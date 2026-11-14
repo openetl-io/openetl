@@ -55,6 +55,38 @@ type Meter struct {
 	exitedCPU float64
 	exitedMem int64
 	group     *Cgroup
+	// By worker, for an attempt on workers.
+	remote map[int]Remote
+}
+
+// Remote is what one of an attempt's workers, a runner of its own, has used
+// and moved so far.
+type Remote struct {
+	Usage       Usage
+	Lanes       Lanes
+	Rows, Bytes int64
+}
+
+// SetRemote records what worker i of the attempt has used and moved so far.
+// Each figure only grows, so a reading older than one taken keeps the
+// newer's. Once any worker has reported, the attempt's usage is its largest
+// worker's, for the size is each worker's, and its rows, bytes and lanes
+// are every worker's.
+func (m *Meter) SetRemote(i int, r Remote) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.remote == nil {
+		m.remote = map[int]Remote{}
+	}
+	was := m.remote[i]
+	u, l := &r.Usage, &r.Lanes
+	u.CPU, u.Memory, u.RunnerCPU, u.RunnerMemory = max(u.CPU, was.Usage.CPU), max(u.Memory, was.Usage.Memory), max(u.RunnerCPU, was.Usage.RunnerCPU), max(u.RunnerMemory, was.Usage.RunnerMemory)
+	l.Busy, l.Backpressured, l.Idle, l.Rows = max(l.Busy, was.Lanes.Busy), max(l.Backpressured, was.Lanes.Backpressured), max(l.Idle, was.Lanes.Idle), max(l.Rows, was.Lanes.Rows)
+	r.Rows, r.Bytes = max(r.Rows, was.Rows), max(r.Bytes, was.Bytes)
+	m.remote[i] = r
 }
 
 type reading struct {
@@ -154,6 +186,13 @@ func (m *Meter) Usage() Usage {
 	defer m.mu.Unlock()
 	m.read()
 	u := m.usage
+	if len(m.remote) > 0 {
+		u = Usage{}
+		for _, r := range m.remote {
+			u.CPU, u.Memory = max(u.CPU, r.Usage.CPU), max(u.Memory, r.Usage.Memory)
+			u.RunnerCPU, u.RunnerMemory = max(u.RunnerCPU, r.Usage.RunnerCPU), max(u.RunnerMemory, r.Usage.RunnerMemory)
+		}
+	}
 	u.Seconds = time.Since(m.start).Seconds()
 	return u
 }
@@ -238,15 +277,36 @@ func (m *Meter) Lanes() Lanes {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.lanes
+	if len(m.remote) == 0 {
+		return m.lanes
+	}
+	var l Lanes
+	limited := true
+	for _, r := range m.remote {
+		l.Count += r.Lanes.Count
+		l.Limit += r.Lanes.Limit
+		limited = limited && r.Lanes.Limit > 0
+		l.Busy, l.Backpressured, l.Idle = l.Busy+r.Lanes.Busy, l.Backpressured+r.Lanes.Backpressured, l.Idle+r.Lanes.Idle
+		l.Rows += r.Lanes.Rows
+	}
+	if !limited {
+		l.Limit = 0
+	}
+	return l
 }
 
-// Progress is how many rows and bytes the attempt's source has emitted.
+// Progress is how many rows and bytes the attempt's sources have emitted.
 func (m *Meter) Progress() (rows, bytes int64) {
 	if m == nil {
 		return 0, 0
 	}
-	return m.rows.Load(), m.bytes.Load()
+	rows, bytes = m.rows.Load(), m.bytes.Load()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.remote {
+		rows, bytes = rows+r.Rows, bytes+r.Bytes
+	}
+	return rows, bytes
 }
 
 // Self is what this process has used: its CPU seconds, and the bytes its

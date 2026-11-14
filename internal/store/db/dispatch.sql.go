@@ -67,7 +67,7 @@ UPDATE dispatches SET state = 'running', runner = $1,
     lease_deadline = now() + (LEAST(heartbeat_ms, timeout_ms) * interval '1 millisecond')
 WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND placements = $5
     AND launcher IS NOT NULL AND launched AND state = 'placed' AND start_deadline > now() AND NOT cancel
-RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched
+RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched, workers, coordinator_cpu, coordinator_memory, worker_target
 `
 
 type ClaimLaunchedParams struct {
@@ -127,6 +127,10 @@ func (q *Queries) ClaimLaunched(ctx context.Context, arg ClaimLaunchedParams) ([
 			&i.Launcher,
 			&i.Placements,
 			&i.Launched,
+			&i.Workers,
+			&i.CoordinatorCpu,
+			&i.CoordinatorMemory,
+			&i.WorkerTarget,
 		); err != nil {
 			return nil, err
 		}
@@ -142,7 +146,7 @@ const claimLaunches = `-- name: ClaimLaunches :many
 UPDATE dispatches SET launched = true
 WHERE org_id = $1 AND data_plane_id = $2 AND launcher = $3 AND runner = $3
     AND state = 'placed' AND NOT launched AND start_deadline > now() AND NOT cancel
-RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched
+RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched, workers, coordinator_cpu, coordinator_memory, worker_target
 `
 
 type ClaimLaunchesParams struct {
@@ -193,6 +197,10 @@ func (q *Queries) ClaimLaunches(ctx context.Context, arg ClaimLaunchesParams) ([
 			&i.Launcher,
 			&i.Placements,
 			&i.Launched,
+			&i.Workers,
+			&i.CoordinatorCpu,
+			&i.CoordinatorMemory,
+			&i.WorkerTarget,
 		); err != nil {
 			return nil, err
 		}
@@ -217,7 +225,7 @@ UPDATE dispatches d SET state = 'running', runner = $1,
     lease_deadline = now() + (LEAST(d.heartbeat_ms, d.timeout_ms) * interval '1 millisecond')
 FROM picked
 WHERE d.org_id = $2 AND d.id = picked.id
-RETURNING d.org_id, d.id, d.data_plane_id, d.workflow_id, d.kind, d.input, d.light, d.pool, d.size_cpu, d.size_memory, d.priority, d.needs, d.trace, d.state, d.runner, d.heartbeat_ms, d.start_timeout_ms, d.timeout_ms, d.enqueue_time, d.start_deadline, d.run_deadline, d.lease_deadline, d.cancel, d.epoch, d.outcome, d.finish_time, d.woken, d.drain, d.launcher, d.placements, d.launched
+RETURNING d.org_id, d.id, d.data_plane_id, d.workflow_id, d.kind, d.input, d.light, d.pool, d.size_cpu, d.size_memory, d.priority, d.needs, d.trace, d.state, d.runner, d.heartbeat_ms, d.start_timeout_ms, d.timeout_ms, d.enqueue_time, d.start_deadline, d.run_deadline, d.lease_deadline, d.cancel, d.epoch, d.outcome, d.finish_time, d.woken, d.drain, d.launcher, d.placements, d.launched, d.workers, d.coordinator_cpu, d.coordinator_memory, d.worker_target
 `
 
 type ClaimLightParams struct {
@@ -277,6 +285,10 @@ func (q *Queries) ClaimLight(ctx context.Context, arg ClaimLightParams) ([]Dispa
 			&i.Launcher,
 			&i.Placements,
 			&i.Launched,
+			&i.Workers,
+			&i.CoordinatorCpu,
+			&i.CoordinatorMemory,
+			&i.WorkerTarget,
 		); err != nil {
 			return nil, err
 		}
@@ -294,7 +306,7 @@ UPDATE dispatches SET state = 'running',
     lease_deadline = now() + (LEAST(heartbeat_ms, timeout_ms) * interval '1 millisecond')
 WHERE org_id = $1 AND data_plane_id = $2 AND runner = $3 AND state = 'placed' AND start_deadline > now() AND NOT cancel
     AND launcher IS NULL
-RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched
+RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched, workers, coordinator_cpu, coordinator_memory, worker_target
 `
 
 type ClaimPlacedParams struct {
@@ -345,6 +357,10 @@ func (q *Queries) ClaimPlaced(ctx context.Context, arg ClaimPlacedParams) ([]Dis
 			&i.Launcher,
 			&i.Placements,
 			&i.Launched,
+			&i.Workers,
+			&i.CoordinatorCpu,
+			&i.CoordinatorMemory,
+			&i.WorkerTarget,
 		); err != nil {
 			return nil, err
 		}
@@ -377,31 +393,34 @@ func (q *Queries) DeleteFinishedDispatches(ctx context.Context, arg DeleteFinish
 const enqueueDispatch = `-- name: EnqueueDispatch :execrows
 INSERT INTO dispatches (
     org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace,
-    heartbeat_ms, start_timeout_ms, timeout_ms, start_deadline
+    heartbeat_ms, start_timeout_ms, timeout_ms, workers, coordinator_cpu, coordinator_memory, start_deadline
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-    $14, $15::bigint, $16,
+    $14, $15::bigint, $16, $17, $18, $19,
     now() + ($15::bigint * interval '1 millisecond')
 ) ON CONFLICT (org_id, id) DO NOTHING
 `
 
 type EnqueueDispatchParams struct {
-	OrgID          uuid.UUID
-	ID             string
-	DataPlaneID    string
-	WorkflowID     string
-	Kind           string
-	Input          []byte
-	Light          string
-	Pool           string
-	SizeCpu        int64
-	SizeMemory     int64
-	Priority       int16
-	Needs          []byte
-	Trace          []byte
-	HeartbeatMs    int64
-	StartTimeoutMs int64
-	TimeoutMs      int64
+	OrgID             uuid.UUID
+	ID                string
+	DataPlaneID       string
+	WorkflowID        string
+	Kind              string
+	Input             []byte
+	Light             string
+	Pool              string
+	SizeCpu           int64
+	SizeMemory        int64
+	Priority          int16
+	Needs             []byte
+	Trace             []byte
+	HeartbeatMs       int64
+	StartTimeoutMs    int64
+	TimeoutMs         int64
+	Workers           int32
+	CoordinatorCpu    int64
+	CoordinatorMemory int64
 }
 
 // A workflow's retry enqueues nothing new.
@@ -423,6 +442,9 @@ func (q *Queries) EnqueueDispatch(ctx context.Context, arg EnqueueDispatchParams
 		arg.HeartbeatMs,
 		arg.StartTimeoutMs,
 		arg.TimeoutMs,
+		arg.Workers,
+		arg.CoordinatorCpu,
+		arg.CoordinatorMemory,
 	)
 	if err != nil {
 		return 0, err
@@ -646,8 +668,8 @@ func (q *Queries) GetDispatchWorkflow(ctx context.Context, arg GetDispatchWorkfl
 }
 
 const insertAttempt = `-- name: InsertAttempt :exec
-INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, workers, one_pod)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (org_id, id) DO NOTHING
 `
 
@@ -660,6 +682,8 @@ type InsertAttemptParams struct {
 	SizeCpu    int64
 	SizeMemory int64
 	SizeReason string
+	Workers    int32
+	OnePod     string
 }
 
 // A workflow's retry of the same work inserts nothing new.
@@ -673,6 +697,8 @@ func (q *Queries) InsertAttempt(ctx context.Context, arg InsertAttemptParams) er
 		arg.SizeCpu,
 		arg.SizeMemory,
 		arg.SizeReason,
+		arg.Workers,
+		arg.OnePod,
 	)
 	return err
 }
@@ -858,8 +884,36 @@ func (q *Queries) NotifyDispatch(ctx context.Context, dataPlane string) error {
 	return err
 }
 
+const openWorkers = `-- name: OpenWorkers :execrows
+UPDATE dispatches SET worker_target = $1
+WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND runner = $5 AND state = 'running' AND workers > 0
+`
+
+type OpenWorkersParams struct {
+	WorkerTarget []byte
+	OrgID        uuid.UUID
+	DataPlaneID  string
+	ID           string
+	Runner       *string
+}
+
+// Where the workers of an attempt running on this runner join it.
+func (q *Queries) OpenWorkers(ctx context.Context, arg OpenWorkersParams) (int64, error) {
+	result, err := q.db.Exec(ctx, openWorkers,
+		arg.WorkerTarget,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.ID,
+		arg.Runner,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const pendingAttempts = `-- name: PendingAttempts :many
-SELECT id, pool, size_cpu, size_memory, priority, needs,
+SELECT id, pool, size_cpu, size_memory, priority, needs, workers, coordinator_cpu, coordinator_memory,
     (extract(epoch FROM now() - enqueue_time) * 1000)::bigint AS waited_ms
 FROM dispatches
 WHERE org_id = $1 AND data_plane_id = $2 AND state = 'pending' AND light = ''
@@ -874,13 +928,16 @@ type PendingAttemptsParams struct {
 }
 
 type PendingAttemptsRow struct {
-	ID         string
-	Pool       string
-	SizeCpu    int64
-	SizeMemory int64
-	Priority   int16
-	Needs      []byte
-	WaitedMs   int64
+	ID                string
+	Pool              string
+	SizeCpu           int64
+	SizeMemory        int64
+	Priority          int16
+	Needs             []byte
+	Workers           int32
+	CoordinatorCpu    int64
+	CoordinatorMemory int64
+	WaitedMs          int64
 }
 
 // The attempts waiting for room, longest-waiting first within each priority,
@@ -901,6 +958,9 @@ func (q *Queries) PendingAttempts(ctx context.Context, arg PendingAttemptsParams
 			&i.SizeMemory,
 			&i.Priority,
 			&i.Needs,
+			&i.Workers,
+			&i.CoordinatorCpu,
+			&i.CoordinatorMemory,
 			&i.WaitedMs,
 		); err != nil {
 			return nil, err
@@ -1011,23 +1071,26 @@ func (q *Queries) PlacementCapacity(ctx context.Context, arg PlacementCapacityPa
 }
 
 const placementDemand = `-- name: PlacementDemand :many
-SELECT data_plane_id, pool, size_cpu, size_memory, state, (launcher IS NOT NULL)::boolean AS pod,
+SELECT data_plane_id, pool, size_cpu, size_memory, workers, coordinator_cpu, coordinator_memory, state, (launcher IS NOT NULL)::boolean AS pod,
     count(*)::bigint AS attempts,
     COALESCE(max(extract(epoch FROM now() - enqueue_time)), 0)::double precision AS oldest_seconds
 FROM dispatches
 WHERE org_id = $1 AND light = '' AND state IN ('pending', 'placed', 'running')
-GROUP BY data_plane_id, pool, size_cpu, size_memory, state, launcher IS NOT NULL
+GROUP BY data_plane_id, pool, size_cpu, size_memory, workers, coordinator_cpu, coordinator_memory, state, launcher IS NOT NULL
 `
 
 type PlacementDemandRow struct {
-	DataPlaneID   string
-	Pool          string
-	SizeCpu       int64
-	SizeMemory    int64
-	State         string
-	Pod           bool
-	Attempts      int64
-	OldestSeconds float64
+	DataPlaneID       string
+	Pool              string
+	SizeCpu           int64
+	SizeMemory        int64
+	Workers           int32
+	CoordinatorCpu    int64
+	CoordinatorMemory int64
+	State             string
+	Pod               bool
+	Attempts          int64
+	OldestSeconds     float64
 }
 
 // Attempts placed, running or waiting by pool and size, and whether a
@@ -1046,6 +1109,9 @@ func (q *Queries) PlacementDemand(ctx context.Context, orgID uuid.UUID) ([]Place
 			&i.Pool,
 			&i.SizeCpu,
 			&i.SizeMemory,
+			&i.Workers,
+			&i.CoordinatorCpu,
+			&i.CoordinatorMemory,
 			&i.State,
 			&i.Pod,
 			&i.Attempts,
@@ -1068,7 +1134,9 @@ SELECT r.org_id, r.data_plane_id, r.id, r.release, r.protocol, r.features, r.lau
     COALESCE(u.attempts, 0)::bigint AS attempts
 FROM runners r
 LEFT JOIN LATERAL (
-    SELECT sum(d.size_cpu) AS cpu, sum(d.size_memory) AS memory, count(*) AS attempts
+    SELECT sum(d.size_cpu * GREATEST(d.workers, 1) + d.coordinator_cpu) AS cpu,
+        sum(d.size_memory * GREATEST(d.workers, 1) + d.coordinator_memory) AS memory,
+        sum(CASE WHEN d.workers > 0 THEN d.workers + 1 ELSE 1 END) AS attempts
     FROM dispatches d
     WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND (d.runner = r.id OR d.launcher = r.id) AND d.state IN ('placed', 'running')
 ) u ON true
@@ -1115,7 +1183,9 @@ type PlacementRunnersRow struct {
 }
 
 // A data plane's runners and pod launchers reporting now, with the room their
-// placements use: a launcher's go on using it while their pods run them.
+// placements use: a launcher's go on using it while their pods run them. An
+// attempt on workers uses its workers' and its coordinator's, and counts as
+// its pods.
 func (q *Queries) PlacementRunners(ctx context.Context, arg PlacementRunnersParams) ([]PlacementRunnersRow, error) {
 	rows, err := q.db.Query(ctx, placementRunners, arg.OrgID, arg.DataPlaneID, arg.LapseMs)
 	if err != nil {
@@ -1313,7 +1383,8 @@ UPDATE dispatches SET
     state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
     outcome = CASE WHEN cancel THEN $1::jsonb ELSE outcome END,
     finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
-    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL,
+    worker_target = NULL
 WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND runner = $5 AND state = 'running' AND light = ''
 `
 
@@ -1326,7 +1397,8 @@ type ReplaceRunningParams struct {
 }
 
 // A runner with no room for what was placed on it: it's placed again, unless
-// it's been cancelled, which finishes it.
+// it's been cancelled, which finishes it. Its workers join the next
+// coordinator, once it says where.
 func (q *Queries) ReplaceRunning(ctx context.Context, arg ReplaceRunningParams) (int64, error) {
 	result, err := q.db.Exec(ctx, replaceRunning,
 		arg.Cancelled,
@@ -1416,6 +1488,41 @@ func (q *Queries) ReturnLaunch(ctx context.Context, arg ReturnLaunchParams) (int
 	return result.RowsAffected(), nil
 }
 
+const returnOnePod = `-- name: ReturnOnePod :execrows
+UPDATE dispatches SET
+    state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
+    outcome = CASE WHEN cancel THEN $1::jsonb ELSE outcome END,
+    finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL,
+    workers = 0, coordinator_cpu = 0, coordinator_memory = 0, worker_target = NULL
+WHERE org_id = $2 AND data_plane_id = $3 AND id = $4 AND runner = $5 AND state = 'running' AND workers > 0
+`
+
+type ReturnOnePodParams struct {
+	Cancelled   []byte
+	OrgID       uuid.UUID
+	DataPlaneID string
+	ID          string
+	Runner      *string
+}
+
+// An attempt on workers that its coordinator found can't run on them: it's
+// placed again, as the same attempt, on one pod, unless it's been cancelled,
+// which finishes it.
+func (q *Queries) ReturnOnePod(ctx context.Context, arg ReturnOnePodParams) (int64, error) {
+	result, err := q.db.Exec(ctx, returnOnePod,
+		arg.Cancelled,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.ID,
+		arg.Runner,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const returnPlaced = `-- name: ReturnPlaced :exec
 UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, start_deadline = NULL
 WHERE org_id = $1 AND data_plane_id = $2 AND runner = $3 AND state = 'placed' AND NOT launched
@@ -1488,8 +1595,23 @@ func (q *Queries) SetAttemptCode(ctx context.Context, arg SetAttemptCodeParams) 
 	return err
 }
 
+const setAttemptOnePod = `-- name: SetAttemptOnePod :exec
+UPDATE attempts SET workers = 0, one_pod = $1 WHERE org_id = $2 AND id = $3
+`
+
+type SetAttemptOnePodParams struct {
+	OnePod string
+	OrgID  uuid.UUID
+	ID     string
+}
+
+func (q *Queries) SetAttemptOnePod(ctx context.Context, arg SetAttemptOnePodParams) error {
+	_, err := q.db.Exec(ctx, setAttemptOnePod, arg.OnePod, arg.OrgID, arg.ID)
+	return err
+}
+
 const syncAttempts = `-- name: SyncAttempts :many
-SELECT org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, cpu_seconds, peak_memory, runner_cpu_seconds, runner_memory, seconds, rows, bytes, code, create_time, lanes, lane_limit, busy_seconds, backpressured_seconds, idle_seconds, lane_rows FROM attempts
+SELECT org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, cpu_seconds, peak_memory, runner_cpu_seconds, runner_memory, seconds, rows, bytes, code, create_time, lanes, lane_limit, busy_seconds, backpressured_seconds, idle_seconds, lane_rows, workers, one_pod FROM attempts
 WHERE org_id = $1 AND sync_id = ANY($2::uuid[])
 ORDER BY sync_id, attempt, create_time
 `
@@ -1533,6 +1655,8 @@ func (q *Queries) SyncAttempts(ctx context.Context, arg SyncAttemptsParams) ([]A
 			&i.BackpressuredSeconds,
 			&i.IdleSeconds,
 			&i.LaneRows,
+			&i.Workers,
+			&i.OnePod,
 		); err != nil {
 			return nil, err
 		}
@@ -1641,6 +1765,84 @@ func (q *Queries) UnwokenDispatches(ctx context.Context, arg UnwokenDispatchesPa
 	for rows.Next() {
 		var i UnwokenDispatchesRow
 		if err := rows.Scan(&i.ID, &i.WorkflowID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workerAttempt = `-- name: WorkerAttempt :many
+SELECT org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched, workers, coordinator_cpu, coordinator_memory, worker_target FROM dispatches
+WHERE org_id = $1 AND data_plane_id = $2 AND id = $3 AND placements = $4
+    AND launcher IS NOT NULL AND launched AND state IN ('placed', 'running') AND NOT cancel AND workers > $5::integer
+`
+
+type WorkerAttemptParams struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	ID          string
+	Placement   int32
+	Worker      int32
+}
+
+// A worker pod's attempt, while it's still that placement's, with where the
+// worker joins once its coordinator has said.
+func (q *Queries) WorkerAttempt(ctx context.Context, arg WorkerAttemptParams) ([]Dispatch, error) {
+	rows, err := q.db.Query(ctx, workerAttempt,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.ID,
+		arg.Placement,
+		arg.Worker,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Dispatch
+	for rows.Next() {
+		var i Dispatch
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ID,
+			&i.DataPlaneID,
+			&i.WorkflowID,
+			&i.Kind,
+			&i.Input,
+			&i.Light,
+			&i.Pool,
+			&i.SizeCpu,
+			&i.SizeMemory,
+			&i.Priority,
+			&i.Needs,
+			&i.Trace,
+			&i.State,
+			&i.Runner,
+			&i.HeartbeatMs,
+			&i.StartTimeoutMs,
+			&i.TimeoutMs,
+			&i.EnqueueTime,
+			&i.StartDeadline,
+			&i.RunDeadline,
+			&i.LeaseDeadline,
+			&i.Cancel,
+			&i.Epoch,
+			&i.Outcome,
+			&i.FinishTime,
+			&i.Woken,
+			&i.Drain,
+			&i.Launcher,
+			&i.Placements,
+			&i.Launched,
+			&i.Workers,
+			&i.CoordinatorCpu,
+			&i.CoordinatorMemory,
+			&i.WorkerTarget,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

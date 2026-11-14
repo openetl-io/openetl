@@ -1618,7 +1618,10 @@ type CatalogStream struct {
 	Columns []*CatalogColumn `protobuf:"bytes,5,rep,name=columns,proto3" json:"columns,omitempty"`
 	// How the source can read the stream, the way it reads it first; empty if
 	// it doesn't say.
-	SyncModes     []SyncMode `protobuf:"varint,6,rep,packed,name=sync_modes,json=syncModes,proto3,enum=openetl.api.v1.SyncMode" json:"sync_modes,omitempty"`
+	SyncModes []SyncMode `protobuf:"varint,6,rep,packed,name=sync_modes,json=syncModes,proto3,enum=openetl.api.v1.SyncMode" json:"sync_modes,omitempty"`
+	// Where the source splits the stream, every record of a key is in one
+	// split, so an attempt on workers can spread its splits.
+	SplitsByKey   bool `protobuf:"varint,7,opt,name=splits_by_key,json=splitsByKey,proto3" json:"splits_by_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1693,6 +1696,13 @@ func (x *CatalogStream) GetSyncModes() []SyncMode {
 		return x.SyncModes
 	}
 	return nil
+}
+
+func (x *CatalogStream) GetSplitsByKey() bool {
+	if x != nil {
+		return x.SplitsByKey
+	}
+	return false
 }
 
 type CatalogColumn struct {
@@ -1867,7 +1877,7 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\aCatalog\x127\n" +
 	"\astreams\x18\x01 \x03(\v2\x1d.openetl.api.v1.CatalogStreamR\astreams\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12?\n" +
-	"\rdiscover_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\fdiscoverTime\"\x89\x02\n" +
+	"\rdiscover_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\fdiscoverTime\"\xad\x02\n" +
 	"\rCatalogStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vprimary_key\x18\x02 \x03(\tR\n" +
@@ -1876,7 +1886,8 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\x06replay\x18\x04 \x01(\x0e2\x16.openetl.api.v1.ReplayR\x06replay\x127\n" +
 	"\acolumns\x18\x05 \x03(\v2\x1d.openetl.api.v1.CatalogColumnR\acolumns\x127\n" +
 	"\n" +
-	"sync_modes\x18\x06 \x03(\x0e2\x18.openetl.api.v1.SyncModeR\tsyncModes\"S\n" +
+	"sync_modes\x18\x06 \x03(\x0e2\x18.openetl.api.v1.SyncModeR\tsyncModes\x12\"\n" +
+	"\rsplits_by_key\x18\a \x01(\bR\vsplitsByKey\"S\n" +
 	"\rCatalogColumn\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +

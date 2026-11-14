@@ -146,6 +146,22 @@ func TestParseResources(t *testing.T) {
 	if r := doc.Pipeline.GetResources(); r.GetSize() != nil || r.GetMin().GetPreset() != "xs" {
 		t.Errorf("auto is an unset size: %v", r)
 	}
+	doc, err = Parse([]byte(header + "  resources: {workers: 4}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := doc.Pipeline.GetResources().GetWorkers(); w != 4 {
+		t.Errorf("workers %d, want 4", w)
+	}
+	for _, bad := range []string{"0", "-1", "65", "two", "1.9", "2.0", "1e1", "[2]", "{n: 2}", `"2"`} {
+		_, err := Parse([]byte(header + "  resources: {workers: " + bad + "}\n"))
+		if err == nil || !strings.Contains(err.Error(), "resources.workers:") || !strings.Contains(err.Error(), "isn't a whole number from 1 to 64") {
+			t.Errorf("workers %s: %v, want it refused", bad, err)
+		}
+	}
+	if _, err := Parse([]byte(header + "  resources: {workers: 1.9}\n")); err == nil || !strings.Contains(err.Error(), `resources.workers: "1.9" isn't`) {
+		t.Errorf("workers 1.9: %v, want the message to give the value", err)
+	}
 	doc, err = Parse([]byte(header))
 	if err != nil {
 		t.Fatal(err)

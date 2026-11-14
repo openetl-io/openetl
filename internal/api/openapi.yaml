@@ -3054,6 +3054,11 @@ components:
                     description: |-
                         How the source can read the stream, the way it reads it first; empty if
                          it doesn't say.
+                splitsByKey:
+                    type: boolean
+                    description: |-
+                        Where the source splits the stream, every record of a key is in one
+                         split, so an attempt on workers can spread its splits.
         ChangePasswordRequest:
             type: object
             properties:
@@ -4188,7 +4193,9 @@ components:
             type: object
             properties:
                 size:
-                    $ref: '#/components/schemas/JobSize'
+                    allOf:
+                        - $ref: '#/components/schemas/JobSize'
+                    description: Each worker's, when it runs on workers.
                 reason:
                     enum:
                         - JOB_SIZE_REASON_UNSPECIFIED
@@ -4205,6 +4212,12 @@ components:
                     format: enum
                 pool:
                     type: string
+                workers:
+                    type: integer
+                    description: |-
+                        The workers each attempt runs on, with their coordinator; 0: one pod.
+                         A warning says why a job that asks for workers runs on one pod.
+                    format: uint32
         JobResources:
             type: object
             properties:
@@ -4231,6 +4244,14 @@ components:
                 pool:
                     type: string
                     description: 'The runners that run its jobs. Unset: default.'
+                workers:
+                    type: integer
+                    description: |-
+                        How many pods each attempt runs on, as workers that a coordinator in a
+                         pod of its own leads, each of the job's size; 0 or 1: one pod. A pool's
+                         pod launcher starts them, all or none. A job that can't run on workers
+                         runs on one pod, and the plan says why.
+                    format: uint32
             description: JobResources sizes the pipeline's jobs.
         JobScaling:
             type: object
@@ -5822,6 +5843,15 @@ components:
                     description: |-
                         Its lanes and where their time went, as its runner last reported. Unset
                          until it does, and for an attempt without lanes.
+                workers:
+                    type: integer
+                    description: |-
+                        The workers it ran on, with their coordinator; 0: one pod. Its size is
+                         each worker's, and its use the largest worker's.
+                    format: uint32
+                onePod:
+                    type: string
+                    description: Why it ran on one pod although the pipeline asks for workers.
             description: SyncAttempt is one attempt of a sync, or one job of a continuous run.
         SyncPipelineRequest:
             type: object

@@ -145,6 +145,9 @@ func (s *Server) PollWork(ctx context.Context, req *connect.Request[dataplanev1.
 	}
 	var work []db.Dispatch
 	var err error
+	if a := m.GetAttempt(); a != nil && m.Worker != nil {
+		return s.pollWorker(ctx, a, m.GetWorker())
+	}
 	if a := m.GetAttempt(); a != nil {
 		work, err = s.Dispatch.ClaimAttempt(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), a.GetAttempt(), placementOf(a.GetPlacement()))
 	} else {
@@ -155,23 +158,71 @@ func (s *Server) PollWork(ctx context.Context, req *connect.Request[dataplanev1.
 	}
 	res := &dataplanev1.PollWorkResponse{}
 	for _, w := range work {
-		out := &dataplanev1.Work{
-			Id: w.ID, Kind: w.Kind, Input: w.Input,
-			HeartbeatTimeout: durationpb.New(time.Duration(w.HeartbeatMs) * time.Millisecond),
-			Timeout:          durationpb.New(time.Duration(w.TimeoutMs) * time.Millisecond),
-		}
-		if w.Light == "" {
-			out.Size = &dataplanev1.Resources{CpuMillis: w.SizeCpu, MemoryBytes: w.SizeMemory}
-		}
-		if w.State == "placed" && w.Launched {
-			out.Placement = uint32(max(0, w.Placements))
-		}
-		if err := json.Unmarshal(w.Trace, &out.Trace); err != nil {
+		out, err := workOut(w)
+		if err != nil {
 			return nil, err
 		}
 		res.Work = append(res.Work, out)
 	}
 	return connect.NewResponse(res), nil
+}
+
+func workOut(w db.Dispatch) (*dataplanev1.Work, error) {
+	out := &dataplanev1.Work{
+		Id: w.ID, Kind: w.Kind, Input: w.Input,
+		HeartbeatTimeout: durationpb.New(time.Duration(w.HeartbeatMs) * time.Millisecond),
+		Timeout:          durationpb.New(time.Duration(w.TimeoutMs) * time.Millisecond),
+		Workers:          uint32(max(0, w.Workers)),
+	}
+	if w.Light == "" {
+		out.Size = &dataplanev1.Resources{CpuMillis: w.SizeCpu, MemoryBytes: w.SizeMemory}
+	}
+	if w.Workers > 0 {
+		out.Coordinator = &dataplanev1.Resources{CpuMillis: w.CoordinatorCpu, MemoryBytes: w.CoordinatorMemory}
+	}
+	if w.State == "placed" && w.Launched {
+		out.Placement = uint32(max(0, w.Placements))
+	}
+	return out, json.Unmarshal(w.Trace, &out.Trace)
+}
+
+// pollWorker answers a worker pod's poll: its attempt while that placement is
+// live, with where it joins once the coordinator has said.
+func (s *Server) pollWorker(ctx context.Context, a *dataplanev1.Launch, worker uint32) (*connect.Response[dataplanev1.PollWorkResponse], error) {
+	if worker >= math.MaxInt32 {
+		return nil, invalid("worker %d is out of range", worker)
+	}
+	w, target, err := s.Dispatch.WorkerAttempt(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, a.GetAttempt(), placementOf(a.GetPlacement()), int32(worker))
+	if err != nil || w == nil {
+		return connect.NewResponse(&dataplanev1.PollWorkResponse{}), err
+	}
+	out, err := workOut(*w)
+	if err != nil {
+		return nil, err
+	}
+	out.Placement, out.Join = 0, target
+	return connect.NewResponse(&dataplanev1.PollWorkResponse{Work: []*dataplanev1.Work{out}}), nil
+}
+
+// OpenWorkers records where an attempt's workers join its coordinator.
+func (s *Server) OpenWorkers(ctx context.Context, req *connect.Request[dataplanev1.OpenWorkersRequest]) (*connect.Response[dataplanev1.OpenWorkersResponse], error) {
+	m := req.Msg
+	switch {
+	case m.GetRunner() == "" || len(m.GetRunner()) > 255:
+		return nil, invalid("runner must name the runner, in at most 255 characters")
+	case m.GetAddress() == "" || len(m.GetAddress()) > 1024:
+		return nil, invalid("address must be host:port, in at most 1024 characters")
+	case m.GetToken() == "" || len(m.GetToken()) > 1024 || len(m.GetCertificate()) > 64<<10:
+		return nil, invalid("an attempt's workers need its token, and its certificate is at most 64 KiB")
+	case m.GetGeneration() == 0 || m.GetOwner() == "" || len(m.GetOwner()) > 1024:
+		return nil, invalid("generation and owner must be what the coordinator claimed the pipeline with")
+	}
+	target := &dataplanev1.WorkerTarget{Address: m.GetAddress(), Certificate: m.GetCertificate(), Token: m.GetToken(), Generation: m.GetGeneration(), Owner: m.GetOwner()}
+	ok, err := s.Dispatch.OpenWorkers(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), target)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&dataplanev1.OpenWorkersResponse{Accepted: ok}), nil
 }
 
 // maxFreeWork bounds what a runner can ask for at once.
@@ -189,6 +240,13 @@ func (s *Server) ReportResult(ctx context.Context, req *connect.Request[dataplan
 	}
 	var accepted bool
 	var err error
+	if why := m.GetOnePod(); why != "" {
+		accepted, err = s.Dispatch.OnePod(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), truncate(why, 1024))
+		if err != nil {
+			return nil, err
+		}
+		return connect.NewResponse(&dataplanev1.ReportResultResponse{Accepted: accepted}), nil
+	}
 	if n := m.GetPlacement(); n > 0 {
 		accepted, err = s.Dispatch.LaunchResult(ctx, s.Tenant.Org, callerOf(ctx).dataPlane, m.GetRunner(), m.GetId(), placementOf(n), out, m.GetNoCapacity())
 	} else {
@@ -200,15 +258,30 @@ func (s *Server) ReportResult(ctx context.Context, req *connect.Request[dataplan
 	return connect.NewResponse(&dataplanev1.ReportResultResponse{Accepted: accepted}), nil
 }
 
-// planJob is what the pipeline's next attempt would be sized at, and checks
-// that a runner or pod launcher of its pool can take the size. That's a
-// problem when the pool's runners reported lately and none can, and a note
-// when none reported.
-func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, out *apiv1.PipelinePlan) error {
+// planJob is what the pipeline's next attempt would be sized at, on how many
+// workers, and checks that a runner or pod launcher of its pool can take the
+// size. That's a problem when the pool's runners reported lately and none
+// can, and a note when none reported. An attempt on workers needs a pod
+// launcher that takes every worker and their coordinator; without a launcher
+// in the pool, it runs on one pod.
+func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, workers int, out *apiv1.PipelinePlan) error {
 	sp := sizing.SpecOf(p.v.spec.GetResources())
 	rows, err := q.RecentRunners(ctx, db.RecentRunnersParams{OrgID: s.Tenant.Org, DataPlaneID: p.v.dataPlane, Since: time.Now().Add(-runnerReach)})
 	if err != nil {
 		return err
+	}
+	var launchers []*dispatch.Pods
+	for _, r := range rows {
+		if r.Pool == sp.Pool && r.Launcher {
+			launchers = append(launchers, &dispatch.Pods{
+				Max: resources.Size{CPU: r.PodMaxCpu, Memory: r.PodMaxMemory}, MaxPods: int(r.MaxPods), MaxCPU: r.MaxPodCpu,
+			})
+		}
+	}
+	if workers > 0 && len(rows) > 0 && len(launchers) == 0 {
+		out.Warnings = append(out.Warnings, &apiv1.PlanWarning{Message: onePodWarning(workers, fmt.Sprintf(
+			"no pod launcher of data plane %q and pool %q has reported in the last ten minutes, and an attempt runs on workers only in pods", p.v.dataPlane, sp.Pool))})
+		workers = 0
 	}
 	var capacities []resources.Size
 	for _, r := range rows {
@@ -216,7 +289,7 @@ func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, out *ap
 		case r.Pool != sp.Pool:
 		case r.Launcher:
 			capacities = append(capacities, dispatch.LargestPod(resources.Size{CPU: r.PodMaxCpu, Memory: r.PodMaxMemory}))
-		case r.CapacityCpu > 0:
+		case r.CapacityCpu > 0 && workers == 0:
 			capacities = append(capacities, resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory})
 		}
 	}
@@ -234,7 +307,11 @@ func (s *Server) planJob(ctx context.Context, q *db.Queries, p *planned, out *ap
 		}
 	}
 	c := sizing.Choose(in)
-	out.Job = &apiv1.JobPlan{Size: sizing.Out(c.Size), Reason: c.Reason.API(), Pool: sp.Pool}
+	out.Job = &apiv1.JobPlan{Size: sizing.Out(c.Size), Reason: c.Reason.API(), Pool: sp.Pool, Workers: uint32(max(workers, 0))}
+	if workers > 0 && len(launchers) > 0 && !slices.ContainsFunc(launchers, func(l *dispatch.Pods) bool { return l.AllowsWorkers(workers, c.Size, sizing.Coordinator) }) {
+		out.Problems = append(out.Problems, fmt.Sprintf("the job's %d workers of %s and their coordinator, %s, need %d pods with %s between them, more than any pod launcher of data plane %q and pool %q takes",
+			workers, c.Size.Name(), sizing.Coordinator.Name(), workers+1, c.Size.Times(workers).Add(sizing.Coordinator), p.v.dataPlane, sp.Pool))
+	}
 	if len(capacities) == 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("no runner of data plane %q and pool %q has reported in the last ten minutes, so the plan can't check that one can take the job's size", p.v.dataPlane, sp.Pool))
 		return nil

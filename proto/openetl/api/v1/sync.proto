@@ -77,6 +77,11 @@ message SyncAttempt {
   // Its lanes and where their time went, as its runner last reported. Unset
   // until it does, and for an attempt without lanes.
   LaneUsage lanes = 8;
+  // The workers it ran on, with their coordinator; 0: one pod. Its size is
+  // each worker's, and its use the largest worker's.
+  uint32 workers = 9;
+  // Why it ran on one pod although the pipeline asks for workers.
+  string one_pod = 10;
 }
 
 // LaneUsage is how an attempt's lanes spent their time.

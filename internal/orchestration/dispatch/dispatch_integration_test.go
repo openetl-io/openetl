@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -1238,6 +1239,101 @@ func TestAttemptInAPod(t *testing.T) {
 	f.tick()
 	if got := f.launches("pods"); len(got) != 1 || got[0].Attempt != "next" {
 		t.Fatalf("the launcher got %v, want next", got)
+	}
+}
+
+// An attempt on workers takes its launcher's pods for every worker and its
+// coordinator, or waits; its workers get where to join once the coordinator
+// says; and a coordinator that finds it can't run on workers places it
+// again, as the same attempt, on one pod.
+func TestAttemptOnWorkers(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	f.launcher("pods", Pods{Min: resources.M, MaxPods: 4})
+	gang := func(id string) {
+		t.Helper()
+		err := f.d.Enqueue(ctx, contract.WorkInput{
+			OrgID: f.org.String(), DataPlane: "default", ID: id, WorkflowID: "wf", Kind: contract.RunSyncAttempt, Input: map[string]string{},
+			Size: resources.S, Workers: 2, Coordinator: resources.XS, Heartbeat: time.Minute, Timeout: time.Hour, Priority: contract.PriorityScheduled,
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	gang("first")
+	gang("second")
+	got := f.launches("pods")
+	if len(got) != 1 || got[0] != (Launch{"first", 1}) {
+		t.Fatalf("the launcher got %v, want first only: 3 pods of its 4", got)
+	}
+	rows, err := f.d.Store.PlacementRunners(ctx, db.PlacementRunnersParams{OrgID: f.org, DataPlaneID: "default", LapseMs: time.Minute.Milliseconds()})
+	if err != nil || len(rows) != 1 || rows[0].Attempts != 3 || rows[0].UsedCpu != resources.S.CPU*2+resources.XS.CPU {
+		t.Fatalf("placement rows %+v (%v), want 3 pods and their CPU", rows, err)
+	}
+	w, target, err := f.d.WorkerAttempt(ctx, f.org, "default", "first", 1, 1)
+	if err != nil || w == nil || target != nil {
+		t.Fatalf("worker 1 before its coordinator: %v, %v (%v)", w, target, err)
+	}
+	if w, _, _ := f.d.WorkerAttempt(ctx, f.org, "default", "first", 1, 2); w != nil {
+		t.Fatal("a third worker of two got the attempt")
+	}
+	if !f.claimAs("coordinator", got[0]) {
+		t.Fatal("the coordinator's pod didn't get it")
+	}
+	if ok, err := f.d.OpenWorkers(ctx, f.org, "default", "someone", "first", &dataplanev1.WorkerTarget{Address: "x:1"}); err != nil || ok {
+		t.Fatalf("another runner opened the workers: %v (%v)", ok, err)
+	}
+	if ok, err := f.d.OpenWorkers(ctx, f.org, "default", "coordinator", "first", &dataplanev1.WorkerTarget{Address: "10.0.0.7:7720", Token: "t", Generation: 3, Owner: "o"}); err != nil || !ok {
+		t.Fatalf("open: %v (%v)", ok, err)
+	}
+	_, target, err = f.d.WorkerAttempt(ctx, f.org, "default", "first", 1, 1)
+	if err != nil || target.GetAddress() != "10.0.0.7:7720" || target.GetWorker() != 1 || target.GetOwner() != "o" {
+		t.Fatalf("worker 1's target %v (%v)", target, err)
+	}
+	if w, _, _ := f.d.WorkerAttempt(ctx, f.org, "default", "first", 2, 0); w != nil {
+		t.Fatal("a worker of another placement got the attempt")
+	}
+
+	if ok, err := f.d.OnePod(ctx, f.org, "default", "coordinator", "first", "a SQL transform runs on one pod"); err != nil || !ok {
+		t.Fatalf("one pod: %v (%v)", ok, err)
+	}
+	if w, _, _ := f.d.WorkerAttempt(ctx, f.org, "default", "first", 1, 0); w != nil {
+		t.Fatal("a worker of the placement that moved on got the attempt")
+	}
+	f.tick()
+	launched := f.launches("pods")
+	slices.SortFunc(launched, func(a, b Launch) int { return strings.Compare(a.Attempt, b.Attempt) })
+	if len(launched) != 2 || launched[0] != (Launch{"first", 2}) || launched[1] != (Launch{"second", 1}) {
+		t.Fatalf("the launcher got %v, want first again on one pod, and second's 3 pods", launched)
+	}
+	d, err := f.d.Store.GetDispatchOutcome(ctx, db.GetDispatchOutcomeParams{OrgID: f.org, ID: "first"})
+	if err != nil || d.State != "placed" {
+		t.Fatalf("first is %s (%v)", d.State, err)
+	}
+	conn, err := pgx.Connect(ctx, f.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	var workers int32
+	var stored []byte
+	if err := conn.QueryRow(ctx, "SELECT workers, worker_target FROM dispatches WHERE org_id = $1 AND id = $2", f.org, "first").Scan(&workers, &stored); err != nil || workers != 0 || stored != nil {
+		t.Fatalf("first has %d workers and target %s (%v), want none", workers, stored, err)
+	}
+
+	// A coordinator with no room places its attempt again: the next
+	// placement's workers don't get where the last coordinator was.
+	if !f.claimAs("coordinator-2", launched[1]) {
+		t.Fatal("second's coordinator didn't get it")
+	}
+	if ok, err := f.d.OpenWorkers(ctx, f.org, "default", "coordinator-2", "second", &dataplanev1.WorkerTarget{Address: "10.0.0.8:7720", Token: "t", Generation: 4, Owner: "o"}); err != nil || !ok {
+		t.Fatalf("open: %v (%v)", ok, err)
+	}
+	if ok, err := f.d.Result(ctx, f.org, "default", "coordinator-2", "second", contract.WorkOutcome{}, true, nil); err != nil || !ok {
+		t.Fatalf("no room: %v (%v)", ok, err)
+	}
+	if err := conn.QueryRow(ctx, "SELECT workers, worker_target FROM dispatches WHERE org_id = $1 AND id = $2", f.org, "second").Scan(&workers, &stored); err != nil || workers != 2 || stored != nil {
+		t.Fatalf("second has %d workers and target %s (%v), want 2 and none", workers, stored, err)
 	}
 }
 

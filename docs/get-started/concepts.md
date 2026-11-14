@@ -95,6 +95,8 @@ OpenETL has two halves:
 - The **control plane** serves the API and the console, keeps the pipelines, and decides what runs when and where.
 - **Runners** execute jobs that copy data. Each run starts the connectors as separate programs, with OpenETL's data engine between them. A **data plane** groups runners that can reach the API and your data systems.
 
+A large job can run on several **workers**, each a runner in a pod of its own that reads and writes part of the data. A **coordinator** leads them and records each checkpoint.
+
 On a laptop, `openetld dev` runs both halves in one process. [Self-host](../self-host/index.md) covers running them on servers.
 
 ## Workspaces

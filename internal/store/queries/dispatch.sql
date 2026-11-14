@@ -2,17 +2,17 @@
 -- name: EnqueueDispatch :execrows
 INSERT INTO dispatches (
     org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace,
-    heartbeat_ms, start_timeout_ms, timeout_ms, start_deadline
+    heartbeat_ms, start_timeout_ms, timeout_ms, workers, coordinator_cpu, coordinator_memory, start_deadline
 ) VALUES (
     @org_id, @id, @data_plane_id, @workflow_id, @kind, @input, @light, @pool, @size_cpu, @size_memory, @priority, @needs, @trace,
-    @heartbeat_ms, sqlc.arg(start_timeout_ms)::bigint, @timeout_ms,
+    @heartbeat_ms, sqlc.arg(start_timeout_ms)::bigint, @timeout_ms, @workers, @coordinator_cpu, @coordinator_memory,
     now() + (sqlc.arg(start_timeout_ms)::bigint * interval '1 millisecond')
 ) ON CONFLICT (org_id, id) DO NOTHING;
 
 -- A workflow's retry of the same work inserts nothing new.
 -- name: InsertAttempt :exec
-INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason)
-VALUES (@org_id, @id, @pipeline_id, @sync_id, @attempt, @size_cpu, @size_memory, @size_reason)
+INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, workers, one_pod)
+VALUES (@org_id, @id, @pipeline_id, @sync_id, @attempt, @size_cpu, @size_memory, @size_reason, @workers, @one_pod)
 ON CONFLICT (org_id, id) DO NOTHING;
 
 -- name: RecordAttemptUsage :exec
@@ -88,14 +88,18 @@ SELECT pg_try_advisory_xact_lock(hashtextextended(@data_plane::text, 0));
 
 -- name: PlacementRunners :many
 -- A data plane's runners and pod launchers reporting now, with the room their
--- placements use: a launcher's go on using it while their pods run them.
+-- placements use: a launcher's go on using it while their pods run them. An
+-- attempt on workers uses its workers' and its coordinator's, and counts as
+-- its pods.
 SELECT r.*,
     COALESCE(u.cpu, 0)::bigint AS used_cpu,
     COALESCE(u.memory, 0)::bigint AS used_memory,
     COALESCE(u.attempts, 0)::bigint AS attempts
 FROM runners r
 LEFT JOIN LATERAL (
-    SELECT sum(d.size_cpu) AS cpu, sum(d.size_memory) AS memory, count(*) AS attempts
+    SELECT sum(d.size_cpu * GREATEST(d.workers, 1) + d.coordinator_cpu) AS cpu,
+        sum(d.size_memory * GREATEST(d.workers, 1) + d.coordinator_memory) AS memory,
+        sum(CASE WHEN d.workers > 0 THEN d.workers + 1 ELSE 1 END) AS attempts
     FROM dispatches d
     WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND (d.runner = r.id OR d.launcher = r.id) AND d.state IN ('placed', 'running')
 ) u ON true
@@ -106,7 +110,7 @@ ORDER BY r.id;
 -- name: PendingAttempts :many
 -- The attempts waiting for room, longest-waiting first within each priority,
 -- with how long they've waited.
-SELECT id, pool, size_cpu, size_memory, priority, needs,
+SELECT id, pool, size_cpu, size_memory, priority, needs, workers, coordinator_cpu, coordinator_memory,
     (extract(epoch FROM now() - enqueue_time) * 1000)::bigint AS waited_ms
 FROM dispatches
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND state = 'pending' AND light = ''
@@ -148,6 +152,33 @@ UPDATE dispatches SET state = 'running', runner = @runner,
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND placements = @placement
     AND launcher IS NOT NULL AND launched AND state = 'placed' AND start_deadline > now() AND NOT cancel
 RETURNING *;
+
+-- name: OpenWorkers :execrows
+-- Where the workers of an attempt running on this runner join it.
+UPDATE dispatches SET worker_target = @worker_target
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'running' AND workers > 0;
+
+-- name: WorkerAttempt :many
+-- A worker pod's attempt, while it's still that placement's, with where the
+-- worker joins once its coordinator has said.
+SELECT * FROM dispatches
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND placements = @placement
+    AND launcher IS NOT NULL AND launched AND state IN ('placed', 'running') AND NOT cancel AND workers > sqlc.arg(worker)::integer;
+
+-- name: ReturnOnePod :execrows
+-- An attempt on workers that its coordinator found can't run on them: it's
+-- placed again, as the same attempt, on one pod, unless it's been cancelled,
+-- which finishes it.
+UPDATE dispatches SET
+    state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
+    outcome = CASE WHEN cancel THEN sqlc.arg(cancelled)::jsonb ELSE outcome END,
+    finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL,
+    workers = 0, coordinator_cpu = 0, coordinator_memory = 0, worker_target = NULL
+WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'running' AND workers > 0;
+
+-- name: SetAttemptOnePod :exec
+UPDATE attempts SET workers = 0, one_pod = @one_pod WHERE org_id = @org_id AND id = @id;
 
 -- name: FinishLaunch :execrows
 -- A launcher's word on an attempt whose pod couldn't be made or ended without
@@ -211,12 +242,14 @@ SELECT EXISTS (
 
 -- name: ReplaceRunning :execrows
 -- A runner with no room for what was placed on it: it's placed again, unless
--- it's been cancelled, which finishes it.
+-- it's been cancelled, which finishes it. Its workers join the next
+-- coordinator, once it says where.
 UPDATE dispatches SET
     state = CASE WHEN cancel THEN 'finished' ELSE 'pending' END,
     outcome = CASE WHEN cancel THEN sqlc.arg(cancelled)::jsonb ELSE outcome END,
     finish_time = CASE WHEN cancel THEN now() ELSE finish_time END,
-    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL
+    runner = NULL, launcher = NULL, launched = false, start_deadline = NULL, run_deadline = NULL, lease_deadline = NULL,
+    worker_target = NULL
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND id = @id AND runner = @runner AND state = 'running' AND light = '';
 
 -- name: FinishDispatch :exec
@@ -298,12 +331,12 @@ GROUP BY r.data_plane_id, r.pool;
 -- name: PlacementDemand :many
 -- Attempts placed, running or waiting by pool and size, and whether a
 -- launcher's pod has them, for the placer's metrics.
-SELECT data_plane_id, pool, size_cpu, size_memory, state, (launcher IS NOT NULL)::boolean AS pod,
+SELECT data_plane_id, pool, size_cpu, size_memory, workers, coordinator_cpu, coordinator_memory, state, (launcher IS NOT NULL)::boolean AS pod,
     count(*)::bigint AS attempts,
     COALESCE(max(extract(epoch FROM now() - enqueue_time)), 0)::double precision AS oldest_seconds
 FROM dispatches
 WHERE org_id = @org_id AND light = '' AND state IN ('pending', 'placed', 'running')
-GROUP BY data_plane_id, pool, size_cpu, size_memory, state, launcher IS NOT NULL;
+GROUP BY data_plane_id, pool, size_cpu, size_memory, workers, coordinator_cpu, coordinator_memory, state, launcher IS NOT NULL;
 
 -- name: TakeManualSync :one
 -- Whether the API just started this pipeline's sync by hand. RETURNING sees

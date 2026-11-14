@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/gen/openetl/api/v1/apiv1connect"
+	"github.com/openetl-io/openetl/internal/spec"
 )
 
 type fakeApply struct {
@@ -314,6 +316,56 @@ func TestCheckPipeline(t *testing.T) {
 	f.destination, f.problems = &apiv1.CheckResult{Ok: true}, []string{"a problem"}
 	if err := run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out); err == nil {
 		t.Error("a plan with problems passed")
+	}
+}
+
+// parsingApply parses each document as the API's Apply does, and refuses one
+// that doesn't parse as it does.
+type parsingApply struct {
+	apiv1connect.UnimplementedApplyServiceHandler
+}
+
+func (parsingApply) Apply(_ context.Context, req *connect.Request[apiv1.ApplyRequest]) (*connect.Response[apiv1.ApplyResponse], error) {
+	for _, d := range req.Msg.GetDocuments() {
+		if _, err := spec.Parse(d.GetContent()); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s: %w", d.GetOrigin(), err))
+		}
+	}
+	return connect.NewResponse(&apiv1.ApplyResponse{}), nil
+}
+
+// A worker count that isn't a whole number is refused, by openetl plan and
+// openetl apply alike, naming the field and the value.
+func TestPlanAndApplyRefuseFractionalWorkers(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle(apiv1connect.NewApplyServiceHandler(parsingApply{}))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	t.Setenv("OPENETL_API_KEY", "oetl_test")
+	file := filepath.Join(t.TempDir(), "p.yaml")
+	doc := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  source: {ref: s}\n  destination: {ref: d}\n  resources: {workers: 1.9}\n"
+	if err := os.WriteFile(file, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"plan", "apply"} {
+		var out bytes.Buffer
+		err := run(t.Context(), []string{cmd, "--api-url", srv.URL, "-f", file}, &out)
+		if err == nil || !strings.Contains(err.Error(), `resources.workers: "1.9" isn't a whole number from 1 to 64`) {
+			t.Errorf("openetl %s: %v, want workers 1.9 refused", cmd, err)
+		}
+	}
+}
+
+// openetl plan says how many workers a job runs on; the plan's warnings say
+// why one that asks for them doesn't.
+func TestPlanShowsWorkers(t *testing.T) {
+	var out bytes.Buffer
+	printPlan(&out, &apiv1.PipelinePlan{
+		Pipeline: "workspaces/default/pipelines/shop", Version: "0123456789abcdef",
+		Job: &apiv1.JobPlan{Size: &apiv1.JobSize{Preset: "m", CpuMillis: 2000, MemoryBytes: 4 << 30}, Reason: apiv1.JobSizeReason_JOB_SIZE_REASON_SPEC, Pool: "default", Workers: 4},
+	})
+	if want := "  workers: 4, each of the job's size, and their coordinator\n"; !strings.Contains(out.String(), want) {
+		t.Errorf("printed\n%s\nwant a line %q", out.String(), want)
 	}
 }
 

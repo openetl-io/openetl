@@ -61,27 +61,28 @@ func (s *Server) bind(kind, name string, v *connectorhost.Version, config *struc
 	return b, nil
 }
 
-// capabilities are what the destination's connector declares; false if the
-// control plane can't tell, as for a connector only runners have.
-func (s *Server) capabilities(ctx context.Context, q *db.Queries, dst db.Destination) (destination.Capabilities, bool, error) {
+// capabilities are what the destination's connector declares, and whether
+// the engine writes its data; known is false if the control plane can't
+// tell, as for a connector only runners have.
+func (s *Server) capabilities(ctx context.Context, q *db.Queries, dst db.Destination) (caps destination.Capabilities, known, engine bool, err error) {
 	var c apiv1.ConnectorConfig
 	if err := protojson.Unmarshal(dst.Spec, &c); err != nil {
-		return destination.Capabilities{}, false, err
+		return destination.Capabilities{}, false, false, err
 	}
 	name, _ := connectorhost.SplitRef(c.GetConnector())
 	var v *connectorhost.Version
 	if dst.ConnectorDigest != "" {
 		var err error
 		if v, err = s.resolveConnector(ctx, q, "destination", name, dst.ConnectorDigest); err != nil {
-			return destination.Capabilities{}, false, err
+			return destination.Capabilities{}, false, false, err
 		}
 	}
 	// A config that no longer binds is the runner's to report.
-	b, err := s.bind("destination", name, v, c.GetConfig())
-	if err != nil {
-		return destination.Capabilities{}, false, nil
+	b, bindErr := s.bind("destination", name, v, c.GetConfig())
+	if bindErr != nil {
+		return destination.Capabilities{}, false, false, nil
 	}
-	caps := b.destination.Capabilities()
+	caps = b.destination.Capabilities()
 	if caps.Class == 0 && v == nil {
 		// One in the connectors directory, without a descriptor: its spec
 		// says, so run it long enough to read it.
@@ -92,7 +93,7 @@ func (s *Server) capabilities(ctx context.Context, q *db.Queries, dst db.Destina
 		}
 		connectorhost.Close(b.destination)
 	}
-	return caps, caps.Class != 0, nil
+	return caps, caps.Class != 0, connectorhost.EngineWritten(b.destination), nil
 }
 
 // planned is a pipeline an Apply gave a version.
@@ -183,7 +184,12 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 	if err != nil {
 		return nil, err
 	}
-	if err := s.planJob(ctx, q, p, out); err != nil {
+	caps, known, engine, err := s.capabilities(ctx, q, p.v.dst)
+	if err != nil {
+		return nil, err
+	}
+	workers := planWorkers(p.v.spec, cat, caps, known, engine, out)
+	if err := s.planJob(ctx, q, p, workers, out); err != nil {
 		return nil, err
 	}
 	for _, c := range []struct {
@@ -198,10 +204,6 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 			out.Warnings = append(out.Warnings, &apiv1.PlanWarning{Message: fmt.Sprintf(
 				"%s %q names connector %s without a version, so applying it again may pin a newer one; %s@MAJOR keeps to one major version", c.kind, c.ref, name, name)})
 		}
-	}
-	caps, known, err := s.capabilities(ctx, q, p.v.dst)
-	if err != nil {
-		return nil, err
 	}
 	if !known {
 		out.Notes = append(out.Notes, fmt.Sprintf("the control plane doesn't know destination %q's capabilities, so only the runner checks delivery, before each sync", dst))
@@ -263,4 +265,34 @@ func refuse(ch *changes, plans []*apiv1.PipelinePlan) error {
 		return nil
 	}
 	return connect.NewError(connect.CodeFailedPrecondition, errors.New("the plan fails, so nothing was applied:\n"+strings.Join(lines, "\n")))
+}
+
+// planWorkers is how many workers the job's attempts run on, as far as the
+// spec, the destination and the catalog say, with a warning for why a job
+// that asks for workers runs on one pod, and for each stream an attempt
+// reads on one worker. What the plan can't check, the attempt's coordinator
+// does, which places the attempt again on one pod if it must.
+func planWorkers(sp *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, known, engine bool, out *apiv1.PipelinePlan) int {
+	asked := int(sp.GetResources().GetWorkers())
+	if asked <= 1 {
+		return 0
+	}
+	if !known {
+		out.Notes = append(out.Notes, fmt.Sprintf("resources.workers asks for %d workers, and the control plane doesn't know the destination's capabilities, so each attempt's coordinator checks that it can run on them, and runs it on one pod if not", asked))
+		return asked
+	}
+	workers, why, oneWorker := plan.Workers(sp, cat, caps, engine)
+	if why != "" {
+		out.Warnings = append(out.Warnings, &apiv1.PlanWarning{Message: onePodWarning(asked, why)})
+		return 0
+	}
+	if cat == nil {
+		out.Notes = append(out.Notes, "the source hasn't been discovered, so the plan can't say which streams hold columns, which would run the job on one pod, or which an attempt reads on one worker")
+	}
+	out.Warnings = append(out.Warnings, oneWorker...)
+	return workers
+}
+
+func onePodWarning(asked int, why string) string {
+	return fmt.Sprintf("resources.workers asks for %d workers, and the job runs on one pod: %s", asked, why)
 }

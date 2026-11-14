@@ -537,6 +537,19 @@ func (w *worker) Propose(p *attemptv1.SchemaProposal) error {
 	return nil
 }
 
+func (w *worker) Report(u *attemptv1.Usage) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	switch {
+	case w.over:
+		return w.overErrLocked()
+	case w.assignment == nil:
+		return errors.New("attempt: a usage report before the assignment")
+	}
+	w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Usage{Usage: u}})
+	return nil
+}
+
 func (w *worker) Fail(err error) {
 	if err == nil {
 		err = errs.New(errs.Internal, "attempt: the worker failed without a reason")

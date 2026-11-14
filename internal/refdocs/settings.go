@@ -57,12 +57,12 @@ var groups = []group{
 	{
 		"Runners",
 		"Where a runner keeps checkpoints and its cache, the programs it runs, the pool it serves, the room it has, and its token.",
-		[]string{"checkpoints", "engine", "connectors", "cache", "dbt", "spark-submit", "bridge-listen", "bridge-advertise", "pool", "capacity", "reserve", "cgroup-root", "report-interval", "token-file", config.RunnerTokenEnv},
+		[]string{"checkpoints", "engine", "connectors", "cache", "dbt", "spark-submit", "bridge-listen", "bridge-advertise", "attempt-listen", "attempt-advertise", "pool", "capacity", "reserve", "cgroup-root", "report-interval", "token-file", config.RunnerTokenEnv},
 	},
 	{
 		"Pod launchers",
 		"A runner with `--launcher` set is a pod launcher: it makes a pod, or a process, for each attempt placed on it, instead of running the attempt itself.",
-		[]string{"launcher", "pod-min-size", "pod-max-size", "max-pods", "max-pod-cpu", "pod-template", "pod-namespace", "kubeconfig", "pod-stream-spot", "pod-scratch", "attempt", "placement"},
+		[]string{"launcher", "pod-min-size", "pod-max-size", "max-pods", "max-pod-cpu", "pod-template", "pod-namespace", "kubeconfig", "pod-stream-spot", "pod-scratch", "attempt", "placement", "worker"},
 	},
 	{
 		"Logs",

@@ -118,20 +118,36 @@ func syncCount(t *testing.T, pipeline string) int {
 	return n
 }
 
-// syncNow starts a sync and waits for it to finish. The last sync's
-// workflow can still be running for a moment after its row says it ended.
+// syncNow starts a sync and waits for that one to finish. The last sync's
+// workflow can still be running for a moment after its row says it ended,
+// and a pipeline's first sync, which applying it starts, can be on its way
+// when syncNow is called: the sync it waits for is the first to start after
+// SyncPipeline took the request, which no other can, as one runs at a time.
 func syncNow(t *testing.T, pipeline string) (status, stats string) {
 	t.Helper()
-	before := syncCount(t, pipeline)
+	var since time.Time
 	eventually(t, 10*time.Second, "the last sync's workflow to end", func() bool {
-		_, err := pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: "workspaces/default/pipelines/" + pipeline}))
+		var err error
+		if since, err = query[time.Time](t, "SELECT now()"); err != nil {
+			t.Fatal(err)
+		}
+		_, err = pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: "workspaces/default/pipelines/" + pipeline}))
 		if err != nil && connect.CodeOf(err) != connect.CodeFailedPrecondition {
 			t.Fatal(err)
 		}
 		return err == nil
 	})
-	eventually(t, 30*time.Second, "the sync to start", func() bool { return syncCount(t, pipeline) > before })
-	return waitSync(t, pipeline, 60*time.Second)
+	q := `SELECT s.status || ' ' || coalesce(s.stats::text, s.error, '') FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id
+		WHERE p.name = $1 AND s.start_time > $2 ORDER BY s.start_time LIMIT 1`
+	eventually(t, 90*time.Second, "pipeline "+pipeline+" to finish the sync it was asked for", func() bool {
+		v, err := query[string](t, q, pipeline, since)
+		if err != nil {
+			return false
+		}
+		status, stats, _ = strings.Cut(v, " ")
+		return status != "running"
+	})
+	return status, stats
 }
 
 func wantCode(t *testing.T, err error, code connect.Code, what string) {

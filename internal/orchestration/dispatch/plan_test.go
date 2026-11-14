@@ -282,3 +282,78 @@ func TestDrainingLauncher(t *testing.T) {
 		t.Fatalf("got %v, want l on shared", got)
 	}
 }
+
+func onWorkers(id string, workers int, size resources.Size, waited time.Duration) Request {
+	r := sized(id, size, waited)
+	r.Workers, r.Coordinator = workers, resources.XS
+	return r
+}
+
+// An attempt on workers goes to a launcher, which takes its coordinator and
+// every worker or none of them, however small they are and whatever room a
+// shared runner has.
+func TestWorkersGoToALauncherAllOrNone(t *testing.T) {
+	shared := runner("shared", resources.XL, resources.Size{})
+	pods := launcher("pods", Pods{Min: resources.M, MaxPods: 5, MaxCPU: 8000})
+	ds := Plan([]Runner{shared, pods}, []Request{onWorkers("gang", 3, resources.S, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["gang"] != "pods" || !ds[0].Launch {
+		t.Fatalf("got %+v, want the gang on pods", ds)
+	}
+
+	// 3 workers and a coordinator are 4 pods: with 2 placed, the launcher's
+	// 5 leave room for one more, so the gang waits, and a single job passes.
+	busy := pods
+	busy.Attempts, busy.Used = 2, resources.S.Times(2)
+	ds = Plan([]Runner{shared, busy}, []Request{onWorkers("gang", 3, resources.S, time.Second), sized("l", resources.L, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["gang"] != "" || got["l"] != "pods" {
+		t.Fatalf("got %v, want the gang to wait for 4 pods, and l to take the one left", got)
+	}
+
+	// The CPU cap counts every worker and the coordinator: 4 m workers and
+	// an xs coordinator are 8.5 vCPUs, over 8.
+	ds = Plan([]Runner{pods}, []Request{onWorkers("gang", 4, resources.M, time.Second)}, nil, DefaultReserveAfter)
+	if len(ds) != 0 {
+		t.Fatalf("got %+v, want the gang to wait", ds)
+	}
+	ds = Plan([]Runner{pods}, []Request{onWorkers("gang", 3, resources.M, time.Second)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["gang"] != "pods" {
+		t.Fatalf("got %v, want 3 m workers and their coordinator, 6.5 vCPUs, on pods", got)
+	}
+}
+
+// A gang holds its pods and their CPU in the pass that places it; once it
+// ends, the store's counts give them back.
+func TestAPlacedGangUsesItsPods(t *testing.T) {
+	pods := launcher("pods", Pods{MaxPods: 6})
+	ds := Plan([]Runner{pods}, []Request{onWorkers("a", 2, resources.S, time.Minute), onWorkers("b", 2, resources.S, time.Second), onWorkers("c", 2, resources.S, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["a"] != "pods" || got["b"] != "pods" || len(got) != 2 {
+		t.Fatalf("got %v, want a and b, 3 pods each", got)
+	}
+	ds = Plan([]Runner{pods}, []Request{onWorkers("c", 2, resources.S, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["c"] != "pods" {
+		t.Fatalf("got %v, want c placed once the others have gone", got)
+	}
+}
+
+// Without a launcher, an attempt on workers waits; with one that could never
+// take it, it fails once it has waited, saying what it needs.
+func TestWorkersNoLauncherCanTake(t *testing.T) {
+	ds := Plan([]Runner{runner("shared", resources.XL, resources.Size{})}, []Request{onWorkers("gang", 2, resources.S, 3*time.Minute)}, nil, DefaultReserveAfter)
+	if len(ds) != 0 {
+		t.Fatalf("got %+v, want the gang to wait for a launcher", ds)
+	}
+	for _, c := range []struct {
+		pods Pods
+		why  string
+	}{
+		{Pods{MaxPods: 3}, "launcher pods has at most 3 pods at once"},
+		{Pods{MaxCPU: 2000}, "launcher pods's pods have at most 2 vCPUs between them"},
+		{Pods{Max: resources.XS}, "launcher pods makes pods of at most 0.5 vCPU, 1 GiB"},
+	} {
+		ds := Plan([]Runner{launcher("pods", c.pods)}, []Request{onWorkers("gang", 3, resources.S, 3*time.Minute)}, nil, DefaultReserveAfter)
+		if len(ds) != 1 || ds[0].Runner != "" || !strings.Contains(ds[0].Failure, "its 3 workers of 1 vCPU, 2 GiB and their coordinator need 4 pods") ||
+			!strings.Contains(ds[0].Failure, c.why) {
+			t.Errorf("%+v: got %+v, want a failure saying %q", c.pods, ds, c.why)
+		}
+	}
+}

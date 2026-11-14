@@ -81,7 +81,7 @@ func TestCallsAreAnsweredOnce(t *testing.T) {
 	})
 }
 
-// Signals and schema proposals reach the coordinator's inbox in each
+// Signals, schema proposals and usage reach the coordinator's inbox in each
 // worker's order, and the coordinator's schemas reach one worker or all.
 func TestSignalsProposalsAndSchemas(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -90,6 +90,10 @@ func TestSignalsProposalsAndSchemas(t *testing.T) {
 		placed := &attemptv1.Signal{After: testFirst, Signal: &attemptv1.Signal_Placed{Placed: &attemptv1.Placed{}}}
 		proposal := &attemptv1.SchemaProposal{Stream: "events", Base: 0, ArrowSchema: []byte("schema")}
 		schema := &attemptv1.StreamSchema{Stream: "events", Version: 1, ArrowSchema: []byte("schema")}
+		usage := &attemptv1.Usage{CpuSeconds: 2, PeakMemoryBytes: 1 << 20, Rows: 10}
+		if err := ws[0].Report(usage); err == nil {
+			t.Fatal("a usage report before the assignment")
+		}
 		if err := ws[0].Signal(placed); err == nil {
 			t.Fatal("a signal before the assignment")
 		}
@@ -117,12 +121,12 @@ func TestSignalsProposalsAndSchemas(t *testing.T) {
 			}
 		}
 		emitted := &attemptv1.Signal{After: testFirst - 1, Signal: &attemptv1.Signal_Emitted{Emitted: &attemptv1.Emitted{}}}
-		for _, err := range []error{ws[1].Signal(emitted), ws[1].Propose(proposal), ws[1].Signal(placed), ws[0].Signal(placed)} {
+		for _, err := range []error{ws[1].Signal(emitted), ws[1].Propose(proposal), ws[1].Signal(placed), ws[0].Report(usage), ws[0].Signal(placed)} {
 			if err != nil {
 				t.Fatal(err)
 			}
 		}
-		want := []From{{Worker: 1, Signal: emitted}, {Worker: 1, Proposal: proposal}, {Worker: 1, Signal: placed}, {Worker: 0, Signal: placed}}
+		want := []From{{Worker: 1, Signal: emitted}, {Worker: 1, Proposal: proposal}, {Worker: 1, Signal: placed}, {Worker: 0, Usage: usage}, {Worker: 0, Signal: placed}}
 		var got []From
 		for range want {
 			got = append(got, within(t, c.Inbox(), time.Second, "the inbox"))
@@ -143,7 +147,7 @@ func TestSignalsProposalsAndSchemas(t *testing.T) {
 				t.Fatalf("worker %d's inbox: %v, want %v", w, g, x)
 			}
 			for i := range g {
-				if !proto.Equal(g[i].Signal, x[i].Signal) || !proto.Equal(g[i].Proposal, x[i].Proposal) {
+				if !proto.Equal(g[i].Signal, x[i].Signal) || !proto.Equal(g[i].Proposal, x[i].Proposal) || !proto.Equal(g[i].Usage, x[i].Usage) {
 					t.Fatalf("worker %d's inbox: %v, want %v", w, g, x)
 				}
 			}
