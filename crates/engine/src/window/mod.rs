@@ -680,7 +680,7 @@ impl Operator {
                         state: State {
                             emitted: old.state.emitted,
                             visible: true,
-                            accs: Vec::new(),
+                            accs: old.state.accs.clone(),
                         },
                         merged: true,
                     });
@@ -884,7 +884,7 @@ impl Operator {
 
     /// The rows of `windows`: each that passes HAVING as an insert or an
     /// update, and each that the output has but that no longer passes, or
-    /// that was merged away (no accumulators), as a delete. Gives the
+    /// that was merged away, as a delete. Gives the
     /// windows with their counts and visibility updated.
     fn emit_states(&self, windows: Vec<Emit>) -> Result<(Out, Vec<Emit>), JobError> {
         let mut out = Out::default();
@@ -957,13 +957,23 @@ impl Operator {
             let dels = ran.rows.iter().map(|&i| (deleted[i], "delete")).collect();
             parts.push((ran.batch, dels));
         }
-        // Rows of sessions merged away: their key, and nothing else.
+        // Rows of sessions merged away: their key and their last values,
+        // which a column that can't be null, as count's, needs.
         let mut gone_parts = Vec::new();
         if !gone.is_empty() {
             let refs: Vec<&Emit> = gone.iter().collect();
-            let empty: Vec<Vec<Option<Value>>> =
-                gone.iter().map(|_| vec![None; self.specs.len()]).collect();
-            let rows = self.grouped(&refs, &empty)?;
+            let last: Vec<Vec<Option<Value>>> = gone
+                .iter()
+                .map(|e| {
+                    e.state
+                        .accs
+                        .iter()
+                        .zip(&self.specs)
+                        .map(|(a, spec)| a.value(spec).ok().flatten())
+                        .collect()
+                })
+                .collect();
+            let rows = self.grouped(&refs, &last)?;
             let (ran, _) = steps::run_rows(&self.plan.steps, rows, false)
                 .map_err(|e| JobError::internal(self.reason(&e.message)))?;
             gone_parts.push(ran);

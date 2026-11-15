@@ -419,6 +419,25 @@ async fn a_late_row_that_moves_a_sessions_start_deletes_its_old_row() {
     assert!(v.ends_with("total=3"), "{v}");
 }
 
+/// A late row that bridges two closed sessions deletes the row of the one
+/// merged away, under a count, whose column can't be null.
+#[tokio::test]
+async fn a_session_merged_away_is_deleted_under_a_count() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, region, count(*) AS n FROM orders \
+               GROUP BY session(at, INTERVAL '30 seconds'), region";
+    let mut run = Run::new(sql, 2 * MIN, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 0), ("eu", 1, 60 * SEC)]).await;
+    run.advance(100 * SEC).await;
+    assert_eq!(run.table.0.len(), 2, "{:?}", run.table);
+    run.rows(&[("eu", 1, 30 * SEC)]).await;
+    assert_eq!(run.rejected, 0);
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        ["window_start=1970-01-01T00:00:00Z region=eu n=3"]
+    );
+}
+
 fn next(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *seed;
