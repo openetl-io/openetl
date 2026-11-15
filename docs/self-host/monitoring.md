@@ -33,7 +33,8 @@ These are OpenTelemetry instrument names; Prometheus replaces dots with undersco
 |---|---|---|
 | `openetl.pipeline.freshness` | seconds | Time since the pipeline's latest commit. The API reads its checkpoint mirror every 15 seconds. Pipelines with no commit in the last 30 days are absent. |
 | `openetl.job.rows.committed` | rows, counter | Rows in committed epochs, including quarantined rows. It is not a count of usable destination rows. |
-| `openetl.job.rows.quarantined` | rows, counter | Rows held back in committed epochs. Compare its rate with the committed-row rate. |
+| `openetl.job.rows.quarantined` | rows, counter | Rows quarantined in committed epochs: not written, and kept aside with the reason. Compare its rate with the committed-row rate. |
+| `openetl.job.cells.held` | cells, counter | Cells held back in committed epochs, by stream and column, from rows that were written. |
 | `openetl.job.lag` | seconds | Time lag last reported by the source. |
 | `openetl.job.lag.bytes`, `openetl.job.lag.records` | bytes or records | Unacknowledged backlog last reported by the source. |
 | `openetl.job.retention_left` | seconds | Time left before the source discards unread data, when reported. |

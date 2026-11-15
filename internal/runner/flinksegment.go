@@ -320,7 +320,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 		Org: job.Org, Pipeline: job.Pipeline, Owner: job.Owner, Generation: a.sess.Generation(), FirstEpoch: first,
 		Streams: job.Streams,
 		Naming:  Naming{KeepSource: job.KeepSourceNames, MaxLength: job.Destination.Capabilities().MaxIdentifierLength},
-		Policy:  job.SchemaPolicy, QuarantineURL: job.QuarantineURL, QuarantineInfinity: job.QuarantineInfinity,
+		Policy:  job.SchemaPolicy, QuarantineURL: job.QuarantineURL, UnfitInfinity: job.UnfitInfinity,
 		ReadStarts: c.readStarts, Schemas: schemas, ReportSchemas: true,
 	}
 	second := plan

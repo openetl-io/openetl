@@ -326,10 +326,12 @@ type StartJobRequest struct {
 	// How changes to a stream's established schema are taken. A stream's
 	// schema is established once restored, or once it crosses a barrier.
 	SchemaPolicy SchemaPolicy `protobuf:"varint,12,opt,name=schema_policy,json=schemaPolicy,proto3,enum=openetl.engine.v1.SchemaPolicy" json:"schema_policy,omitempty"`
-	// Infinite dates and timestamps are quarantined instead of clamped to the
-	// logical type's limits. In typed batches, the largest and smallest values
-	// of Date32 and of timestamps in any unit are infinite.
-	QuarantineInfinity bool `protobuf:"varint,13,opt,name=quarantine_infinity,json=quarantineInfinity,proto3" json:"quarantine_infinity,omitempty"`
+	// Infinite dates and timestamps don't fit their type, instead of being
+	// clamped to the logical type's limits: they quarantine their row, or are
+	// held as cells under the stream's HoldPlan. In typed batches, the largest
+	// and smallest values of Date32 and of timestamps in any unit are
+	// infinite.
+	UnfitInfinity bool `protobuf:"varint,13,opt,name=unfit_infinity,json=unfitInfinity,proto3" json:"unfit_infinity,omitempty"`
 	// Batches reach the sink as they came: not coerced, renamed or given
 	// metadata columns. Rows fail the job. For measuring the boundary.
 	Passthrough bool `protobuf:"varint,14,opt,name=passthrough,proto3" json:"passthrough,omitempty"`
@@ -506,9 +508,9 @@ func (x *StartJobRequest) GetSchemaPolicy() SchemaPolicy {
 	return SchemaPolicy_SCHEMA_POLICY_UNSPECIFIED
 }
 
-func (x *StartJobRequest) GetQuarantineInfinity() bool {
+func (x *StartJobRequest) GetUnfitInfinity() bool {
 	if x != nil {
-		return x.QuarantineInfinity
+		return x.UnfitInfinity
 	}
 	return false
 }
@@ -3702,7 +3704,7 @@ var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\x8e\t\n" +
+	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\x84\t\n" +
 	"\x0fStartJobRequest\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x10\n" +
 	"\x03job\x18\x02 \x01(\tR\x03job\x12\x1e\n" +
@@ -3719,8 +3721,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06naming\x18\n" +
 	" \x01(\v2\x19.openetl.engine.v1.NamingR\x06naming\x12%\n" +
 	"\x0equarantine_url\x18\v \x01(\tR\rquarantineUrl\x12D\n" +
-	"\rschema_policy\x18\f \x01(\x0e2\x1f.openetl.engine.v1.SchemaPolicyR\fschemaPolicy\x12/\n" +
-	"\x13quarantine_infinity\x18\r \x01(\bR\x12quarantineInfinity\x12 \n" +
+	"\rschema_policy\x18\f \x01(\x0e2\x1f.openetl.engine.v1.SchemaPolicyR\fschemaPolicy\x12%\n" +
+	"\x0eunfit_infinity\x18\r \x01(\bR\runfitInfinity\x12 \n" +
 	"\vpassthrough\x18\x0e \x01(\bR\vpassthrough\x12\x19\n" +
 	"\bheld_url\x18\x0f \x01(\tR\aheldUrl\x12\x14\n" +
 	"\x05lanes\x18\x10 \x01(\rR\x05lanes\x12!\n" +
