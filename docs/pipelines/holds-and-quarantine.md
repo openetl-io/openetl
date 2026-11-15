@@ -29,7 +29,7 @@ OpenETL applies two rules to data it cannot write:
 
 Quarantine and holds apply these rules at two sizes:
 
-- **Quarantine treats the row as the unit.** The destination gets only complete rows whose values fit their types. A row with a bad value is missing until you load it again. On a `merge` stream, the key's other columns keep their old values until the source changes the row again. If the row was an insert, rows that refer to it point at nothing.
+- **Quarantine treats the row as the unit.** The destination gets only rows whose values fit their types. A row with a bad value is missing until you load it again. On a `merge` stream, the key's other columns keep their old values until the source changes the row again. If the row was an insert, rows that refer to it point at nothing.
 - **A hold treats the value as the unit.** OpenETL writes the row, and its other columns are current. Only the held value is missing. The row's `_openetl_held` column names the held columns. A reader that does not check `_openetl_held` takes a partial row for a complete one.
 
 A partial row changes what a row means. So OpenETL holds single values only if you tell it to. By default, a value that does not fit quarantines its row. A change to a whole column is different, because a stop for that change would stop every row of the stream. So OpenETL holds the column by default where it can ([Column holds](#column-holds)).
@@ -143,6 +143,8 @@ Keep the default, `quarantine`, when:
 - readers must see only complete rows, such as amounts that a report adds up;
 - the stream has no primary key, or the destination does not patch its write mode;
 - you plan to load bad rows again yourself.
+
+`quarantine` does not stop [column holds](#column-holds). A row that OpenETL writes can still have a held column. So a reader that needs complete rows checks `_openetl_held` and the pipeline's holds, whatever `unfitValues` says.
 
 Choose `hold` when:
 
