@@ -51,11 +51,7 @@ type ReplayProgress struct {
 func (r Ready) EpochReady(e *protocolv1.Epoch) *enginev1.EpochReady {
 	p := &enginev1.EpochReady{Epoch: e, Schemas: r.Schemas, OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: holdsProto(r.Holds), Watermarks: watermarksProto(r.Watermarks)}
 	for _, s := range r.Snapshots {
-		snap := &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL}
-		if kg := s.KeyGroups; kg != nil {
-			snap.KeyGroups = KeyGroups(kg.First, kg.Last)
-		}
-		p.Snapshots = append(p.Snapshots, snap)
+		p.Snapshots = append(p.Snapshots, SnapshotProto(s))
 	}
 	for _, q := range r.Quarantine {
 		p.Quarantine = append(p.Quarantine, &enginev1.QuarantineFile{Stream: q.Stream, Url: q.URL, Rows: q.Rows, Output: q.Output})
@@ -71,11 +67,7 @@ func ReadyOf(p *enginev1.EpochReady) (Ready, error) {
 	}
 	r := Ready{Schemas: p.GetSchemas(), OutputSchemas: p.GetOutputSchemas(), Delivered: p.GetDelivered(), Holds: HoldsOf(p.GetHolds()), Watermarks: WatermarksOf(p.GetWatermarks())}
 	for _, s := range p.GetSnapshots() {
-		snap := checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()}
-		if kg := s.GetKeyGroups(); kg != nil {
-			snap.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
-		}
-		r.Snapshots = append(r.Snapshots, snap)
+		r.Snapshots = append(r.Snapshots, SnapshotOf(s))
 	}
 	for _, q := range p.GetQuarantine() {
 		r.Quarantine = append(r.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), Output: q.GetOutput(), URL: q.GetUrl(), Rows: q.GetRows()})
@@ -86,6 +78,19 @@ func ReadyOf(p *enginev1.EpochReady) (Ready, error) {
 // KeyGroups is key groups first to last as the protocol carries them.
 func KeyGroups(first, last int) *enginev1.KeyGroupRange {
 	return &enginev1.KeyGroupRange{First: ints.Uint32(first), Last: ints.Uint32(last)}
+}
+
+// SnapshotProto is a lane's snapshot as the engine and a share carry it.
+func SnapshotProto(s checkpoint.Snapshot) *enginev1.StateSnapshot {
+	return &enginev1.StateSnapshot{Operator: s.Operator, KeyGroups: KeyGroups(s.KeyGroups.First, s.KeyGroups.Last),
+		Layout: s.Layout, Data: s.Data, Runs: s.Runs}
+}
+
+// SnapshotOf is a lane's snapshot as the record keeps it.
+func SnapshotOf(p *enginev1.StateSnapshot) checkpoint.Snapshot {
+	kg := p.GetKeyGroups()
+	return checkpoint.Snapshot{Operator: p.GetOperator(), KeyGroups: checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())},
+		Layout: p.GetLayout(), Data: p.GetData(), Runs: p.GetRuns()}
 }
 
 // WatermarksOf are the splits' watermarks as the engine reports them at

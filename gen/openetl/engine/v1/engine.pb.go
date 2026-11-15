@@ -313,7 +313,9 @@ type StartJobRequest struct {
 	Edges      []*Edge       `protobuf:"bytes,6,rep,name=edges,proto3" json:"edges,omitempty"`
 	Sink       *SinkPlan     `protobuf:"bytes,7,opt,name=sink,proto3" json:"sink,omitempty"`
 	Limits     *Limits       `protobuf:"bytes,8,opt,name=limits,proto3" json:"limits,omitempty"`
-	// Operator state in the restored checkpoint, as EpochReady reported it.
+	// Operator state in the restored checkpoint, as EpochReady reported it:
+	// each lane's of each stateful operator, which this job's lanes open by
+	// their own ranges of key groups.
 	RestoredSnapshots []*StateSnapshot `protobuf:"bytes,9,rep,name=restored_snapshots,json=restoredSnapshots,proto3" json:"restored_snapshots,omitempty"`
 	Naming            *Naming          `protobuf:"bytes,10,opt,name=naming,proto3" json:"naming,omitempty"`
 	// Where records the engine can't take are kept: file:// and an absolute
@@ -377,7 +379,15 @@ type StartJobRequest struct {
 	AttemptWriterLanes uint32 `protobuf:"varint,24,opt,name=attempt_writer_lanes,json=attemptWriterLanes,proto3" json:"attempt_writer_lanes,omitempty"`
 	// Where several engines run the attempt and their exchanges cross them.
 	// Unset: a stream's exchange stays inside the engine.
-	Mesh          *Mesh `protobuf:"bytes,25,opt,name=mesh,proto3" json:"mesh,omitempty"`
+	Mesh *Mesh `protobuf:"bytes,25,opt,name=mesh,proto3" json:"mesh,omitempty"`
+	// Where stateful operators keep their state, as quarantine_url: each
+	// operator's runs below a directory of its own, which StateSnapshot.runs
+	// name. A run counts once a record names it. Empty: a job with a
+	// stateful operator fails with CONFIG_INVALID.
+	StateUrl string `protobuf:"bytes,26,opt,name=state_url,json=stateUrl,proto3" json:"state_url,omitempty"`
+	// A redo's job, of one epoch: its stateful operators read the restored
+	// snapshots and write nothing, and EpochReady names no state.
+	StateReadOnly bool `protobuf:"varint,27,opt,name=state_read_only,json=stateReadOnly,proto3" json:"state_read_only,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -585,6 +595,20 @@ func (x *StartJobRequest) GetMesh() *Mesh {
 		return x.Mesh
 	}
 	return nil
+}
+
+func (x *StartJobRequest) GetStateUrl() string {
+	if x != nil {
+		return x.StateUrl
+	}
+	return ""
+}
+
+func (x *StartJobRequest) GetStateReadOnly() bool {
+	if x != nil {
+		return x.StateReadOnly
+	}
+	return false
 }
 
 // Mesh is the attempt's engines, whose lanes send an exchanged stream's rows
@@ -2964,14 +2988,20 @@ func (x *QuarantineFile) GetOutput() bool {
 	return false
 }
 
-// StateSnapshot is an operator's state for a range of key groups, which
-// names it, never the lane that wrote it.
+// StateSnapshot is a stateful operator's state on one lane at a barrier,
+// for the lane's range of key groups, which names it, never the lane: a
+// lane of any later job opens the part of it that its own range holds. An
+// operator's snapshots in an epoch hold every key group between them.
 type StateSnapshot struct {
-	state    protoimpl.MessageState `protogen:"open.v1"`
-	Operator string                 `protobuf:"bytes,1,opt,name=operator,proto3" json:"operator,omitempty"`
-	Url      string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
-	// Unset: all of them.
-	KeyGroups     *KeyGroupRange `protobuf:"bytes,3,opt,name=key_groups,json=keyGroups,proto3" json:"key_groups,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Operator  string                 `protobuf:"bytes,1,opt,name=operator,proto3" json:"operator,omitempty"`
+	KeyGroups *KeyGroupRange         `protobuf:"bytes,2,opt,name=key_groups,json=keyGroups,proto3" json:"key_groups,omitempty"`
+	// The layout of the state's keys.
+	Layout uint32 `protobuf:"varint,3,opt,name=layout,proto3" json:"layout,omitempty"`
+	// The sections of runs it reads, which only the engine reads.
+	Data []byte `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
+	// The runs it names, below state_url: what retention keeps.
+	Runs          []string `protobuf:"bytes,5,rep,name=runs,proto3" json:"runs,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3013,16 +3043,30 @@ func (x *StateSnapshot) GetOperator() string {
 	return ""
 }
 
-func (x *StateSnapshot) GetUrl() string {
-	if x != nil {
-		return x.Url
-	}
-	return ""
-}
-
 func (x *StateSnapshot) GetKeyGroups() *KeyGroupRange {
 	if x != nil {
 		return x.KeyGroups
+	}
+	return nil
+}
+
+func (x *StateSnapshot) GetLayout() uint32 {
+	if x != nil {
+		return x.Layout
+	}
+	return 0
+}
+
+func (x *StateSnapshot) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *StateSnapshot) GetRuns() []string {
+	if x != nil {
+		return x.Runs
 	}
 	return nil
 }
@@ -3658,7 +3702,7 @@ var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xc9\b\n" +
+	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\x8e\t\n" +
 	"\x0fStartJobRequest\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x10\n" +
 	"\x03job\x18\x02 \x01(\tR\x03job\x12\x1e\n" +
@@ -3690,7 +3734,9 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"first_lane\x18\x16 \x01(\rR\tfirstLane\x12*\n" +
 	"\x11first_writer_lane\x18\x17 \x01(\rR\x0ffirstWriterLane\x120\n" +
 	"\x14attempt_writer_lanes\x18\x18 \x01(\rR\x12attemptWriterLanes\x12+\n" +
-	"\x04mesh\x18\x19 \x01(\v2\x17.openetl.engine.v1.MeshR\x04mesh\"\xbb\x01\n" +
+	"\x04mesh\x18\x19 \x01(\v2\x17.openetl.engine.v1.MeshR\x04mesh\x12\x1b\n" +
+	"\tstate_url\x18\x1a \x01(\tR\bstateUrl\x12&\n" +
+	"\x0fstate_read_only\x18\x1b \x01(\bR\rstateReadOnly\"\xbb\x01\n" +
 	"\x04Mesh\x12\x16\n" +
 	"\x06engine\x18\x01 \x01(\rR\x06engine\x127\n" +
 	"\aengines\x18\x02 \x03(\v2\x1d.openetl.engine.v1.MeshEngineR\aengines\x12\x16\n" +
@@ -3892,12 +3938,14 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x12\n" +
 	"\x04rows\x18\x03 \x01(\x04R\x04rows\x12\x16\n" +
-	"\x06output\x18\x04 \x01(\bR\x06output\"~\n" +
+	"\x06output\x18\x04 \x01(\bR\x06output\"\xac\x01\n" +
 	"\rStateSnapshot\x12\x1a\n" +
-	"\boperator\x18\x01 \x01(\tR\boperator\x12\x10\n" +
-	"\x03url\x18\x02 \x01(\tR\x03url\x12?\n" +
+	"\boperator\x18\x01 \x01(\tR\boperator\x12?\n" +
 	"\n" +
-	"key_groups\x18\x03 \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\"9\n" +
+	"key_groups\x18\x02 \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12\x16\n" +
+	"\x06layout\x18\x03 \x01(\rR\x06layout\x12\x12\n" +
+	"\x04data\x18\x04 \x01(\fR\x04data\x12\x12\n" +
+	"\x04runs\x18\x05 \x03(\tR\x04runs\"9\n" +
 	"\rKeyGroupRange\x12\x14\n" +
 	"\x05first\x18\x01 \x01(\rR\x05first\x12\x12\n" +
 	"\x04last\x18\x02 \x01(\rR\x04last\"\x9e\x01\n" +

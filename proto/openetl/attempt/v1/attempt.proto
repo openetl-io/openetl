@@ -362,6 +362,9 @@ message Settle {
   repeated uint32 committables = 2;
   // As Assignment.forced.
   repeated string forced = 3;
+  // The record before it, as the log holds it, where a redo needs the
+  // state the epoch started from; empty for none.
+  bytes previous = 4;
 }
 
 // Settled is how each committable of a Settle was settled, in its order:

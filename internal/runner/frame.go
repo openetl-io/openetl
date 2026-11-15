@@ -151,8 +151,14 @@ type Plan struct {
 	ReadStarts map[string]int64
 	// What each stream's schema starts as: the restored checkpoint's, as
 	// Ready reported them, or one a Flink job's batches have changed it to.
-	Schemas   map[string][]byte
-	Snapshots []checkpoint.Snapshot
+	Schemas map[string][]byte
+	// The restored record's state, which the SQL's stateful operators open,
+	// and where they keep it: object storage below StateURL, as
+	// QuarantineURL is. A redo's are StateReadOnly: they read the restored
+	// state and write none.
+	Snapshots     []checkpoint.Snapshot
+	StateURL      string
+	StateReadOnly bool
 	// out carries FrameSchema frames. An empty batch establishes its
 	// stream's schema without rows.
 	ReportSchemas bool

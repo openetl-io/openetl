@@ -297,7 +297,7 @@ func shareOf(n uint64, worker int, local bool) *attemptv1.Share {
 		Ready: &enginev1.EpochReady{
 			Epoch:      e,
 			Schemas:    map[string][]byte{"events": []byte("schema")},
-			Snapshots:  []*enginev1.StateSnapshot{{Operator: "agg", Url: fmt.Sprintf("file:///state/%d/%d", n, worker)}},
+			Snapshots:  []*enginev1.StateSnapshot{{Operator: "agg", KeyGroups: KeyGroups(worker, worker), Runs: []string{fmt.Sprintf("agg/g1/e%d/kg%d-%d.run", n, worker, worker)}}},
 			Quarantine: []*enginev1.QuarantineFile{{Stream: "events", Url: "file:///q", Rows: 1}},
 		},
 	}
