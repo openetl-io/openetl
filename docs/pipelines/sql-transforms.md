@@ -246,6 +246,28 @@ WHERE details ? 'plan';
 
 `->>` gives text. `->` gives a JSON value: written to an output column, it is JSON, as the document writes it. Invalid JSON gives null. [JSON](../reference/sql.md#json) in the reference has the exact rules.
 
+### Aggregate rows by windows of time
+
+A group window writes one row for each window of a stream's event time and each value of its keys. Set the stream's `eventTime`, read it with `full_refresh`, and group by a window and columns:
+
+```yaml
+  source:
+    ref: shop-db
+    streams:
+      - name: orders
+        sync: full_refresh
+        eventTime: created_at
+```
+
+```sql
+INSERT INTO revenue_by_minute
+SELECT window_start, region, sum(amount) AS revenue, count(*) AS orders
+FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
+```
+
+The output's primary key is `window_start` and `region`. Each window's row is written when the sync's read ends. `hop` and `session` group rows by overlapping windows and by sessions. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates and when rows are written.
+
 ## Changelog streams
 
 A stream read with `cdc` is a changelog: its rows are inserts, updates and deletes of the stream's primary key. This continuous pipeline keeps a table of open orders, in a destination that merges:

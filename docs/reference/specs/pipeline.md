@@ -93,6 +93,7 @@ With `resources.workers` above 1, `openetl plan` shows `workers:` and the count 
 
 - the pipeline has a Spark or Flink `transform`;
 - the pipeline has `transform.sql`, and the destination's writer lanes commit on their own (`laneCommits`);
+- a statement of `transform.sql` keeps state, as a [group window](../sql.md#group-windows) does;
 - the destination declares fewer writer lanes than workers (`maxWriterLanes`, one if unset), is a transactional stream without lane commits (`laneCommits`), loads staged epochs, or is the built-in `parquet`;
 - no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners of its data plane have.
 
@@ -137,9 +138,10 @@ When the control plane cannot check the destination's capabilities or the source
 | `source.streams[].heldValue` | any value | Yes with `held: value` | None | With `held: value`, what held cells show; with `held: last`, what they show in rows the destination doesn't have yet. A value of the column's delivered type. Set alone, it means `held: value`. `held: null` takes none. |
 | `source.streams[].groups` | list of lists of column names | No | None | Columns held together, by their source names: holding one holds the rest. Each group has two columns or more. |
 | `source.streams[].typeChanges` | `refuse` or `allow` | No | `destination.typeChanges` | `destination.typeChanges` for this stream alone. With a SQL transform, for the stream as the destination gets it ([Settings and holds of outputs](#settings-and-holds-of-outputs)). |
-| `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it | The column that holds a row's event time, for a SQL transform's statements. It needs `transform.sql`. A column that the source's latest catalog doesn't list for the stream is a problem in the plan. |
+| `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it | The column that holds a row's event time, for a SQL transform's statements. A [group window](../sql.md#group-windows) over the stream goes by it. It needs `transform.sql`. A column that the source's latest catalog doesn't list for the stream is a problem in the plan. |
 | `source.streams[].watermark` | object | No | `delay: 0s` | How far behind the latest event time the stream's watermark stays. It needs `eventTime`. |
 | `source.streams[].watermark.delay` | duration, 0 or more | No | `0s` | The watermark trails the latest event time read from the stream by this much. |
+| `source.streams[].watermark.lateness` | duration, 0 or more | No | `0s` | How long after a group window over the stream closes a row may still come. Such a row writes the window's row again, as an update. A later row is quarantined. A stream with lateness needs `destination.write: merge` for each group window's output over it. |
 | `source.streams[].columns` | map of column names to objects | No | None | Settings for single columns, by their source names |
 | `source.streams[].columns.NAME` | object | No | None | One column's settings. It sets a `type`, a `held` or a `heldValue`, or more than one. |
 | `source.streams[].columns.NAME.type` | `string` or `float64` | No | The decimal | For a column the source declares as a decimal: `string` delivers the source's text for the value, NaN included; `float64` delivers a double, which can lose digits, and keeps NaN and infinities. Setting it on any other column is a problem in the plan. |

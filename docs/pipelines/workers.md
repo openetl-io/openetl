@@ -18,6 +18,7 @@ Workers give a job more CPU and memory than one pod can have. A job gains from t
 Some work does not spread:
 
 - A stream that one worker reads is no faster. [Streams that one worker reads](#streams-that-one-worker-reads) lists them.
+- A pipeline whose SQL has a [group window](../reference/sql.md#group-windows) runs on one pod.
 - The first worker commits each checkpoint for all the workers, so a job whose time goes to commits gains little. A destination with lane commits is different: each worker commits its own part.
 - Each attempt starts more pods. The coordinator also starts the source and destination connectors to set them up before the workers start.
 

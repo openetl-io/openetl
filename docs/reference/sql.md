@@ -5,7 +5,7 @@ description: The statements, names, types, operators and functions a pipeline's 
 
 A SQL transform is the `transform.sql` field of a [Pipeline](./specs/pipeline.md#a-sql-transform). Its statements read the source's streams and write outputs, which the destination gets as streams. The engine runs them on every lane of a sync or a continuous pipeline's job, between typing a stream's rows and writing them. [Write a SQL transform](../pipelines/sql-transforms.md) shows how to write one and check it.
 
-The engine runs row-wise statements: each output row comes from one input row, or from one element of a list with `UNNEST`. Everything else is refused, with the position in the SQL text where it is written. [What's refused](#whats-refused) lists the refusals and their messages.
+The engine runs row-wise statements, where each output row comes from one input row, or from one element of a list with `UNNEST`. It also runs [group windows](#group-windows), which aggregate a stream's rows by windows of their event time. Everything else is refused, with the position in the SQL text where it is written. [What's refused](#whats-refused) lists the refusals and their messages.
 
 ## Statements
 
@@ -110,6 +110,85 @@ A changelog stream is one whose rows are inserts, updates and deletes of their k
 - Turns an insert or update that fails its `WHERE` into a delete of its key alone. The delete's other columns are null.
 
 The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the destination applies these deletes, and what happens to an update that does not send every column.
+
+## Group windows
+
+A group window aggregates a stream's rows by windows of their event time, and by the columns its `GROUP BY` names. It writes one row for each window and key:
+
+```sql
+INSERT INTO revenue_by_minute
+SELECT window_start, region, sum(amount) AS revenue, count(*) AS orders
+FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
+```
+
+- The stream has an event time: its `eventTime` in the [Pipeline](./specs/pipeline.md#source-and-streams). The window's first argument is that column, as the statement reads it.
+- `GROUP BY` has one window, and any number of the stream's columns, renamed or not. A computed key, such as `lower(region)`, is refused.
+- The stream is read with `full_refresh`. A group window over a stream read another way is a problem in the plan.
+- A group window is in the statement's own `SELECT`. It reads the stream or a view of it, and the view is row-wise.
+
+### Windows
+
+| Window | Rows it groups |
+|---|---|
+| `tumble(TIME, SIZE)` | Windows of `SIZE`, one after another from the Unix epoch, 1970-01-01 00:00 UTC. Each row is in one window. |
+| `hop(TIME, SLIDE, SIZE)` | Windows of `SIZE` that start every `SLIDE`, from the Unix epoch. Each row is in each window that holds its time: `SIZE / SLIDE` of them, rounded up. |
+| `session(TIME, GAP)` | A key's rows with no more than `GAP` between one and the next. A session starts at its first row's time and ends `GAP` after its last row's time. |
+
+- A window holds the times from its start up to, but not including, its end. A session holds its end too.
+- Sizes are constant intervals of days, hours, minutes, seconds or smaller, in whole microseconds, such as `INTERVAL '5 minutes'`. Months are refused, as their length varies.
+- A hop's slide is at most its size, and a row is in at most 1,000 of its windows.
+- A row whose event time is null is in no window. The engine quarantines it.
+
+### Bounds and keys
+
+- `window_start` and `window_end` in the `SELECT` list and in `HAVING` are the window's bounds, of the event time's type. Write the names unquoted. A quoted `"window_start"` is a stream's column of that name.
+- `WHERE` runs before rows are grouped, so it cannot read `window_start` or `window_end`. Compare them in `HAVING`.
+- The output's primary key is `window_start` and the group keys, as the output names them. The `SELECT` list has both: a statement that leaves either out is refused.
+- An output can be merged on that key. The rows a window writes are inserts, and updates when its row is written again.
+
+### Aggregates
+
+| Aggregate | Argument | Value |
+|---|---|---|
+| `count(*)` | None | The window's rows, as `BIGINT` |
+| `count(X)` | Any | The rows where `X` is not null, as `BIGINT` |
+| `sum(X)` | A number | The sum. Integers give `BIGINT`. `DECIMAL(P, S)` gives `DECIMAL(P + 10, S)`, at most 38 digits. Floats give `DOUBLE`, rounded once from the exact sum. |
+| `avg(X)` | A number | The mean. Integers and floats give `DOUBLE`. `DECIMAL(P, S)` gives `DECIMAL(P + 4, S + 4)`, rounded half away from zero. |
+| `min(X)`, `max(X)` | A number, text, binary, a boolean, a date, a time, a timestamp or a UUID | The least or the greatest value. NaN is greater than every other float, and -0 equals 0. |
+| `approx_distinct(X)` | As `min` | How many distinct values `X` has, as `BIGINT`: exact up to 256, then an estimate within about 2% |
+| `median(X)` | A number | The middle value, or the two middle values' mean. Integers give `DOUBLE`. A `DECIMAL` keeps its type, rounded down. |
+| `percentile_cont(F) WITHIN GROUP (ORDER BY X)` | A number, and `F` from 0 to 1 | The value at fraction `F` of the sorted values, interpolated between the nearest two, as `DOUBLE`. `ORDER BY X DESC` reads `1 - F`. `quantile_cont` is another name. |
+
+- `mean` is another name for `avg`.
+- Each aggregate ignores nulls, except `count(*)`. An aggregate of no values is null, except `count` and `approx_distinct`, which give 0.
+- `FILTER (WHERE …)` after an aggregate counts only the rows where its condition is true: `count(*) FILTER (WHERE qty > 1)`.
+- `HAVING` keeps the windows where its condition is true. It can read the aggregates, the bounds and the group keys.
+- An aggregate gives the same value whatever order rows come in.
+- If an aggregate's value does not fit its type, as a sum past `BIGINT`'s range, the engine quarantines the window's row instead of writing it.
+
+### When a window's row is written
+
+A window's row is written when the stream's read ends. At the last checkpoint of a sync, every window closes, and the engine writes each window's row in that checkpoint's epoch. A window that fails `HAVING` writes no row.
+
+- `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
+- A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start.
+- A row that comes later than its window's end and the lateness is quarantined with the reason `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
+- `watermark.lateness` needs `destination.write: merge` for the output.
+- A sync reads its stream whole, with `full_refresh`, and closes its windows at its end. The next sync starts its windows again.
+
+### State
+
+A group window keeps each window's aggregates as state, by key group, until its row is written. `openetl plan` shows the statement's operator, which keeps the state:
+
+```text
+    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-92aacf1701a6097c
+```
+
+- The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.
+- A window over no group keys runs on one lane.
+- Each checkpoint names the state. The engine keeps the state in its memory. If an attempt fails while windows are open, the attempts after it fail with `CONFIG_INVALID`, as the state is gone.
+- A pipeline with a group window runs on one pod, whatever its `resources.workers`.
 
 ## Expressions and operators
 
@@ -473,14 +552,13 @@ These are refused, each at the place it is written. The message says what was fo
 
 | What | Message |
 |---|---|
-| Group windows: `GROUP BY tumble(…)`, `hop(…)`, `session(…)` | `a group window: transforms don't run group windows yet (tier 2)` |
 | `OVER`, window functions such as `row_number()`, `rank()` and `lag()`, `QUALIFY` | `OVER: transforms don't run window functions yet (tier 3)`, or with `a window function:` or `QUALIFY:` first |
 | `JOIN` | `a join: transforms don't run joins yet (tier 4)` |
 | Two relations in `FROM` | `reading two relations: transforms don't run joins yet (tier 4)` |
 | A subquery in an expression, such as `IN (SELECT …)` or `EXISTS (…)` | `a subquery: transforms don't run joins yet (tier 4)` |
 | `GROUP BY` without a window | `GROUP BY without a window: transforms don't run updating statements yet (tier 5)` |
 | An aggregate, such as `count(*)` or `sum(x)`, without a window | `an aggregate without a window: transforms don't run updating statements yet (tier 5)` |
-| `HAVING` | `HAVING without a window: transforms don't run updating statements yet (tier 5)` |
+| `HAVING` without a window | `HAVING without a window: transforms don't run updating statements yet (tier 5)` |
 | `DISTINCT`, `DISTINCT ON` | `DISTINCT: transforms don't run updating statements yet (tier 5)` |
 | A function that is not in [the list](#functions), such as a user-defined function | `my_udf isn't a function transforms can call` |
 
@@ -518,6 +596,33 @@ A view of one of these kinds is refused too, where the view is defined.
 | A column name used twice | `there's already a column id: give this one another name with AS` |
 | Types that do not combine | `expressions have incompatible types (has type Utf8; has type Int64)` |
 | A type an output cannot hold | `column nothing is Null, which an output can't hold: CAST it to a type it can` |
+
+### Group windows
+
+| What | Message |
+|---|---|
+| A stream without an event time | `orders has no event time, which a group window goes by: set eventTime on the stream in source.streams` |
+| A window over another column | `tumble goes by the event time of logins, at: write tumble("at", …)` |
+| A window outside `GROUP BY` | `tumble is a group window, which goes in GROUP BY: select window_start and window_end for its bounds` |
+| `window_start` or `window_end` in `WHERE` | `window_start is a window's bound, and WHERE runs before rows are grouped: compare it in HAVING` |
+| Two windows | `a group window groups by one window: tumble, hop or session` |
+| `ROLLUP`, `CUBE`, `GROUPING SETS` | `a group window groups by its window and columns, without ROLLUP, CUBE or GROUPING SETS` |
+| A computed group key | `a group window groups by columns of orders, renamed or not, beside its window: lower(orders.region) is computed` |
+| A group key of a list or a struct | `a group window can't group by tags, of type List(Utf8)` |
+| A size in months | `tumble's sizes are in days, hours, minutes or seconds, as a month's length varies` |
+| A size of zero or less | `tumble's sizes are more than zero, and under 290,000 years` |
+| A hop's slide larger than its size | `hop's slide is at most its size, so every row is in a window: hop(time, slide, size)` |
+| A hop with more than 1,000 windows a row | `hop puts each row in at most 1000 windows: its size over its slide is more` |
+| An aggregate it does not run, such as `stddev` | `stddev isn't an aggregate transforms run: a group window takes count, sum, min, max, avg, approx_distinct, median and percentile_cont` |
+| `DISTINCT` in an aggregate | `count(DISTINCT …) isn't supported: approx_distinct(x) estimates how many distinct values x has` |
+| An output without `window_start` | `a group window's output keeps window_start, which with its group keys is its primary key: select window_start` |
+| An output without a group key | `a group window's output keeps its group keys, which with window_start are its primary key: select region` |
+| The window itself in the `SELECT` list | `select a window's bounds as window_start and window_end, not the window` |
+| A group window in a view | `a view is row-wise, so it can't group by a window: group in the INSERT INTO … SELECT that reads the view` |
+| A group window in a subquery | `a group window is in the statement's own SELECT, not in a subquery's` |
+| A group window over a changelog stream | `changes is a changelog, and a group window groups appended rows: transforms don't run updating statements yet (tier 5)` |
+
+The plan also has a problem where a group window reads a stream with another mode than `full_refresh`, and where a stream sets `watermark.lateness` and the window's output is not merged.
 
 ### Changelog streams
 
