@@ -60,6 +60,11 @@ message AttendRequest {
     SchemaProposal schema_proposal = 8;
     // What the worker has used and moved so far, now and then.
     Usage usage = 9;
+    // As failure, where the worker failed only because its engine lost
+    // another worker's engine (openetl.engine.v1.PeerLost): the coordinator
+    // waits a moment for another worker's failure or loss, which says why,
+    // and fails the attempt with this only if none comes. Its last message.
+    openetl.connector.v1.Error peer_lost = 10;
   }
 }
 

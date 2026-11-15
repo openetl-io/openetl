@@ -47,6 +47,11 @@ const SERVER_NAME: &str = "openetl-exchange";
 const PEER_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest hello, in bytes: an attempt's ID and a secret are far
+/// shorter.
+const MAX_HELLO: usize = 4096;
+/// The most connections a listener handshakes with at once.
+const MAX_HANDSHAKES: usize = 64;
 /// How long binding waits for its address while an engine of an earlier
 /// generation on the same pod still holds it.
 const BIND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -425,12 +430,23 @@ pub async fn bind(plan: &Plan) -> Result<Option<TcpListener>, JobError> {
     let Some(id) = plan.mesh.as_ref().and_then(|m| m.identity.as_ref()) else {
         return Ok(None);
     };
+    // Go's ":7720" is every address: IPv6's, which takes IPv4's where the
+    // host has both, then IPv4's.
+    let at: Vec<String> = match id.listen.strip_prefix(':') {
+        Some(port) => vec![format!("[::]:{port}"), format!("0.0.0.0:{port}")],
+        None => vec![id.listen.clone()],
+    };
     let deadline = Instant::now() + BIND_TIMEOUT;
+    let mut i = 0;
     loop {
-        match TcpListener::bind(&id.listen).await {
+        match TcpListener::bind(&at[i]).await {
             Ok(l) => return Ok(Some(l)),
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Err(e) if e.kind() != std::io::ErrorKind::AddrInUse && i + 1 < at.len() => {
+                debug!(listen = %at[i], error = %e, "binding for the other engines; trying another address");
+                i += 1;
             }
             Err(e) => {
                 return Err(transient(format!(
@@ -562,8 +578,9 @@ fn hello(plan: &Plan, m: &MeshPlan, secret: &[u8], refused: &str) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// Reads a hello of at most MAX_HELLO bytes, before its sender is known.
 async fn read_hello<S: AsyncRead + Unpin>(c: &mut S) -> Result<MeshHello, String> {
-    let f = timeout(HANDSHAKE_TIMEOUT, frame::read(c))
+    let f = timeout(HANDSHAKE_TIMEOUT, frame::read_limited(c, MAX_HELLO))
         .await
         .map_err(|_| "no hello in time".to_owned())?
         .map_err(|e| e.to_string())?
@@ -644,10 +661,13 @@ async fn dial(
             Err(Dialed::Failed(why)) => why,
         };
         if Instant::now() + wait > deadline {
-            return Err(transient(format!(
-                "engine {to} at {} wasn't reached within {:?}: {why}",
-                m.engines[to].address, m.timeout
-            )));
+            return Err(JobError::peer_lost(
+                to,
+                format!(
+                    "engine {to} at {} wasn't reached within {:?}: {why}",
+                    m.engines[to].address, m.timeout
+                ),
+            ));
         }
         debug!(engine = to, error = %why, "reaching another engine; trying again");
         tokio::time::sleep(wait).await;
@@ -672,10 +692,13 @@ async fn link(
             .ok_or_else(|| JobError::internal("a link without a mesh"))?;
         let c = dial(&plan, m, &connector, to).await?;
         send(c, rx, &queued).await.map_err(|e| {
-            transient(format!(
-                "the connection to engine {to} at {} broke: {e}",
-                m.engines[to].address
-            ))
+            JobError::peer_lost(
+                to,
+                format!(
+                    "the connection to engine {to} at {} broke: {e}",
+                    m.engines[to].address
+                ),
+            )
         })
     }
     .await;
@@ -806,6 +829,12 @@ pub async fn inbound(
         }
         tokio::select! {
             accepted = listener.accept(), if !waiting.is_empty() => match accepted {
+                // Connections that aren't the attempt's can't hold more
+                // than this many handshakes' memory.
+                Ok((tcp, from)) if handshakes.len() >= MAX_HANDSHAKES => {
+                    warn!(%from, "refused a connection: too many handshakes in progress");
+                    drop(tcp);
+                }
                 Ok((tcp, _)) => {
                     tune(&tcp);
                     handshakes.spawn(handshake(plan.clone(), acceptor.clone(), tcp));
@@ -837,7 +866,8 @@ pub async fn inbound(
                 Err(e) => return Err(JobError::internal(format!("a connection from another engine failed: {e}"))),
             },
             () = &mut deadline, if !waiting.is_empty() => {
-                return Err(transient(format!(
+                let first = waiting.first().copied().unwrap_or_default();
+                return Err(JobError::peer_lost(first, format!(
                     "engines {waiting:?} of the attempt didn't connect within {:?}",
                     m.timeout
                 )));
@@ -859,8 +889,12 @@ async fn receive(
         .as_ref()
         .ok_or_else(|| JobError::internal("a mesh's connection without one"))?;
     let peer = &m.engines[from];
-    let lost =
-        |why: String| transient(format!("engine {from} at {} was lost: {why}", peer.address));
+    let lost = |why: String| {
+        JobError::peer_lost(
+            from,
+            format!("engine {from} at {} was lost: {why}", peer.address),
+        )
+    };
     let protocol = |why: String| JobError::internal(format!("engine {from} sent {why}"));
     answer(&mut c, &plan, m, "")
         .await

@@ -122,7 +122,8 @@ message Mesh {
   // follow from the engines before it and from all of them.
   uint32 engine = 1;
   repeated MeshEngine engines = 2;
-  // Where this engine listens for the others, as host:port.
+  // Where this engine listens for the others, as host:port; without a
+  // host, as :7720, on every address.
   string listen = 3;
   // The attempt's certificate, as DER, which every engine presents and is
   // the only one each trusts, and its private key, as PKCS #8 DER.
@@ -139,6 +140,14 @@ message MeshEngine {
   // it in the attempt's order, and likewise its writer lanes.
   uint32 lanes = 2;
   uint32 writer_lanes = 3;
+}
+
+// PeerLost is in the status details of a job that failed only because it
+// lost another engine of its mesh, beside its openetl.connector.v1.Error:
+// the other engine's own failure, if it had one, says why.
+message PeerLost {
+  // The other engine's index in Mesh.engines.
+  uint32 engine = 1;
 }
 
 // Transform is SQL between the normalizer's two halves. Its statements read

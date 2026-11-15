@@ -37,6 +37,7 @@ type AttendRequest struct {
 	//	*AttendRequest_Signal
 	//	*AttendRequest_SchemaProposal
 	//	*AttendRequest_Usage
+	//	*AttendRequest_PeerLost
 	Message       isAttendRequest_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -160,6 +161,15 @@ func (x *AttendRequest) GetUsage() *Usage {
 	return nil
 }
 
+func (x *AttendRequest) GetPeerLost() *v1.Error {
+	if x != nil {
+		if x, ok := x.Message.(*AttendRequest_PeerLost); ok {
+			return x.PeerLost
+		}
+	}
+	return nil
+}
+
 type isAttendRequest_Message interface {
 	isAttendRequest_Message()
 }
@@ -208,6 +218,14 @@ type AttendRequest_Usage struct {
 	Usage *Usage `protobuf:"bytes,9,opt,name=usage,proto3,oneof"`
 }
 
+type AttendRequest_PeerLost struct {
+	// As failure, where the worker failed only because its engine lost
+	// another worker's engine (openetl.engine.v1.PeerLost): the coordinator
+	// waits a moment for another worker's failure or loss, which says why,
+	// and fails the attempt with this only if none comes. Its last message.
+	PeerLost *v1.Error `protobuf:"bytes,10,opt,name=peer_lost,json=peerLost,proto3,oneof"`
+}
+
 func (*AttendRequest_Join) isAttendRequest_Message() {}
 
 func (*AttendRequest_Share) isAttendRequest_Message() {}
@@ -225,6 +243,8 @@ func (*AttendRequest_Signal) isAttendRequest_Message() {}
 func (*AttendRequest_SchemaProposal) isAttendRequest_Message() {}
 
 func (*AttendRequest_Usage) isAttendRequest_Message() {}
+
+func (*AttendRequest_PeerLost) isAttendRequest_Message() {}
 
 // AttendResponse is the coordinator's message.
 type AttendResponse struct {
@@ -2742,7 +2762,7 @@ var File_openetl_attempt_v1_attempt_proto protoreflect.FileDescriptor
 
 const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\n" +
-	" openetl/attempt/v1/attempt.proto\x12\x12openetl.attempt.v1\x1a&openetl/connector/v1/destination.proto\x1a!openetl/connector/v1/errors.proto\x1a!openetl/connector/v1/source.proto\x1a\x1eopenetl/engine/v1/engine.proto\"\xa2\x04\n" +
+	" openetl/attempt/v1/attempt.proto\x12\x12openetl.attempt.v1\x1a&openetl/connector/v1/destination.proto\x1a!openetl/connector/v1/errors.proto\x1a!openetl/connector/v1/source.proto\x1a\x1eopenetl/engine/v1/engine.proto\"\xde\x04\n" +
 	"\rAttendRequest\x12.\n" +
 	"\x04join\x18\x01 \x01(\v2\x18.openetl.attempt.v1.JoinH\x00R\x04join\x121\n" +
 	"\x05share\x18\x02 \x01(\v2\x19.openetl.attempt.v1.ShareH\x00R\x05share\x12=\n" +
@@ -2752,7 +2772,9 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\x06answer\x18\x06 \x01(\v2\x1a.openetl.attempt.v1.AnswerH\x00R\x06answer\x124\n" +
 	"\x06signal\x18\a \x01(\v2\x1a.openetl.attempt.v1.SignalH\x00R\x06signal\x12M\n" +
 	"\x0fschema_proposal\x18\b \x01(\v2\".openetl.attempt.v1.SchemaProposalH\x00R\x0eschemaProposal\x121\n" +
-	"\x05usage\x18\t \x01(\v2\x19.openetl.attempt.v1.UsageH\x00R\x05usageB\t\n" +
+	"\x05usage\x18\t \x01(\v2\x19.openetl.attempt.v1.UsageH\x00R\x05usage\x12:\n" +
+	"\tpeer_lost\x18\n" +
+	" \x01(\v2\x1b.openetl.connector.v1.ErrorH\x00R\bpeerLostB\t\n" +
 	"\amessage\"\xe3\x03\n" +
 	"\x0eAttendResponse\x12@\n" +
 	"\n" +
@@ -3021,65 +3043,66 @@ var file_openetl_attempt_v1_attempt_proto_depIdxs = []int32{
 	26, // 6: openetl.attempt.v1.AttendRequest.signal:type_name -> openetl.attempt.v1.Signal
 	31, // 7: openetl.attempt.v1.AttendRequest.schema_proposal:type_name -> openetl.attempt.v1.SchemaProposal
 	32, // 8: openetl.attempt.v1.AttendRequest.usage:type_name -> openetl.attempt.v1.Usage
-	3,  // 9: openetl.attempt.v1.AttendResponse.assignment:type_name -> openetl.attempt.v1.Assignment
-	8,  // 10: openetl.attempt.v1.AttendResponse.barrier:type_name -> openetl.attempt.v1.Barrier
-	14, // 11: openetl.attempt.v1.AttendResponse.positions:type_name -> openetl.attempt.v1.Positions
-	12, // 12: openetl.attempt.v1.AttendResponse.commit:type_name -> openetl.attempt.v1.Commit
-	15, // 13: openetl.attempt.v1.AttendResponse.heartbeat:type_name -> openetl.attempt.v1.Heartbeat
-	16, // 14: openetl.attempt.v1.AttendResponse.end:type_name -> openetl.attempt.v1.End
-	17, // 15: openetl.attempt.v1.AttendResponse.call:type_name -> openetl.attempt.v1.Call
-	33, // 16: openetl.attempt.v1.AttendResponse.schema:type_name -> openetl.attempt.v1.StreamSchema
-	4,  // 17: openetl.attempt.v1.Assignment.lanes:type_name -> openetl.attempt.v1.Lane
-	4,  // 18: openetl.attempt.v1.Assignment.writer_lanes:type_name -> openetl.attempt.v1.Lane
-	6,  // 19: openetl.attempt.v1.Assignment.splits:type_name -> openetl.attempt.v1.SplitAssignment
-	34, // 20: openetl.attempt.v1.Assignment.read_starts:type_name -> openetl.attempt.v1.Assignment.ReadStartsEntry
-	5,  // 21: openetl.attempt.v1.Assignment.exchange:type_name -> openetl.attempt.v1.Exchange
-	39, // 22: openetl.attempt.v1.Lane.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
-	7,  // 23: openetl.attempt.v1.SplitAssignment.split:type_name -> openetl.attempt.v1.SplitPosition
-	40, // 24: openetl.attempt.v1.SplitPosition.split:type_name -> openetl.connector.v1.Split
-	41, // 25: openetl.attempt.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
-	41, // 26: openetl.attempt.v1.Share.epoch:type_name -> openetl.connector.v1.Epoch
-	7,  // 27: openetl.attempt.v1.Share.positions:type_name -> openetl.attempt.v1.SplitPosition
-	35, // 28: openetl.attempt.v1.Share.rows:type_name -> openetl.attempt.v1.Share.RowsEntry
-	10, // 29: openetl.attempt.v1.Share.committables:type_name -> openetl.attempt.v1.Committable
-	42, // 30: openetl.attempt.v1.Share.ready:type_name -> openetl.engine.v1.EpochReady
-	11, // 31: openetl.attempt.v1.Committable.splits:type_name -> openetl.attempt.v1.SplitRef
-	39, // 32: openetl.attempt.v1.SplitRef.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
-	43, // 33: openetl.attempt.v1.Commit.commit:type_name -> openetl.connector.v1.WriteCommit
-	44, // 34: openetl.attempt.v1.Committed.committed:type_name -> openetl.connector.v1.WriteCommitted
-	41, // 35: openetl.attempt.v1.Positions.epoch:type_name -> openetl.connector.v1.Epoch
-	7,  // 36: openetl.attempt.v1.Positions.splits:type_name -> openetl.attempt.v1.SplitPosition
-	38, // 37: openetl.attempt.v1.End.error:type_name -> openetl.connector.v1.Error
-	19, // 38: openetl.attempt.v1.Call.recover:type_name -> openetl.attempt.v1.Recover
-	23, // 39: openetl.attempt.v1.Call.split_read:type_name -> openetl.attempt.v1.SplitRead
-	45, // 40: openetl.attempt.v1.Call.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
-	21, // 41: openetl.attempt.v1.Call.settle:type_name -> openetl.attempt.v1.Settle
-	38, // 42: openetl.attempt.v1.Answer.error:type_name -> openetl.connector.v1.Error
-	20, // 43: openetl.attempt.v1.Answer.recovered:type_name -> openetl.attempt.v1.Recovered
-	25, // 44: openetl.attempt.v1.Answer.read_splits:type_name -> openetl.attempt.v1.ReadSplits
-	46, // 45: openetl.attempt.v1.Answer.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
-	22, // 46: openetl.attempt.v1.Answer.settled:type_name -> openetl.attempt.v1.Settled
-	47, // 47: openetl.attempt.v1.Recovered.recovery:type_name -> openetl.connector.v1.Recovery
-	36, // 48: openetl.attempt.v1.Recovered.limits:type_name -> openetl.attempt.v1.Recovered.LimitsEntry
-	47, // 49: openetl.attempt.v1.Settled.recoveries:type_name -> openetl.connector.v1.Recovery
-	24, // 50: openetl.attempt.v1.SplitRead.streams:type_name -> openetl.attempt.v1.EndedRead
-	48, // 51: openetl.attempt.v1.EndedRead.ended:type_name -> openetl.connector.v1.Splits
-	37, // 52: openetl.attempt.v1.ReadSplits.splits:type_name -> openetl.attempt.v1.ReadSplits.SplitsEntry
-	27, // 53: openetl.attempt.v1.Signal.placed:type_name -> openetl.attempt.v1.Placed
-	28, // 54: openetl.attempt.v1.Signal.emitted:type_name -> openetl.attempt.v1.Emitted
-	29, // 55: openetl.attempt.v1.Signal.full:type_name -> openetl.attempt.v1.Full
-	30, // 56: openetl.attempt.v1.Signal.read_done:type_name -> openetl.attempt.v1.ReadDone
-	49, // 57: openetl.attempt.v1.SchemaProposal.holding:type_name -> openetl.engine.v1.ColumnHold
-	49, // 58: openetl.attempt.v1.StreamSchema.holding:type_name -> openetl.engine.v1.ColumnHold
-	50, // 59: openetl.attempt.v1.Recovered.LimitsEntry.value:type_name -> openetl.connector.v1.TableLimits
-	48, // 60: openetl.attempt.v1.ReadSplits.SplitsEntry.value:type_name -> openetl.connector.v1.Splits
-	0,  // 61: openetl.attempt.v1.AttemptService.Attend:input_type -> openetl.attempt.v1.AttendRequest
-	1,  // 62: openetl.attempt.v1.AttemptService.Attend:output_type -> openetl.attempt.v1.AttendResponse
-	62, // [62:63] is the sub-list for method output_type
-	61, // [61:62] is the sub-list for method input_type
-	61, // [61:61] is the sub-list for extension type_name
-	61, // [61:61] is the sub-list for extension extendee
-	0,  // [0:61] is the sub-list for field type_name
+	38, // 9: openetl.attempt.v1.AttendRequest.peer_lost:type_name -> openetl.connector.v1.Error
+	3,  // 10: openetl.attempt.v1.AttendResponse.assignment:type_name -> openetl.attempt.v1.Assignment
+	8,  // 11: openetl.attempt.v1.AttendResponse.barrier:type_name -> openetl.attempt.v1.Barrier
+	14, // 12: openetl.attempt.v1.AttendResponse.positions:type_name -> openetl.attempt.v1.Positions
+	12, // 13: openetl.attempt.v1.AttendResponse.commit:type_name -> openetl.attempt.v1.Commit
+	15, // 14: openetl.attempt.v1.AttendResponse.heartbeat:type_name -> openetl.attempt.v1.Heartbeat
+	16, // 15: openetl.attempt.v1.AttendResponse.end:type_name -> openetl.attempt.v1.End
+	17, // 16: openetl.attempt.v1.AttendResponse.call:type_name -> openetl.attempt.v1.Call
+	33, // 17: openetl.attempt.v1.AttendResponse.schema:type_name -> openetl.attempt.v1.StreamSchema
+	4,  // 18: openetl.attempt.v1.Assignment.lanes:type_name -> openetl.attempt.v1.Lane
+	4,  // 19: openetl.attempt.v1.Assignment.writer_lanes:type_name -> openetl.attempt.v1.Lane
+	6,  // 20: openetl.attempt.v1.Assignment.splits:type_name -> openetl.attempt.v1.SplitAssignment
+	34, // 21: openetl.attempt.v1.Assignment.read_starts:type_name -> openetl.attempt.v1.Assignment.ReadStartsEntry
+	5,  // 22: openetl.attempt.v1.Assignment.exchange:type_name -> openetl.attempt.v1.Exchange
+	39, // 23: openetl.attempt.v1.Lane.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	7,  // 24: openetl.attempt.v1.SplitAssignment.split:type_name -> openetl.attempt.v1.SplitPosition
+	40, // 25: openetl.attempt.v1.SplitPosition.split:type_name -> openetl.connector.v1.Split
+	41, // 26: openetl.attempt.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
+	41, // 27: openetl.attempt.v1.Share.epoch:type_name -> openetl.connector.v1.Epoch
+	7,  // 28: openetl.attempt.v1.Share.positions:type_name -> openetl.attempt.v1.SplitPosition
+	35, // 29: openetl.attempt.v1.Share.rows:type_name -> openetl.attempt.v1.Share.RowsEntry
+	10, // 30: openetl.attempt.v1.Share.committables:type_name -> openetl.attempt.v1.Committable
+	42, // 31: openetl.attempt.v1.Share.ready:type_name -> openetl.engine.v1.EpochReady
+	11, // 32: openetl.attempt.v1.Committable.splits:type_name -> openetl.attempt.v1.SplitRef
+	39, // 33: openetl.attempt.v1.SplitRef.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	43, // 34: openetl.attempt.v1.Commit.commit:type_name -> openetl.connector.v1.WriteCommit
+	44, // 35: openetl.attempt.v1.Committed.committed:type_name -> openetl.connector.v1.WriteCommitted
+	41, // 36: openetl.attempt.v1.Positions.epoch:type_name -> openetl.connector.v1.Epoch
+	7,  // 37: openetl.attempt.v1.Positions.splits:type_name -> openetl.attempt.v1.SplitPosition
+	38, // 38: openetl.attempt.v1.End.error:type_name -> openetl.connector.v1.Error
+	19, // 39: openetl.attempt.v1.Call.recover:type_name -> openetl.attempt.v1.Recover
+	23, // 40: openetl.attempt.v1.Call.split_read:type_name -> openetl.attempt.v1.SplitRead
+	45, // 41: openetl.attempt.v1.Call.apply_schema:type_name -> openetl.connector.v1.WriteApplySchema
+	21, // 42: openetl.attempt.v1.Call.settle:type_name -> openetl.attempt.v1.Settle
+	38, // 43: openetl.attempt.v1.Answer.error:type_name -> openetl.connector.v1.Error
+	20, // 44: openetl.attempt.v1.Answer.recovered:type_name -> openetl.attempt.v1.Recovered
+	25, // 45: openetl.attempt.v1.Answer.read_splits:type_name -> openetl.attempt.v1.ReadSplits
+	46, // 46: openetl.attempt.v1.Answer.schema_applied:type_name -> openetl.connector.v1.WriteSchemaApplied
+	22, // 47: openetl.attempt.v1.Answer.settled:type_name -> openetl.attempt.v1.Settled
+	47, // 48: openetl.attempt.v1.Recovered.recovery:type_name -> openetl.connector.v1.Recovery
+	36, // 49: openetl.attempt.v1.Recovered.limits:type_name -> openetl.attempt.v1.Recovered.LimitsEntry
+	47, // 50: openetl.attempt.v1.Settled.recoveries:type_name -> openetl.connector.v1.Recovery
+	24, // 51: openetl.attempt.v1.SplitRead.streams:type_name -> openetl.attempt.v1.EndedRead
+	48, // 52: openetl.attempt.v1.EndedRead.ended:type_name -> openetl.connector.v1.Splits
+	37, // 53: openetl.attempt.v1.ReadSplits.splits:type_name -> openetl.attempt.v1.ReadSplits.SplitsEntry
+	27, // 54: openetl.attempt.v1.Signal.placed:type_name -> openetl.attempt.v1.Placed
+	28, // 55: openetl.attempt.v1.Signal.emitted:type_name -> openetl.attempt.v1.Emitted
+	29, // 56: openetl.attempt.v1.Signal.full:type_name -> openetl.attempt.v1.Full
+	30, // 57: openetl.attempt.v1.Signal.read_done:type_name -> openetl.attempt.v1.ReadDone
+	49, // 58: openetl.attempt.v1.SchemaProposal.holding:type_name -> openetl.engine.v1.ColumnHold
+	49, // 59: openetl.attempt.v1.StreamSchema.holding:type_name -> openetl.engine.v1.ColumnHold
+	50, // 60: openetl.attempt.v1.Recovered.LimitsEntry.value:type_name -> openetl.connector.v1.TableLimits
+	48, // 61: openetl.attempt.v1.ReadSplits.SplitsEntry.value:type_name -> openetl.connector.v1.Splits
+	0,  // 62: openetl.attempt.v1.AttemptService.Attend:input_type -> openetl.attempt.v1.AttendRequest
+	1,  // 63: openetl.attempt.v1.AttemptService.Attend:output_type -> openetl.attempt.v1.AttendResponse
+	63, // [63:64] is the sub-list for method output_type
+	62, // [62:63] is the sub-list for method input_type
+	62, // [62:62] is the sub-list for extension type_name
+	62, // [62:62] is the sub-list for extension extendee
+	0,  // [0:62] is the sub-list for field type_name
 }
 
 func init() { file_openetl_attempt_v1_attempt_proto_init() }
@@ -3097,6 +3120,7 @@ func file_openetl_attempt_v1_attempt_proto_init() {
 		(*AttendRequest_Signal)(nil),
 		(*AttendRequest_SchemaProposal)(nil),
 		(*AttendRequest_Usage)(nil),
+		(*AttendRequest_PeerLost)(nil),
 	}
 	file_openetl_attempt_v1_attempt_proto_msgTypes[1].OneofWrappers = []any{
 		(*AttendResponse_Assignment)(nil),

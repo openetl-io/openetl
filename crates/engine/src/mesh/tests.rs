@@ -578,3 +578,124 @@ async fn exchange_throughput() {
         payload.len()
     );
 }
+
+/// Trusts any certificate, as a client of no attempt can.
+#[derive(Debug)]
+struct AnyCertificate(rustls::crypto::WebPkiSupportedAlgorithms);
+
+impl ServerCertVerifier for AnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.supported_schemes()
+    }
+}
+
+/// A client of no attempt whose hello claims half a gigabyte is cut off as
+/// its header arrives, before any of it is read or held, and the attempt's
+/// engines still connect and finish.
+#[tokio::test]
+async fn a_long_hello_is_refused_before_it_is_read() {
+    use tokio::io::AsyncReadExt;
+    let parts = [(1, 1), (1, 1)];
+    let (ls, addrs) = listeners(2).await;
+    let mut es: Vec<Engine> = ls
+        .into_iter()
+        .enumerate()
+        .map(|(me, l)| start(request(&parts, me, &addrs), l, Duration::from_secs(10)))
+        .collect();
+    let p = provider();
+    let cfg = ClientConfig::builder_with_provider(p.clone())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AnyCertificate(
+            p.signature_verification_algorithms,
+        )))
+        .with_no_client_auth();
+    let tcp = TcpStream::connect(&addrs[1]).await.unwrap();
+    let name = ServerName::try_from(SERVER_NAME).unwrap();
+    let mut c = TlsConnector::from(Arc::new(cfg))
+        .connect(name, tcp)
+        .await
+        .unwrap();
+    c.write_all(&frame::header(FrameKind::MeshHello, 0, 512 << 20))
+        .await
+        .unwrap();
+    c.flush().await.unwrap();
+    let mut buf = [0u8; 16];
+    let read = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
+        .await
+        .expect("the listener kept the connection open");
+    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+
+    let drains: Vec<_> = es
+        .iter_mut()
+        .map(|e| drain(std::mem::take(&mut e.outs)))
+        .collect();
+    for (i, e) in es.iter_mut().enumerate() {
+        let from = i as i64 * 100;
+        put(&mut e.ins[0], FrameKind::Rows, rows(from..from + 100)).await;
+        put(&mut e.ins[0], FrameKind::Barrier, barrier(1, 1)).await;
+        end(&mut e.ins[0]).await;
+    }
+    let mut all = BTreeSet::new();
+    for (e, drains) in es.into_iter().zip(drains) {
+        for d in drains {
+            all.extend(around_barrier(&d.await.unwrap()).0);
+        }
+        e.job.await.unwrap().unwrap();
+    }
+    assert_eq!(all, (0..200).collect());
+}
+
+/// A listen address without a host, as Go writes it, is every address.
+#[tokio::test]
+async fn a_listen_address_without_a_host_binds_every_address() {
+    let mut req = request(&[(1, 1), (1, 1)], 0, &[":0".into(), "127.0.0.1:1".into()]);
+    req.mesh.as_mut().unwrap().listen = ":0".into();
+    let plan = Plan::from_request(req).unwrap();
+    let l = bind(&plan).await.unwrap().unwrap();
+    assert!(l.local_addr().unwrap().ip().is_unspecified());
+}
+
+/// An engine lost by another fails it with that engine's index in a
+/// PeerLost detail.
+#[tokio::test]
+async fn an_engine_lost_is_marked_as_lost() {
+    let mut es = mesh(&[(1, 1), (1, 1)], |_, _| {}).await;
+    put(&mut es[1].ins[0], FrameKind::Rows, rows(0..10)).await;
+    let e1 = es.pop().unwrap();
+    let e0 = es.pop().unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    e0.job.abort();
+    let err = failure(e1).await;
+    assert_eq!(err.peer_lost, Some(0), "{err}");
+}
