@@ -131,7 +131,7 @@ When the control plane cannot check the destination's capabilities or the source
 | `source.streams[].timestamps` | `microsecond` or `nanosecond` | No | `microsecond` | The unit timestamps arrive in. Finer values are truncated. Nanoseconds need a destination that keeps them, and hold only 1677-09-21 to 2262-04-11. A Spark transform's inputs can't keep nanoseconds. |
 | `source.streams[].require` | delivery guarantee | No | `delivery.require` | The lowest guarantee this stream may have, in place of `delivery.require` |
 | `source.streams[].collapse` | boolean | No | `true` for a stream whose reads may repeat rows (the plan's reason says `superset replay`) and that requires more than `at_least_once`; otherwise `false` | For a stream without a primary key: rows with the same content become one row. A stream with a primary key ignores it, and the plan warns. |
-| `source.streams[].unfitValues` | `quarantine` or `hold` | No | `quarantine` | What a value that doesn't fit its column's type does. `quarantine`: its row isn't written, and is quarantined with the reason. `hold`: the row is written and the value's cell is held, where the cell can be held; otherwise the row is quarantined ([When hold still quarantines a row](../../pipelines/holds-and-quarantine.md#when-hold-still-quarantines-a-row)). |
+| `source.streams[].unfitValues` | `quarantine` or `hold` | No | `quarantine` | What a value that does not fit its column's type does. `quarantine`: OpenETL does not write the row, and quarantines it with the reason. `hold`: OpenETL writes the row and holds the value's cell, where it can hold the cell. Where it cannot, it quarantines the row ([When hold still quarantines a row](../../pipelines/holds-and-quarantine.md#when-hold-still-quarantines-a-row)). |
 | `source.streams[].held` | `null`, `value` or `last` | No | `null`, or `value` when `heldValue` is set | What a held cell shows, in the columns that `columns` doesn't set it for: `null`; `value`, the value in `heldValue`; or `last`, the value the destination already has, which needs merge. |
 | `source.streams[].heldValue` | any value | Yes with `held: value` | None | With `held: value`, what held cells show; with `held: last`, what they show in rows the destination doesn't have yet. A value of the column's delivered type. Set alone, it means `held: value`. `held: null` takes none. |
 | `source.streams[].groups` | list of lists of column names | No | None | Columns held together, by their source names: holding one holds the rest. Each group has two columns or more. |
@@ -150,7 +150,7 @@ The plan checks hold requirements:
 
 - `unfitValues: hold` and the `held`, `heldValue` and `groups` settings require a primary key. The destination must support patching for the selected write mode. These requirements also apply to column-level settings.
 - `held: last` additionally requires merge writes and destination support for preserving the last value.
-- The streams of a pipeline with a Spark or Flink transform cannot set `unfitValues: hold`, `held`, `heldValue`, `groups`, `collapse` or `typeChanges`, and their columns cannot set `held` or `heldValue`.
+- The streams of a pipeline with a Spark or Flink transform cannot set `unfitValues: hold`, `held`, `heldValue`, `groups`, `collapse` or `typeChanges`. Their columns cannot set `held` or `heldValue`.
 - With a SQL transform, these settings apply to the stream as the destination gets it. [Settings and holds of outputs](#settings-and-holds-of-outputs) explains what that is, and what the plan refuses.
 
 ## Destination
@@ -172,7 +172,7 @@ The plan checks hold requirements:
 |---|---|---|---|---|
 | `schemaPolicy` | `allow_all`, `allow_columns`, `block` or `ignore_new` | No | `allow_all` | What a change to a stream's schema does, once the destination has the stream: see the table below. |
 | `types` | object | No | `infinity: clamp` | How values map to types where the pipeline has a choice |
-| `types.infinity` | `clamp` or `unfit` | No | `clamp` | What becomes of infinite dates and timestamps: `clamp` turns them into the type's largest or smallest value. `unfit` makes them values that don't fit, with the reason `range`, which each stream's `unfitValues` quarantines or holds. |
+| `types.infinity` | `clamp` or `unfit` | No | `clamp` | What becomes of infinite dates and timestamps: `clamp` turns them into the type's largest or smallest value. `unfit` makes them values that do not fit, with the reason `range`. Each stream's `unfitValues` then quarantines or holds them. |
 
 | Policy | A new column | A type that widens | A type that changes otherwise |
 |---|---|---|---|
@@ -430,7 +430,7 @@ The plan has a problem, and a sync fails with `CONFIG_INVALID`, for each of thes
 
 An output holds as a stream without a transform does. It needs a primary key and a destination that patches its write mode. If a column's type changes and `schemaPolicy` or the destination does not take the change, the engine holds the column. The output's other columns are still written. A new column follows `schemaPolicy`, as in [the table above](#schema): `allow_all` and `allow_columns` add it, `block` holds it, and `ignore_new` drops it. The engine also holds a new column that the destination refuses, or that a destination with no room for more columns cannot add. `openetl holds` lists the hold under the output's name, with the ways to clear it, and `openetl holds release NAME OUTPUT COLUMN` releases it.
 
-With `unfitValues: hold`, a value that does not fit its type holds its cell, both where the stream is typed and where `schemaPolicy: ignore_new` casts an output's values to its columns' types. A statement cannot evaluate a row whose stream holds a cell. The engine quarantines that row as one of the statement output's records.
+With `unfitValues: hold`, a value that does not fit its type holds its cell. This applies where the stream is typed, and where `schemaPolicy: ignore_new` casts an output's values to its columns' types. A statement cannot evaluate a row whose stream holds a cell. The engine quarantines that row as one of the statement output's records.
 
 ### Schema changes
 

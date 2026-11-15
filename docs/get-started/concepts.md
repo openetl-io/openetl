@@ -76,10 +76,10 @@ By default, OpenETL does not change an existing destination column's type. That 
 
 Sometimes OpenETL cannot write a value: it does not fit its column's type, or the destination refuses a change to its column. OpenETL keeps such a value back in one of two ways, and never drops it without a record.
 
-- A **hold** keeps back a value, or a whole column, from a row that OpenETL writes. The row's other columns are current. **Releasing** the hold writes the saved values into the same rows on the next run, after you change what refused them. **Discarding** it deletes the saved values. A hold needs a primary key and a destination that can patch rows.
+- A **hold** keeps back a value, or a whole column, from a row that OpenETL writes. The row's other columns are current. After you change what refused the values, **releasing** the hold writes them into the same rows on the next run. **Discarding** it deletes the saved values. A hold needs a primary key and a destination that can patch rows.
 - **Quarantine** keeps back a whole row. OpenETL does not write the row, and saves it as the source sent it, with the reason. There is no row to patch, so a quarantined row comes back only when the source sends it again or you load it yourself.
 
-A change to a column is held where OpenETL can hold it. For a single value that does not fit, the pipeline chooses: quarantine the row, which is the default, or hold the value. A pipeline that holds values still quarantines a row when the value is in a column that cannot be held, such as a primary key. [Holds and quarantine](../pipelines/holds-and-quarantine.md) explains when each applies and how to choose. [Handle schema changes and holds](../pipelines/schema-changes.md) walks through a release.
+OpenETL holds a change to a column where it can. For a single value that does not fit, the pipeline chooses: quarantine the row, which is the default, or hold the value. If a pipeline holds values, it still quarantines a row whose value is in a column that OpenETL cannot hold, such as a primary key. [Holds and quarantine](../pipelines/holds-and-quarantine.md) explains when each applies and how to choose. [Handle schema changes and holds](../pipelines/schema-changes.md) walks through a release.
 
 ## Incidents
 

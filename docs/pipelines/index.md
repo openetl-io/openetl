@@ -341,7 +341,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | `timestamps` | `microsecond`, or `nanosecond` for a destination that keeps them | `microsecond`; finer values are truncated |
 | `require` | This stream's lowest acceptable delivery guarantee, overriding `delivery.require` | The pipeline's |
 | `collapse` | For a stream without a primary key: rows with the same content become one row | On for a stream that may be read twice and requires more than at least once |
-| `unfitValues` | What a value that doesn't fit its column's type does: `quarantine` its row, which isn't written, or `hold` its cell, for a keyed stream into a destination that patches. `hold` still quarantines a row whose value can't be held ([Holds and quarantine](./holds-and-quarantine.md)) | `quarantine` |
+| `unfitValues` | What a value that does not fit its column's type does: `quarantine` its row, which OpenETL does not write, or `hold` its cell, for a keyed stream into a destination that patches. With `hold`, OpenETL still quarantines a row whose value it cannot hold ([Holds and quarantine](./holds-and-quarantine.md)) | `quarantine` |
 | `held`, `heldValue` | What a held cell shows: `null`, a `value` given in `heldValue`, or `last`, the destination's value (merge only); also under `columns.NAME` for one column | `null` |
 | `groups` | Lists of columns held together: holding one holds the rest | |
 | `typeChanges` | `refuse` or `allow`, overriding `destination.typeChanges` for this stream | The destination's |
@@ -362,13 +362,13 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 
 | Field | What it does | Unset |
 |---|---|---|
-| `schemaPolicy` | What a change to a stream's schema does. `allow_all` adds columns and widens types, and sends a type change that isn't a widening to a new column; `allow_columns` adds columns and widens types, but holds other type changes or fails when they cannot be held; `block` holds changes or fails the stream; `ignore_new` drops new columns, and values that don't fit follow `unfitValues` | `allow_all` |
+| `schemaPolicy` | What a change to a stream's schema does. `allow_all` adds columns and widens types, and sends a type change that is not a widening to a new column; `allow_columns` adds columns and widens types, but holds other type changes or fails when they cannot be held; `block` holds changes or fails the stream; `ignore_new` drops new columns, and values that do not fit follow `unfitValues` | `allow_all` |
 | `delivery.require` | The lowest guarantee any stream may have: `at_least_once`, `effectively_once` or `exactly_once` | `exactly_once` |
 | `delivery.commit.interval` | How often to commit what's been read | 5 minutes in a scheduled pipeline; in a continuous one, the destination's own interval, or 10 seconds |
 | `delivery.commit.maxBytes` | Commit once this much has been read since the last commit | `256MB`, which grows when commits can't keep up |
 | `delivery.commit.scope` | Commit every stream together (`pipeline`) or each on its own (`stream`) | `pipeline` where the destination can, otherwise `stream` |
 | `delivery.resumePointTimeout` | How long a commit waits for a point the source can resume from exactly, before committing without one where the stream keeps its guarantee anyway; `none` waits forever | `1m` |
-| `types.infinity` | What becomes of infinite dates and timestamps: `clamp` to the type's largest or smallest value, or `unfit`, which makes them values that don't fit, for `unfitValues` | `clamp` |
+| `types.infinity` | What becomes of infinite dates and timestamps: `clamp` to the type's largest or smallest value, or `unfit`, which makes them values that do not fit, for `unfitValues` | `clamp` |
 
 ### After and between
 

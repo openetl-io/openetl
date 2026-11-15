@@ -9,7 +9,7 @@ Sometimes OpenETL cannot write a value as the source sent it. The value does not
 
 | | Hold | Quarantine |
 |---|---|---|
-| The row | OpenETL writes the row. The held value's place shows null, a value that you choose, or the value that the destination already has. | OpenETL does not write the row. |
+| The row | OpenETL writes the row. The held cell shows null, a value that you choose, or the value that the destination already has. | OpenETL does not write the row. |
 | What OpenETL keeps | The held value, with the row's key and version | The whole record as the source sent it, with the reason |
 | The way back | **Release** patches the value into the same row. **Discard** drops it. | There is no row to patch. Read the record again from the source, or load it yourself. |
 | What it needs | A primary key, and a destination that patches the stream's write mode | Nothing |
@@ -18,7 +18,7 @@ Sometimes OpenETL cannot write a value as the source sent it. The value does not
 
 A hold keeps a value back from a row that OpenETL writes. Quarantine keeps a row back from the destination, as a dead-letter queue does. A hold has a way back into the destination. A quarantined row has none.
 
-The files differ for the same reason. A held value has a type and a key, and OpenETL reads it back as a patch, so it keeps held values in Parquet. A quarantined record did not fit its types, and records of one commit can differ in shape. So OpenETL keeps each record as the source sent it, in JSON lines that you can read with `jq`.
+The files are different because their data is different. A held value has a type and a key, and OpenETL reads it back as a patch. So OpenETL keeps held values in Parquet. A quarantined record did not fit its types, and the records of one commit can have different shapes. So OpenETL keeps each record as the source sent it, in JSON lines that you can read with `jq`.
 
 ## Why there are two
 
@@ -32,7 +32,7 @@ Quarantine and holds apply these rules at two sizes:
 - **Quarantine treats the row as the unit.** The destination gets only complete rows whose values fit their types. A row with a bad value is missing until you load it again. On a `merge` stream, the key's other columns keep their old values until the source changes the row again. If the row was an insert, rows that refer to it point at nothing.
 - **A hold treats the value as the unit.** OpenETL writes the row, and its other columns are current. Only the held value is missing. The row's `_openetl_held` column names the held columns. A reader that does not check `_openetl_held` takes a partial row for a complete one.
 
-A partial row changes what a row means, so you choose it for single values: by default, a value that does not fit quarantines its row. A change to a whole column is different. A stop for that change would stop every row of the stream. So OpenETL holds the column by default where it can ([Column holds](#column-holds)).
+A partial row changes what a row means. So OpenETL holds single values only if you tell it to. By default, a value that does not fit quarantines its row. A change to a whole column is different, because a stop for that change would stop every row of the stream. So OpenETL holds the column by default where it can ([Column holds](#column-holds)).
 
 ## Choose what a value that does not fit does
 
@@ -61,32 +61,32 @@ source:
 | `unfitValues` | What it does |
 |---|---|
 | `quarantine` | OpenETL quarantines every row that has a value that does not fit. It writes none of those rows. This is the default. |
-| `hold` | OpenETL writes the row and holds the value's cell, where the cell can be held. Where it cannot, OpenETL quarantines the row. |
+| `hold` | If OpenETL can hold the value's cell, it writes the row and holds the cell. If it cannot, it quarantines the row. |
 
 So `quarantine` quarantines every such row, but `hold` does not hold every such value. [When hold still quarantines a row](#when-hold-still-quarantines-a-row) lists the cases.
 
-`hold` needs a primary key and a destination that patches the stream's write mode. If the stream does not have both, the plan has a problem. The destination connector's documentation says which write modes it patches. `held` and `heldValue` choose what a held cell shows, and `groups` names columns that are held together. The [Pipeline reference](../reference/specs/pipeline.md#source-and-streams) lists each setting.
+`hold` needs a primary key and a destination that patches the stream's write mode. If the stream does not have both, the plan has a problem. The destination connector's documentation says which write modes it patches. `held` and `heldValue` choose what a held cell shows, and `groups` names columns that OpenETL holds together. The [Pipeline reference](../reference/specs/pipeline.md#source-and-streams) lists each setting.
 
 `schemaPolicy: ignore_new` casts each value to the type that the destination's column already has. A value that does not fit that type follows `unfitValues` too.
 
 ## When hold still quarantines a row
 
-With `unfitValues: hold`, OpenETL quarantines a row when the row has no safe place to hold its value:
+With `unfitValues: hold`, if a row has no safe place to hold its value, OpenETL quarantines the row. These are the cases:
 
 - **The record is broken, not one of its values.** A record that is not JSON, or is not a JSON object, has no cell to hold.
-- **The value is in a column that cannot be held:**
+- **The value is in a column that OpenETL cannot hold:**
   - a column of the primary key, because a patch finds its row by the key;
   - the stream's cursor, because it orders the versions of a row;
   - a column that the destination reports it cannot hold, such as a partition column;
   - a column that cannot be null, unless `heldValue` gives a value to write in its place;
   - a column whose `heldValue` does not fit the column's type.
-- **A SQL transform reads the row.** A statement cannot compute from a value that OpenETL holds. So OpenETL quarantines a row whose input holds a cell, as one of the statement output's records. A delete is the exception: it passes with its key. A row that a statement cannot evaluate is also quarantined, whatever `unfitValues` says. Examples are a cast that fails, a division by zero and a row that comes too late for its window ([SQL reference](../reference/sql.md)).
+- **A SQL transform reads the row.** A statement cannot compute from a value that OpenETL holds. So OpenETL quarantines a row whose input holds a cell, as one of the statement output's records. A delete is the exception: it passes with its key. OpenETL also quarantines a row that a statement cannot evaluate, whatever `unfitValues` says. Examples are a cast that fails, a division by zero and a row that comes too late for its window ([SQL reference](../reference/sql.md)).
 
-A stream without a primary key, and the streams of a pipeline with a Spark or Flink transform, cannot set `hold`. The plan has a problem if they do.
+A stream without a primary key cannot set `hold`. The streams of a pipeline with a Spark or Flink transform cannot set it either. If they do, the plan has a problem.
 
 ## Column holds
 
-`unfitValues` decides only what single values do. OpenETL holds a whole column, whatever `unfitValues` says, when:
+`unfitValues` decides only what single values do. In these cases, OpenETL holds a whole column, whatever `unfitValues` says:
 
 - the destination refuses a change to the column's type, which it does unless `typeChanges` is `allow`;
 - the schema policy does not take the change: `allow_columns` for a type change that is not a widening, and `block` for any change;
@@ -111,7 +111,12 @@ With `unfitValues: quarantine`, the default, the destination gets rows 1 and 3. 
 | 1 | 10.00 | first |
 | 3 | 30.00 | third |
 
-To write row 2, fix the cause first. Change the value at the source, or set `columns.price.type: string` on the stream so that the column keeps the source's text. With `string`, also change the destination's column to match. Then read the row again: on an incremental stream, update the row at the source, or run `openetl reset --stream orders PIPELINE`.
+To write row 2:
+
+1. Fix the cause. Change the value at the source. Or give `price` a type that keeps `NaN`, as steps 1 to 3 below do.
+2. Read the row again. On an incremental stream, update the row at the source. Or run `openetl reset --stream orders PIPELINE` to read the whole stream again.
+
+The next sync writes row 2.
 
 With `unfitValues: hold` and `held: null`, the destination gets all three rows. Row 2's `price` is null, and its `_openetl_held` names `price`:
 
@@ -121,7 +126,15 @@ With `unfitValues: hold` and `held: null`, the destination gets all three rows. 
 | 2 | | second |
 | 3 | 30.00 | third |
 
-`openetl holds PIPELINE` shows a hold on cells of `price`. To clear it, set `columns.price.type: string`, change the destination's column to match, and release the hold. The next run patches `NaN` into row 2. A cell that still does not fit stays held.
+`openetl holds PIPELINE` shows a hold on cells of `price`. To clear the hold:
+
+1. Set `columns.price.type: string` on the stream, so that `price` keeps the source's text.
+2. Apply the pipeline.
+3. Change the destination's `price` column to a text type.
+4. Release the hold with `openetl holds release PIPELINE orders price`.
+5. Start a sync.
+
+The sync patches `NaN` into row 2, and the hold clears. If a cell still does not fit, it stays held.
 
 ## Choose between them
 
@@ -133,21 +146,21 @@ Keep the default, `quarantine`, when:
 
 Choose `hold` when:
 
-- a current row with one missing value is better than a missing or out-of-date row, such as on a `merge` stream that other tables join to;
+- a row with one missing value is better than a missing or old row, such as on a `merge` stream that other tables join to;
 - one column sometimes has bad values, and the other columns must stay current;
-- readers check `_openetl_held`, or can work with a null where a value is held.
+- readers check `_openetl_held`, or can work with a null where OpenETL holds a value.
 
 ## Find what OpenETL kept back
 
 Held values:
 
-- The **Held** column of the **Streams** table on a pipeline's **Overview**, and its **Holds** list, show each hold, with the ways to clear it ([Use the console](../use/index.md#overview)).
+- On a pipeline's **Overview**, the **Held** column of the **Streams** table shows the held columns. The **Holds** list shows each hold and the ways to clear it ([Use the console](../use/index.md#overview)).
 - `openetl holds PIPELINE` lists the holds. [Handle schema changes and holds](./schema-changes.md) shows how to release or discard one.
 - The `openetl.job.cells.held` and `openetl.job.hold.age` metrics count held cells and give each hold's age ([Monitoring](../self-host/monitoring.md#pipeline-signals)).
 
 Quarantined rows:
 
-- The **Quarantined** counts on a pipeline's **Overview**, its **Syncs** and **Checkpoints** tabs, and a sync's page give the rows that OpenETL did not write.
-- The rows are in the data plane's object storage, under `_quarantine/` next to the pipeline's checkpoints, in files of JSON lines. A commit has a file for each of the job's lanes (the parts of the job that read in parallel) that quarantined rows of a stream: `STREAM.jsonl` from the first lane, and `STREAM.N.jsonl` from lane `N`. Read all of a commit's files for the stream. Each line has the stream, the reason and the record. OpenETL keeps the files of every commit and deletes the files of commits that failed.
-- If a stream quarantines a large share of its rows, the **Quarantine** incident opens, and its **Next steps** name the newest file.
+- The **Quarantined** counts on a pipeline's **Overview**, its **Syncs** and **Checkpoints** tabs, and a sync's page count the rows that OpenETL did not write.
+- The rows are in the data plane's object storage, under `_quarantine/` next to the pipeline's checkpoints, in files of JSON lines. A job reads in parallel parts, called lanes. For each stream, a commit has one file from each lane that quarantined rows: `STREAM.jsonl` from the first lane, and `STREAM.N.jsonl` from lane `N`. Read all of a commit's files for the stream. Each line has the stream, the reason and the record. OpenETL keeps the files of every commit and deletes the files of commits that failed.
+- If a stream quarantines a large share of its rows, the **Quarantine** incident opens, and its **Next steps** names the newest file.
 - The `openetl.job.rows.quarantined` metric counts quarantined rows.
