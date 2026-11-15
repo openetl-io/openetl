@@ -629,7 +629,7 @@ func (r remoteWriter) Commit(ctx context.Context, e destination.Epoch, staged []
 				err = answerErr(ans.GetError())
 			}
 			if err != nil {
-				failed[worker] = fmt.Errorf("worker %d's writer lanes %v: %w", worker, lanes, err)
+				failed[worker] = fmt.Errorf("worker %d's writer lanes %v: %w", worker+1, lanes, err)
 			}
 		})
 	}
@@ -897,11 +897,11 @@ func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *ch
 				err = answerErr(ans.GetError())
 			}
 			if err != nil {
-				return fmt.Errorf("runner: worker %d settling writer lanes %v of epoch %d: %w", w, which, rec.Epoch, err)
+				return fmt.Errorf("runner: worker %d settling writer lanes %v of epoch %d: %w", w+1, which, rec.Epoch, err)
 			}
 			rs := ans.GetSettled().GetRecoveries()
 			if len(rs) != len(which) {
-				return errs.New(errs.Internal, "runner: worker %d settled %d of writer lanes %v", w, len(rs), which)
+				return errs.New(errs.Internal, "runner: worker %d settled %d of writer lanes %v", w+1, len(rs), which)
 			}
 			for _, r := range rs {
 				got[w] = append(got[w], destination.Recovery(r))
@@ -1221,7 +1221,7 @@ func layoutString(a *attemptv1.Assignment) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(&b, "%s/%s→%d", s.GetSplit().GetStream(), s.GetSplit().GetSplit().GetId(), a.GetLanes()[s.GetLane()].GetWorker())
+		fmt.Fprintf(&b, "%s/%s→%d", s.GetSplit().GetStream(), s.GetSplit().GetSplit().GetId(), a.GetLanes()[s.GetLane()].GetWorker()+1)
 	}
 	return b.String()
 }

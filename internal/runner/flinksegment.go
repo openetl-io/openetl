@@ -855,7 +855,6 @@ func (s *flinkSegment) loop(ctx context.Context) (err error) {
 				// Drained before the job was deployed.
 				return ErrDrained
 			}
-			err = s.drain(ctx)
 		case jerr := <-jobDone:
 			jobDone <- jerr
 			jobDone = nil
@@ -885,6 +884,11 @@ func (s *flinkSegment) loop(ctx context.Context) (err error) {
 		}
 		if err := s.progress(ctx); err != nil {
 			return err
+		}
+		// Flink's stop aborts the checkpoint in flight, so the stop waits
+		// for every epoch ended at one to complete.
+		if s.a.draining && s.a.stopDir == "" && s.jobID != "" && len(s.epochs) == 0 && len(s.byC) == 0 {
+			s.drain(ctx)
 		}
 		if s.stopped && s.committedN == s.lastN && !s.recording && !s.committing {
 			s.a.log.Info("drained with a savepoint", "epoch", s.lastN, "savepoint", s.a.stopDir)
@@ -945,14 +949,13 @@ func (s *flinkSegment) stopCheckpoint() int64 {
 
 // drain stops the job with a savepoint, which ends the segment's last
 // epoch.
-func (s *flinkSegment) drain(ctx context.Context) error {
+func (s *flinkSegment) drain(ctx context.Context) {
 	a := s.a
 	a.stopDir = a.job.Flink.SavepointDir(flinkSavepointName(a.sess.Generation()))
 	a.stopDone = make(chan error, 1)
 	fjob, dir, done := a.fjob, a.stopDir, a.stopDone
 	a.log.Info("draining: stopping the Flink job with a savepoint", "dir", dir)
 	go func() { done <- fjob.Stop(context.WithoutCancel(ctx), dir) }()
-	return nil
 }
 
 // pumped handles the source pump's and the sink pump's events.
@@ -1223,11 +1226,13 @@ func (s *flinkSegment) allSinks(barriers int) bool {
 }
 
 // decide ends an epoch at a checkpoint whose every barrier has arrived. A
-// savepoint taken by hand, or a checkpoint the stop aborted, ends none: what
-// it covers goes into the next epoch. So does a checkpoint with no rows since the last record, whose
-// barriers are released once that record's epoch is committed.
+// savepoint taken by hand, a checkpoint the stop aborted, or one while the
+// attempt drains, which the stop may abort, ends none: what it covers goes
+// into the next epoch. So does a checkpoint with no rows since the last
+// record, whose barriers are released once that record's epoch is committed.
 func (s *flinkSegment) decide(cut *flinkCut) error {
-	if cut.aborted || cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SAVEPOINT || cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT && s.a.stopDir == "" {
+	if cut.aborted || cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SAVEPOINT || cut.typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT && s.a.stopDir == "" ||
+		cut.typ == bridgev1.BarrierType_BARRIER_TYPE_CHECKPOINT && s.a.draining {
 		s.carry = append(s.carry, cut)
 		refuse(cut.replies, nil)
 		return nil

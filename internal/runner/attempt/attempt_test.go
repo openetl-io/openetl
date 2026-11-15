@@ -398,7 +398,7 @@ func TestAWorkerThatNeverJoinsFailsTheAttempt(t *testing.T) {
 		}
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
-		if !isDone(c.Done()) || !errors.Is(c.Err(), ErrLost) || !strings.Contains(c.Err().Error(), "worker 1: it didn't join within 1m0s") {
+		if !isDone(c.Done()) || !errors.Is(c.Err(), ErrLost) || !strings.Contains(c.Err().Error(), "worker 2: it didn't join within 1m0s") {
 			t.Fatalf("after the join timeout: %v", c.Err())
 		}
 		if err := within(t, assigned, time.Hour, "Assign"); !errors.Is(err, c.Err()) {
@@ -446,7 +446,7 @@ func TestAWorkerLostMidEpochFailsTheAttempt(t *testing.T) {
 			}
 			time.Sleep(2 * time.Millisecond)
 			synctest.Wait()
-			if err := c.Err(); !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "worker 1") {
+			if err := c.Err(); !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "worker 2") {
 				t.Fatalf("after the timeout: %v", err)
 			}
 			if err := within(t, gathered, time.Hour, "Shares"); !errors.Is(err, c.Err()) {
@@ -474,7 +474,7 @@ func TestAWorkerLostMidEpochFailsTheAttempt(t *testing.T) {
 			}
 			ws[1].hangUp()
 			within(t, c.Done(), time.Second, "the attempt's failure")
-			if err := c.Err(); !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "worker 1") {
+			if err := c.Err(); !errors.Is(err, ErrLost) || !strings.Contains(err.Error(), "worker 2") {
 				t.Fatalf("attempt: %v", err)
 			}
 			within(t, ws[0].Done(), time.Second, "worker 0's end")
@@ -587,7 +587,7 @@ func TestADuplicateShareFailsTheAttempt(t *testing.T) {
 		r.share(t, shareOf(testFirst, 0, false))
 		r.share(t, shareOf(testFirst, 0, false))
 		within(t, c.Done(), time.Second, "the attempt's failure")
-		if err := c.Err(); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "worker 0 shared epoch 5 again") {
+		if err := c.Err(); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "worker 1 shared epoch 5 again") {
 			t.Fatalf("attempt: %v", err)
 		}
 		within(t, w1.Done(), time.Second, "worker 1's end")
@@ -601,7 +601,7 @@ func TestAWorkersFailureFailsTheAttempt(t *testing.T) {
 		c, ws := start2(t, Options{})
 		ws[1].Fail(errs.New(errs.SchemaDrift, "column v changed type"))
 		within(t, c.Done(), time.Second, "the attempt's failure")
-		if err := c.Err(); errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "worker 1 failed: SCHEMA_DRIFT: column v changed type") {
+		if err := c.Err(); errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "worker 2 failed: SCHEMA_DRIFT: column v changed type") {
 			t.Fatalf("attempt: %v", err)
 		}
 		within(t, ws[0].Done(), time.Second, "worker 0's end")
@@ -633,7 +633,7 @@ func TestALostPeerDefersToAWorkersOwnFailure(t *testing.T) {
 		}
 		ws[1].Fail(errs.New(errs.SchemaDrift, "column v changed type"))
 		within(t, c.Done(), time.Second, "the attempt's failure")
-		if err := c.Err(); errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "worker 1 failed: SCHEMA_DRIFT") {
+		if err := c.Err(); errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "worker 2 failed: SCHEMA_DRIFT") {
 			t.Fatalf("attempt: %v", err)
 		}
 		if err := c.End(t.Context(), nil); err != nil {
@@ -656,7 +656,7 @@ func TestALostPeerAloneFailsTheAttemptAfterTheGrace(t *testing.T) {
 		if waited := time.Since(start); waited < 3*time.Second {
 			t.Errorf("the attempt failed after %s, before the grace", waited)
 		}
-		if err := c.Err(); errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "worker 0 failed: TRANSIENT: engine 1 at w1:7720 was lost") {
+		if err := c.Err(); errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "worker 1 failed: TRANSIENT: engine 1 at w1:7720 was lost") {
 			t.Fatalf("attempt: %v", err)
 		}
 		within(t, ws[1].Done(), time.Second, "worker 1's end")

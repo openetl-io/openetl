@@ -78,14 +78,14 @@ func (p *Pod) Serve(ctx context.Context) error {
 			failing = err
 		case len(res.Msg.GetWork()) == 0:
 			if ran == 0 {
-				p.log().Info("the attempt isn't this worker's to run any more", "attempt", p.Attempt.ID, "placement", p.Attempt.Placement, "worker", p.Worker)
+				p.log().Info("the attempt isn't this worker's to run any more", "attempt", p.Attempt.ID, "placement", p.Attempt.Placement, "worker", p.Worker+1)
 			}
 			return nil
 		case res.Msg.GetWork()[0].GetJoin().GetGeneration() > ran:
 			w := res.Msg.GetWork()[0]
-			p.log().Info("worker joining its coordinator", "attempt", w.GetId(), "worker", p.Worker, "coordinator", w.GetJoin().GetAddress(), "generation", w.GetJoin().GetGeneration())
+			p.log().Info("worker joining its coordinator", "attempt", w.GetId(), "worker", p.Worker+1, "coordinator", w.GetJoin().GetAddress(), "generation", w.GetJoin().GetGeneration())
 			if err := p.Run(ctx, w); err != nil {
-				p.log().Warn("the worker's part of the attempt failed", "attempt", w.GetId(), "worker", p.Worker, "err", err)
+				p.log().Warn("the worker's part of the attempt failed", "attempt", w.GetId(), "worker", p.Worker+1, "err", err)
 			}
 			ran, failing, deadline = w.GetJoin().GetGeneration(), nil, time.Now().Add(wait)
 			continue
@@ -93,9 +93,9 @@ func (p *Pod) Serve(ctx context.Context) error {
 		if time.Now().After(deadline) {
 			switch {
 			case failing != nil:
-				return fmt.Errorf("worker: taking attempt %s's worker %d from the API: %w", p.Attempt.ID, p.Worker, failing)
+				return fmt.Errorf("worker: taking attempt %s's worker %d from the API: %w", p.Attempt.ID, p.Worker+1, failing)
 			case ran == 0:
-				p.log().Warn("the attempt's coordinator didn't say where to join in time", "attempt", p.Attempt.ID, "worker", p.Worker, "waited", wait)
+				p.log().Warn("the attempt's coordinator didn't say where to join in time", "attempt", p.Attempt.ID, "worker", p.Worker+1, "waited", wait)
 			}
 			return nil
 		}
