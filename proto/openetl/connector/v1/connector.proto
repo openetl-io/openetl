@@ -43,7 +43,9 @@ message SpecResponse {
   // "v1".
   string protocol_version = 1;
   ConnectorKind kind = 2;
-  // A JSON Schema. Fields marked "x-secret": true hold secret names.
+  // A JSON Schema. Fields marked "x-secret": true hold secret names. The
+  // x- keywords a form reads, such as x-group and x-when, are in
+  // docs/build-connectors.
   bytes config_schema = 3;
   Egress egress = 4;
   bool setup = 5;
@@ -78,8 +80,45 @@ message CheckRequest {
 }
 
 message CheckResponse {
-  // Unset when the check passed.
+  // Unset when the check passed. With items, the first failed item's error.
   Error error = 1;
+  // What the check looked at, one item each, in the order it ran: a
+  // pre-flight that can say which permission or which stream failed, and
+  // what passed. Empty from a connector that reports only error.
+  repeated CheckItem items = 2;
+}
+
+// CheckItem is one thing a check looked at, such as reaching the service,
+// a permission, or one stream. Its text never holds secrets or records.
+message CheckItem {
+  // Unique within the response and the same from one check to the next,
+  // such as stream.clicks.read, so a client can follow an item.
+  string name = 1;
+  // What was checked, for people: "Read stream clicks".
+  string title = 2;
+  CheckStatus status = 3;
+  // What it found. For a failure, what failed.
+  string message = 4;
+  // When failed: the classified error.
+  Error error = 5;
+  // For a failure or a warning: what to do about it, such as the IAM
+  // action to allow.
+  string fix = 6;
+  // The config field it concerns, as a dotted path such as
+  // consumer.name; empty if none.
+  string field = 7;
+}
+
+enum CheckStatus {
+  CHECK_STATUS_UNSPECIFIED = 0;
+  CHECK_STATUS_PASSED = 1;
+  // Works, but not as configured or not as well as it could: a pipeline can
+  // still run.
+  CHECK_STATUS_WARNING = 2;
+  CHECK_STATUS_FAILED = 3;
+  // Not checked: an earlier item failed, or it can't be checked without
+  // changing something, such as writing a record.
+  CHECK_STATUS_SKIPPED = 4;
 }
 
 message SetupRequest {

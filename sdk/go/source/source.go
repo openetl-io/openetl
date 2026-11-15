@@ -12,6 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/preflight"
 )
 
 // Replay is whether a stream can carry the same record version more than
@@ -564,4 +565,13 @@ type Teardowner interface {
 // source without reading it.
 type Checker interface {
 	Check(ctx context.Context) error
+}
+
+// Preflighter is implemented by sources whose check says what it looked at,
+// item by item: reaching the source, each permission, each stream it would
+// read. It takes Checker's place. A pre-flight reads no records, and it
+// records a failure in r rather than stopping at it, so one check shows
+// everything that's wrong.
+type Preflighter interface {
+	Preflight(ctx context.Context, r *preflight.Report)
 }

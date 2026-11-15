@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+
+	"github.com/openetl-io/openetl/sdk/go/preflight"
 )
 
 // Epoch is checkpoint N within the generation that wrote it. Names a sink
@@ -355,6 +357,15 @@ type StreamSchema struct {
 // records.
 type Checker interface {
 	Check(ctx context.Context) error
+}
+
+// Preflighter is implemented by destinations whose check says what it
+// looked at, item by item: reaching the destination, each permission, each
+// table or stream it would write. It takes Checker's place. A pre-flight
+// writes nothing, and it records a failure in r rather than stopping at it,
+// so one check shows everything that's wrong.
+type Preflighter interface {
+	Preflight(ctx context.Context, r *preflight.Report)
 }
 
 // Setupper is implemented by destinations that prepare something for a

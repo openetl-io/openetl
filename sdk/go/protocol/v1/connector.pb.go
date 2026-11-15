@@ -122,6 +122,65 @@ func (EgressTier) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{1}
 }
 
+type CheckStatus int32
+
+const (
+	CheckStatus_CHECK_STATUS_UNSPECIFIED CheckStatus = 0
+	CheckStatus_CHECK_STATUS_PASSED      CheckStatus = 1
+	// Works, but not as configured or not as well as it could: a pipeline can
+	// still run.
+	CheckStatus_CHECK_STATUS_WARNING CheckStatus = 2
+	CheckStatus_CHECK_STATUS_FAILED  CheckStatus = 3
+	// Not checked: an earlier item failed, or it can't be checked without
+	// changing something, such as writing a record.
+	CheckStatus_CHECK_STATUS_SKIPPED CheckStatus = 4
+)
+
+// Enum value maps for CheckStatus.
+var (
+	CheckStatus_name = map[int32]string{
+		0: "CHECK_STATUS_UNSPECIFIED",
+		1: "CHECK_STATUS_PASSED",
+		2: "CHECK_STATUS_WARNING",
+		3: "CHECK_STATUS_FAILED",
+		4: "CHECK_STATUS_SKIPPED",
+	}
+	CheckStatus_value = map[string]int32{
+		"CHECK_STATUS_UNSPECIFIED": 0,
+		"CHECK_STATUS_PASSED":      1,
+		"CHECK_STATUS_WARNING":     2,
+		"CHECK_STATUS_FAILED":      3,
+		"CHECK_STATUS_SKIPPED":     4,
+	}
+)
+
+func (x CheckStatus) Enum() *CheckStatus {
+	p := new(CheckStatus)
+	*p = x
+	return p
+}
+
+func (x CheckStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CheckStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_openetl_connector_v1_connector_proto_enumTypes[2].Descriptor()
+}
+
+func (CheckStatus) Type() protoreflect.EnumType {
+	return &file_openetl_connector_v1_connector_proto_enumTypes[2]
+}
+
+func (x CheckStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CheckStatus.Descriptor instead.
+func (CheckStatus) EnumDescriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{2}
+}
+
 type SpecRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The platform calling; unset from a platform before the alpha.
@@ -237,7 +296,9 @@ type SpecResponse struct {
 	// "v1".
 	ProtocolVersion string        `protobuf:"bytes,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	Kind            ConnectorKind `protobuf:"varint,2,opt,name=kind,proto3,enum=openetl.connector.v1.ConnectorKind" json:"kind,omitempty"`
-	// A JSON Schema. Fields marked "x-secret": true hold secret names.
+	// A JSON Schema. Fields marked "x-secret": true hold secret names. The
+	// x- keywords a form reads, such as x-group and x-when, are in
+	// docs/build-connectors.
 	ConfigSchema []byte                   `protobuf:"bytes,3,opt,name=config_schema,json=configSchema,proto3" json:"config_schema,omitempty"`
 	Egress       *Egress                  `protobuf:"bytes,4,opt,name=egress,proto3" json:"egress,omitempty"`
 	Setup        bool                     `protobuf:"varint,5,opt,name=setup,proto3" json:"setup,omitempty"`
@@ -435,8 +496,12 @@ func (x *CheckRequest) GetConfig() []byte {
 
 type CheckResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unset when the check passed.
-	Error         *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	// Unset when the check passed. With items, the first failed item's error.
+	Error *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	// What the check looked at, one item each, in the order it ran: a
+	// pre-flight that can say which permission or which stream failed, and
+	// what passed. Empty from a connector that reports only error.
+	Items         []*CheckItem `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -478,6 +543,116 @@ func (x *CheckResponse) GetError() *Error {
 	return nil
 }
 
+func (x *CheckResponse) GetItems() []*CheckItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+// CheckItem is one thing a check looked at, such as reaching the service,
+// a permission, or one stream. Its text never holds secrets or records.
+type CheckItem struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unique within the response and the same from one check to the next,
+	// such as stream.clicks.read, so a client can follow an item.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// What was checked, for people: "Read stream clicks".
+	Title  string      `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Status CheckStatus `protobuf:"varint,3,opt,name=status,proto3,enum=openetl.connector.v1.CheckStatus" json:"status,omitempty"`
+	// What it found. For a failure, what failed.
+	Message string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	// When failed: the classified error.
+	Error *Error `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	// For a failure or a warning: what to do about it, such as the IAM
+	// action to allow.
+	Fix string `protobuf:"bytes,6,opt,name=fix,proto3" json:"fix,omitempty"`
+	// The config field it concerns, as a dotted path such as
+	// consumer.name; empty if none.
+	Field         string `protobuf:"bytes,7,opt,name=field,proto3" json:"field,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CheckItem) Reset() {
+	*x = CheckItem{}
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CheckItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CheckItem) ProtoMessage() {}
+
+func (x *CheckItem) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CheckItem.ProtoReflect.Descriptor instead.
+func (*CheckItem) Descriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CheckItem) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CheckItem) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *CheckItem) GetStatus() CheckStatus {
+	if x != nil {
+		return x.Status
+	}
+	return CheckStatus_CHECK_STATUS_UNSPECIFIED
+}
+
+func (x *CheckItem) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *CheckItem) GetError() *Error {
+	if x != nil {
+		return x.Error
+	}
+	return nil
+}
+
+func (x *CheckItem) GetFix() string {
+	if x != nil {
+		return x.Fix
+	}
+	return ""
+}
+
+func (x *CheckItem) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
 type SetupRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Config        []byte                 `protobuf:"bytes,1,opt,name=config,proto3" json:"config,omitempty"`
@@ -488,7 +663,7 @@ type SetupRequest struct {
 
 func (x *SetupRequest) Reset() {
 	*x = SetupRequest{}
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[6]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -500,7 +675,7 @@ func (x *SetupRequest) String() string {
 func (*SetupRequest) ProtoMessage() {}
 
 func (x *SetupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[6]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -513,7 +688,7 @@ func (x *SetupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetupRequest.ProtoReflect.Descriptor instead.
 func (*SetupRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{6}
+	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SetupRequest) GetConfig() []byte {
@@ -538,7 +713,7 @@ type SetupResponse struct {
 
 func (x *SetupResponse) Reset() {
 	*x = SetupResponse{}
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[7]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -550,7 +725,7 @@ func (x *SetupResponse) String() string {
 func (*SetupResponse) ProtoMessage() {}
 
 func (x *SetupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[7]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -563,7 +738,7 @@ func (x *SetupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetupResponse.ProtoReflect.Descriptor instead.
 func (*SetupResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{7}
+	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{8}
 }
 
 type TeardownRequest struct {
@@ -576,7 +751,7 @@ type TeardownRequest struct {
 
 func (x *TeardownRequest) Reset() {
 	*x = TeardownRequest{}
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[8]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -588,7 +763,7 @@ func (x *TeardownRequest) String() string {
 func (*TeardownRequest) ProtoMessage() {}
 
 func (x *TeardownRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[8]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -601,7 +776,7 @@ func (x *TeardownRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TeardownRequest.ProtoReflect.Descriptor instead.
 func (*TeardownRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{8}
+	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TeardownRequest) GetConfig() []byte {
@@ -626,7 +801,7 @@ type TeardownResponse struct {
 
 func (x *TeardownResponse) Reset() {
 	*x = TeardownResponse{}
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[9]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -638,7 +813,7 @@ func (x *TeardownResponse) String() string {
 func (*TeardownResponse) ProtoMessage() {}
 
 func (x *TeardownResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_connector_v1_connector_proto_msgTypes[9]
+	mi := &file_openetl_connector_v1_connector_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -651,7 +826,7 @@ func (x *TeardownResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TeardownResponse.ProtoReflect.Descriptor instead.
 func (*TeardownResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{9}
+	return file_openetl_connector_v1_connector_proto_rawDescGZIP(), []int{10}
 }
 
 var File_openetl_connector_v1_connector_proto protoreflect.FileDescriptor
@@ -678,9 +853,18 @@ const file_openetl_connector_v1_connector_proto_rawDesc = "" +
 	"\x04tier\x18\x01 \x01(\x0e2 .openetl.connector.v1.EgressTierR\x04tier\x12\x14\n" +
 	"\x05allow\x18\x02 \x03(\tR\x05allow\"&\n" +
 	"\fCheckRequest\x12\x16\n" +
-	"\x06config\x18\x01 \x01(\fR\x06config\"B\n" +
+	"\x06config\x18\x01 \x01(\fR\x06config\"y\n" +
 	"\rCheckResponse\x121\n" +
-	"\x05error\x18\x01 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\"B\n" +
+	"\x05error\x18\x01 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x125\n" +
+	"\x05items\x18\x02 \x03(\v2\x1f.openetl.connector.v1.CheckItemR\x05items\"\xe5\x01\n" +
+	"\tCheckItem\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x129\n" +
+	"\x06status\x18\x03 \x01(\x0e2!.openetl.connector.v1.CheckStatusR\x06status\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\x121\n" +
+	"\x05error\x18\x05 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x12\x10\n" +
+	"\x03fix\x18\x06 \x01(\tR\x03fix\x12\x14\n" +
+	"\x05field\x18\a \x01(\tR\x05field\"B\n" +
 	"\fSetupRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12\x1a\n" +
 	"\bpipeline\x18\x02 \x01(\tR\bpipeline\"\x0f\n" +
@@ -698,7 +882,13 @@ const file_openetl_connector_v1_connector_proto_rawDesc = "" +
 	"\x17EGRESS_TIER_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10EGRESS_TIER_HOST\x10\x01\x12\x15\n" +
 	"\x11EGRESS_TIER_PROXY\x10\x02\x12\x13\n" +
-	"\x0fEGRESS_TIER_RAW\x10\x032\xe0\x02\n" +
+	"\x0fEGRESS_TIER_RAW\x10\x03*\x91\x01\n" +
+	"\vCheckStatus\x12\x1c\n" +
+	"\x18CHECK_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13CHECK_STATUS_PASSED\x10\x01\x12\x18\n" +
+	"\x14CHECK_STATUS_WARNING\x10\x02\x12\x17\n" +
+	"\x13CHECK_STATUS_FAILED\x10\x03\x12\x18\n" +
+	"\x14CHECK_STATUS_SKIPPED\x10\x042\xe0\x02\n" +
 	"\x10ConnectorService\x12M\n" +
 	"\x04Spec\x12!.openetl.connector.v1.SpecRequest\x1a\".openetl.connector.v1.SpecResponse\x12P\n" +
 	"\x05Check\x12\".openetl.connector.v1.CheckRequest\x1a#.openetl.connector.v1.CheckResponse\x12P\n" +
@@ -717,46 +907,51 @@ func file_openetl_connector_v1_connector_proto_rawDescGZIP() []byte {
 	return file_openetl_connector_v1_connector_proto_rawDescData
 }
 
-var file_openetl_connector_v1_connector_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_openetl_connector_v1_connector_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_openetl_connector_v1_connector_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_openetl_connector_v1_connector_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_openetl_connector_v1_connector_proto_goTypes = []any{
 	(ConnectorKind)(0),              // 0: openetl.connector.v1.ConnectorKind
 	(EgressTier)(0),                 // 1: openetl.connector.v1.EgressTier
-	(*SpecRequest)(nil),             // 2: openetl.connector.v1.SpecRequest
-	(*Host)(nil),                    // 3: openetl.connector.v1.Host
-	(*SpecResponse)(nil),            // 4: openetl.connector.v1.SpecResponse
-	(*Egress)(nil),                  // 5: openetl.connector.v1.Egress
-	(*CheckRequest)(nil),            // 6: openetl.connector.v1.CheckRequest
-	(*CheckResponse)(nil),           // 7: openetl.connector.v1.CheckResponse
-	(*SetupRequest)(nil),            // 8: openetl.connector.v1.SetupRequest
-	(*SetupResponse)(nil),           // 9: openetl.connector.v1.SetupResponse
-	(*TeardownRequest)(nil),         // 10: openetl.connector.v1.TeardownRequest
-	(*TeardownResponse)(nil),        // 11: openetl.connector.v1.TeardownResponse
-	(*SourceCapabilities)(nil),      // 12: openetl.connector.v1.SourceCapabilities
-	(*DestinationCapabilities)(nil), // 13: openetl.connector.v1.DestinationCapabilities
-	(*Error)(nil),                   // 14: openetl.connector.v1.Error
+	(CheckStatus)(0),                // 2: openetl.connector.v1.CheckStatus
+	(*SpecRequest)(nil),             // 3: openetl.connector.v1.SpecRequest
+	(*Host)(nil),                    // 4: openetl.connector.v1.Host
+	(*SpecResponse)(nil),            // 5: openetl.connector.v1.SpecResponse
+	(*Egress)(nil),                  // 6: openetl.connector.v1.Egress
+	(*CheckRequest)(nil),            // 7: openetl.connector.v1.CheckRequest
+	(*CheckResponse)(nil),           // 8: openetl.connector.v1.CheckResponse
+	(*CheckItem)(nil),               // 9: openetl.connector.v1.CheckItem
+	(*SetupRequest)(nil),            // 10: openetl.connector.v1.SetupRequest
+	(*SetupResponse)(nil),           // 11: openetl.connector.v1.SetupResponse
+	(*TeardownRequest)(nil),         // 12: openetl.connector.v1.TeardownRequest
+	(*TeardownResponse)(nil),        // 13: openetl.connector.v1.TeardownResponse
+	(*SourceCapabilities)(nil),      // 14: openetl.connector.v1.SourceCapabilities
+	(*DestinationCapabilities)(nil), // 15: openetl.connector.v1.DestinationCapabilities
+	(*Error)(nil),                   // 16: openetl.connector.v1.Error
 }
 var file_openetl_connector_v1_connector_proto_depIdxs = []int32{
-	3,  // 0: openetl.connector.v1.SpecRequest.host:type_name -> openetl.connector.v1.Host
+	4,  // 0: openetl.connector.v1.SpecRequest.host:type_name -> openetl.connector.v1.Host
 	0,  // 1: openetl.connector.v1.SpecResponse.kind:type_name -> openetl.connector.v1.ConnectorKind
-	5,  // 2: openetl.connector.v1.SpecResponse.egress:type_name -> openetl.connector.v1.Egress
-	12, // 3: openetl.connector.v1.SpecResponse.source:type_name -> openetl.connector.v1.SourceCapabilities
-	13, // 4: openetl.connector.v1.SpecResponse.destination:type_name -> openetl.connector.v1.DestinationCapabilities
+	6,  // 2: openetl.connector.v1.SpecResponse.egress:type_name -> openetl.connector.v1.Egress
+	14, // 3: openetl.connector.v1.SpecResponse.source:type_name -> openetl.connector.v1.SourceCapabilities
+	15, // 4: openetl.connector.v1.SpecResponse.destination:type_name -> openetl.connector.v1.DestinationCapabilities
 	1,  // 5: openetl.connector.v1.Egress.tier:type_name -> openetl.connector.v1.EgressTier
-	14, // 6: openetl.connector.v1.CheckResponse.error:type_name -> openetl.connector.v1.Error
-	2,  // 7: openetl.connector.v1.ConnectorService.Spec:input_type -> openetl.connector.v1.SpecRequest
-	6,  // 8: openetl.connector.v1.ConnectorService.Check:input_type -> openetl.connector.v1.CheckRequest
-	8,  // 9: openetl.connector.v1.ConnectorService.Setup:input_type -> openetl.connector.v1.SetupRequest
-	10, // 10: openetl.connector.v1.ConnectorService.Teardown:input_type -> openetl.connector.v1.TeardownRequest
-	4,  // 11: openetl.connector.v1.ConnectorService.Spec:output_type -> openetl.connector.v1.SpecResponse
-	7,  // 12: openetl.connector.v1.ConnectorService.Check:output_type -> openetl.connector.v1.CheckResponse
-	9,  // 13: openetl.connector.v1.ConnectorService.Setup:output_type -> openetl.connector.v1.SetupResponse
-	11, // 14: openetl.connector.v1.ConnectorService.Teardown:output_type -> openetl.connector.v1.TeardownResponse
-	11, // [11:15] is the sub-list for method output_type
-	7,  // [7:11] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	16, // 6: openetl.connector.v1.CheckResponse.error:type_name -> openetl.connector.v1.Error
+	9,  // 7: openetl.connector.v1.CheckResponse.items:type_name -> openetl.connector.v1.CheckItem
+	2,  // 8: openetl.connector.v1.CheckItem.status:type_name -> openetl.connector.v1.CheckStatus
+	16, // 9: openetl.connector.v1.CheckItem.error:type_name -> openetl.connector.v1.Error
+	3,  // 10: openetl.connector.v1.ConnectorService.Spec:input_type -> openetl.connector.v1.SpecRequest
+	7,  // 11: openetl.connector.v1.ConnectorService.Check:input_type -> openetl.connector.v1.CheckRequest
+	10, // 12: openetl.connector.v1.ConnectorService.Setup:input_type -> openetl.connector.v1.SetupRequest
+	12, // 13: openetl.connector.v1.ConnectorService.Teardown:input_type -> openetl.connector.v1.TeardownRequest
+	5,  // 14: openetl.connector.v1.ConnectorService.Spec:output_type -> openetl.connector.v1.SpecResponse
+	8,  // 15: openetl.connector.v1.ConnectorService.Check:output_type -> openetl.connector.v1.CheckResponse
+	11, // 16: openetl.connector.v1.ConnectorService.Setup:output_type -> openetl.connector.v1.SetupResponse
+	13, // 17: openetl.connector.v1.ConnectorService.Teardown:output_type -> openetl.connector.v1.TeardownResponse
+	14, // [14:18] is the sub-list for method output_type
+	10, // [10:14] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_connector_proto_init() }
@@ -772,8 +967,8 @@ func file_openetl_connector_v1_connector_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_connector_v1_connector_proto_rawDesc), len(file_openetl_connector_v1_connector_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   10,
+			NumEnums:      3,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

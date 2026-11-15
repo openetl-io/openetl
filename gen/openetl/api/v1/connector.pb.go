@@ -559,8 +559,8 @@ func (x *CatalogPackage) GetUpdateAvailable() bool {
 	return false
 }
 
-// ConfigField is a top-level field of a role's config, from its JSON
-// Schema.
+// ConfigField is a field of a role's config, or of an object in it, from
+// its JSON Schema and the x- keywords forms read.
 type ConfigField struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
@@ -571,7 +571,33 @@ type ConfigField struct {
 	Description string `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	Required    bool   `protobuf:"varint,5,opt,name=required,proto3" json:"required,omitempty"`
 	// Its value is a secret's name, never the secret.
-	Secret        bool `protobuf:"varint,6,opt,name=secret,proto3" json:"secret,omitempty"`
+	Secret bool `protobuf:"varint,6,opt,name=secret,proto3" json:"secret,omitempty"`
+	// Dotted from the config's root, such as consumer.name.
+	Path string `protobuf:"bytes,7,opt,name=path,proto3" json:"path,omitempty"`
+	// The default, as JSON; empty when there's none.
+	Default string `protobuf:"bytes,8,opt,name=default,proto3" json:"default,omitempty"`
+	// The values it takes; for an array, its items'.
+	Options []*ConfigOption `protobuf:"bytes,9,rep,name=options,proto3" json:"options,omitempty"`
+	// The id of the group it shows in, from CatalogRole.groups; empty: before
+	// every group.
+	Group string `protobuf:"bytes,10,opt,name=group,proto3" json:"group,omitempty"`
+	// Folded away until asked for.
+	Advanced   bool `protobuf:"varint,11,opt,name=advanced,proto3" json:"advanced,omitempty"`
+	Deprecated bool `protobuf:"varint,12,opt,name=deprecated,proto3" json:"deprecated,omitempty"`
+	// It applies only when every condition holds; a form hides it otherwise.
+	When []*ConfigCondition `protobuf:"bytes,13,rep,name=when,proto3" json:"when,omitempty"`
+	// duration (Go's syntax: 500ms, 1m30s), date-time (RFC 3339), uri,
+	// regex, multiline and the like; empty: none.
+	Format  string   `protobuf:"bytes,14,opt,name=format,proto3" json:"format,omitempty"`
+	Minimum *float64 `protobuf:"fixed64,15,opt,name=minimum,proto3,oneof" json:"minimum,omitempty"`
+	Maximum *float64 `protobuf:"fixed64,16,opt,name=maximum,proto3,oneof" json:"maximum,omitempty"`
+	Pattern string   `protobuf:"bytes,17,opt,name=pattern,proto3" json:"pattern,omitempty"`
+	// Values as JSON.
+	Examples []string `protobuf:"bytes,18,rep,name=examples,proto3" json:"examples,omitempty"`
+	// An array's items' type.
+	Items string `protobuf:"bytes,19,opt,name=items,proto3" json:"items,omitempty"`
+	// An object's fields, in the schema's order.
+	Fields        []*ConfigField `protobuf:"bytes,20,rep,name=fields,proto3" json:"fields,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -648,18 +674,298 @@ func (x *ConfigField) GetSecret() bool {
 	return false
 }
 
+func (x *ConfigField) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *ConfigField) GetDefault() string {
+	if x != nil {
+		return x.Default
+	}
+	return ""
+}
+
+func (x *ConfigField) GetOptions() []*ConfigOption {
+	if x != nil {
+		return x.Options
+	}
+	return nil
+}
+
+func (x *ConfigField) GetGroup() string {
+	if x != nil {
+		return x.Group
+	}
+	return ""
+}
+
+func (x *ConfigField) GetAdvanced() bool {
+	if x != nil {
+		return x.Advanced
+	}
+	return false
+}
+
+func (x *ConfigField) GetDeprecated() bool {
+	if x != nil {
+		return x.Deprecated
+	}
+	return false
+}
+
+func (x *ConfigField) GetWhen() []*ConfigCondition {
+	if x != nil {
+		return x.When
+	}
+	return nil
+}
+
+func (x *ConfigField) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
+}
+
+func (x *ConfigField) GetMinimum() float64 {
+	if x != nil && x.Minimum != nil {
+		return *x.Minimum
+	}
+	return 0
+}
+
+func (x *ConfigField) GetMaximum() float64 {
+	if x != nil && x.Maximum != nil {
+		return *x.Maximum
+	}
+	return 0
+}
+
+func (x *ConfigField) GetPattern() string {
+	if x != nil {
+		return x.Pattern
+	}
+	return ""
+}
+
+func (x *ConfigField) GetExamples() []string {
+	if x != nil {
+		return x.Examples
+	}
+	return nil
+}
+
+func (x *ConfigField) GetItems() string {
+	if x != nil {
+		return x.Items
+	}
+	return ""
+}
+
+func (x *ConfigField) GetFields() []*ConfigField {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+// ConfigOption is a value an enum field takes.
+type ConfigOption struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// JSON.
+	Value string `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	// Empty: show the value.
+	Title         string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Description   string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigOption) Reset() {
+	*x = ConfigOption{}
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigOption) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigOption) ProtoMessage() {}
+
+func (x *ConfigOption) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigOption.ProtoReflect.Descriptor instead.
+func (*ConfigOption) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ConfigOption) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *ConfigOption) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *ConfigOption) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+// ConfigCondition holds when the field at path has one of values. A field
+// that isn't set has its default.
+type ConfigCondition struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Field string                 `protobuf:"bytes,1,opt,name=field,proto3" json:"field,omitempty"`
+	// JSON.
+	Values        []string `protobuf:"bytes,2,rep,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigCondition) Reset() {
+	*x = ConfigCondition{}
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigCondition) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigCondition) ProtoMessage() {}
+
+func (x *ConfigCondition) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigCondition.ProtoReflect.Descriptor instead.
+func (*ConfigCondition) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ConfigCondition) GetField() string {
+	if x != nil {
+		return x.Field
+	}
+	return ""
+}
+
+func (x *ConfigCondition) GetValues() []string {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+// ConfigGroup is a section of a role's config form.
+type ConfigGroup struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigGroup) Reset() {
+	*x = ConfigGroup{}
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigGroup) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigGroup) ProtoMessage() {}
+
+func (x *ConfigGroup) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigGroup.ProtoReflect.Descriptor instead.
+func (*ConfigGroup) Descriptor() ([]byte, []int) {
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ConfigGroup) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ConfigGroup) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *ConfigGroup) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
 type CatalogRole struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// source or destination
-	Role          string         `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
-	Config        []*ConfigField `protobuf:"bytes,2,rep,name=config,proto3" json:"config,omitempty"`
+	Role string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	// Its top-level fields, in the schema's order.
+	Config []*ConfigField `protobuf:"bytes,2,rep,name=config,proto3" json:"config,omitempty"`
+	// In the order a form shows them.
+	Groups        []*ConfigGroup `protobuf:"bytes,3,rep,name=groups,proto3" json:"groups,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CatalogRole) Reset() {
 	*x = CatalogRole{}
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -671,7 +977,7 @@ func (x *CatalogRole) String() string {
 func (*CatalogRole) ProtoMessage() {}
 
 func (x *CatalogRole) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[8]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -684,7 +990,7 @@ func (x *CatalogRole) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CatalogRole.ProtoReflect.Descriptor instead.
 func (*CatalogRole) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{8}
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CatalogRole) GetRole() string {
@@ -701,6 +1007,13 @@ func (x *CatalogRole) GetConfig() []*ConfigField {
 	return nil
 }
 
+func (x *CatalogRole) GetGroups() []*ConfigGroup {
+	if x != nil {
+		return x.Groups
+	}
+	return nil
+}
+
 type ListCatalogRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -709,7 +1022,7 @@ type ListCatalogRequest struct {
 
 func (x *ListCatalogRequest) Reset() {
 	*x = ListCatalogRequest{}
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[9]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -721,7 +1034,7 @@ func (x *ListCatalogRequest) String() string {
 func (*ListCatalogRequest) ProtoMessage() {}
 
 func (x *ListCatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[9]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -734,7 +1047,7 @@ func (x *ListCatalogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCatalogRequest.ProtoReflect.Descriptor instead.
 func (*ListCatalogRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{9}
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{12}
 }
 
 type ListCatalogResponse struct {
@@ -746,7 +1059,7 @@ type ListCatalogResponse struct {
 
 func (x *ListCatalogResponse) Reset() {
 	*x = ListCatalogResponse{}
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[10]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -758,7 +1071,7 @@ func (x *ListCatalogResponse) String() string {
 func (*ListCatalogResponse) ProtoMessage() {}
 
 func (x *ListCatalogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[10]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -771,7 +1084,7 @@ func (x *ListCatalogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCatalogResponse.ProtoReflect.Descriptor instead.
 func (*ListCatalogResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{10}
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListCatalogResponse) GetPackages() []*CatalogPackage {
@@ -790,7 +1103,7 @@ type GetCatalogPackageRequest struct {
 
 func (x *GetCatalogPackageRequest) Reset() {
 	*x = GetCatalogPackageRequest{}
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[11]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -802,7 +1115,7 @@ func (x *GetCatalogPackageRequest) String() string {
 func (*GetCatalogPackageRequest) ProtoMessage() {}
 
 func (x *GetCatalogPackageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[11]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -815,7 +1128,7 @@ func (x *GetCatalogPackageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogPackageRequest.ProtoReflect.Descriptor instead.
 func (*GetCatalogPackageRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{11}
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetCatalogPackageRequest) GetName() string {
@@ -835,7 +1148,7 @@ type GetCatalogPackageResponse struct {
 
 func (x *GetCatalogPackageResponse) Reset() {
 	*x = GetCatalogPackageResponse{}
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[12]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -847,7 +1160,7 @@ func (x *GetCatalogPackageResponse) String() string {
 func (*GetCatalogPackageResponse) ProtoMessage() {}
 
 func (x *GetCatalogPackageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[12]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -860,7 +1173,7 @@ func (x *GetCatalogPackageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCatalogPackageResponse.ProtoReflect.Descriptor instead.
 func (*GetCatalogPackageResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{12}
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetCatalogPackageResponse) GetPackage() *CatalogPackage {
@@ -885,7 +1198,7 @@ type RefreshCatalogRequest struct {
 
 func (x *RefreshCatalogRequest) Reset() {
 	*x = RefreshCatalogRequest{}
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[13]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -897,7 +1210,7 @@ func (x *RefreshCatalogRequest) String() string {
 func (*RefreshCatalogRequest) ProtoMessage() {}
 
 func (x *RefreshCatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[13]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -910,7 +1223,7 @@ func (x *RefreshCatalogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshCatalogRequest.ProtoReflect.Descriptor instead.
 func (*RefreshCatalogRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{13}
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{16}
 }
 
 type RefreshCatalogResponse struct {
@@ -922,7 +1235,7 @@ type RefreshCatalogResponse struct {
 
 func (x *RefreshCatalogResponse) Reset() {
 	*x = RefreshCatalogResponse{}
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[14]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +1247,7 @@ func (x *RefreshCatalogResponse) String() string {
 func (*RefreshCatalogResponse) ProtoMessage() {}
 
 func (x *RefreshCatalogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_api_v1_connector_proto_msgTypes[14]
+	mi := &file_openetl_api_v1_connector_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +1260,7 @@ func (x *RefreshCatalogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshCatalogResponse.ProtoReflect.Descriptor instead.
 func (*RefreshCatalogResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{14}
+	return file_openetl_api_v1_connector_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RefreshCatalogResponse) GetSources() []*ConnectorSource {
@@ -1003,17 +1316,50 @@ const file_openetl_api_v1_connector_proto_rawDesc = "" +
 	"\bimpostor\x18\x10 \x01(\bR\bimpostor\x12'\n" +
 	"\x0fapplied_version\x18\x11 \x01(\tR\x0eappliedVersion\x12\x16\n" +
 	"\x06manual\x18\x12 \x01(\bR\x06manual\x12)\n" +
-	"\x10update_available\x18\x13 \x01(\bR\x0fupdateAvailable\"\xa1\x01\n" +
+	"\x10update_available\x18\x13 \x01(\bR\x0fupdateAvailable\"\xfd\x04\n" +
 	"\vConfigField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x14\n" +
 	"\x05title\x18\x03 \x01(\tR\x05title\x12 \n" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x12\x1a\n" +
 	"\brequired\x18\x05 \x01(\bR\brequired\x12\x16\n" +
-	"\x06secret\x18\x06 \x01(\bR\x06secret\"V\n" +
+	"\x06secret\x18\x06 \x01(\bR\x06secret\x12\x12\n" +
+	"\x04path\x18\a \x01(\tR\x04path\x12\x18\n" +
+	"\adefault\x18\b \x01(\tR\adefault\x126\n" +
+	"\aoptions\x18\t \x03(\v2\x1c.openetl.api.v1.ConfigOptionR\aoptions\x12\x14\n" +
+	"\x05group\x18\n" +
+	" \x01(\tR\x05group\x12\x1a\n" +
+	"\badvanced\x18\v \x01(\bR\badvanced\x12\x1e\n" +
+	"\n" +
+	"deprecated\x18\f \x01(\bR\n" +
+	"deprecated\x123\n" +
+	"\x04when\x18\r \x03(\v2\x1f.openetl.api.v1.ConfigConditionR\x04when\x12\x16\n" +
+	"\x06format\x18\x0e \x01(\tR\x06format\x12\x1d\n" +
+	"\aminimum\x18\x0f \x01(\x01H\x00R\aminimum\x88\x01\x01\x12\x1d\n" +
+	"\amaximum\x18\x10 \x01(\x01H\x01R\amaximum\x88\x01\x01\x12\x18\n" +
+	"\apattern\x18\x11 \x01(\tR\apattern\x12\x1a\n" +
+	"\bexamples\x18\x12 \x03(\tR\bexamples\x12\x14\n" +
+	"\x05items\x18\x13 \x01(\tR\x05items\x123\n" +
+	"\x06fields\x18\x14 \x03(\v2\x1b.openetl.api.v1.ConfigFieldR\x06fieldsB\n" +
+	"\n" +
+	"\b_minimumB\n" +
+	"\n" +
+	"\b_maximum\"\\\n" +
+	"\fConfigOption\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\tR\x05value\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\"?\n" +
+	"\x0fConfigCondition\x12\x14\n" +
+	"\x05field\x18\x01 \x01(\tR\x05field\x12\x16\n" +
+	"\x06values\x18\x02 \x03(\tR\x06values\"U\n" +
+	"\vConfigGroup\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05title\x18\x02 \x01(\tR\x05title\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\"\x8b\x01\n" +
 	"\vCatalogRole\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x123\n" +
-	"\x06config\x18\x02 \x03(\v2\x1b.openetl.api.v1.ConfigFieldR\x06config\"\x14\n" +
+	"\x06config\x18\x02 \x03(\v2\x1b.openetl.api.v1.ConfigFieldR\x06config\x123\n" +
+	"\x06groups\x18\x03 \x03(\v2\x1b.openetl.api.v1.ConfigGroupR\x06groups\"\x14\n" +
 	"\x12ListCatalogRequest\"Q\n" +
 	"\x13ListCatalogResponse\x12:\n" +
 	"\bpackages\x18\x01 \x03(\v2\x1e.openetl.api.v1.CatalogPackageR\bpackages\".\n" +
@@ -1044,7 +1390,7 @@ func file_openetl_api_v1_connector_proto_rawDescGZIP() []byte {
 	return file_openetl_api_v1_connector_proto_rawDescData
 }
 
-var file_openetl_api_v1_connector_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_openetl_api_v1_connector_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_openetl_api_v1_connector_proto_goTypes = []any{
 	(*ConnectorSourceSpec)(nil),           // 0: openetl.api.v1.ConnectorSourceSpec
 	(*ConnectorSource)(nil),               // 1: openetl.api.v1.ConnectorSource
@@ -1054,40 +1400,47 @@ var file_openetl_api_v1_connector_proto_goTypes = []any{
 	(*DeleteConnectorSourceResponse)(nil), // 5: openetl.api.v1.DeleteConnectorSourceResponse
 	(*CatalogPackage)(nil),                // 6: openetl.api.v1.CatalogPackage
 	(*ConfigField)(nil),                   // 7: openetl.api.v1.ConfigField
-	(*CatalogRole)(nil),                   // 8: openetl.api.v1.CatalogRole
-	(*ListCatalogRequest)(nil),            // 9: openetl.api.v1.ListCatalogRequest
-	(*ListCatalogResponse)(nil),           // 10: openetl.api.v1.ListCatalogResponse
-	(*GetCatalogPackageRequest)(nil),      // 11: openetl.api.v1.GetCatalogPackageRequest
-	(*GetCatalogPackageResponse)(nil),     // 12: openetl.api.v1.GetCatalogPackageResponse
-	(*RefreshCatalogRequest)(nil),         // 13: openetl.api.v1.RefreshCatalogRequest
-	(*RefreshCatalogResponse)(nil),        // 14: openetl.api.v1.RefreshCatalogResponse
-	(*timestamppb.Timestamp)(nil),         // 15: google.protobuf.Timestamp
+	(*ConfigOption)(nil),                  // 8: openetl.api.v1.ConfigOption
+	(*ConfigCondition)(nil),               // 9: openetl.api.v1.ConfigCondition
+	(*ConfigGroup)(nil),                   // 10: openetl.api.v1.ConfigGroup
+	(*CatalogRole)(nil),                   // 11: openetl.api.v1.CatalogRole
+	(*ListCatalogRequest)(nil),            // 12: openetl.api.v1.ListCatalogRequest
+	(*ListCatalogResponse)(nil),           // 13: openetl.api.v1.ListCatalogResponse
+	(*GetCatalogPackageRequest)(nil),      // 14: openetl.api.v1.GetCatalogPackageRequest
+	(*GetCatalogPackageResponse)(nil),     // 15: openetl.api.v1.GetCatalogPackageResponse
+	(*RefreshCatalogRequest)(nil),         // 16: openetl.api.v1.RefreshCatalogRequest
+	(*RefreshCatalogResponse)(nil),        // 17: openetl.api.v1.RefreshCatalogResponse
+	(*timestamppb.Timestamp)(nil),         // 18: google.protobuf.Timestamp
 }
 var file_openetl_api_v1_connector_proto_depIdxs = []int32{
 	0,  // 0: openetl.api.v1.ConnectorSource.spec:type_name -> openetl.api.v1.ConnectorSourceSpec
-	15, // 1: openetl.api.v1.ConnectorSource.refresh_time:type_name -> google.protobuf.Timestamp
-	15, // 2: openetl.api.v1.ConnectorSource.error_time:type_name -> google.protobuf.Timestamp
+	18, // 1: openetl.api.v1.ConnectorSource.refresh_time:type_name -> google.protobuf.Timestamp
+	18, // 2: openetl.api.v1.ConnectorSource.error_time:type_name -> google.protobuf.Timestamp
 	1,  // 3: openetl.api.v1.ListConnectorSourcesResponse.sources:type_name -> openetl.api.v1.ConnectorSource
-	7,  // 4: openetl.api.v1.CatalogRole.config:type_name -> openetl.api.v1.ConfigField
-	6,  // 5: openetl.api.v1.ListCatalogResponse.packages:type_name -> openetl.api.v1.CatalogPackage
-	6,  // 6: openetl.api.v1.GetCatalogPackageResponse.package:type_name -> openetl.api.v1.CatalogPackage
-	8,  // 7: openetl.api.v1.GetCatalogPackageResponse.roles:type_name -> openetl.api.v1.CatalogRole
-	1,  // 8: openetl.api.v1.RefreshCatalogResponse.sources:type_name -> openetl.api.v1.ConnectorSource
-	2,  // 9: openetl.api.v1.ConnectorService.ListConnectorSources:input_type -> openetl.api.v1.ListConnectorSourcesRequest
-	4,  // 10: openetl.api.v1.ConnectorService.DeleteConnectorSource:input_type -> openetl.api.v1.DeleteConnectorSourceRequest
-	9,  // 11: openetl.api.v1.ConnectorService.ListCatalog:input_type -> openetl.api.v1.ListCatalogRequest
-	11, // 12: openetl.api.v1.ConnectorService.GetCatalogPackage:input_type -> openetl.api.v1.GetCatalogPackageRequest
-	13, // 13: openetl.api.v1.ConnectorService.RefreshCatalog:input_type -> openetl.api.v1.RefreshCatalogRequest
-	3,  // 14: openetl.api.v1.ConnectorService.ListConnectorSources:output_type -> openetl.api.v1.ListConnectorSourcesResponse
-	5,  // 15: openetl.api.v1.ConnectorService.DeleteConnectorSource:output_type -> openetl.api.v1.DeleteConnectorSourceResponse
-	10, // 16: openetl.api.v1.ConnectorService.ListCatalog:output_type -> openetl.api.v1.ListCatalogResponse
-	12, // 17: openetl.api.v1.ConnectorService.GetCatalogPackage:output_type -> openetl.api.v1.GetCatalogPackageResponse
-	14, // 18: openetl.api.v1.ConnectorService.RefreshCatalog:output_type -> openetl.api.v1.RefreshCatalogResponse
-	14, // [14:19] is the sub-list for method output_type
-	9,  // [9:14] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	8,  // 4: openetl.api.v1.ConfigField.options:type_name -> openetl.api.v1.ConfigOption
+	9,  // 5: openetl.api.v1.ConfigField.when:type_name -> openetl.api.v1.ConfigCondition
+	7,  // 6: openetl.api.v1.ConfigField.fields:type_name -> openetl.api.v1.ConfigField
+	7,  // 7: openetl.api.v1.CatalogRole.config:type_name -> openetl.api.v1.ConfigField
+	10, // 8: openetl.api.v1.CatalogRole.groups:type_name -> openetl.api.v1.ConfigGroup
+	6,  // 9: openetl.api.v1.ListCatalogResponse.packages:type_name -> openetl.api.v1.CatalogPackage
+	6,  // 10: openetl.api.v1.GetCatalogPackageResponse.package:type_name -> openetl.api.v1.CatalogPackage
+	11, // 11: openetl.api.v1.GetCatalogPackageResponse.roles:type_name -> openetl.api.v1.CatalogRole
+	1,  // 12: openetl.api.v1.RefreshCatalogResponse.sources:type_name -> openetl.api.v1.ConnectorSource
+	2,  // 13: openetl.api.v1.ConnectorService.ListConnectorSources:input_type -> openetl.api.v1.ListConnectorSourcesRequest
+	4,  // 14: openetl.api.v1.ConnectorService.DeleteConnectorSource:input_type -> openetl.api.v1.DeleteConnectorSourceRequest
+	12, // 15: openetl.api.v1.ConnectorService.ListCatalog:input_type -> openetl.api.v1.ListCatalogRequest
+	14, // 16: openetl.api.v1.ConnectorService.GetCatalogPackage:input_type -> openetl.api.v1.GetCatalogPackageRequest
+	16, // 17: openetl.api.v1.ConnectorService.RefreshCatalog:input_type -> openetl.api.v1.RefreshCatalogRequest
+	3,  // 18: openetl.api.v1.ConnectorService.ListConnectorSources:output_type -> openetl.api.v1.ListConnectorSourcesResponse
+	5,  // 19: openetl.api.v1.ConnectorService.DeleteConnectorSource:output_type -> openetl.api.v1.DeleteConnectorSourceResponse
+	13, // 20: openetl.api.v1.ConnectorService.ListCatalog:output_type -> openetl.api.v1.ListCatalogResponse
+	15, // 21: openetl.api.v1.ConnectorService.GetCatalogPackage:output_type -> openetl.api.v1.GetCatalogPackageResponse
+	17, // 22: openetl.api.v1.ConnectorService.RefreshCatalog:output_type -> openetl.api.v1.RefreshCatalogResponse
+	18, // [18:23] is the sub-list for method output_type
+	13, // [13:18] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_connector_proto_init() }
@@ -1095,13 +1448,14 @@ func file_openetl_api_v1_connector_proto_init() {
 	if File_openetl_api_v1_connector_proto != nil {
 		return
 	}
+	file_openetl_api_v1_connector_proto_msgTypes[7].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_connector_proto_rawDesc), len(file_openetl_api_v1_connector_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
