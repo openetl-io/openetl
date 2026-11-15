@@ -83,6 +83,7 @@ func sqlRecord() *checkpoint.Record {
 			{Stream: "items", ID: "b", Output: "by_id", KeyGroups: kg, Key: []string{"id"}, From: []byte("12"), Rows: 7},
 		}}},
 		Committables: [][]byte{nil},
+		SQLDigest:    sqlLanesJob().SQL.digest(),
 	}
 }
 
@@ -121,14 +122,17 @@ func TestARedoReadsEachOutputsPart(t *testing.T) {
 	}
 }
 
-// What the pipeline's SQL writes now must be what wrote the epoch: an
-// output keyed otherwise, written from another stream, gone, or a SQL
-// transform gone fails the redo with CONFIG_INVALID.
+// What the pipeline's SQL writes now must be what wrote the epoch: other
+// statements, even with the same outputs and keys, an output keyed
+// otherwise, written from another stream, gone, or a SQL transform gone
+// fails the redo with CONFIG_INVALID.
 func TestARedoOfAnotherSQLIsRefused(t *testing.T) {
 	for name, c := range map[string]struct {
 		change func(*Job)
 		says   string
 	}{
+		"edited": {change: func(j *Job) { j.SQL.SQL = strings.Replace(j.SQL.SQL, "SELECT name", "SELECT upper(name) AS name", 1) },
+			says: "epoch 4 was written by other statements of transform.sql than the pipeline has now"},
 		"rekeyed":    {change: func(j *Job) { j.Outputs[0].PrimaryKey = []string{"name"} }, says: "output \"by_id\" between writer lanes by its primary key (id), and the pipeline now keys it by (name)"},
 		"other from": {change: func(j *Job) { j.Outputs[1].From = "other" }, says: "output \"names\" written from stream \"items\""},
 		"gone":       {change: func(j *Job) { j.Outputs = j.Outputs[:1] }, says: "output \"names\" written from stream \"items\""},

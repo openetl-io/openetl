@@ -170,7 +170,13 @@ With a [SQL transform](./sql-transforms.md), the next attempt runs the statement
 
 Do not change the primary key of a keyed stream while an epoch waits to be finished. Each lane's part of such a stream holds the rows of some of the key's values, so OpenETL cannot read it again under another key. The attempt then fails with `CONFIG_INVALID`, and names the key that the epoch used. Apply the pipeline with that key again, and change the key once the pipeline has committed again.
 
-With a SQL transform, do not change the statements while an epoch waits to be finished. If an output that the epoch wrote has another key, is no longer written, or is written from another stream, the attempt fails with `CONFIG_INVALID`. Apply the pipeline with the statements that wrote the epoch, and change them once the pipeline has committed again.
+With a SQL transform, do not change `transform.sql` while an epoch waits to be finished. The attempt fails with `CONFIG_INVALID` in these cases:
+
+- The statements are not the ones that wrote the epoch, even if only a comment or a space changed.
+- An output that the epoch wrote is no longer written, or is written from another stream.
+- An output that the epoch sent to the lanes by its key now has another key.
+
+Apply the pipeline with the statements that wrote the epoch, and change them once the pipeline has committed again.
 
 ## Logs and usage
 

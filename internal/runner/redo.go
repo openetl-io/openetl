@@ -155,10 +155,15 @@ type redoPart struct {
 // but those whose part of the epoch was empty, and of each of the
 // destination's streams the key groups whose rows it holds, where not all.
 // A stream grouped by another key than the pipeline's now can't be read
-// again as the epoch had it, nor rows that the pipeline's SQL no longer
-// writes.
+// again as the epoch had it, nor an epoch that other statements of the
+// pipeline's SQL wrote.
 func (j *Job) redoReads(rec *checkpoint.Record, i int) (redoPart, error) {
 	part := redoPart{ranges: map[string]checkpoint.KeyGroupRange{}}
+	if j.SQL != nil && rec.SQLDigest != j.SQL.digest() {
+		// Other statements would write other rows than the other writer
+		// lanes committed of the epoch.
+		return part, errs.New(errs.ConfigInvalid, "runner: epoch %d was written by other statements of transform.sql than the pipeline has now, so writer lane %d's part can't be written again as it was: apply the pipeline with the SQL that wrote the epoch until the epoch is settled, then change it", rec.Epoch, i)
+	}
 	whole := map[string]bool{}
 	// Each split, in the coverage's order, and the destination's streams
 	// it reaches in the committable.

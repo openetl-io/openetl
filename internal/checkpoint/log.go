@@ -305,6 +305,9 @@ type Record struct {
 	// What each committable holds, by its index, in the layout of the
 	// attempt that wrote it; nil from an attempt without workers.
 	Coverage []Coverage `json:"coverage,omitempty"`
+	// The SHA-256, in hex, of the SQL transform's statements that wrote the
+	// epoch; empty without one.
+	SQLDigest string `json:"sql_digest,omitempty"`
 	// The files the dataflow staged for a destination that loads them, by
 	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
