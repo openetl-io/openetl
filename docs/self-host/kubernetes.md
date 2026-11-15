@@ -270,7 +270,7 @@ The launcher deletes the pods when the attempt ends, and their logs with them. T
 
 #### The process launcher
 
-`OPENETL_LAUNCHER=process`, for development and tests, starts a process for each worker and one for the coordinator, on the launcher's own machine. Each coordinator listens on 127.0.0.1 at a free port, which only that machine reaches. Leave `OPENETL_ATTEMPT_LISTEN` unset on such a launcher: its processes take its settings, so every coordinator would listen at the same address. The processes also take the launcher's log settings, so by default their logs go to the launcher's standard error.
+`OPENETL_LAUNCHER=process`, for development and tests, starts a process for each worker and one for the coordinator, on the launcher's own machine. Each coordinator listens on 127.0.0.1 at a free port, which only that machine reaches. Leave `OPENETL_ATTEMPT_LISTEN` unset on such a launcher, or give it port 0: its processes take its settings, so every coordinator would listen at the same address. With any other port, `openetld` does not start. The processes also take the launcher's log settings, so by default their logs go to the launcher's standard error.
 
 ### Spot nodes
 
