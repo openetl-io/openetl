@@ -152,13 +152,13 @@ workspaces/default/sources/app-db passed its check (version 5e1d0feeafb7)
 workspaces/default/destinations/warehouse passed its check (version f9aec669685a)
 ```
 
-A failed check identifies the missing requirement. For example, the default destination schema is `public`. On a default Postgres 15 or later installation, `openetl_writer` lacks permission to create tables there:
+A failed check identifies the missing requirement. For example, the default destination schema is `public`. On a default Postgres 15 or later installation, `openetl_writer` lacks permission to create tables there. The last line of the output names the problem:
 
 ```text
 openetl: workspaces/default/destinations/warehouse failed its check: PERMISSION_DENIED: postgres: no CREATE on schema "public"
 ```
 
-A connector that says what its check looked at lists each item under that line, with a fix and the config field for each one that failed or warned. Correct the database privileges or connection configuration. If you changed `app-db.yaml`, apply it again. Repeat both connection checks before continuing.
+A connector that says what its check looked at lists each item above that line, with a fix and the config field for each one that failed or warned. [Pipeline CLI commands](../reference/pipeline-cli.md#text-output) explains each line. Correct the database privileges or connection configuration. If you changed `app-db.yaml`, apply it again. Repeat both connection checks before continuing.
 
 ## 5. Look at the source's streams
 
@@ -272,7 +272,7 @@ created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
 checked pipeline app-db-to-warehouse
 ```
 
-The apply also ran the pipeline's [preflight](../get-started/concepts.md#checks-and-preflights): the checks of both connections, each connector's checks of the tables the pipeline reads and writes, and the plan. `checked` means it passed. To run it again, for example after you change a grant, use `openetl preflight app-db-to-warehouse`.
+The apply also ran the pipeline's [preflight](../get-started/concepts.md#checks-and-preflights): the checks of both connections, the plan, and each connector's checks of the tables the pipeline reads and writes. `checked` means it passed. To run it again, for example after you change a grant, use `openetl preflight app-db-to-warehouse`.
 
 A new pipeline starts its first sync immediately. List its syncs:
 

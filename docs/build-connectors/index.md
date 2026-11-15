@@ -296,7 +296,7 @@ greetings: 3 records, complete
 
 Connectors run as trusted code: `egress` says what yours means to reach, and OpenETL doesn't enforce it yet. [What that means for the people who run them](../self-host/index.md#connectors-are-trusted-code).
 
-`openetl connector check` checks a config reaches the upstream, and prints the check's items. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
+`openetl connector check` checks a config reaches the upstream, and prints the check's items, as [Checks and preflights](./checks.md#with-openetl-connector-check) shows. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
 
 ## Test it with the conformance kit
 

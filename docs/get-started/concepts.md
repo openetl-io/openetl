@@ -16,9 +16,16 @@ Connection details include the server, database and account. Passwords and keys 
 OpenETL can test a connection or a pipeline before any data moves.
 
 - A **check** tests one source or destination: OpenETL connects with its configuration, for example to sign in. A check does not need a pipeline.
-- A **preflight** tests a pipeline. It runs the checks of the pipeline's source and destination first. Then each connector examines the streams the pipeline reads or writes, for example each stream's permissions. Last, OpenETL plans the sync.
+- A **preflight** tests a pipeline. It runs the checks of the pipeline's source and destination first. Then OpenETL plans the sync. Last, each connector examines the streams the pipeline reads or writes, for example each stream's permissions.
 
-Each check or preflight lists the items it examined. An item is **Passed**, **Warning**, **Failed** or **Skipped**, and a failed item tells you how to fix it. A connector selects the items that apply to its configuration. Neither a check nor a preflight reads or writes records.
+An **item** is one thing that a check or a preflight examined, such as one sign-in or the permission to read one table. The connector selects the items that apply to its configuration. Each item has one of four results:
+
+- **Passed:** the item is correct.
+- **Warning:** the pipeline can run, but not as configured or not as well as it could. A warning does not fail the check or the preflight.
+- **Failed:** the pipeline cannot run until you correct it. The item usually tells you what to fix, and which configuration field it concerns.
+- **Skipped:** the item was not examined, for example because an earlier item failed. The item tells you why.
+
+A check or a preflight can also fail with no failed item, for example when it runs out of time. Neither a check nor a preflight reads or writes records.
 
 ## Connectors
 
