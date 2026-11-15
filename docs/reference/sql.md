@@ -138,7 +138,7 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 - A window holds the times from its start up to, but not including, its end. A session holds its end too.
 - Sizes are constant intervals of days, hours, minutes, seconds or smaller, in whole microseconds, such as `INTERVAL '5 minutes'`. Months are refused, as their length varies.
 - A hop's slide is at most its size, and a row is in at most 1,000 of its windows.
-- A row whose event time is null is in no window. The engine quarantines it.
+- A row whose event time is null is in no window. The engine quarantines it, with the code `event_time`.
 
 ### Bounds and keys
 
@@ -165,7 +165,7 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 - `FILTER (WHERE …)` after an aggregate counts only the rows where its condition is true: `count(*) FILTER (WHERE qty > 1)`.
 - `HAVING` keeps the windows where its condition is true. It can read the aggregates, the bounds and the group keys.
 - An aggregate gives the same value whatever order rows come in.
-- If an aggregate's value does not fit its type, as a sum past `BIGINT`'s range, the engine quarantines the window's row instead of writing it.
+- If an aggregate's value does not fit its type, the engine quarantines the window's row instead of writing it, with the code `aggregate`. An example is a sum past the range of `BIGINT`.
 
 ### When a window's row is written
 
@@ -177,7 +177,7 @@ A window closes when the stream's watermark reaches the window's end: the engine
 - `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
 - A delete has the output's key, and the values of the row it deletes. The engine does not evaluate a column that can change between runs, such as one that reads `now()` or `random()`, again for a delete. That column is null in the delete, or its type's zero if the column cannot be null.
 - A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start.
-- A row that comes later than its window's end and the lateness is quarantined with the reason `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
+- The engine quarantines a row that comes later than its window's end and the lateness, with the code `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
 - `watermark.lateness` needs `destination.write: merge` for the output.
 - After a restore, the watermark starts where the checkpoint's watermarks are. A window that closed before the checkpoint stays closed, and a row of it is late.
 
@@ -660,6 +660,6 @@ The plan also has a problem where a group window's stream is read in a way that 
 
 ### When rows run
 
-A statement that plans can still fail on a row, such as a cast of a value that does not convert, or an integer divided by zero. The engine quarantines such a row, and writes the rest of the batch. The [Pipeline reference](./specs/pipeline.md#statements-that-run) says where quarantined rows go, and what a change to a stream's schema does to the statements that read it.
+A statement that plans can still fail on a row. Examples are a cast of a value that does not convert, and an integer divided by zero. The engine quarantines such a row, and writes the rest of the batch. The [Pipeline reference](./specs/pipeline.md#statements-that-run) says where quarantined rows go, and what a change to a stream's schema does to the statements that read it. [Quarantine files](./quarantine-files.md) gives the format of their lines, and the code of each failure.
 
 The settings that streams can and cannot have beside `transform.sql` are in the [Pipeline reference](./specs/pipeline.md#transforms).

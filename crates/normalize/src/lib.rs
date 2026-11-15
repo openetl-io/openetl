@@ -3,6 +3,7 @@
 //! their types. A [`Shaper`] gives a stream's columns their destination
 //! names, on either lane, in two halves with a [`Typed`] batch between them.
 
+mod cause;
 mod coerce;
 mod control;
 mod evolve;
@@ -13,6 +14,7 @@ pub mod naming;
 mod shape;
 mod typed;
 
+pub use cause::{Cause, Code, NotHeld};
 pub use coerce::{Infinity, check_declared, nanoseconds, render_row};
 pub use control::{CONTROL_KEY, Control};
 pub use evolve::{BIG_INTS_KEY, Policy, VERSIONS_KEY, widens};
@@ -23,7 +25,7 @@ pub use typed::Typed;
 
 use coerce::Target;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use hold::HeldCell;
@@ -185,6 +187,7 @@ pub struct Rejected {
     pub row: usize,
     /// Never contains the row's contents.
     pub reason: String,
+    pub cause: Cause,
 }
 
 #[derive(Debug)]
@@ -235,8 +238,8 @@ pub struct Normalizer {
     identity: Option<Identity>,
     infinity: Infinity,
     /// Some: a declared value that doesn't fit holds its cell, except in
-    /// these columns, by source name.
-    hold_cells: Option<HashSet<String>>,
+    /// these columns, by source name, with why.
+    hold_cells: Option<HashMap<String, NotHeld>>,
 }
 
 impl Default for Normalizer {
@@ -340,8 +343,8 @@ impl Normalizer {
     }
 
     /// A declared value that doesn't fit holds its cell instead of
-    /// rejecting its row, except in the `unholdable` columns.
-    pub fn hold_cells(&mut self, unholdable: HashSet<String>) {
+    /// rejecting its row, except in the `unholdable` columns, which say why.
+    pub fn hold_cells(&mut self, unholdable: HashMap<String, NotHeld>) {
         self.hold_cells = Some(unholdable);
     }
 
@@ -358,24 +361,29 @@ impl Normalizer {
         let mut rejected = Vec::new();
         for (row, raw) in rows.into_iter().enumerate() {
             // Parsing to Value first keeps contents out of the error.
-            let err = match serde_json::from_slice(raw) {
+            let (err, code) = match serde_json::from_slice(raw) {
                 Ok(Value::Object(obj)) => {
                     objects.push(obj);
                     at.push(row);
                     continue;
                 }
-                Ok(_) => Error::NotAnObject { row },
-                Err(source) => Error::Json { row, source },
+                Ok(_) => (Error::NotAnObject { row }, Code::Object),
+                Err(source) => (Error::Json { row, source }, Code::Json),
             };
+            let mut cause = Cause::new(code);
+            if self.hold_cells.is_some() {
+                cause = cause.not_held(NotHeld::Record);
+            }
             rejected.push(Rejected {
                 row,
                 reason: err.to_string(),
+                cause,
             });
         }
 
         // Declared columns first, so rows that don't fit infer nothing.
         let mut coerced: HashMap<&str, ArrayRef> = HashMap::new();
-        let mut failed: Vec<Option<String>> = vec![None; objects.len()];
+        let mut failed: Vec<Option<(String, Cause)>> = vec![None; objects.len()];
         // By object.
         let mut held: Vec<(usize, &str, String)> = Vec::new();
         for (name, ty) in &self.declared {
@@ -391,9 +399,13 @@ impl Normalizer {
             let (array, failures) = coerce::json(f, *t, values, self.infinity)?;
             for (i, reason) in failures {
                 match &self.hold_cells {
-                    Some(unholdable) if !unholdable.contains(name) => held.push((i, name, reason)),
+                    Some(unholdable) if !unholdable.contains_key(name) => {
+                        held.push((i, name, reason))
+                    }
                     _ => {
-                        failed[i].get_or_insert(reason);
+                        let why = self.hold_cells.as_ref().and_then(|u| u.get(name)).copied();
+                        let cause = Cause::value(&reason, name, why);
+                        failed[i].get_or_insert((reason, cause));
                     }
                 }
             }
@@ -450,11 +462,12 @@ impl Normalizer {
         if failed.iter().any(Option::is_some) {
             let keep = BooleanArray::from_iter(failed.iter().map(|f| Some(f.is_none())));
             batch = arrow_select::filter::filter_record_batch(&batch, &keep)?;
-            for (i, reason) in failed.iter().enumerate() {
-                if let Some(reason) = reason {
+            for (i, f) in failed.iter().enumerate() {
+                if let Some((reason, cause)) = f {
                     rejected.push(Rejected {
                         row: at[i],
                         reason: reason.clone(),
+                        cause: cause.clone(),
                     });
                 }
             }

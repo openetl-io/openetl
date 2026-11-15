@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"slices"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
@@ -90,7 +89,12 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 }
 
 func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
-	var keys []string
+	objects, err := s.ListObjects(ctx, prefix)
+	return checkpoint.Keys(objects), err
+}
+
+func (s *Store) ListObjects(ctx context.Context, prefix string) ([]checkpoint.Object, error) {
+	var out []checkpoint.Object
 	pages := s.container.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{Prefix: &prefix})
 	for pages.More() {
 		page, err := pages.NextPage(ctx)
@@ -98,11 +102,15 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 			return nil, fmt.Errorf("checkpoint: azure list %s: %w", prefix, err)
 		}
 		for _, b := range page.Segment.BlobItems {
-			keys = append(keys, *b.Name)
+			o := checkpoint.Object{Key: *b.Name}
+			if b.Properties != nil && b.Properties.LastModified != nil {
+				o.Modified = *b.Properties.LastModified
+			}
+			out = append(out, o)
 		}
 	}
-	slices.Sort(keys)
-	return keys, nil
+	checkpoint.SortObjects(out)
+	return out, nil
 }
 
 func version(etag *azcore.ETag) checkpoint.Version {

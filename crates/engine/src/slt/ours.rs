@@ -397,7 +397,7 @@ impl Ours {
                 }
                 ran.rows.push(row);
             }
-            for (r, _) in &applied.failed {
+            for (r, ..) in &applied.failed {
                 ran.quarantined
                     .push((several.then(|| st.output.clone()), r + 1));
             }

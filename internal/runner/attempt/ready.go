@@ -54,7 +54,7 @@ func (r Ready) EpochReady(e *protocolv1.Epoch) *enginev1.EpochReady {
 		p.Snapshots = append(p.Snapshots, SnapshotProto(s))
 	}
 	for _, q := range r.Quarantine {
-		p.Quarantine = append(p.Quarantine, &enginev1.QuarantineFile{Stream: q.Stream, Url: q.URL, Rows: q.Rows, Output: q.Output})
+		p.Quarantine = append(p.Quarantine, QuarantineProto(q))
 	}
 	return p
 }
@@ -70,9 +70,27 @@ func ReadyOf(p *enginev1.EpochReady) (Ready, error) {
 		r.Snapshots = append(r.Snapshots, SnapshotOf(s))
 	}
 	for _, q := range p.GetQuarantine() {
-		r.Quarantine = append(r.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), Output: q.GetOutput(), URL: q.GetUrl(), Rows: q.GetRows()})
+		r.Quarantine = append(r.Quarantine, QuarantineOf(q))
 	}
 	return r, nil
+}
+
+// QuarantineOf is a quarantine file as the engine reports it.
+func QuarantineOf(q *enginev1.QuarantineFile) checkpoint.QuarantineFile {
+	f := checkpoint.QuarantineFile{Stream: q.GetStream(), Output: q.GetOutput(), URL: q.GetUrl(), Rows: q.GetRows()}
+	for _, c := range q.GetCauses() {
+		f.Causes = append(f.Causes, checkpoint.QuarantineCause{Code: c.GetCode(), Column: c.GetColumn(), NotHeld: c.GetNotHeld(), Rows: c.GetRows()})
+	}
+	return f
+}
+
+// QuarantineProto is q as the engine reports it.
+func QuarantineProto(q checkpoint.QuarantineFile) *enginev1.QuarantineFile {
+	p := &enginev1.QuarantineFile{Stream: q.Stream, Url: q.URL, Rows: q.Rows, Output: q.Output}
+	for _, c := range q.Causes {
+		p.Causes = append(p.Causes, &enginev1.QuarantineCause{Code: c.Code, Column: c.Column, NotHeld: c.NotHeld, Rows: c.Rows})
+	}
+	return p
 }
 
 // KeyGroups is key groups first to last as the protocol carries them.

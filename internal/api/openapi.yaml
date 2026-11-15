@@ -1516,6 +1516,62 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/quarantine:
+        get:
+            tags:
+                - PipelineService
+            description: |-
+                The quarantine files of the pipeline's committed epochs, newest first:
+                 where each is, and how many of its rows each cause quarantined. Their
+                 records stay in the data plane's object storage. A file is listed until
+                 quarantine.retention deletes it, or the pipeline is deleted.
+            operationId: PipelineService_ListQuarantine
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: stream
+                  in: query
+                  description: Only this stream's or output's files; empty for every one's.
+                  schema:
+                    type: string
+                - name: since
+                  in: query
+                  description: Only files committed at or after it.
+                  schema:
+                    type: string
+                    format: date-time
+                - name: pageSize
+                  in: query
+                  schema:
+                    type: integer
+                    format: int32
+                - name: pageToken
+                  in: query
+                  schema:
+                    type: string
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListQuarantineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}/streamSchemas:
         get:
             tags:
@@ -4451,6 +4507,15 @@ components:
                         $ref: '#/components/schemas/Principal'
                 nextPageToken:
                     type: string
+        ListQuarantineResponse:
+            type: object
+            properties:
+                files:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/QuarantineFile'
+                nextPageToken:
+                    type: string
         ListRunnerTokensResponse:
             type: object
             properties:
@@ -4882,6 +4947,12 @@ components:
                     allOf:
                         - $ref: '#/components/schemas/JobResources'
                     description: 'Unset: sized automatically, in the default pool.'
+                quarantine:
+                    allOf:
+                        - $ref: '#/components/schemas/Quarantine'
+                    description: |-
+                        What becomes of the rows the pipeline quarantines. Unset: their files
+                         are kept.
             description: |-
                 PipelineSpec is the spec of a Pipeline document. Unset fields take their
                  defaults.
@@ -5140,6 +5211,81 @@ components:
                     type: string
                     format: date-time
             description: A user or a service account, which calls the API with its keys.
+        Quarantine:
+            type: object
+            properties:
+                retention:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: |-
+                        Each file is deleted, by the run that starts after it is this old, and
+                         the control plane stops listing it. Unset: files are never deleted.
+            description: |-
+                Quarantine is what becomes of the files a pipeline's committed epochs
+                 quarantined rows to.
+        QuarantineCause:
+            type: object
+            properties:
+                code:
+                    type: string
+                    description: |-
+                        What was wrong: json, object, type, range, precision, nan, statement,
+                         unsent, late, event_time or aggregate.
+                column:
+                    type: string
+                    description: The column that caused it; empty where no one column did.
+                notHeld:
+                    type: string
+                    description: |-
+                        Set where the stream holds values that don't fit (unfitValues: hold):
+                         why these rows' values couldn't be held. One of key, cursor,
+                         destination, not_null, held_value, record and transform.
+                rows:
+                    type: string
+            description: |-
+                QuarantineCause is how many of a file's rows were quarantined for one
+                 cause. It never holds a value.
+        QuarantineFile:
+            type: object
+            properties:
+                stream:
+                    type: string
+                    description: The stream, or the transform's output, whose rows it holds.
+                output:
+                    type: boolean
+                    description: stream is one of a transform's outputs.
+                path:
+                    type: string
+                    description: |-
+                        Below the pipeline's _quarantine directory: {g}/{N}/{stream}.jsonl, or
+                         {g}/{N}/{stream}.{k}.jsonl from the attempt's lane k, with a
+                         transform's outputs' below _outputs/.
+                url:
+                    type: string
+                    description: Where it is in the data plane's object storage.
+                rows:
+                    type: string
+                causes:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/QuarantineCause'
+                    description: Its rows by cause, the most first.
+                generation:
+                    type: string
+                    description: The checkpoint that committed it.
+                epoch:
+                    type: string
+                sync:
+                    type: string
+                    description: |-
+                        The sync that committed it; empty if the control plane has no record of
+                         the sync.
+                commitTime:
+                    type: string
+                    format: date-time
+            description: |-
+                QuarantineFile is one stream's quarantined rows from one committed
+                 epoch: JSON lines, one per row, in the data plane's object storage.
         ReadProgress:
             type: object
             properties:

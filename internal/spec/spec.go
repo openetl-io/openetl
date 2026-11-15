@@ -367,6 +367,9 @@ type pipelineYAML struct {
 	Resources   *jobResourcesYAML `yaml:"resources"`
 	SparkAccess *sparkAccessYAML  `yaml:"sparkAccess"`
 	FlinkAccess *sparkAccessYAML  `yaml:"flinkAccess"`
+	Quarantine  *struct {
+		Retention string `yaml:"retention"`
+	} `yaml:"quarantine"`
 }
 
 type postSyncYAML struct {
@@ -725,6 +728,16 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 		if p.Resources, err = parseJobResources(y.Resources, continuous); err != nil {
 			return nil, err
 		}
+	}
+	if y.Quarantine != nil && y.Quarantine.Retention != "" {
+		r, err := duration("quarantine.retention", y.Quarantine.Retention)
+		if err != nil {
+			return nil, err
+		}
+		if r.AsDuration() <= 0 {
+			return nil, errors.New("quarantine.retention must be positive")
+		}
+		p.Quarantine = &apiv1.Quarantine{Retention: r}
 	}
 	if y.Types != nil {
 		p.Types = &apiv1.Types{}

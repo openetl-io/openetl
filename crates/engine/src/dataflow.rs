@@ -12,7 +12,7 @@
 //! EpochReady. A group window's statement runs on keyed lanes, past an
 //! exchange of its own (see [`keyed`]).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -24,14 +24,14 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use openetl_formats::ParquetStaging;
 use openetl_normalize::{
-    Error as NormalizeError, Policy, Rejected, Shaped, Shaper, Typed, by_key_group, in_key_groups,
-    logical_type, naming::Naming, widens,
+    Cause, Error as NormalizeError, NotHeld, Policy, Rejected, Shaped, Shaper, Typed, by_key_group,
+    in_key_groups, logical_type, naming::Naming, widens,
 };
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
     Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, LaneMetrics,
-    Metrics, QuarantineFile, ReplayProgress, Rows, SchemaChange, Split, SplitWatermarks,
-    StagedStream, StreamHolds, StreamMetrics, events_response, hold_cause,
+    Metrics, QuarantineCause, QuarantineFile, ReplayProgress, Rows, SchemaChange, Split,
+    SplitWatermarks, StagedStream, StreamHolds, StreamMetrics, events_response, hold_cause,
 };
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
@@ -475,7 +475,7 @@ struct InputCrossing {
 impl InputOwner {
     /// `cells` are the cell holds of the output the stream passes through
     /// as, if it holds cells: its rows are typed holding them.
-    fn new(input: &InputPlan, cells: Option<HashSet<String>>) -> Result<Self, JobError> {
+    fn new(input: &InputPlan, cells: Option<HashMap<String, NotHeld>>) -> Result<Self, JobError> {
         let shaper = Shaper::new(
             Naming {
                 keep_source: true,
@@ -951,8 +951,8 @@ struct LaneStream {
     stream: usize,
     shaper: Shaper,
     version: u64,
-    /// Quarantined lines since its last barrier, and how many.
-    quarantined: (Vec<u8>, u64),
+    /// Quarantined since its last barrier.
+    quarantined: Quarantined,
     /// Held cells since its last barrier, by column.
     cells: BTreeMap<String, CellHolds>,
     /// Lane 0 replays released holds.
@@ -1078,8 +1078,8 @@ enum Kind {
 struct Transformed {
     input: usize,
     typer: Shaper,
-    /// Quarantined lines since its last barrier, and how many.
-    quarantined: (Vec<u8>, u64),
+    /// Quarantined since its last barrier.
+    quarantined: Quarantined,
     /// The schema the lane last told the stream's owner of.
     seen: Option<SchemaRef>,
     /// The outputs it feeds.
@@ -1238,7 +1238,7 @@ where
             stream: s,
             shaper: o.shaper.fork(),
             version: o.version,
-            quarantined: (Vec::new(), 0),
+            quarantined: Quarantined::default(),
             cells: BTreeMap::new(),
             replay,
         })
@@ -1250,7 +1250,7 @@ where
             Some(t) => Kind::Transformed(Box::new(Transformed {
                 input: s,
                 typer: flow.inputs[s].shaper.fork(),
-                quarantined: (Vec::new(), 0),
+                quarantined: Quarantined::default(),
                 seen: None,
                 outputs: t.routes[s]
                     .iter()
@@ -1583,10 +1583,14 @@ async fn quarantine_file(
     epoch: Epoch,
     stream: &str,
     lane: &Lane,
-    held: &mut (Vec<u8>, u64),
+    held: &mut Quarantined,
     output: bool,
 ) -> Result<Option<QuarantineFile>, JobError> {
-    let (lines, rows) = std::mem::take(held);
+    let Quarantined {
+        lines,
+        rows,
+        causes,
+    } = std::mem::take(held);
     let Some(q) = q.filter(|_| rows > 0) else {
         return Ok(None);
     };
@@ -1604,6 +1608,15 @@ async fn quarantine_file(
         url,
         rows,
         output,
+        causes: causes
+            .into_iter()
+            .map(|((code, column, not_held), rows)| QuarantineCause {
+                code: code.to_owned(),
+                column,
+                not_held: not_held.to_owned(),
+                rows,
+            })
+            .collect(),
     }))
 }
 
@@ -1668,7 +1681,7 @@ async fn output(
     let Applied { typed: out, failed } = applied;
     let failed: Vec<Rejected> = failed
         .into_iter()
-        .map(|(row, reason)| Rejected { row, reason })
+        .map(|(row, reason, cause)| Rejected { row, reason, cause })
         .collect();
     hold(plan, name, &failed, record, &mut ls.quarantined, oc)?;
     let planned = stage.planned();
@@ -1855,6 +1868,48 @@ fn copy(t: &Typed) -> Typed {
     }
 }
 
+/// What a stream quarantined on a lane since its last barrier: its lines,
+/// how many, and how many by cause.
+#[derive(Default)]
+pub(crate) struct Quarantined {
+    lines: Vec<u8>,
+    rows: u64,
+    /// By code, column and why not held; "" for none.
+    causes: BTreeMap<(&'static str, String, &'static str), u64>,
+}
+
+impl Quarantined {
+    /// Adds a record's line. Only `record` holds its values.
+    fn add(&mut self, stream: &str, r: &Rejected, record: String) {
+        let Cause {
+            code,
+            column,
+            not_held,
+        } = &r.cause;
+        let mut line = serde_json::Map::new();
+        line.insert("stream".into(), stream.into());
+        line.insert("code".into(), code.as_str().into());
+        if let Some(c) = column {
+            line.insert("column".into(), c.as_str().into());
+        }
+        if let Some(n) = not_held {
+            line.insert("notHeld".into(), n.as_str().into());
+        }
+        line.insert("reason".into(), r.reason.as_str().into());
+        line.insert("record".into(), record.into());
+        self.lines
+            .extend_from_slice(serde_json::Value::Object(line).to_string().as_bytes());
+        self.lines.push(b'\n');
+        self.rows += 1;
+        let key = (
+            code.as_str(),
+            column.clone().unwrap_or_default(),
+            not_held.map_or("", |n| n.as_str()),
+        );
+        *self.causes.entry(key).or_default() += 1;
+    }
+}
+
 /// Adds rejected rows to the stream's quarantine for the epoch, or fails the
 /// job if it has no quarantine.
 fn hold(
@@ -1862,7 +1917,7 @@ fn hold(
     stream: &str,
     rejected: &[Rejected],
     record: impl Fn(usize) -> String,
-    held: &mut (Vec<u8>, u64),
+    held: &mut Quarantined,
     c: &Counters,
 ) -> Result<(), JobError> {
     let Some(first) = rejected.first() else {
@@ -1874,17 +1929,9 @@ fn hold(
             format!("stream {stream}: {}", first.reason),
         ));
     }
-    let (lines, count) = held;
     for r in rejected {
-        let line = serde_json::json!({
-            "stream": stream,
-            "reason": r.reason,
-            "record": record(r.row),
-        });
-        lines.extend_from_slice(line.to_string().as_bytes());
-        lines.push(b'\n');
+        held.add(stream, r, record(r.row));
     }
-    *count += rejected.len() as u64;
     c.rows_quarantined
         .fetch_add(rejected.len() as u64, Ordering::Relaxed);
     Ok(())
@@ -3447,7 +3494,7 @@ pub(crate) mod tests {
                     stream: 0,
                     shaper: o.shaper.fork(),
                     version: o.version,
-                    quarantined: (Vec::new(), 0),
+                    quarantined: Quarantined::default(),
                     cells: BTreeMap::new(),
                     replay: None,
                 }
@@ -3736,7 +3783,7 @@ pub(crate) mod tests {
                 stream: 0,
                 shaper: o.shaper.fork(),
                 version: o.version,
-                quarantined: (Vec::new(), 0),
+                quarantined: Quarantined::default(),
                 cells: BTreeMap::new(),
                 replay: None,
             }
@@ -3873,6 +3920,30 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(ready, vec![1]);
+    }
+
+    /// A quarantine file's causes, as (code, column, notHeld, rows).
+    fn causes(q: &QuarantineFile) -> Vec<(&str, &str, &str, u64)> {
+        q.causes
+            .iter()
+            .map(|c| {
+                (
+                    c.code.as_str(),
+                    c.column.as_str(),
+                    c.not_held.as_str(),
+                    c.rows,
+                )
+            })
+            .collect()
+    }
+
+    /// A quarantine file's lines.
+    fn lines_of(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
     }
 
     async fn ready(events: &mut mpsc::Receiver<Result<EventsResponse, Status>>) -> Vec<EpochReady> {
@@ -4091,7 +4162,7 @@ pub(crate) mod tests {
             w,
             FrameKind::Rows,
             0,
-            rows(&[r#"{"x": 1}"#, "[1]", r#"{"x": 2}"#]),
+            rows(&[r#"{"x": 1}"#, "[1]", "{nope", r#"{"x": 2}"#]),
         )
         .await;
         put(w, FrameKind::Barrier, 0, barrier(1)).await;
@@ -4115,12 +4186,14 @@ pub(crate) mod tests {
         assert_eq!(q.len(), 1);
         assert_eq!(
             (q[0].stream.as_str(), q[0].rows, q[0].output),
-            ("a", 1, false)
+            ("a", 2, false)
         );
+        assert_eq!(causes(&q[0]), [("json", "", "", 1), ("object", "", "", 1)]);
         assert!(q[0].url.ends_with("/1/1/a.jsonl"), "{}", q[0].url);
-        let text = std::fs::read_to_string(dir.path().join("1/1/a.jsonl")).unwrap();
-        let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        let lines = lines_of(&dir.path().join("1/1/a.jsonl"));
+        let line = &lines[0];
         assert_eq!(line["stream"], "a");
+        assert_eq!(line["code"], "object");
         assert_eq!(line["record"], "[1]");
         assert!(
             line["reason"]
@@ -4128,6 +4201,10 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains("not a JSON object")
         );
+        // No column caused it, and the stream holds no cells.
+        assert!(line.get("column").is_none() && line.get("notHeld").is_none());
+        assert_eq!(lines[1]["code"], "json");
+        assert_eq!(lines[1]["record"], "{nope");
         // Rows after the last barrier are never committed.
         assert!(!dir.path().join("1/2").exists());
     }
@@ -4183,6 +4260,15 @@ pub(crate) mod tests {
                 .as_str()
                 .unwrap()
                 .starts_with("precision:")
+        );
+        assert_eq!(
+            (&lines[0]["code"], &lines[0]["column"]),
+            (&"nan".into(), &"price".into())
+        );
+        assert_eq!(lines[1]["code"], "precision");
+        assert_eq!(
+            causes(&ready[0].quarantine[0]),
+            [("nan", "price", "", 1), ("precision", "price", "", 1)]
         );
     }
 
@@ -4475,6 +4561,77 @@ pub(crate) mod tests {
         let at = |i: usize| second[i].holds["a"].replayed.unwrap();
         assert!(!at(0).done, "epoch 2 ends before the chunk");
         assert!(at(1).done && at(1).still_held == 0, "{:?}", at(1));
+    }
+
+    /// A stream that holds cells still quarantines a row whose value it
+    /// can't hold, and says why it didn't.
+    #[tokio::test]
+    async fn what_a_stream_that_holds_cells_quarantines_says_why() {
+        use arrow_schema::{Field, Schema};
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = request(&["a", "b"]);
+        req.quarantine_url = format!("file://{}/q", dir.path().display());
+        req.held_url = format!("file://{}/held", dir.path().display());
+        let declared = Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("price", DataType::Decimal128(10, 2), true),
+        ]);
+        req.streams[0].arrow_schema = ipc::encode_schema(&Arc::new(declared)).unwrap();
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+            cells: true,
+            ..Default::default()
+        });
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        let sent = [
+            r#"{"id": "x", "price": "1.5"}"#,
+            r#"{"id": 2, "price": "12345678901.5"}"#,
+            "[1]",
+        ];
+        put(w, FrameKind::Rows, 0, rows(&sent)).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+
+        let ready = ready(&mut h.events).await;
+        assert_eq!(ready[0].holds["a"].cells["price"].cells, 1, "price is held");
+        let q = &ready[0].quarantine;
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].rows, 2, "{:?}", causes(&q[0]));
+        assert_eq!(
+            causes(&q[0]),
+            [("object", "", "record", 1), ("type", "id", "key", 1)]
+        );
+        let lines = lines_of(&dir.path().join("q/1/1/a.jsonl"));
+        let got: Vec<(&str, Option<&str>, &str)> = lines
+            .iter()
+            .map(|l| {
+                (
+                    l["code"].as_str().unwrap(),
+                    l.get("column").and_then(|c| c.as_str()),
+                    l["notHeld"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [("type", Some("id"), "key"), ("object", None, "record")]
+        );
+        for l in &lines {
+            let fields: Vec<&str> = l.as_object().unwrap().keys().map(String::as_str).collect();
+            assert!(
+                fields.iter().all(
+                    |f| ["stream", "code", "column", "notHeld", "reason", "record"].contains(f)
+                ),
+                "{fields:?}"
+            );
+            assert!(!l["reason"].as_str().unwrap().contains('x'), "{l}");
+        }
     }
 
     #[tokio::test]
@@ -5003,6 +5160,8 @@ pub(crate) mod tests {
         let text = std::fs::read_to_string(dir.path().join("_outputs/1/1/c.jsonl")).unwrap();
         let line: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(line["stream"], "c");
+        assert_eq!(line["code"], "statement");
+        assert!(line.get("column").is_none() && line.get("notHeld").is_none());
         assert_eq!(line["record"], r#"{"id": 2, "email": "x"}"#);
         assert!(
             line["reason"]
@@ -5012,6 +5171,7 @@ pub(crate) mod tests {
             "{}",
             line["reason"]
         );
+        assert_eq!(causes(&q[0]), [("statement", "", "", 1)]);
     }
 
     #[tokio::test]
@@ -5323,6 +5483,11 @@ pub(crate) mod tests {
             "{}",
             line["reason"]
         );
+        assert_eq!(
+            (&line["code"], &line["column"], &line["notHeld"]),
+            (&"precision".into(), &"price".into(), &"transform".into())
+        );
+        assert_eq!(causes(&q[0]), [("precision", "price", "transform", 1)]);
 
         let mut req = priced_sql(dir.path(), 20);
         req.generation = 2;
@@ -5680,6 +5845,8 @@ pub(crate) mod tests {
             [row(0, "x", 1, 1), row(0, "x", 2, 1), row(60, "x", 2, 1)]
         );
         assert_eq!(quarantined(&ready, "minutes"), 1);
+        let q: Vec<_> = ready.iter().flat_map(|r| &r.quarantine).collect();
+        assert_eq!(causes(q[0]), [("late", "", "", 1)]);
     }
 
     /// A restore resumes a window's state from the record's snapshots, in

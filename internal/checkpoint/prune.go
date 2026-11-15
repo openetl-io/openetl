@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // QuarantineDir holds a pipeline's quarantined records, next to its
@@ -19,6 +20,20 @@ const QuarantineDir = "_quarantine"
 // QuarantineOutputs holds, below QuarantineDir, what a transform's outputs
 // quarantined, at {g}/{N}/{output}.jsonl, apart from its inputs'.
 const QuarantineOutputs = "_outputs"
+
+// QuarantinePath is where a quarantine file's URL is below the pipeline's
+// QuarantineDir, as its key there has it, such as 3/17/orders.jsonl or
+// _outputs/3/17/daily.jsonl; empty if the URL isn't below one. A stream's
+// name is escaped in the file's name, so the path's slashes are the
+// layout's.
+func QuarantinePath(fileURL string) string {
+	p, _, _ := strings.Cut(fileURL, "?")
+	i := strings.LastIndex(p, "/"+QuarantineDir+"/")
+	if i < 0 {
+		return ""
+	}
+	return p[i+len(QuarantineDir)+2:]
+}
 
 // How many earlier generations Prune looks through for quarantined files of
 // epochs that never committed.
@@ -115,6 +130,42 @@ func (s *Session) Prune(ctx context.Context, restored *Record, keep int) (delete
 	for _, k := range doomed {
 		if err := s.log.store.Delete(ctx, k); err != nil {
 			return deleted, fmt.Errorf("checkpoint: prune %s: %w", k, err)
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
+// PruneQuarantine deletes the quarantined files of committed epochs, those
+// up to restored's, that were written before before: a pipeline's
+// quarantine.retention. Without restored, nothing has committed, and it
+// deletes nothing. A file whose time the store doesn't give is kept. Like
+// Prune, it stops at the first error.
+func (s *Session) PruneQuarantine(ctx context.Context, restored *Record, before time.Time) (deleted int, err error) {
+	if restored == nil {
+		return 0, nil
+	}
+	prefix := s.log.root + QuarantineDir + "/"
+	objects, err := s.log.store.ListObjects(ctx, prefix)
+	if err != nil {
+		return 0, fmt.Errorf("checkpoint: prune quarantine: %w", err)
+	}
+	for _, o := range objects {
+		if o.Modified.IsZero() || !o.Modified.Before(before) {
+			continue
+		}
+		rel := strings.TrimPrefix(strings.TrimPrefix(o.Key, prefix), QuarantineOutputs+"/")
+		parts := strings.SplitN(rel, "/", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		_, err1 := strconv.ParseUint(parts[0], 10, 64)
+		epoch, err2 := strconv.ParseUint(parts[1], 10, 64)
+		if err1 != nil || err2 != nil || epoch > restored.Epoch {
+			continue
+		}
+		if err := s.log.store.Delete(ctx, o.Key); err != nil {
+			return deleted, fmt.Errorf("checkpoint: prune %s: %w", o.Key, err)
 		}
 		deleted++
 	}

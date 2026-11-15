@@ -369,6 +369,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | `delivery.commit.scope` | Commit every stream together (`pipeline`) or each on its own (`stream`) | `pipeline` where the destination can, otherwise `stream` |
 | `delivery.resumePointTimeout` | How long a commit waits for a point the source can resume from exactly, before committing without one where the stream keeps its guarantee anyway; `none` waits forever | `1m` |
 | `types.infinity` | What becomes of infinite dates and timestamps: `clamp` to the type's largest or smallest value, or `unfit`, which makes them values that do not fit, for `unfitValues` | `clamp` |
+| `quarantine.retention` | How long OpenETL keeps the files of quarantined rows, such as `720h`. A run deletes older files ([Quarantine files](../reference/quarantine-files.md)) | Kept |
 
 ### After and between
 
@@ -457,6 +458,7 @@ order by id, _openetl_seq desc;
 | `openetl holds NAME` | List the columns and cells the pipeline holds back, why, and the ways to clear each |
 | `openetl holds release NAME STREAM COLUMN` | Patch a hold's values in on the pipeline's next run; `--new-version`, before the names, sends a column held whole to a new column, `COLUMN__v2`, instead |
 | `openetl holds discard NAME STREAM COLUMN` | Drop a hold's values; the column stays as the destination has it |
+| `openetl quarantine NAME` | List the files of rows it quarantined, newest first, and their rows by stream and cause; `--stream` and `--since` narrow it ([Quarantine files](../reference/quarantine-files.md)) |
 
 Flags go before the names, and every command takes `--workspace`. `openetl COMMAND -h` lists a command's flags.
 

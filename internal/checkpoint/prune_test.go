@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 )
@@ -108,6 +109,57 @@ func TestPruneDeletesWhatNeverCommitted(t *testing.T) {
 	}
 	if !exists(t, store, kept) {
 		t.Error("quarantined records of a committed epoch were deleted")
+	}
+}
+
+// Retention deletes the files of committed epochs written before its
+// cutoff, and keeps newer ones and those of epochs after the restored one.
+func TestPruneQuarantineDeletesCommittedFilesPastRetention(t *testing.T) {
+	ctx := t.Context()
+	store := checkpoint.NewMemStore()
+	now := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	clock := now.Add(-48 * time.Hour)
+	store.SetClock(func() time.Time { return clock })
+	l := newLog(store)
+	a := claim(t, l, "a")
+	commit(t, a, 1)
+	commit(t, a, 2)
+	old := quarantine(t, store, 1, 1)
+	oldOutput := "org/pipe/" + checkpoint.QuarantineDir + "/" + checkpoint.QuarantineOutputs + "/1/2/daily.jsonl"
+	if _, err := store.Create(ctx, oldOutput, []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Not an epoch's file.
+	other := "org/pipe/" + checkpoint.QuarantineDir + "/notes.txt"
+	if _, err := store.Create(ctx, other, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	clock = now.Add(-time.Hour)
+	commit(t, a, 3)
+	recent := quarantine(t, store, 1, 3)
+	clock = now.Add(-48 * time.Hour)
+	// An old file of an epoch after the one restored: not committed.
+	later := quarantine(t, store, 1, 4)
+
+	b := claim(t, l, "b")
+	restored, err := b.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := b.PruneQuarantine(ctx, nil, now); n != 0 || err != nil {
+		t.Fatalf("without a restored record: %d, %v", n, err)
+	}
+	n, err := b.PruneQuarantine(ctx, restored, now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || exists(t, store, old) || exists(t, store, oldOutput) {
+		t.Errorf("deleted %d; the files past retention are left: %v, %v", n, exists(t, store, old), exists(t, store, oldOutput))
+	}
+	for _, k := range []string{recent, later, other} {
+		if !exists(t, store, k) {
+			t.Errorf("%s was deleted", k)
+		}
 	}
 }
 

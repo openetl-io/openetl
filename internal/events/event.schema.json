@@ -27,6 +27,7 @@
         "pipeline.overridden",
         "stream.paused",
         "stream.resumed",
+        "stream.quarantined",
         "pipeline.reset",
         "schema.changed",
         "schema.blocked",
@@ -171,6 +172,14 @@
       }
     },
     {
+      "if": { "properties": {"type": {"const": "stream.quarantined"}} },
+      "then": {
+        "description": "A committed epoch quarantined some of a stream's rows: it set them aside in files in the data plane's object storage instead of writing them. Each file is sent once, in the event of the epoch that committed it.",
+        "required": ["data"],
+        "properties": { "data": {"description": "The stream, the epoch and its files.", "$ref": "#/$defs/quarantine"} }
+      }
+    },
+    {
       "if": { "properties": {"type": {"const": "pipeline.reset"}} },
       "then": {
         "description": "A pipeline's streams are to be read again from the start.",
@@ -312,6 +321,54 @@
         "added": { "description": "The names of the columns added.", "type": "array", "items": {"type": "string"} },
         "removed": { "description": "The names of the columns removed.", "type": "array", "items": {"type": "string"} },
         "changed": { "description": "The names of the columns whose type or nullability changed.", "type": "array", "items": {"type": "string"} }
+      }
+    },
+    "quarantine": {
+      "description": "What a committed epoch quarantined of one stream, or of one of a transform's outputs. It names files and counts their rows, and never holds a row's values.",
+      "type": "object",
+      "required": ["pipeline", "stream", "generation", "epoch", "rows", "files"],
+      "additionalProperties": true,
+      "properties": {
+        "pipeline": { "description": "The pipeline's resource name.", "type": "string" },
+        "sync": { "description": "The resource name of the sync, or the continuous pipeline's run, that committed the epoch.", "type": "string" },
+        "stream": { "description": "The stream, or the transform's output, whose rows were quarantined.", "type": "string" },
+        "output": { "description": "Whether the stream is one of a transform's outputs.", "type": "boolean" },
+        "generation": { "description": "The generation of the checkpoint that committed the epoch.", "type": "integer" },
+        "epoch": { "description": "The epoch.", "type": "integer" },
+        "rows": { "description": "How many rows the epoch quarantined, in all its files.", "type": "integer" },
+        "files": {
+          "description": "The epoch's quarantine files of the stream.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/quarantineFile" }
+        }
+      }
+    },
+    "quarantineFile": {
+      "description": "One quarantine file: JSON lines, one per row, in the format the quarantine files reference describes.",
+      "type": "object",
+      "required": ["path", "url", "rows", "causes"],
+      "additionalProperties": true,
+      "properties": {
+        "path": { "description": "The file's path below the pipeline's `_quarantine/` directory, such as `3/17/orders.jsonl`.", "type": "string" },
+        "url": { "description": "Where the file is in the data plane's object storage.", "type": "string" },
+        "rows": { "description": "How many rows it holds.", "type": "integer" },
+        "causes": {
+          "description": "Its rows by cause, the most first.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/quarantineCause" }
+        }
+      }
+    },
+    "quarantineCause": {
+      "description": "How many of a file's rows were quarantined for one cause.",
+      "type": "object",
+      "required": ["code", "rows"],
+      "additionalProperties": true,
+      "properties": {
+        "code": { "description": "What was wrong, as the file's lines name it: `json`, `object`, `type`, `range`, `precision`, `nan`, `statement`, `unsent`, `late`, `event_time` or `aggregate`.", "type": "string" },
+        "column": { "description": "The column that caused it. Left out where no one column did.", "type": "string" },
+        "notHeld": { "description": "Where the stream holds values that do not fit (`unfitValues: hold`), why these rows' values could not be held: `key`, `cursor`, `destination`, `not_null`, `held_value`, `record` or `transform`. Left out otherwise.", "type": "string" },
+        "rows": { "description": "How many rows.", "type": "integer" }
       }
     },
     "column": {

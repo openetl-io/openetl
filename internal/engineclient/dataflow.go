@@ -480,7 +480,7 @@ func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
 		ready.Snapshots = append(ready.Snapshots, attempt.SnapshotOf(s))
 	}
 	for _, q := range r.GetQuarantine() {
-		ready.Quarantine = append(ready.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), Output: q.GetOutput(), URL: q.GetUrl(), Rows: q.GetRows()})
+		ready.Quarantine = append(ready.Quarantine, attempt.QuarantineOf(q))
 	}
 	if s := r.GetOutputSchemas(); len(s) > 0 {
 		ready.OutputSchemas = s

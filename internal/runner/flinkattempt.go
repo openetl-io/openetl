@@ -596,6 +596,7 @@ func (a *flinkAttempt) start(ctx context.Context, restored *checkpoint.Record, l
 	}
 	a.res.Last = epochOf(restored)
 	prune(ctx, a.sess, restored, a.job.keep(), a.job.Staging, false, a.log)
+	pruneQuarantine(ctx, a.sess, restored, a.job.QuarantineRetention, a.log)
 	a.pruneFlink(ctx, restored)
 	a.segments++
 	seg := newFlinkSegment(a, restored, learn)

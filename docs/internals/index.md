@@ -63,7 +63,7 @@ An attempt ([`internal/runner`](../../internal/runner)) hosts connectors, drives
 The runner sits between the connectors and the engine. Its source pump is the source connector's emitter, and sends what the source reads to the engine's inbound edges. On each lane, the engine:
 
 - turns raw rows into Arrow, inferring each stream's schema from what it sees and only ever widening it, and coerces values to the types a source declares ([`crates/normalize`](../../crates/normalize));
-- sets aside the records it can't take, with a reason, as JSON lines under the pipeline's `_quarantine/` in object storage;
+- sets aside the records it cannot take, each with a reason and its code. They are JSON lines under the pipeline's `_quarantine/` in object storage ([format](../reference/quarantine-files.md)). It counts them by cause in each epoch's report;
 - applies the pipeline's schema policy, gives tables and columns their destination names, which never change once given, and adds the metadata columns, `_openetl_id` among them;
 - holds back the columns and cells the destination can't take, and keeps their values for a later release;
 - hands the rows to writer lanes, which write to the runner, with barriers in band, or stage Parquet files, for a destination that loads them and for the built-in `parquet` destination.
@@ -117,6 +117,8 @@ A keyed lane's watermark is the least of its senders' watermarks, through `Sende
 An attempt claims the pipeline by writing `HEAD` with the next generation. An older active attempt, called a **zombie**, receives `ErrFenced` on its next `HEAD` write and stops. Each record contains stream resume states and schemas, lane committables, and staged or quarantined file references.
 
 The same storage holds, next to the log, each attempt's log as JSON lines (`_logs/`), staged epochs (`_staging/`), held values (`_held/`), quarantined records (`_quarantine/`) and stateful operators' runs (`_state/`). `Prune` lists all of `_state/`, and deletes each run that none of the records it keeps names: an earlier generation's, or the attempt's own of an epoch no later than its newest record's. The attempt's own runs of later epochs are kept, since the next record may name them.
+
+A record lists its epoch's quarantine files, with their rows by cause. The runner reports every file of a committed epoch to the control plane. The control plane keeps an index of the files' paths and counts, never their records. In the same transaction, it records a `stream.quarantined` event. `Prune` deletes the files of epochs that never committed. With `quarantine.retention`, `PruneQuarantine` also deletes the files of committed epochs that are older than the retention, by the time that the store gives each object.
 
 ## The commit protocol
 

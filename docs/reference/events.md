@@ -13,7 +13,7 @@ This page is generated from [`internal/events/event.schema.json`](../../internal
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `type` | string | Yes | What happened. Is one of `sync.started`, `sync.succeeded`, `sync.failed`, `sync.stopped`, `pipeline.created`, `pipeline.updated`, `pipeline.deleted`, `pipeline.teardown_failed`, `pipeline.paused`, `pipeline.resumed`, `pipeline.lagging`, `pipeline.recovered`, `pipeline.rescaled`, `pipeline.overridden`, `stream.paused`, `stream.resumed`, `pipeline.reset`, `schema.changed`, `schema.blocked`, `incident.opened`, `incident.escalated`, `incident.resolved` or `webhook.test`. |
+| `type` | string | Yes | What happened. Is one of `sync.started`, `sync.succeeded`, `sync.failed`, `sync.stopped`, `pipeline.created`, `pipeline.updated`, `pipeline.deleted`, `pipeline.teardown_failed`, `pipeline.paused`, `pipeline.resumed`, `pipeline.lagging`, `pipeline.recovered`, `pipeline.rescaled`, `pipeline.overridden`, `stream.paused`, `stream.resumed`, `stream.quarantined`, `pipeline.reset`, `schema.changed`, `schema.blocked`, `incident.opened`, `incident.escalated`, `incident.resolved` or `webhook.test`. |
 | `timestamp` | string | Yes | When the event was recorded, in RFC 3339. |
 | `data` | object | Yes | The event's details. What it holds depends on `type`, as the sections below say. |
 
@@ -145,6 +145,14 @@ One of a pipeline's streams was resumed.
 |---|---|---|---|
 | `data` | [`pipeline`](#pipeline) | Yes | The pipeline, with `stream`. |
 
+### When `type` is `stream.quarantined`
+
+A committed epoch quarantined some of a stream's rows: it set them aside in files in the data plane's object storage instead of writing them. Each file is sent once, in the event of the epoch that committed it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `data` | [`quarantine`](#quarantine) | Yes | The stream, the epoch and its files. |
+
 ### When `type` is `pipeline.reset`
 
 A pipeline's streams are to be read again from the start.
@@ -263,6 +271,43 @@ A pipeline's jobs rescaled.
 | `size` | string | No | The size the API set, such as `l` or `3 vCPU, 6 GiB`. Left out when the job loop rescaled it, or the API gave the spec back its say. |
 | `lanes` | integer | No | The lanes the job loop set. |
 | `fromLanes` | integer | No | The lanes of the job it rescaled. |
+
+### `quarantine`
+
+What a committed epoch quarantined of one stream, or of one of a transform's outputs. It names files and counts their rows, and never holds a row's values.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `pipeline` | string | Yes | The pipeline's resource name. |
+| `sync` | string | No | The resource name of the sync, or the continuous pipeline's run, that committed the epoch. |
+| `stream` | string | Yes | The stream, or the transform's output, whose rows were quarantined. |
+| `output` | boolean | No | Whether the stream is one of a transform's outputs. |
+| `generation` | integer | Yes | The generation of the checkpoint that committed the epoch. |
+| `epoch` | integer | Yes | The epoch. |
+| `rows` | integer | Yes | How many rows the epoch quarantined, in all its files. |
+| `files` | array of [object](#quarantinefiles) | Yes | The epoch's quarantine files of the stream. |
+
+### `quarantine.files[]`
+
+One quarantine file: JSON lines, one per row, in the format the quarantine files reference describes.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | Yes | The file's path below the pipeline's `_quarantine/` directory, such as `3/17/orders.jsonl`. |
+| `url` | string | Yes | Where the file is in the data plane's object storage. |
+| `rows` | integer | Yes | How many rows it holds. |
+| `causes` | array of [object](#quarantinefilescauses) | Yes | Its rows by cause, the most first. |
+
+### `quarantine.files[].causes[]`
+
+How many of a file's rows were quarantined for one cause.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | Yes | What was wrong, as the file's lines name it: `json`, `object`, `type`, `range`, `precision`, `nan`, `statement`, `unsent`, `late`, `event_time` or `aggregate`. |
+| `column` | string | No | The column that caused it. Left out where no one column did. |
+| `notHeld` | string | No | Where the stream holds values that do not fit (`unfitValues: hold`), why these rows' values could not be held: `key`, `cursor`, `destination`, `not_null`, `held_value`, `record` or `transform`. Left out otherwise. |
+| `rows` | integer | Yes | How many rows. |
 
 ### `schemaChange`
 

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strconv"
 
 	"cloud.google.com/go/storage"
@@ -87,11 +86,21 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 }
 
 func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
+	objects, err := s.list(ctx, prefix, "Name")
+	return checkpoint.Keys(objects), err
+}
+
+func (s *Store) ListObjects(ctx context.Context, prefix string) ([]checkpoint.Object, error) {
+	return s.list(ctx, prefix, "Name", "Updated")
+}
+
+// list lists the objects under prefix, sorted, with the attributes named.
+func (s *Store) list(ctx context.Context, prefix string, attrs ...string) ([]checkpoint.Object, error) {
 	q := &storage.Query{Prefix: prefix}
-	if err := q.SetAttrSelection([]string{"Name"}); err != nil {
+	if err := q.SetAttrSelection(attrs); err != nil {
 		return nil, err
 	}
-	var keys []string
+	var out []checkpoint.Object
 	it := s.bucket.Objects(ctx, q)
 	for {
 		o, err := it.Next()
@@ -101,10 +110,10 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("checkpoint: gcs list %s: %w", prefix, err)
 		}
-		keys = append(keys, o.Name)
+		out = append(out, checkpoint.Object{Key: o.Name, Modified: o.Updated})
 	}
-	slices.Sort(keys)
-	return keys, nil
+	checkpoint.SortObjects(out)
+	return out, nil
 }
 
 func version(gen int64) checkpoint.Version {

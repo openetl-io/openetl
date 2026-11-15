@@ -20,12 +20,14 @@ use std::sync::Arc;
 
 use arrow_array::{RecordBatch, UInt32Array, new_null_array};
 use arrow_schema::{Field, Schema};
-use openetl_normalize::{Rejected, Typed, key_groups, render_row};
+use openetl_normalize::{Cause, NotHeld, Rejected, Typed, key_groups, render_row};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_state::{KeyGroupRange, Layer};
 use tokio::sync::mpsc;
 
-use super::{Flow, Lane, LaneStream, copy, hold, quarantine_file, shape_error, shaped};
+use super::{
+    Flow, Lane, LaneStream, Quarantined, copy, hold, quarantine_file, shape_error, shaped,
+};
 use crate::error::JobError;
 use crate::watermark::{self, Senders};
 use crate::window::{Operator, Out};
@@ -34,7 +36,7 @@ use crate::window::{Operator, Out};
 pub(super) enum In {
     /// Rows of the statement's stream: the columns it reads. Each row the
     /// statement can't read, as a cell the stream holds, has why.
-    Rows(usize, RecordBatch, Vec<Option<String>>),
+    Rows(usize, RecordBatch, Vec<Option<(String, Cause)>>),
     /// The sender's watermark of the statement's stream, in microseconds:
     /// every row before it has come, but late ones. It never goes back.
     Watermark(usize, i64),
@@ -63,7 +65,7 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
             continue;
         };
         let batch = reads(st, &typed.batch, &t.sql.inputs[st.input].name)?;
-        let mut why: Vec<Option<String>> = vec![None; batch.num_rows()];
+        let mut why: Vec<Option<(String, Cause)>> = vec![None; batch.num_rows()];
         // A cell the stream holds is no value only for a column the
         // statement reads.
         for c in typed
@@ -73,10 +75,12 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
         {
             if let Some(w) = why.get_mut(c.row) {
                 w.get_or_insert_with(|| {
-                    format!(
+                    let reason = format!(
                         "transform.sql {}, writing {}: column {} has a value that doesn't fit its type, which the stream holds: {}",
                         st.at, st.output, c.column, c.reason
-                    )
+                    );
+                    let cause = Cause::value(&c.reason, &c.column, Some(NotHeld::Transform));
+                    (reason, cause)
                 });
             }
         }
@@ -283,7 +287,7 @@ pub(super) async fn run(
                 stream: output,
                 shaper: o.shaper.fork(),
                 version: o.version,
-                quarantined: (Vec::new(), 0),
+                quarantined: Quarantined::default(),
                 cells: Default::default(),
                 replay: None,
             }
@@ -336,10 +340,11 @@ impl Keyed {
                 let mut rejected = Vec::new();
                 let keep: Vec<usize> = (0..batch.num_rows())
                     .filter(|&r| match &why[r] {
-                        Some(w) => {
+                        Some((reason, cause)) => {
                             rejected.push(Rejected {
                                 row: r,
-                                reason: w.clone(),
+                                reason: reason.clone(),
+                                cause: cause.clone(),
                             });
                             false
                         }
@@ -359,9 +364,10 @@ impl Keyed {
                 let rejected = out
                     .rejected
                     .iter()
-                    .map(|(r, why)| Rejected {
+                    .map(|(r, why, cause)| Rejected {
                         row: keep[*r],
                         reason: why.clone(),
+                        cause: cause.clone(),
                     })
                     .collect();
                 self.reject(lane, &batch, rejected)?;
@@ -430,9 +436,10 @@ impl Keyed {
                 .failed
                 .iter()
                 .enumerate()
-                .map(|(i, (_, why))| Rejected {
+                .map(|(i, (_, why, cause))| Rejected {
                     row: i,
                     reason: why.clone(),
+                    cause: cause.clone(),
                 })
                 .collect();
             hold(
