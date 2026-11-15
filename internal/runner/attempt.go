@@ -1876,7 +1876,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for i, d := range st.descs {
 		rec.Committables[i] = d
 	}
-	rec.Coverage = st.coverage
+	rec.Coverage, rec.SQLDigest = st.coverage, c.job.SQL.digest()
 	if err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced); err != nil {
 		return nil, fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}

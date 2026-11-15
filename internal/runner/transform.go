@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 
@@ -61,6 +63,16 @@ type SQLTransform struct {
 	// The stateful operators' IDs, as planning gave them for the pipeline's
 	// version, and as checkpoint.Snapshot.Operator names them.
 	Operators []string
+}
+
+// digest names t's statements, as checkpoint.Record.SQLDigest does; empty
+// for none.
+func (t *SQLTransform) digest() string {
+	if t == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(t.SQL))
+	return hex.EncodeToString(sum[:])
 }
 
 // ExpectedOutput is an output a statement writes, as planning gave it.

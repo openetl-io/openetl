@@ -396,6 +396,20 @@ func (p *pool) lose(t *testing.T, s *txnStore, n1 int, hook func(uint64, laneMar
 
 var errCoordinatorLost = errors.New("the coordinator is gone")
 
+// attempt runs attempt owner of s's pipeline on n workers, or on one runner
+// with n 0, and says how it ended, once its workers have.
+func (p *pool) attempt(ctx context.Context, s *txnStore, owner string, n int) error {
+	j := p.job(owner, p.source(), txnDest{s: s})
+	if n > 0 {
+		j = p.workers(owner, n)
+	}
+	_, err := runner.RunAttempt(ctx, j)
+	if n > 0 {
+		p.wait(owner)
+	}
+	return err
+}
+
 // settle runs attempt owner on n workers, or on one runner with n 0, after
 // head, and checks it settled head's epoch before anything else, redoing
 // the lanes that weren't committed from the source, as they were.
@@ -604,14 +618,7 @@ func TestARedoUnderAnotherKeyIsRefused(t *testing.T) {
 			head := p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
 			// A key of the same column hashes its rows to other groups.
 			p.change = func(j *runner.Job) { j.Streams[0].PrimaryKey = []string{"id", "id"} }
-			j := p.job("a2", p.source(), txnDest{s: s})
-			if n > 0 {
-				j = p.workers("a2", n)
-			}
-			_, err := runner.RunAttempt(ctx, j)
-			if n > 0 {
-				p.wait("a2")
-			}
+			err := p.attempt(ctx, s, "a2", n)
 			if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(fmt.Sprint(err), "(id) until the epoch is settled") {
 				t.Fatalf("the attempt ended with %v (%s)", err, errs.CodeOf(err))
 			}
@@ -676,14 +683,7 @@ func TestARedoShortOfItsPosition(t *testing.T) {
 			head := p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
 			// The source now holds fewer rows than the epoch read.
 			p.source = ranges(6, 1, 5)
-			j := p.job("a2", p.source(), txnDest{s: s})
-			if n > 0 {
-				j = p.workers("a2", n)
-			}
-			_, err := runner.RunAttempt(ctx, j)
-			if n > 0 {
-				p.wait("a2")
-			}
+			err := p.attempt(ctx, s, "a2", n)
 			if errs.CodeOf(err) != errs.PositionLost {
 				t.Fatalf("the attempt ended with %v", err)
 			}
