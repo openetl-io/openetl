@@ -157,8 +157,10 @@ func (p *podsOnKube) isolate(t *testing.T) {
 }
 
 // reaches says whether a pod of the data plane, with labels besides the
-// data plane's, opens a TCP connection to addr.
-func (p *podsOnKube) reaches(t *testing.T, labels map[string]string, addr string) bool {
+// data plane's, opens a TCP connection to addr within tries attempts of 5
+// seconds each, 5 seconds apart: a new pod's allow rules may take a moment
+// to apply.
+func (p *podsOnKube) reaches(t *testing.T, labels map[string]string, addr string, tries int) bool {
 	t.Helper()
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -169,7 +171,7 @@ func (p *podsOnKube) reaches(t *testing.T, labels map[string]string, addr string
 		ObjectMeta: metav1.ObjectMeta{Name: unique("probe"), Labels: labels},
 		Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{{
 			Name: "probe", Image: os.Getenv("OPENETL_E2E_KUBE_IMAGE"), ImagePullPolicy: corev1.PullNever,
-			Command: []string{"bash", "-c", fmt.Sprintf("timeout 5 bash -c '</dev/tcp/%s/%s'", host, port)},
+			Command: []string{"bash", "-c", fmt.Sprintf("for i in $(seq %d); do [ $i = 1 ] || sleep 5; timeout 5 bash -c '</dev/tcp/%s/%s' && exit 0; done; exit 1", tries, host, port)},
 		}}},
 	}
 	pods := p.client.CoreV1().Pods(p.k.namespace)
@@ -178,7 +180,7 @@ func (p *podsOnKube) reaches(t *testing.T, labels map[string]string, addr string
 	}
 	t.Cleanup(func() { _ = pods.Delete(context.Background(), pod.Name, metav1.DeleteOptions{}) })
 	var phase corev1.PodPhase
-	eventually(t, 2*time.Minute, pod.Name+" to end", func() bool {
+	eventually(t, time.Minute+time.Duration(tries)*10*time.Second, pod.Name+" to end", func() bool {
 		got, err := pods.Get(t.Context(), pod.Name, metav1.GetOptions{})
 		if err != nil {
 			t.Fatal(err)
@@ -281,11 +283,12 @@ func TestWorkersOnKubernetes(t *testing.T) {
 		})
 	}
 	// The cluster enforces the policies: a job pod reaches the coordinator,
-	// and another pod of the data plane doesn't.
-	if !p.reaches(t, map[string]string{"app.kubernetes.io/managed-by": "openetl", "app.kubernetes.io/component": "attempt"}, at) {
-		t.Errorf("a job pod doesn't reach the coordinator at %s under the Kubernetes page's NetworkPolicy", at)
+	// and then, with the policies applied for as long, another pod of the
+	// data plane doesn't, in one try.
+	if !p.reaches(t, map[string]string{"app.kubernetes.io/managed-by": "openetl", "app.kubernetes.io/component": "attempt"}, at, 12) {
+		t.Fatalf("a job pod doesn't reach the coordinator at %s under the Kubernetes page's NetworkPolicy", at)
 	}
-	if p.reaches(t, map[string]string{"app.kubernetes.io/name": "probe"}, at) {
+	if p.reaches(t, map[string]string{"app.kubernetes.io/name": "probe"}, at, 1) {
 		t.Errorf("a pod no policy allows reaches the coordinator at %s, so the cluster doesn't enforce NetworkPolicy", at)
 	}
 
