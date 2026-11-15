@@ -3,8 +3,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Callout } from "@/components/callout";
-import type { SchemaColumn, StatementPlan, ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
-import { classLabel, position, type SqlMessage } from "@/lib/sql-plan";
+import { OperatorChange, type OperatorPlan, type SchemaColumn, type StatementPlan, type ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
+import { duration, durationMs } from "@/lib/format";
+import { changeLabel, changeText, classLabel, operatorComputes, position, type SqlMessage } from "@/lib/sql-plan";
 
 /** A place in the SQL, as line:column. */
 export function SqlPosition({ line, column }: { line: number; column: number }) {
@@ -152,6 +153,69 @@ export function SqlView({ view: v, messages }: { view: ViewPlan; messages: SqlMe
         <SqlColumns columns={v.columns} label={`The columns of view ${v.name}`} />
       </CardContent>
     </Card>
+  );
+}
+
+/** The transform's stateful operators: what each keeps, and what applying does to its state. */
+export function SqlOperators({ operators }: { operators: OperatorPlan[] }) {
+  if (!operators.length) return null;
+  return (
+    <div className="grid gap-2">
+      <h3 className="text-[0.8125rem] text-muted-foreground">State</h3>
+      <div className="overflow-x-auto rounded-md border contain-inline-size">
+        <Table aria-label="The transform's stateful operators">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Operator</TableHead>
+              <TableHead>Keeps</TableHead>
+              <TableHead>State</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {operators.map((op) => (
+              <TableRow key={op.id} className="align-top">
+                <TableCell className="whitespace-normal">
+                  <div className="font-mono text-[0.8125rem]">{op.id}</div>
+                  <div className="text-[0.8125rem] text-muted-foreground">
+                    {op.output || "—"}
+                    {op.line > 0 && (
+                      <>
+                        {" "}
+                        <SqlPosition line={op.line} column={op.column} />
+                      </>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  {op.window ? (
+                    <>
+                      <div className="font-mono text-[0.8125rem] break-words">{operatorComputes(op)}</div>
+                      <div className="text-[0.8125rem] text-muted-foreground">
+                        Each window's state for {duration(durationMs(op.retention))} of event time, lateness {duration(durationMs(op.lateness))} included
+                      </div>
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </TableCell>
+                <TableCell className="grid gap-1 whitespace-normal">
+                  <div>
+                    <Badge variant={op.change === OperatorChange.KEPT ? "secondary" : "outline"}>{changeLabel[op.change]}</Badge>
+                  </div>
+                  <span className="text-[0.8125rem] text-muted-foreground">{changeText(op)}</span>
+                  {op.backfill.length > 0 && (
+                    <span className="text-[0.8125rem] text-muted-foreground">
+                      A backfill builds it from the start:{" "}
+                      <code className="font-mono text-foreground">openetl reset --stream {op.backfill.join(" --stream ")} NAME</code>
+                    </span>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
   );
 }
 

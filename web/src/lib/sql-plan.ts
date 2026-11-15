@@ -1,4 +1,5 @@
-import type { StatementPlan, TransformPlan, ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
+import { OperatorChange, type OperatorPlan, type StatementPlan, type TransformPlan, type ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
+import { duration, durationMs } from "@/lib/format";
 
 // A SQL transform's plan as the console shows it: the plan's problems and
 // notes about transform.sql, each at its place in the SQL when it has one.
@@ -56,6 +57,43 @@ export function partOf(all: Part[], m: SqlMessage): Part | undefined {
 export function notDelivered(t: TransformPlan) {
   const replaced = new Set(t.statements.filter((s) => s.replaces).map((s) => s.output));
   return t.withheld.filter((s) => !replaced.has(s));
+}
+
+/**
+ * What a stateful operator computes, by the stream's names: "tumble 1m 00s by created_at on region: sum(amount), count(*)".
+ * Empty for a dropped one, whose statement is gone.
+ */
+export function operatorComputes(op: OperatorPlan) {
+  if (!op.window) return "";
+  let s = `${op.window} ${duration(durationMs(op.size))}`;
+  if (op.slide) s += ` every ${duration(durationMs(op.slide))}`;
+  s += ` by ${op.eventTime}`;
+  if (op.keys.length) s += ` on ${op.keys.join(", ")}`;
+  return `${s}: ${op.aggregates.join(", ")}`;
+}
+
+/** What applying does to an operator's state, against the pipeline's current version. */
+export const changeLabel: Record<OperatorChange, string> = {
+  [OperatorChange.UNSPECIFIED]: "Unknown",
+  [OperatorChange.KEPT]: "Kept",
+  [OperatorChange.NEW]: "New",
+  [OperatorChange.CHANGED]: "Changed",
+  [OperatorChange.DROPPED]: "Dropped",
+};
+
+/** What happens to an operator's state, in a sentence. */
+export function changeText(op: OperatorPlan) {
+  switch (op.change) {
+    case OperatorChange.KEPT:
+      return "Keeps its state.";
+    case OperatorChange.NEW:
+      return "Its state starts empty.";
+    case OperatorChange.CHANGED:
+      return `Its state starts empty, in place of ${op.replaces}, whose state is dropped.`;
+    case OperatorChange.DROPPED:
+      return "No statement keeps it now, so the next sync drops its state.";
+  }
+  return "The current version wasn't planned when it was applied.";
 }
 
 /** row_wise → "Row-wise", and the classes of statements the engine refuses. */
