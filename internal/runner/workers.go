@@ -916,10 +916,13 @@ func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, don
 // layout spreads the attempt over n workers. A stream's splits go to the
 // workers emitting least, but those of a stream whose key's rows meet on a
 // writer lane, of an overwrite, whose read one pump ends, and of a stream
-// the attempt doesn't read stay on one worker. Each worker runs as many
-// lanes as the job, no more than its splits unless the source splits
-// running ones, and at least one of the destination's writer lanes. Worker
-// 0 has the first writer lane, which applies schemas and commits.
+// the attempt doesn't read stay on one worker. Every stream read with CDC
+// goes to one worker, the same for all of them: a source reads their
+// changes from one log, such as a replication slot, which one read holds.
+// Each worker runs as many lanes as the job, no more than its splits unless
+// the source splits running ones, and at least one of the destination's
+// writer lanes. Worker 0 has the first writer lane, which applies schemas
+// and commits.
 func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[string]bool, resplits bool) (*attemptv1.Assignment, error) {
 	load := make([]int, n)
 	inParts := make([]bool, n)
@@ -930,10 +933,17 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 		worker int
 	}
 	var all []placed
+	changes := -1
 	for _, s := range j.Streams {
 		ss := splits[s.Name]
 		together := done[s.Name] || len(ss) <= 1 || j.oneWorker(s)
 		w := least()
+		if s.Read == source.CDC && !done[s.Name] {
+			if changes < 0 {
+				changes = w
+			}
+			w, together = changes, true
+		}
 		for _, sp := range ss {
 			if !together && !sp.Complete {
 				w = least()

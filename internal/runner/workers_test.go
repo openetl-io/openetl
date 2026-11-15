@@ -296,8 +296,9 @@ type pool struct {
 	sources map[string][]*rangeSource
 	cancels map[string][]context.CancelFunc
 	done    map[string]chan error
-	// Makes each attempt's workers' sources.
+	// Makes each attempt's workers' sources; reader, if set, in its place.
 	source func() *rangeSource
+	reader func() source.Reader
 	// The workers' dataflow; nil: Passthrough.
 	flow runner.Dataflow
 	// The destination, the coordinator's or a worker's; nil: store's.
@@ -355,9 +356,15 @@ func (p *pool) workers(owner string, n int) runner.Job {
 		p.mu.Lock()
 		p.done[owner] = done
 		for _, tg := range targets {
-			src := p.source()
+			var src source.Reader
+			if p.reader != nil {
+				src = p.reader()
+			} else {
+				rs := p.source()
+				p.sources[owner] = append(p.sources[owner], rs)
+				src = rs
+			}
 			wctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-			p.sources[owner] = append(p.sources[owner], src)
 			p.cancels[owner] = append(p.cancels[owner], cancel)
 			wj := p.job(owner, src, p.destination(false))
 			wj.Log = nil
@@ -971,6 +978,79 @@ func TestHoldsOnWorkers(t *testing.T) {
 	if h := p.head().Streams["s"].Holds; h != nil && (len(h.Columns) > 0 || h.Replay != nil) {
 		t.Errorf("the hold didn't end: %+v", h)
 	}
+}
+
+// changeLog is a source's one log of changes for every stream it reads
+// with CDC, as a Postgres replication slot is: a read holds it until it
+// ends, and another read of it meanwhile fails. Stream a's rows are ids 1
+// to rows, b's the next rows.
+type changeLog struct {
+	rows int
+	mu   sync.Mutex
+	held bool
+}
+
+type changeReader struct{ log *changeLog }
+
+func (r changeReader) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	l := r.log
+	l.mu.Lock()
+	if l.held {
+		l.mu.Unlock()
+		return errs.New(errs.Transient, "the change log is held by another read")
+	}
+	l.held = true
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		l.held = false
+		l.mu.Unlock()
+	}()
+	for _, cs := range req.Streams {
+		if cs.State != nil {
+			continue
+		}
+		first := 1
+		if cs.Name == "b" {
+			first += l.rows
+		}
+		rows := make([]json.RawMessage, l.rows)
+		for i := range rows {
+			rows[i] = json.RawMessage(fmt.Sprintf(`{"id":%d}`, first+i))
+		}
+		if err := out.Rows(cs.Name, rows); err != nil {
+			return err
+		}
+		if err := out.ResumePoint(cs.Name, []byte("read")); err != nil {
+			return err
+		}
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// Every stream a job reads with CDC is read on one worker, since the source
+// reads their changes from one log, which one read holds: two streams'
+// changes read on two workers would fight over it.
+func TestStreamsReadWithCDCShareOneWorker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	p := newPool(t, ranges(1, 1, 1))
+	log := &changeLog{rows: 20}
+	p.reader = func() source.Reader { return changeReader{log} }
+	p.change = func(j *runner.Job) {
+		j.Streams = []runner.Stream{
+			{Name: "a", Replay: source.Exact, Read: source.CDC, Mode: destination.Append},
+			{Name: "b", Replay: source.Exact, Read: source.CDC, Mode: destination.Append},
+		}
+	}
+	j := p.workers("a1", 2)
+	drains(&j)
+	if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
+		t.Fatalf("the attempt: %v", err)
+	}
+	p.wait("a1")
+	p.store.check(t, 40)
 }
 
 // Workers without a server to join or a way to launch them are refused

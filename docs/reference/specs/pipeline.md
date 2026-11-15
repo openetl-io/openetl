@@ -100,10 +100,10 @@ A pipeline with `transform.sql` runs on workers, and so do streams that hold col
 Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
 
 - a keyed stream whose splits don't partition it by key;
-- a keyed stream read with `cdc`;
+- a stream read with `cdc`, on the same worker as every other stream read with `cdc`, since the source reads their changes from one log;
 - a stream written with `overwrite`.
 
-With `transform.sql`, these rules apply to each stream that a statement reads, as its output keeps the stream's key or has none.
+With `transform.sql`, these rules apply to each statement's output and each stream passed through: the stream a statement reads is read on one worker when an output from it is written with `overwrite` or has an exchange in the plan's `partitioning`.
 
 When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks the capabilities before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod. [Run a job on several pods](../../pipelines/workers.md) explains the plan's messages and what happens when a pod fails.
 

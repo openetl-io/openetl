@@ -44,7 +44,7 @@ func OnePod(j WorkerJob) string {
 // Why an attempt on workers reads all of a stream's splits on one worker.
 const (
 	whyOverwrite = "an overwrite's read ends on one worker"
-	whyChanges   = "the changes to each key must reach one writer lane in order"
+	whyChanges   = "the source reads its changes from one log, with those of every stream read with cdc, which one worker reads"
 	whySplits    = "the source's splits don't partition it by key, and the rows of each key must meet on one writer lane"
 )
 
@@ -54,7 +54,7 @@ func OneWorker(mode destination.WriteMode, keyed, splitsByKey bool, read apiv1.S
 	switch {
 	case mode == destination.Overwrite:
 		return whyOverwrite
-	case keyed && read == apiv1.SyncMode_SYNC_MODE_CDC:
+	case read == apiv1.SyncMode_SYNC_MODE_CDC:
 		return whyChanges
 	case keyed && !splitsByKey:
 		return whySplits
@@ -64,16 +64,17 @@ func OneWorker(mode destination.WriteMode, keyed, splitsByKey bool, read apiv1.S
 
 // oneWorkerOn says why an attempt on workers reads all of a stream's splits
 // on one worker, where a statement writes path's output from it in mode:
-// the output is an overwrite, or its path has an exchange, which runs
-// inside one engine. Empty if it spreads them.
+// the output is an overwrite, the stream is read with cdc, or the output's
+// path has an exchange, which runs inside one engine. Empty if it spreads
+// them.
 func oneWorkerOn(mode destination.WriteMode, path Path, read apiv1.SyncMode) string {
 	switch {
 	case mode == destination.Overwrite:
 		return whyOverwrite
-	case len(path.Exchanges()) == 0:
-		return ""
 	case read == apiv1.SyncMode_SYNC_MODE_CDC:
 		return whyChanges
+	case len(path.Exchanges()) == 0:
+		return ""
 	}
 	return whySplits
 }

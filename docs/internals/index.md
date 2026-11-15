@@ -115,7 +115,8 @@ An attempt can run on several runners: one runner coordinates it, and the others
 - All the splits of these streams go to one worker:
   - a stream written with overwrite;
   - a stream that the attempt does not read;
-  - a keyed stream whose splits do not keep a key's rows together: one whose path has an exchange, which runs inside one engine.
+  - a keyed stream whose splits do not keep a key's rows together: one whose path has an exchange, which runs inside one engine;
+  - a stream read with `cdc`, and every such stream goes to the same worker: a source reads their changes from one log, such as a Postgres replication slot, which only one read can hold.
 
   With a SQL transform, a stream that a statement reads goes to one worker if an output written from it, or the stream passed through, is written with overwrite or has an exchange on its path. An output's partitioning is its stream's past the statement, so a key that the statement passes through, renamed or not, keeps its split, and an output without a key needs no exchange.
 - A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record. The record also has each committable's coverage: the splits whose rows it holds, where each split's part of the epoch began, how many rows the split had, and the key groups of those rows with the key that grouped them.

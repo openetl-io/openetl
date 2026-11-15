@@ -96,10 +96,12 @@ When the coordinator finds that a job cannot run on workers, OpenETL places the 
 The workers read the source's splits between them. Each attempt reads all the splits of these streams on one worker:
 
 - a keyed stream that the source does not split by key;
-- a keyed stream read with `cdc`;
+- a stream read with `cdc`;
 - a stream written with `overwrite`.
 
-The first two are the streams with an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). A destination with one writer lane needs no exchange, but its jobs run on one pod, so a job on workers always has an exchange for such a stream. An exchange moves rows between the lanes of one worker only.
+A keyed stream of the first two kinds has an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). A destination with one writer lane needs no exchange, but its jobs run on one pod, so a job on workers always has an exchange for such a stream. An exchange moves rows between the lanes of one worker only.
+
+The source reads the changes of every stream read with `cdc` from one log, such as a replication slot, and only one reader can hold the log. So one worker reads all of a job's `cdc` streams together.
 
 The plan warns about each one, in this form:
 
@@ -109,7 +111,7 @@ STREAM: each attempt reads it on one of its 4 workers: REASON
 
 Each such stream is no faster than on one pod, but different such streams can go to different workers, which read them at the same time. A worker with no stream or split to read has no work. For example, a job with only two such streams leaves two of four workers with nothing to read.
 
-With a [SQL transform](./sql-transforms.md), these rules apply to each stream that a statement reads. A statement's output keeps the key of the stream that it reads, or has no key.
+With a [SQL transform](./sql-transforms.md), these rules apply to each statement's output, and to each stream that passes through. One worker reads all the splits of a stream when an output written from it has an exchange in the `partitioning` section, or is written with `overwrite`. For example, a statement that passes the key through keeps the stream's split by key, and an output without a key needs no exchange. The plan's warning names the stream that the statement reads.
 
 ## Schema changes and holds
 
