@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,7 +79,7 @@ func (p *laneLossProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.EscapedPath()
 	put := r.Method == http.MethodPut
 	if put && strings.HasSuffix(path, "/_checkpoints/HEAD") {
-		p.beforeHead()
+		p.beforeHead(r.Context())
 	}
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
@@ -102,7 +103,7 @@ func (p *laneLossProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // beforeHead stops a worker if HEAD's write is the one to stop at.
-func (p *laneLossProxy) beforeHead() {
+func (p *laneLossProxy) beforeHead(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	path := p.pending
@@ -110,7 +111,7 @@ func (p *laneLossProxy) beforeHead() {
 	if p.fired || path == "" {
 		return
 	}
-	rec, err := p.read(path)
+	rec, err := p.read(ctx, path)
 	if err != nil {
 		p.fail(fmt.Errorf("reading record %s: %w", path, err))
 		return
@@ -148,9 +149,15 @@ func (p *laneLossProxy) fail(err error) {
 }
 
 // read reads a record from the store, past the proxy.
-func (p *laneLossProxy) read(path string) (checkpoint.Record, error) {
+func (p *laneLossProxy) read(ctx context.Context, path string) (checkpoint.Record, error) {
 	var rec checkpoint.Record
-	res, err := http.Get(p.target.String() + path)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.target.String()+path, nil)
+	if err != nil {
+		return rec, err
+	}
+	res, err := p.tr.RoundTrip(req)
 	if err != nil {
 		return rec, err
 	}
@@ -189,6 +196,11 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	launcher := startPodLauncher(t, plane, token, "--checkpoints", store)
 	proxy.launcher.Store(launcher)
 	startRunnerWith(t, token, env.apiURL, "--data-plane", plane, "--capacity", "1,2Gi", "--checkpoints", store)
+	// A pipeline applied before the launcher reports runs on one pod.
+	eventually(t, 30*time.Second, "the pod launcher to report", func() bool {
+		n, err := query[int](t, "SELECT count(*) FROM runners WHERE data_plane_id = $1 AND launcher AND attempt = ''", plane)
+		return err == nil && n == 1
+	})
 
 	name := unique("workers-kafka")
 	topic, ns := schema(name), schema(name)+"_out"
@@ -214,7 +226,8 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 		}
 		if status, _ := query[string](t, `SELECT s.status FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id
 			WHERE p.name = $1 ORDER BY s.start_time DESC LIMIT 1`, name); status != "" && status != "running" {
-			t.Fatalf("the sync ended %s before an epoch had rows in every writer lane: %s", status, lastSyncError(t, name))
+			a := lastAttempt(t, name)
+			t.Fatalf("the sync ended %s, on %d workers (%q), before an epoch had rows in every writer lane: %s", status, a.GetWorkers(), a.GetOnePod(), lastSyncError(t, name))
 		}
 		return false
 	})

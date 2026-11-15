@@ -190,6 +190,9 @@ func (s *memSource) readUsers(n, seq int64, state, until []byte, out source.Emit
 		if err := out.Records("users", batch); err != nil {
 			return err
 		}
+		if until != nil && to == end && s.bug == "until-completes-first" {
+			break
+		}
 		st, _ := json.Marshal(to)
 		if err := out.ResumePoint("users", st); err != nil {
 			return err
@@ -197,6 +200,11 @@ func (s *memSource) readUsers(n, seq int64, state, until []byte, out source.Emit
 	}
 	var next []byte
 	switch {
+	case until != nil && s.bug == "until-completes-first":
+		if err := out.Complete("users", until); err != nil {
+			return err
+		}
+		return out.ResumePoint("users", until)
 	case until != nil && s.bug != "until-no-end":
 		next = until
 	case until == nil && s.bug == "completion-moves":
@@ -407,6 +415,13 @@ func TestSourcePasses(t *testing.T) {
 	sourceSuite("").Test(t)
 }
 
+// The resume and until checks can start from one resume point.
+func TestSourceOneResumePoint(t *testing.T) {
+	s := sourceSuite("")
+	s.ResumePoints = 1
+	s.Test(t)
+}
+
 // Records read again after a resume point are the same records, though
 // their control sequence is new.
 func TestSourceSequencesAreNotRecords(t *testing.T) {
@@ -415,19 +430,20 @@ func TestSourceSequencesAreNotRecords(t *testing.T) {
 
 func TestSourceBugsFail(t *testing.T) {
 	cases := map[string][]string{
-		"resume-gap":           {"read/resume", "read/until", "read/committed"},
-		"dup-key":              {"read/full"},
-		"batch-after-complete": {"read/full", "read/until"},
-		"incremental-no-next":  {"read/incremental"},
-		"incremental-skips":    {"read/incremental"},
-		"check-internal":       {"errors"},
-		"committed-fails":      {"read/committed"},
-		"ack-trims-too-far":    {"read/committed"},
-		"continuous-completes": {"read/continuous"},
-		"continuous-no-resume": {"read/continuous"},
-		"until-ignored":        {"read/until"},
-		"until-no-end":         {"read/until"},
-		"completion-moves":     {"read/until"},
+		"resume-gap":            {"read/resume", "read/until", "read/committed"},
+		"dup-key":               {"read/full"},
+		"batch-after-complete":  {"read/full", "read/until"},
+		"incremental-no-next":   {"read/incremental"},
+		"incremental-skips":     {"read/incremental"},
+		"check-internal":        {"errors"},
+		"committed-fails":       {"read/committed"},
+		"ack-trims-too-far":     {"read/committed"},
+		"continuous-completes":  {"read/continuous"},
+		"continuous-no-resume":  {"read/continuous"},
+		"until-ignored":         {"read/until"},
+		"until-no-end":          {"read/until"},
+		"until-completes-first": {"read/until"},
+		"completion-moves":      {"read/until"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {

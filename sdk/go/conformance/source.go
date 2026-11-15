@@ -488,26 +488,27 @@ func (r *sourceRun) checkUntil(t T) {
 }
 
 // endsAt: a read until the i-th resume point's state sends a resume point
-// with it after its last record, and completes with it.
+// with it after its last record, then completes with it.
 func endsAt(t T, name string, i int, events []event, until []byte) {
 	t.Helper()
+	end := slices.IndexFunc(events, func(e event) bool { return e.complete })
+	if end < 0 {
+		t.Errorf("%s: a read until resume point %d didn't complete", name, i)
+		return
+	}
 	last := -1
-	for k, e := range events {
+	for k, e := range events[:end] {
 		if e.resume {
 			last = k
 		}
 	}
 	if last < 0 || !bytes.Equal(events[last].state, until) {
-		t.Errorf("%s: a read until resume point %d didn't send a resume point at it last", name, i)
+		t.Errorf("%s: a read until resume point %d didn't send a resume point at it before completing", name, i)
 	} else if len(rowsAfter(events, last)) > 0 {
 		t.Errorf("%s: a read until resume point %d sent records after its resume point there", name, i)
 	}
-	end, ok := completion(events)
-	switch {
-	case !ok:
-		t.Errorf("%s: a read until resume point %d didn't complete", name, i)
-	case !end.hasNext || !bytes.Equal(end.next, until):
-		t.Errorf("%s: a read until resume point %d completed at %q, not at it", name, i, end.next)
+	if !events[end].hasNext || !bytes.Equal(events[end].next, until) {
+		t.Errorf("%s: a read until resume point %d completed at %q, not at it", name, i, events[end].next)
 	}
 }
 
@@ -525,6 +526,9 @@ func rowsBetween(events []event, i, j int) []row {
 func spread(points []int, n int) []int {
 	if len(points) <= n {
 		return points
+	}
+	if n <= 1 {
+		return points[:n]
 	}
 	out := make([]int, 0, n)
 	for i := range n {
