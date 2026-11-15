@@ -55,7 +55,7 @@ func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Opti
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	log = log.With("pipeline", job.Pipeline, "owner", job.Owner, "generation", t.Generation, "worker", t.Worker)
+	log = log.With("pipeline", job.Pipeline, "owner", job.Owner, "generation", t.Generation, "worker", t.Worker+1)
 	if t.Exchange == "" {
 		var err error
 		if t.Listen, t.Exchange, err = attempt.ExchangeAddresses(ctx, t.Listen, ""); err != nil {

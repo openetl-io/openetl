@@ -276,7 +276,7 @@ func TestWorkersOnKubernetes(t *testing.T) {
 		}
 		eventually(t, 2*time.Minute, w.Name+" to join its coordinator at "+at, func() bool {
 			log := p.podLog(t, w.Name)
-			return strings.Contains(log, `msg="runner running one worker of an attempt"`) && strings.Contains(log, fmt.Sprintf("worker=%d", n-1)) &&
+			return strings.Contains(log, `msg="runner running one worker of an attempt"`) && strings.Contains(log, fmt.Sprintf("worker=%d", n)) &&
 				strings.Contains(log, `msg="worker joining its coordinator"`) && strings.Contains(log, "coordinator="+at)
 		})
 	}
