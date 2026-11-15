@@ -228,7 +228,7 @@ func TestARedoThroughTheEngine(t *testing.T) {
 		var workers sync.WaitGroup
 		cancels := make([]context.CancelFunc, n)
 		j := job(src())
-		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 			for _, c := range rec.Coverage {
 				readers := map[string]bool{}
 				for _, s := range c.Splits {

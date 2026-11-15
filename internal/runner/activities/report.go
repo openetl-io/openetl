@@ -45,9 +45,6 @@ type reporter struct {
 	progress *runner.Progress
 	// What the attempt uses; nil if nothing counts it.
 	meter *resources.Meter
-	// Each stream's held cells by column as last reported, for the cells an
-	// epoch held; owned by checkpoint's caller.
-	cells map[string]map[string]uint64
 	// As Job.Lowered says.
 	lowered map[string]runner.Lowered
 	// How the source reads each stream, the paused ones too.
@@ -87,13 +84,13 @@ func (r *reporter) schemas(e destination.Epoch, schemas, outputs map[string][]by
 }
 
 // checkpoint queues a checkpoint mirror report without blocking. rec must
-// not change.
-func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed map[string]uint64) {
+// not change. held are the cells each stream, or a SQL transform's output,
+// held in rec's epoch.
+func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed, held map[string]uint64) {
 	var progress []source.Progress
 	if r.progress != nil {
 		progress = r.progress.Latest()
 	}
-	held := r.heldCells(rec)
 	var usage *apiv1.Usage
 	if r.meter != nil {
 		usage = worker.APIUsage(r.meter.Usage())
@@ -104,34 +101,6 @@ func (r *reporter) checkpoint(rec *checkpoint.Record, collapsed map[string]uint6
 		_, err := r.api.ReportCheckpoint(ctx, connect.NewRequest(req))
 		return err
 	}})
-}
-
-// heldCells are the cells each stream, or a SQL transform's output, held in
-// rec's epoch: what its cell holds grew by since the last record.
-func (r *reporter) heldCells(rec *checkpoint.Record) map[string]uint64 {
-	if r.cells == nil {
-		r.cells = map[string]map[string]uint64{}
-	}
-	out := map[string]uint64{}
-	names := slices.Collect(maps.Keys(rec.Streams))
-	for name := range rec.Outputs {
-		if _, ok := rec.Streams[name]; !ok {
-			names = append(names, name)
-		}
-	}
-	for _, name := range names {
-		now := map[string]uint64{}
-		if h := rec.HoldsOf(name); h != nil {
-			for col, c := range h.Cells {
-				now[col] = c.Cells
-				if c.Cells > r.cells[name][col] {
-					out[name] += c.Cells - r.cells[name][col]
-				}
-			}
-		}
-		r.cells[name] = now
-	}
-	return out
 }
 
 func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]uint64, progress []source.Progress) *dataplanev1.ReportCheckpointRequest {

@@ -126,7 +126,7 @@ func TestTransformBetweenEngines(t *testing.T) {
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: options(t, mem)},
 		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline, CommitMaxBytes: 1},
-		OnCheckpoint: func(rec *checkpoint.Record, _ map[string]uint64) {
+		OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
 			recs = append(recs, rec)
 		},
 	}

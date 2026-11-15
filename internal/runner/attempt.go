@@ -176,9 +176,10 @@ type Job struct {
 	// only the schema. It must not block.
 	OnSchemas func(e destination.Epoch, schemas, outputs map[string][]byte)
 	// Called after an epoch commits, and after OnSchemas, with its record,
-	// which it must not modify, and the rows each stream's apply didn't
-	// insert because of dedupe. It must not block.
-	OnCheckpoint func(rec *checkpoint.Record, collapsed map[string]uint64)
+	// which it must not modify, the rows each stream's apply didn't insert
+	// because of dedupe, and the cells each stream, or a SQL transform's
+	// output, held in the epoch. It must not block.
+	OnCheckpoint func(rec *checkpoint.Record, collapsed, held map[string]uint64)
 	// Closing it stops the attempt at its next checkpoint with ErrDrained,
 	// unless the read has already ended, in which case it finishes.
 	Drain <-chan struct{}
@@ -2024,7 +2025,16 @@ func (c *coordinator) apply(ctx context.Context, n uint64, st *epochState, rec *
 		}
 	}
 	if c.job.OnCheckpoint != nil {
-		c.job.OnCheckpoint(rec, collapsed)
+		held := map[string]uint64{}
+		for name, h := range st.flow.Holds {
+			if h == nil {
+				continue
+			}
+			for _, cell := range h.Cells {
+				held[name] += cell.Cells
+			}
+		}
+		c.job.OnCheckpoint(rec, collapsed, held)
 	}
 	return nil
 }

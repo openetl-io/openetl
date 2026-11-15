@@ -132,13 +132,6 @@ func TestMirroredHolds(t *testing.T) {
 		}
 		return &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: h}, "t": {}}}
 	}
-	r := &reporter{}
-	if got := r.heldCells(rec(3, false)); got["s"] != 3 || got["t"] != 0 {
-		t.Errorf("held cells %v", got)
-	}
-	if got := r.heldCells(rec(5, true)); got["s"] != 2 {
-		t.Errorf("held cells %v, want the epoch's 2", got)
-	}
 	holds := mirroredHolds(rec(5, true).Streams["s"].Holds)
 	if len(holds) != 3 {
 		t.Fatalf("holds %v", holds)
@@ -172,10 +165,7 @@ func TestMirroredOutputHolds(t *testing.T) {
 		}
 	}
 	r := &reporter{}
-	if got := r.heldCells(rec(3)); got["s"] != 3 {
-		t.Errorf("held cells %v", got)
-	}
-	req := r.mirrored(rec(5), nil, r.heldCells(rec(5)), nil)
+	req := r.mirrored(rec(5), nil, map[string]uint64{"s": 2}, nil)
 	for _, st := range req.GetStreams() {
 		if len(st.GetHolds()) > 0 || st.GetHeldCells() > 0 {
 			t.Errorf("stream %s holds %v", st.GetName(), st.GetHolds())

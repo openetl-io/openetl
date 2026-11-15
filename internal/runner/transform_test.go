@@ -256,7 +256,7 @@ func TestTransformedSync(t *testing.T) {
 		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
 		j := transformJob(log, "a1", tr, dst, map[string]int{"a": 3, "b": 1}, outAppend, noneOut)
 		var recs []*checkpoint.Record
-		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) { recs = append(recs, rec) }
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) { recs = append(recs, rec) }
 		res, err := runner.RunAttempt(ctx, j)
 		if err != nil {
 			t.Fatal(err)
@@ -311,7 +311,7 @@ func TestTransformFailureIsRedone(t *testing.T) {
 		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
 		pages := map[string]int{"a": 4, "b": 2}
 		var committed uint64
-		count := func(rec *checkpoint.Record, _ map[string]uint64) { committed += rec.Outputs["out"].Rows }
+		count := func(rec *checkpoint.Record, _, _ map[string]uint64) { committed += rec.Outputs["out"].Rows }
 		j := transformJob(log, "a1", &fakeTransform{c: c, failAt: 2}, dst, pages, outAppend)
 		j.Source = batchSource{pages: pages, pause: time.Second}
 		j.OnCheckpoint = count
@@ -378,7 +378,7 @@ func TestOutputsReadEndsWithTheLastInput(t *testing.T) {
 		over := runner.Stream{Name: "out", Replay: source.Exact, Mode: destination.Overwrite, Transformed: true}
 		j := transformJob(log, "a1", &fakeTransform{c: &calls{}}, dst, map[string]int{"a": 1, "b": 3}, over)
 		var last uint64
-		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 			if rec.Streams["a"].Complete || rec.Streams["b"].Complete {
 				last = rec.Epoch
 			}

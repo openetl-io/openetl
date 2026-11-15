@@ -365,7 +365,7 @@ func drainOnceRecorded(j *runner.Job, ok func(*checkpoint.Record) bool) {
 	ch := make(chan struct{})
 	var once sync.Once
 	j.Drain = ch
-	j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		if ok(rec) {
 			once.Do(func() { close(ch) })
 		}

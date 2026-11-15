@@ -788,7 +788,7 @@ func TestRunAttemptForwardsEncodedBatches(t *testing.T) {
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: opts},
 		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline},
-		OnCheckpoint: func(rec *checkpoint.Record, _ map[string]uint64) {
+		OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
 			rows += rec.Streams["users"].Rows
 		},
 	}

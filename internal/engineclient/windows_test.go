@@ -204,7 +204,7 @@ func TestAGroupWindowClosesAsItsReadGoesOn(t *testing.T) {
 		StateURL:      "file://" + t.TempDir(),
 		Settings:      delivery.Settings{Require: delivery.AtLeastOnce, CommitInterval: 20 * time.Millisecond, Scope: destination.ScopePipeline},
 		Drain:         drain,
-		OnCheckpoint: func(rec *checkpoint.Record, _ map[string]uint64) {
+		OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
 			mu.Lock()
 			for _, q := range rec.Quarantine {
 				if q.Stream == "minutes" {

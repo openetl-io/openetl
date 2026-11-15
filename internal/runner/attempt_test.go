@@ -268,7 +268,7 @@ func TestRecordsCountRows(t *testing.T) {
 		for _, pages := range []int{2, 3} {
 			committed := make(chan uint64, 16)
 			j := job(log, fmt.Sprintf("a%d", pages), ackSource{pages: pages, committed: committed, acks: new([]string)}, runner.Passthrough{Convert: columnless}, committed)
-			j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+			j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 				epochs = append(epochs, rec.Epoch)
 				if n := rec.Streams["s"].Rows; n > 1 {
 					t.Errorf("epoch %d read %d rows, want at most 1", rec.Epoch, n)
@@ -388,7 +388,7 @@ func TestForwardedBatches(t *testing.T) {
 		defer cancel()
 		j := job(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1", encodedSource{pages: 3}, runner.Passthrough{}, make(chan uint64, 16))
 		var rows uint64
-		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) { rows += rec.Streams["s"].Rows }
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) { rows += rec.Streams["s"].Rows }
 		if _, err := runner.RunAttempt(ctx, j); err != nil {
 			t.Fatal(err)
 		}
@@ -1010,6 +1010,87 @@ func TestRecordsCarryTheSyncSoFar(t *testing.T) {
 		check(attempt("s2", false), "s2", first.Ref(), 2, 2)
 		if head, err := log.Latest(ctx); err != nil || head == nil {
 			t.Fatalf("Latest: %v, %v", head, err)
+		}
+	})
+}
+
+// cellFlow is Passthrough, holding one cell of x in each epoch.
+type cellFlow struct{}
+
+func (cellFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	defer close(out)
+	mid := make(chan runner.Frame)
+	errc := make(chan error, 1)
+	go func() { errc <- runner.Passthrough{Convert: columnless}.Run(ctx, plan, in, mid) }()
+	for fr := range mid {
+		if fr.Kind == runner.FrameReady {
+			fr.Ready.Holds = map[string]*runner.ReadyHolds{"s": {Cells: map[string]checkpoint.CellHold{"x": {Cells: 1, Reason: "nan"}}}}
+		}
+		select {
+		case out <- fr:
+		case <-ctx.Done():
+		}
+	}
+	return <-errc
+}
+
+type cellDest struct{ countingDest }
+
+func (d *cellDest) Capabilities() destination.Capabilities {
+	c := d.countingDest.Capabilities()
+	c.Holds = destination.Holds{ByID: true, Guarded: true}
+	return c
+}
+
+func (d *cellDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	return d, nil
+}
+
+// OnCheckpoint gets the cells each epoch held, not what the stream's cell
+// holds have grown to: an attempt that restores 7 held cells reports 1 for
+// its first epoch, which held 1.
+func TestOnCheckpointGetsTheCellsItsEpochHeld(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		first, err := log.Claim(ctx, "a0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		since := checkpoint.RecordRef{Generation: first.Generation(), Epoch: 1}
+		rec := &checkpoint.Record{Epoch: 1, Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{
+			Cells:  map[string]checkpoint.CellHold{"x": {Cells: 7, Since: since}},
+			Epochs: []checkpoint.HeldEpochs{{Generation: since.Generation, From: 1, To: 1}},
+		}}}}
+		rec.SetSplits("s", []checkpoint.SplitState{{ID: checkpoint.WholeStream, State: []byte("0")}})
+		if err := first.Commit(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		closed := make(chan struct{})
+		close(closed)
+		j := job(log, "a1", pagedSource{pages: 3, after1: closed}, cellFlow{}, make(chan uint64, 64))
+		j.Destination, j.HeldURL = &cellDest{}, "mem://held"
+		j.Streams = []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &runner.StreamHolds{Cells: true}}}
+		var got []uint64
+		var total uint64
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, held map[string]uint64) {
+			got = append(got, held["s"])
+			total = rec.Streams["s"].Holds.Cells["x"].Cells
+		}
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) == 0 {
+			t.Fatal("no checkpoints")
+		}
+		for i, n := range got {
+			if n != 1 {
+				t.Errorf("epoch %d of the attempt reported %d held cells, want 1: %v", i+1, n, got)
+			}
+		}
+		if total != 7+uint64(len(got)) {
+			t.Errorf("the record holds %d cells after %d epochs", total, len(got))
 		}
 	})
 }
