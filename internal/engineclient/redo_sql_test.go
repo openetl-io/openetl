@@ -54,7 +54,7 @@ func TestASQLRedoThroughTheEngine(t *testing.T) {
 	job := func(owner string) func() runner.Job {
 		return func() runner.Job {
 			return runner.Job{
-				Pipeline: "p", Owner: owner, Sync: "s1", Log: log, Source: &chunkSource{splits: 3, chunks: chunks, rows: 50},
+				Pipeline: "p", Owner: owner, Sync: "s1", Log: log, Source: &chunkSource{splits: 3, chunks: chunks, rows: 50, pause: 4 * time.Millisecond},
 				Streams: []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Schema: declared}},
 				Outputs: []runner.Stream{
 					{Name: "by_id", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Transformed: true, From: "s"},
@@ -67,9 +67,10 @@ func TestASQLRedoThroughTheEngine(t *testing.T) {
 		}
 	}
 
-	// Each of three workers reads a split. Writer lane 0's commit fails, and
-	// its worker is lost, in its second epoch with rows that holds rows of
-	// both outputs and by_id's of an id whose shifted row isn't there.
+	// Each of three workers reads a split, slowly enough for many epochs.
+	// Writer lane 0's commit fails, and its worker is lost, in its second
+	// epoch with rows or later that holds rows of both outputs and by_id's
+	// of an id whose shifted row isn't there.
 	p := &inProcess{ctx: ctx, mk: job("a1")}
 	j := p.mk()
 	p.on(&j, srv, 3)

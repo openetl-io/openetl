@@ -322,7 +322,7 @@ func (p *workerPart) splitRead(ctx context.Context, r *attemptv1.SplitRead) (*at
 
 func (p *workerPart) applySchema(ctx context.Context, m *protocolv1.WriteApplySchema) (destination.SchemaApplied, error) {
 	if p.first == nil {
-		return destination.SchemaApplied{}, errs.New(errs.Internal, "runner: worker %d hasn't the attempt's first writer lane, which applies schemas", p.t.Worker)
+		return destination.SchemaApplied{}, errs.New(errs.Internal, "runner: worker %d hasn't the attempt's first writer lane, which applies schemas", p.t.Worker+1)
 	}
 	sa, ok := p.first.(destination.SchemaApplier)
 	if !ok {
@@ -356,7 +356,7 @@ func (p *workerPart) commit(ctx context.Context, req *attemptv1.Commit) error {
 		done, err = p.commitLanes(ctx, c, req.GetWriterLanes())
 		answer.Committed.CollapsedRows = done.Collapsed
 	case p.first == nil:
-		err = errs.New(errs.Internal, "runner: worker %d hasn't the attempt's first writer lane, which commits", p.t.Worker)
+		err = errs.New(errs.Internal, "runner: worker %d hasn't the attempt's first writer lane, which commits", p.t.Worker+1)
 	case len(req.GetWriterLanes()) > 0 && len(req.GetWriterLanes()) != len(c.GetStaged()):
 		err = errs.New(errs.Internal, "runner: a commit of %d of %d writer lanes, which this destination doesn't take", len(req.GetWriterLanes()), len(c.GetStaged()))
 	default:
@@ -383,7 +383,7 @@ func (p *workerPart) commitLanes(ctx context.Context, c *protocolv1.WriteCommit,
 	for _, l := range lanes {
 		k := slices.Index(p.global, int(l))
 		if k < 0 || int(l) >= len(c.GetStaged()) {
-			return done, errs.New(errs.Internal, "runner: a commit of writer lane %d, which worker %d hasn't", l, p.t.Worker)
+			return done, errs.New(errs.Internal, "runner: a commit of writer lane %d, which worker %d hasn't", l, p.t.Worker+1)
 		}
 		got, err := p.ws[k].Commit(ctx, e, []destination.Staged{c.GetStaged()[l]})
 		for name, rows := range got.Collapsed {
@@ -451,7 +451,7 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 		}
 	}
 	if len(lanes) == 0 || len(p.global) == 0 || p.t.Worker == 0 && p.global[0] != 0 {
-		return errs.New(errs.Internal, "runner: worker %d's assignment has %d lanes and writer lanes %v", p.t.Worker, len(lanes), p.global)
+		return errs.New(errs.Internal, "runner: worker %d's assignment has %d lanes and writer lanes %v", p.t.Worker+1, len(lanes), p.global)
 	}
 	splits, all := map[string][]checkpoint.SplitState{}, map[string][]checkpoint.SplitState{}
 	readers := map[string]map[uint32]bool{}
