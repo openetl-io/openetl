@@ -88,9 +88,10 @@ var (
 )
 
 // wShape is what a seed's destination is, or what a broken variant needs
-// of it; "" is any.
+// of it, and the state's features it needs on or off, as -wstate takes
+// them; "" is any.
 type wShape struct {
-	dest, staging, exchange string
+	dest, staging, exchange, state string
 }
 
 var variantShapes = map[string]wShape{
@@ -126,6 +127,20 @@ var variantShapes = map[string]wShape{
 	"replay-own-watermarks":      {dest: "txn", staging: "none", exchange: "on"},
 	"prune-to-head":              {dest: "txn", staging: "none", exchange: "on"},
 	"replay-not-exact":           {dest: "txn", staging: "none"},
+	// State's.
+	"state-before-record":    {exchange: "on"},
+	"restore-by-listing":     {exchange: "on"},
+	"restore-whole-sections": {exchange: "on"},
+	"redo-from-own-record":   {dest: "txn", staging: "none", exchange: "on"},
+	"prune-unnamed":          {exchange: "on"},
+	"merge-before-named":     {exchange: "on", state: "merge"},
+	"merge-drops-tombstones": {exchange: "on", state: "merge"},
+	"drop-by-first":          {exchange: "on", state: "drop"},
+	"drop-tombstones":        {exchange: "on", state: "vdrop"},
+	"pending-epoch-only":     {exchange: "on", state: "pending"},
+	"pending-to-memory-only": {exchange: "on", state: "pending,-lazy"},
+	"lazy-stale-handles":     {exchange: "on", state: "lazy,merge,drop,dedupe"},
+	"late-before-dedupe":     {exchange: "on", state: "dedupe"},
 }
 
 // randomShape draws the destination's shape, which the flags and the
@@ -447,8 +462,9 @@ func (m *wModel) redo(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout, id wT
 // source: the row-wise statement's output of its splits, from where the
 // committable says each one's part began, and the windows of its key groups
 // that the epoch closed, from the state of the record before and every
-// split's rows since. Its rows are the epoch's, and carry its generation.
-// Only the keyed operator's needs the record before.
+// split's rows since, less repeats of rows that state or the replay has
+// seen. Its rows are the epoch's, and carry its generation. Only the keyed
+// operator's needs the record before.
 func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (map[string][]row, error) {
 	var prev *wRecord
 	if m.cfg.exchange || m.cfg.broken == "redo-by-new-layout" {
@@ -504,23 +520,26 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 	if !m.cfg.exchange {
 		return rows, nil
 	}
-	state, err := m.stateAt(prev)
+	base := prev
+	if m.cfg.broken == "redo-from-own-record" {
+		base = rec
+	}
+	state, err := m.stateAt(base)
 	if err != nil {
 		m.problem("restore", "%s can't redo %v: %v", w.name(), c.marker(), err)
 		return nil, fmt.Errorf("%w: %w", errRedo, err)
 	}
-	acc := map[wKey]*wAcc{}
-	for g, ws := range state {
-		if !inRange(kg, g) {
-			continue
+	acc, ids := map[wKey]*wAcc{}, map[string]bool{}
+	for g, ws := range state.vals {
+		if inRange(kg, g) {
+			maps.Copy(acc, ws)
 		}
-		for k, a := range ws {
-			x := &wAcc{Sum: a.Sum, Count: a.Count}
-			for _, r := range a.Rows {
-				r.Restored = true
-				x.Rows = append(x.Rows, r)
+	}
+	for g, s := range state.set {
+		if inRange(kg, g) {
+			for id := range s {
+				ids[id] = true
 			}
-			acc[k] = x
 		}
 	}
 	size, wm := m.cfg.size, int64(wEndMark)
@@ -531,12 +550,18 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 			if !e.kept() || !inRange(kg, keyGroupOf(e.Key)) {
 				continue
 			}
+			if m.cfg.dedupe {
+				if ids[e.uid()] {
+					continue
+				}
+				ids[e.uid()] = true
+			}
 			k := wKey{e.Key, windowStart(e.T, size)}
 			if acc[k] == nil {
 				acc[k] = &wAcc{}
 			}
 			acc[k].Sum, acc[k].Count = acc[k].Sum+e.value(), acc[k].Count+1
-			acc[k].Rows = append(acc[k].Rows, wContrib{ID: e.ID, Gen: c.Gen})
+			acc[k].Rows = append(acc[k].Rows, wContrib{ID: e.uid(), Gen: c.Gen})
 		}
 		at := rec.split(s)
 		if m.cfg.broken == "replay-own-watermarks" && !at.Complete {
@@ -556,13 +581,13 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 		rows["agg"] = append(rows["agg"], row{ID: fmt.Sprintf("%d/%s", k.W, k.Key), Seq: k.W, Key: k.Key, Value: string(must(json.Marshal(wEntry{Key: k.Key, W: k.W, Sum: a.Sum, Count: a.Count, Rows: a.Rows})))})
 		delete(acc, k)
 	}
-	// What stays open must be what the record's snapshots hold.
+	// What stays open must be what the record's state holds.
 	at, err := m.stateAt(rec)
 	if err != nil {
 		return nil, err
 	}
 	want := map[wKey]*wAcc{}
-	for g, ws := range at {
+	for g, ws := range at.vals {
 		if inRange(kg, g) {
 			maps.Copy(want, ws)
 		}
