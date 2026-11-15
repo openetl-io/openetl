@@ -248,6 +248,15 @@ impl Case {
         out
     }
 
+    /// The same input on one lane: every lane's splits, one lane after
+    /// another, with `n` barriers.
+    fn one_lane(&self, n: usize) -> Case {
+        let mut out = self.clone();
+        let evs = out.lanes.concat();
+        out.lanes = vec![evs];
+        out.rebarriered(0, n)
+    }
+
     fn rows(&self) -> usize {
         self.lanes
             .iter()
@@ -624,6 +633,14 @@ fn expect(case: &Case) -> Expected {
             }
         }
         let last = lanes.iter().map(|l| *l.at_barrier.last().unwrap()).min();
+        // A session that closed and then grew past the watermark keeps the
+        // row it gave until it closes again: which sessions did depends on
+        // the lanes' order, so only an input that closes every session can
+        // be sure of the table.
+        assert!(
+            case.window != Window::Session || last == Some(END),
+            "sessions on several lanes that the input leaves open"
+        );
         model.advance(last.unwrap());
     }
     let mut kept = case.clone();
@@ -927,6 +944,11 @@ async fn a_bounded_read_and_a_continuous_one_leave_the_same_table() {
                 if let Ev::End(s) = e {
                     *e = Ev::Raise(*s, clock);
                 }
+            }
+            // Sessions left open may keep rows they gave before they grew,
+            // as the lanes' order has it: see expect.
+            if window == Window::Session {
+                case = case.one_lane(1);
             }
             // With several lanes, the rows the model is sure of in both.
             let continuous = case.rebarriered(seed + 1, 12);

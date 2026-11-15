@@ -183,8 +183,7 @@ func TestAGroupWindowBoundedAndContinuous(t *testing.T) {
 	var records atomic.Int64
 	j.Drain = drain
 	j.OnCheckpoint = func(*checkpoint.Record, map[string]uint64) {
-		records.Add(1)
-		if len(table(continuous)) >= len(past) {
+		if records.Add(1) >= 3 && len(table(continuous)) >= len(past) {
 			once.Do(func() { close(drain) })
 		}
 	}

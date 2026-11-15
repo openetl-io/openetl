@@ -6,7 +6,8 @@
 //! rows, which run the row-wise steps before the window. A row goes to
 //! each window its event time falls in. A window's state is a value under
 //! its group keys and start: its accumulators, how many times its row has
-//! been given, and whether the output has it now. A session's is a value
+//! been given, and the values of the row the output has now, if it has
+//! one, which a delete of the row gives again. A session's is a value
 //! under its group keys: every session the keys have open or kept.
 //!
 //! The watermark goes by [`Operator::advance`]: `t` means every row whose
@@ -63,17 +64,21 @@ struct State {
     emitted: u32,
     /// The output has its row now.
     visible: bool,
+    /// While it's visible, the aggregates' values of the row the output
+    /// has, which a delete of it gives again; empty otherwise.
+    shown: Vec<Option<Value>>,
     accs: Vec<Acc>,
 }
 
 /// The layout of a window's state, and of a key's sessions.
-const LAYOUT: u8 = 1;
+const LAYOUT: u8 = 2;
 
 impl State {
     fn new(specs: &[Spec]) -> Self {
         Self {
             emitted: 0,
             visible: false,
+            shown: Vec::new(),
             accs: specs.iter().map(Acc::new).collect(),
         }
     }
@@ -81,6 +86,11 @@ impl State {
     fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.emitted.to_be_bytes());
         out.push(u8::from(self.visible));
+        if self.visible {
+            for v in &self.shown {
+                codec::encode(v.as_ref(), out);
+            }
+        }
         for a in &self.accs {
             a.encode(out);
         }
@@ -89,6 +99,12 @@ impl State {
     fn decode(specs: &[Spec], buf: &mut &[u8]) -> Result<Self, String> {
         let emitted = u32::from_be_bytes(take(buf)?);
         let [visible] = take::<1>(buf)?;
+        let mut shown = Vec::new();
+        if visible == 1 {
+            for _ in specs {
+                shown.push(codec::decode(buf)?);
+            }
+        }
         let mut accs = Vec::with_capacity(specs.len());
         for _ in specs {
             accs.push(Acc::decode(buf)?);
@@ -96,8 +112,23 @@ impl State {
         Ok(Self {
             emitted,
             visible: visible == 1,
+            shown,
             accs,
         })
+    }
+
+    /// The values a delete of its row gives: those of the row the output
+    /// has, which its steps took once.
+    fn deleted(&self, specs: &[Spec]) -> Vec<Option<Value>> {
+        match self.shown.len() == specs.len() {
+            true => self.shown.clone(),
+            false => self
+                .accs
+                .iter()
+                .zip(specs)
+                .map(|(a, spec)| a.value(spec).ok().flatten())
+                .collect(),
+        }
     }
 
     fn merge(&mut self, other: State) {
@@ -325,6 +356,7 @@ impl Operator {
                     {
                         s.state.emitted = e.state.emitted;
                         s.state.visible = e.state.visible;
+                        s.state.shown = e.state.shown;
                     }
                 }
                 for (g, k, list) in &lists {
@@ -631,6 +663,7 @@ impl Operator {
                         true if s.start == start => {
                             merged.emitted = s.state.emitted;
                             merged.visible = s.state.visible;
+                            merged.shown = s.state.shown.clone();
                             merged.merge(s.state);
                         }
                         true => merged.merge(s.state),
@@ -680,7 +713,8 @@ impl Operator {
                         state: State {
                             emitted: old.state.emitted,
                             visible: true,
-                            accs: old.state.accs.clone(),
+                            shown: old.state.deleted(&self.specs),
+                            accs: Vec::new(),
                         },
                         merged: true,
                     });
@@ -874,6 +908,7 @@ impl Operator {
             {
                 s.state.emitted = e.state.emitted;
                 s.state.visible = e.state.visible;
+                s.state.shown = e.state.shown;
             }
         }
         for (g, k, list) in &lists {
@@ -884,8 +919,8 @@ impl Operator {
 
     /// The rows of `windows`: each that passes HAVING as an insert or an
     /// update, and each that the output has but that no longer passes, or
-    /// that was merged away, as a delete. Gives the
-    /// windows with their counts and visibility updated.
+    /// that was merged away, as a delete with the values the output has.
+    /// Gives the windows with their counts and visibility updated.
     fn emit_states(&self, windows: Vec<Emit>) -> Result<(Out, Vec<Emit>), JobError> {
         let mut out = Out::default();
         let mut gone = Vec::new();
@@ -950,33 +985,21 @@ impl Operator {
             .filter(|r| !passing.contains(r) && !failing.contains(r) && ok[*r].state.visible)
             .collect();
         if !deleted.is_empty() {
-            let rows =
-                steps::take(&grouped, &deleted).map_err(|e| JobError::internal(e.message))?;
-            let (ran, _) = steps::run_rows(&self.plan.steps, rows, false)
-                .map_err(|e| JobError::internal(self.reason(&e.message)))?;
+            let refs: Vec<&Emit> = deleted.iter().map(|&r| &ok[r]).collect();
+            let shown: Vec<Vec<Option<Value>>> =
+                refs.iter().map(|e| e.state.deleted(&self.specs)).collect();
+            let rows = self.grouped(&refs, &shown)?;
+            let ran = self.delete_rows(rows)?;
             let dels = ran.rows.iter().map(|&i| (deleted[i], "delete")).collect();
             parts.push((ran.batch, dels));
         }
-        // Rows of sessions merged away: their key and their last values,
-        // which a column that can't be null, as count's, needs.
         let mut gone_parts = Vec::new();
         if !gone.is_empty() {
             let refs: Vec<&Emit> = gone.iter().collect();
-            let last: Vec<Vec<Option<Value>>> = gone
-                .iter()
-                .map(|e| {
-                    e.state
-                        .accs
-                        .iter()
-                        .zip(&self.specs)
-                        .map(|(a, spec)| a.value(spec).ok().flatten())
-                        .collect()
-                })
-                .collect();
-            let rows = self.grouped(&refs, &last)?;
-            let (ran, _) = steps::run_rows(&self.plan.steps, rows, false)
-                .map_err(|e| JobError::internal(self.reason(&e.message)))?;
-            gone_parts.push(ran);
+            let shown: Vec<Vec<Option<Value>>> =
+                gone.iter().map(|e| e.state.shown.clone()).collect();
+            let rows = self.grouped(&refs, &shown)?;
+            gone_parts.push(self.delete_rows(rows)?);
         }
         let mut batches = Vec::new();
         let mut ids = Vec::new();
@@ -994,6 +1017,11 @@ impl Operator {
             }
             batches.push(batch);
         }
+        for (r, vs) in values.into_iter().enumerate() {
+            if counts.get(&r).is_some_and(|(_, visible)| *visible) {
+                ok[r].state.shown = vs;
+            }
+        }
         for ran in gone_parts {
             for &r in &ran.rows {
                 let e = &gone[r];
@@ -1008,6 +1036,9 @@ impl Operator {
             if let Some((n, visible)) = counts.get(&r) {
                 e.state.emitted = *n;
                 e.state.visible = *visible;
+                if !*visible {
+                    e.state.shown.clear();
+                }
             }
             updated.push(e);
         }
@@ -1032,6 +1063,19 @@ impl Operator {
             });
         }
         Ok((out, updated))
+    }
+
+    /// Deletes' rows through the steps after the window, but HAVING: each
+    /// row's values are ones its steps took before, so none fails.
+    fn delete_rows(&self, rows: RecordBatch) -> Result<steps::Ran, JobError> {
+        let (ran, failed) = steps::run_rows(&self.plan.steps, rows, false)
+            .map_err(|e| JobError::internal(self.reason(&e.message)))?;
+        match failed.first() {
+            Some((_, why)) => Err(JobError::internal(
+                self.reason(&format!("a delete of a row it gave: {why}")),
+            )),
+            None => Ok(ran),
+        }
     }
 
     fn schema_of(&self, batches: &[RecordBatch]) -> SchemaRef {

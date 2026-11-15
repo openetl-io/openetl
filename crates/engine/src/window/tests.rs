@@ -438,6 +438,33 @@ async fn a_session_merged_away_is_deleted_under_a_count() {
     );
 }
 
+/// A session reopened by a late row has values no row of it was given
+/// with. Merged away, its delete gives the values its row has, which its
+/// projection took once, so the delete isn't lost.
+#[tokio::test]
+async fn a_reopened_session_merged_away_deletes_the_row_it_gave() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, region, 10 / sum(amount) AS r FROM orders \
+               GROUP BY session(at, INTERVAL '30 seconds'), region";
+    let mut run = Run::new(sql, 2 * MIN, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 0), ("eu", 1, 60 * SEC)]).await;
+    run.advance(100 * SEC).await;
+    assert_eq!(run.table.0.len(), 2, "{:?}", run.table);
+    // The second session reopens, to 115 seconds, with a sum of 0.
+    run.rows(&[("eu", -1, 85 * SEC)]).await;
+    // Then a row bridges the two.
+    run.rows(&[("eu", 1, 30 * SEC)]).await;
+    assert_eq!(
+        run.table.0.keys().cloned().collect::<Vec<_>>(),
+        ["1970-01-01T00:00:00Z|eu"]
+    );
+    run.advance(i64::MAX).await;
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        ["window_start=1970-01-01T00:00:00Z region=eu r=5"]
+    );
+}
+
 fn next(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *seed;

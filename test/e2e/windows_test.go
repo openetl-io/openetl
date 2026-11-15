@@ -77,20 +77,29 @@ func quarantined(t *testing.T, pipeline, output string) []map[string]any {
 // row lands once both partitions have passed its end. A record that comes
 // after its window closed, within the stream's lateness, writes the
 // window's row again, as an update; one past the lateness is quarantined.
-// The records' times are ahead of the clock, so a partition that is idle
-// for a minute moves to the clock and closes no window.
+// The records' times are a quarter of an hour ahead of the clock, which
+// the topic is set to take, so a partition that is idle for a minute moves
+// to the clock and closes no window.
 func TestGroupWindowFromKafka(t *testing.T) {
 	startRunner(t)
 	name := unique("window-kafka")
 	topic := schema(name)
 	src := kafkaSource(t, topic)
-	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), 2, 1, nil, topic); err != nil {
+	anyTime := "9223372036854775807"
+	created, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), 2, 1, map[string]*string{
+		"message.timestamp.type":          kadm.StringPtr("CreateTime"),
+		"message.timestamp.after.max.ms":  &anyTime,
+		"message.timestamp.before.max.ms": &anyTime,
+	}, topic)
+	if err == nil {
+		err = created.Err
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
-	// A quarter of an hour ahead, within the broker's limit on timestamps
-	// past its clock.
 	base := time.Now().Add(15 * time.Minute).Truncate(time.Minute)
-	cl := kafkaClient(t)
+	// Each record goes to the partition the test names.
+	cl := kafkaClient(t, kgo.RecordPartitioner(kgo.ManualPartitioner()))
 	// produce writes a record to partition p for each key and second past
 	// base, as key@second.
 	produce := func(p int32, records ...string) {
@@ -120,10 +129,12 @@ func TestGroupWindowFromKafka(t *testing.T) {
 		t.Helper()
 		slices.Sort(want)
 		var got []string
-		eventually(t, 90*time.Second, what, func() bool {
+		for deadline := time.Now().Add(90 * time.Second); !slices.Equal(got, want); time.Sleep(200 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %s: the table has %v, want %v", what, got, want)
+			}
 			got = windowRows(t, table, "region")
-			return slices.Equal(got, want)
-		})
+		}
 	}
 
 	produce(0, "eu@5", "eu@10", "us@20")
