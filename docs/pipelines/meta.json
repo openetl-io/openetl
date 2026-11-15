@@ -9,6 +9,7 @@
     "delivery",
     "schedules",
     "positions",
+    "holds-and-quarantine",
     "schema-changes",
     "sql-transforms",
     "workers",

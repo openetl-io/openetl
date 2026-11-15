@@ -233,7 +233,7 @@ func TestSQLOutputsTakeTheirStreamsSettings(t *testing.T) {
 	caps := destination.Capabilities{WriteModes: []destination.WriteMode{destination.Append, destination.Merge},
 		Holds: destination.Holds{ByID: true, ByKey: true, Guarded: true}}
 	off := false
-	users := &apiv1.PipelineStream{Name: "users", Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL, TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW,
+	users := &apiv1.PipelineStream{Name: "users", UnfitValues: apiv1.UnfitValues_UNFIT_VALUES_HOLD, TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW,
 		Groups: []*apiv1.ColumnGroup{{Columns: []string{"a", "b"}}}}
 	purchases := &apiv1.PipelineStream{Name: "purchases", Collapse: &off, Held: &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_VALUE, Value: "0"}}
 	spec := func(passthrough apiv1.Passthrough) *apiv1.PipelineSpec {
@@ -282,7 +282,7 @@ func TestSQLOutputsTakeTheirStreamsSettings(t *testing.T) {
 		{"collapse on a replaced stream", replacing("purchases", "uid"), 0, `stream "purchases" sets collapse, and a statement replaces it`},
 		{"holds on an output without a key", replacing("users"), 0, "gives its output no primary key"},
 		{"a stream that doesn't land", planned(t, "emails", "uid"), apiv1.Passthrough_PASSTHROUGH_NONE,
-			`stream "users" sets quarantine, groups, typeChanges, which apply to it as the destination gets it`},
+			`stream "users" sets unfitValues, groups, typeChanges, which apply to it as the destination gets it`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, _, err := sqlOutputs(t.Context(), spec(c.passthrough), caps, destination.SoftDelete, (&planner{answer: c.answer}).plan(), streams, inputs)

@@ -75,12 +75,12 @@ func TestPostgresTypeOverrides(t *testing.T) {
 	}
 }
 
-// With types.infinity: quarantine, rows with an infinite date or timestamp
+// With types.infinity: unfit, rows with an infinite date or timestamp
 // are quarantined. The overrides keep the other edge cases out.
 func TestPostgresInfinitiesQuarantined(t *testing.T) {
 	got := typesRoundTrip(t, func(j *runnerpkg.Job) {
 		j.Streams[0].Overrides = map[string]arrow.DataType{"amount": arrow.PrimitiveTypes.Float64, "any_num": arrow.BinaryTypes.String}
-		j.QuarantineInfinity = true
+		j.UnfitInfinity = true
 	})
 	if want := "4|1|0.0000000001"; got.rows != want {
 		t.Errorf("rows are %q, want %q", got.rows, want)

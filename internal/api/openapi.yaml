@@ -4955,16 +4955,15 @@ components:
                         Rows with the same content become one row. Only for streams without a
                          primary key. Unset: true for a superset stream whose require is above
                          at least once, otherwise false.
-                quarantine:
+                unfitValues:
                     enum:
-                        - QUARANTINE_SCOPE_UNSPECIFIED
-                        - QUARANTINE_SCOPE_ROW
-                        - QUARANTINE_SCOPE_CELL
+                        - UNFIT_VALUES_UNSPECIFIED
+                        - UNFIT_VALUES_QUARANTINE
+                        - UNFIT_VALUES_HOLD
                     type: string
                     description: |-
-                        What a value that doesn't fit its type holds back: its row,
-                         the default, or only its cell, for a keyed stream into a destination
-                         that patches.
+                        What a value that doesn't fit its type does: quarantines its row, the
+                         default, or holds its cell where the cell can be held.
                     format: enum
                 held:
                     allOf:
@@ -6047,7 +6046,7 @@ components:
                     enum:
                         - INFINITY_UNSPECIFIED
                         - INFINITY_CLAMP
-                        - INFINITY_QUARANTINE
+                        - INFINITY_UNFIT
                     type: string
                     format: enum
             description: How values map to logical types where a pipeline has a choice.

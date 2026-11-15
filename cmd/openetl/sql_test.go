@@ -17,7 +17,7 @@ func TestApplyInlinesSQLFiles(t *testing.T) {
 	text := "  INSERT INTO \"Out\" SELECT 'a: b' -- é\n\tFROM orders;  \n\nCREATE VIEW v AS SELECT 1"
 	pipeline := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: shop}\n" +
 		"spec:\n  # the schedule\n  schedule: {every: 1h}\n  source: {ref: s, streams: [{name: orders, eventTime: at}]}\n  destination: {ref: d}\n" +
-		"  types: {infinity: quarantine}\n  transform:\n    passthrough: none\n    sql: {file: FILE}\n"
+		"  types: {infinity: unfit}\n  transform:\n    passthrough: none\n    sql: {file: FILE}\n"
 	for name, content := range map[string]string{
 		"sql/shop.sql":  text,
 		"sql/empty.sql": " \n",
@@ -47,7 +47,7 @@ func TestApplyInlinesSQLFiles(t *testing.T) {
 		}
 		p := doc.Pipeline
 		if p.GetTransform().GetSql().GetSql() != text || p.GetTransform().GetSql().GetPassthrough() != apiv1.Passthrough_PASSTHROUGH_NONE ||
-			p.GetTypes().GetInfinity() != apiv1.Infinity_INFINITY_QUARANTINE || p.GetSource().GetStreams()[0].GetEventTime() != "at" {
+			p.GetTypes().GetInfinity() != apiv1.Infinity_INFINITY_UNFIT || p.GetSource().GetStreams()[0].GetEventTime() != "at" {
 			t.Errorf("%s: sent %s", file, d.GetContent())
 		}
 	}
