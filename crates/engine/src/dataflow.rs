@@ -240,15 +240,36 @@ fn owned_shaper(
             })
             .count()
     });
-    let mut shaper = shaper(plan, s, schema)?;
-    if let Some(h) = &plan.holds[s] {
-        let mut config = h.clone();
-        if let Some(holding) = holding {
-            config.holding = crate::plan::column_holds(&plan.streams[s], holding)?;
+    let has = |column: &str| {
+        schema
+            .as_ref()
+            .is_some_and(|sch| sch.field_with_name(column).is_ok())
+    };
+    let config = match (&plan.holds[s], holding) {
+        (Some(h), Some(holding)) => {
+            let mut config = h.clone();
+            let owned = crate::plan::column_holds(&plan.streams[s], holding)?;
+            // A column the plan holds that the owner's version hasn't got
+            // is one no batch has carried yet, so its hold goes on; the
+            // owner's version names only the holds it has seen. Of a column
+            // it has, its word wins: unheld there, it was let go.
+            let pending: Vec<_> = h
+                .holding
+                .iter()
+                .filter(|c| !owned.iter().any(|o| o.column == c.column) && !has(&c.column))
+                .cloned()
+                .collect();
+            config.holding = owned;
+            config.holding.extend(pending);
             // Columns the stream added since it was restored count toward
             // what the destination's table takes.
             config.limits.columns += added;
+            Some(config)
         }
+        (h, _) => h.clone(),
+    };
+    let mut shaper = shaper(plan, s, schema)?;
+    if let Some(config) = config {
         shaper = shaper.with_holds(config).map_err(bad)?;
     }
     if let (Some(r), Some(_)) = (&plan.replays[s], &plan.held_url) {
@@ -2830,6 +2851,100 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A request for stream a, keyed by id, whose plan holds x, a column
+    /// the destination refused, which no batch has carried yet.
+    fn pending_hold_request(dir: &std::path::Path) -> openetl_proto::engine::v1::StartJobRequest {
+        use openetl_proto::engine::v1::{ColumnHold as Hold, HoldCause, HoldPlan, hold_cause};
+        let mut req = request(&["a"]);
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].holds = Some(HoldPlan {
+            holding: vec![Hold {
+                column: "x".into(),
+                reason: "the destination refused it".into(),
+                cause: Some(HoldCause {
+                    kind: hold_cause::Kind::Refused as i32,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        req.held_url = format!("file://{}", dir.display());
+        req
+    }
+
+    // Where the schema is remote, a hold the plan gives a column no batch
+    // has carried yet outlives the owner's versions that don't name it: the
+    // engine follows its own change, then holds x as it first comes.
+    #[tokio::test]
+    async fn a_pending_hold_outlives_the_owners_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = pending_hold_request(dir.path());
+        req.remote_schemas = true;
+        let mut h = start_owned(req);
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Rows, 0, rows(&[r#"{"id": 1, "a": 1}"#])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 2, "a": 2, "x": 5}"#]),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let b = batches(&frames, 0);
+        let last = b.last().unwrap();
+        assert!(
+            last.schema().field_with_name("x").is_err(),
+            "x was delivered: {:?}",
+            last.schema()
+        );
+        let held = last
+            .column_by_name(openetl_normalize::hold::HELD_COLUMN)
+            .unwrap();
+        assert!(
+            openetl_normalize::render_row(last, 0).contains("x"),
+            "{held:?}"
+        );
+    }
+
+    // A rebuild from the owner's version keeps a planned hold of a column
+    // the version hasn't got, and drops one of a column it has, unheld: the
+    // owner's word for a column it knows wins over the plan's.
+    #[test]
+    fn a_rebuild_keeps_planned_holds_only_of_columns_the_owner_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = Plan::from_request(pending_hold_request(dir.path())).unwrap();
+        let held = |sh: &Shaper, c: &str| sh.holding().iter().any(|h| h.column == c);
+        let mut first = owned_shaper(&plan, 0, None, None).unwrap();
+        first.rows([br#"{"id": 1, "a": 1}"#.as_slice()]).unwrap();
+        let lacking = owned_shaper(&plan, 0, first.schema(), Some(&[])).unwrap();
+        let mut lacking = lacking;
+        lacking
+            .rows([br#"{"id": 2, "a": 2, "x": 5}"#.as_slice()])
+            .unwrap();
+        assert!(held(&lacking, "x"), "{:?}", lacking.holding());
+        // An owner whose version has x, unheld, as after a release.
+        let mut known = owned_shaper(&plan, 0, None, None).unwrap();
+        known.rows([br#"{"id": 1, "a": 1}"#.as_slice()]).unwrap();
+        let unheld = {
+            let mut free = shaper(&plan, 0, known.schema()).unwrap();
+            free.rows([br#"{"id": 3, "a": 3, "x": 1}"#.as_slice()])
+                .unwrap();
+            free.schema()
+        };
+        let mut rebuilt = owned_shaper(&plan, 0, unheld, Some(&[])).unwrap();
+        rebuilt
+            .rows([br#"{"id": 4, "a": 4, "x": 6}"#.as_slice()])
+            .unwrap();
+        assert!(!held(&rebuilt, "x"), "{:?}", rebuilt.holding());
     }
 
     // A shaper rebuilt from the remote owner's version counts against the
