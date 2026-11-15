@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 )
@@ -100,6 +101,25 @@ func TestStore(t *testing.T, newStore func(t *testing.T) checkpoint.Store) {
 		got, err = s.List(ctx, prefix+"missing/")
 		if err != nil || len(got) != 0 {
 			t.Fatalf("List of a missing prefix = %v, %v; want nothing", got, err)
+		}
+	})
+
+	t.Run("ListObjectsHaveTimes", func(t *testing.T) {
+		s := newStore(t)
+		before := time.Now().Add(-time.Hour)
+		for _, k := range []string{"b/2", "a/1", "b/1"} {
+			_, err := s.Create(ctx, prefix+k, []byte(k))
+			must(t, err)
+		}
+		got, err := s.ListObjects(ctx, prefix+"b/")
+		must(t, err)
+		if keys := checkpoint.Keys(got); !slices.Equal(keys, []string{prefix + "b/1", prefix + "b/2"}) {
+			t.Fatalf("ListObjects = %v", keys)
+		}
+		for _, o := range got {
+			if o.Modified.Before(before) || o.Modified.After(time.Now().Add(time.Hour)) {
+				t.Errorf("%s was written at %v, not about now", o.Key, o.Modified)
+			}
 		}
 	})
 

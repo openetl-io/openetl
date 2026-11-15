@@ -213,7 +213,7 @@ An incident page has four sections:
 
 Some incidents pause the pipeline because another sync would repeat the failure. Others change how it runs:
 
-- **Quarantine** pauses the stream, so it holds back no more rows while the others carry on. A stream that can't stop on its own, such as one read with CDC, isn't paused, and **Next steps** says why. A stream that's the pipeline's only one pauses the pipeline. **Next steps** names the file the held-back rows are in, each with the reason it didn't fit.
+- **Quarantine** pauses the stream, so it holds back no more rows while the others carry on. A stream that can't stop on its own, such as one read with CDC, isn't paused, and **Next steps** says why. A stream that's the pipeline's only one pauses the pipeline. **Next steps** says where the quarantined rows are, and the command that lists their files. **Details** names the newest files, under `quarantine_paths`, and how many there are in the last hour, under `quarantine_files`. Each row in a file says why it was quarantined.
 - **Rate limited** reduces request rate where supported, or increases the sync interval, after 3 consecutive rate-limit failures. It repeats the adjustment after every 3 further failures.
 
 What they changed shows under **Not as the spec says** on the pipeline's **Overview**, where you can undo it. A pipeline's definition decides how far heal goes: it can propose these actions without taking them, or take none.
@@ -282,6 +282,7 @@ openetl incident resolve PIPELINE INCIDENT
 openetl holds PIPELINE                   # what it holds back
 openetl holds release PIPELINE STREAM COLUMN
 openetl holds discard PIPELINE STREAM COLUMN
+openetl quarantine PIPELINE              # the files of rows it quarantined, and why
 ```
 
 `openetl principal password-link NAME` makes the link a person sets their password with, and `openetl principal sign-out NAME` signs them out everywhere. `openetl COMMAND -h` lists a command's flags.

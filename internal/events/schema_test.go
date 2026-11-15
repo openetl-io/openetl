@@ -21,9 +21,10 @@ var dataOf = map[string]any{
 	PipelinePaused: Pipeline{}, PipelineResumed: Pipeline{}, PipelineOverridden: Pipeline{}, PipelineReset: Pipeline{},
 	StreamPaused: Pipeline{}, StreamResumed: Pipeline{},
 	PipelineLagging: Lag{}, PipelineRecovered: Lag{},
-	PipelineRescaled: Rescale{},
-	SchemaChanged:    Schema{},
-	IncidentOpened:   Incident{}, IncidentEscalated: Incident{}, IncidentResolved: Incident{},
+	PipelineRescaled:  Rescale{},
+	SchemaChanged:     Schema{},
+	StreamQuarantined: Quarantine{},
+	IncidentOpened:    Incident{}, IncidentEscalated: Incident{}, IncidentResolved: Incident{},
 	WebhookTest: Test{},
 }
 
@@ -166,7 +167,7 @@ func (d doc) typeDrift(path string, p doc, t reflect.Type) []string {
 			want = "string"
 		case reflect.Bool:
 			want = "boolean"
-		case reflect.Int, reflect.Int32, reflect.Int64:
+		case reflect.Int, reflect.Int32, reflect.Int64, reflect.Uint64:
 			want = "integer"
 		case reflect.Float64:
 			want = "number"
@@ -271,6 +272,8 @@ func sample(t reflect.Type, full bool) reflect.Value {
 		v.SetBool(true)
 	case reflect.Int, reflect.Int32, reflect.Int64:
 		v.SetInt(1)
+	case reflect.Uint64:
+		v.SetUint(1)
 	case reflect.Float64:
 		v.SetFloat(1.5)
 	case reflect.Pointer:

@@ -133,8 +133,8 @@ func TestQuarantineInObjectStorage(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var line struct{ Stream, Reason, Record string }
-			if err := json.Unmarshal(body, &line); err != nil || line.Record != "[2]" || line.Stream != "s" {
+			var line struct{ Stream, Code, Reason, Record string }
+			if err := json.Unmarshal(body, &line); err != nil || line.Record != "[2]" || line.Stream != "s" || line.Code != "object" {
 				t.Errorf("the quarantine file holds %s (%v)", body, err)
 			}
 		})

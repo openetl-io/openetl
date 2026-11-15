@@ -16,8 +16,8 @@ use arrow_schema::{DataType, Field, Schema};
 
 use crate::coerce::{self, Failures, Infinity, Target};
 use crate::{
-    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, JSON_EXTENSION, MAX_EXACT_FLOAT_INT,
-    logical_type,
+    Cause, EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, JSON_EXTENSION, MAX_EXACT_FLOAT_INT,
+    NotHeld, logical_type,
 };
 
 /// Schema metadata: a JSON object from each source column whose type changed
@@ -76,8 +76,8 @@ pub fn widens(from: &Field, to: &Field) -> bool {
 #[derive(Debug)]
 pub(crate) struct Conformed {
     pub batch: RecordBatch,
-    /// Rows left out, by their index in the input batch.
-    pub failed: Failures,
+    /// Rows left out, by their index in the input batch, with why.
+    pub failed: Vec<(usize, String, Cause)>,
     pub changed: bool,
     /// What changed incompatibly, and where its values go now.
     pub versioned: Vec<String>,
@@ -95,7 +95,8 @@ pub(crate) struct Conformed {
 /// source names.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HoldRules {
-    pub unholdable: HashSet<String>,
+    /// With why each can't be held.
+    pub unholdable: HashMap<String, NotHeld>,
     /// Columns whose type the destination can't change.
     pub fixed: HashSet<String>,
     pub groups: Vec<Vec<String>>,
@@ -221,7 +222,7 @@ impl Evolver {
             .find(|g| g.iter().any(|c| c == name))
             .cloned()
             .unwrap_or_else(|| vec![name.to_owned()]);
-        if group.iter().any(|c| rules.unholdable.contains(c)) {
+        if group.iter().any(|c| rules.unholdable.contains_key(c)) {
             return false;
         }
         for c in group {
@@ -315,7 +316,7 @@ impl Evolver {
         let big_ints = self.big_ints.len();
         let mut changed = false;
         let mut columns: HashMap<String, ArrayRef> = HashMap::new();
-        let mut failed: HashMap<usize, String> = HashMap::new();
+        let mut failed: HashMap<usize, (String, Cause)> = HashMap::new();
         let mut cells = Vec::new();
         let mut held = Vec::new();
         let mut versioned = Vec::new();
@@ -426,10 +427,9 @@ impl Evolver {
                 }
                 Policy::IgnoreNew if strict => {
                     let (c, rows) = cast_down(col, &cur, f.name(), self.infinity);
-                    let hold_cells = self
-                        .rules
-                        .as_ref()
-                        .is_some_and(|r| r.cells && !r.unholdable.contains(&name));
+                    let rules = self.rules.as_ref().filter(|r| r.cells);
+                    let not_held = rules.and_then(|r| r.unholdable.get(&name)).copied();
+                    let hold_cells = rules.is_some() && not_held.is_none();
                     for (row, reason) in rows {
                         match hold_cells {
                             true => cells.push(HeldCell {
@@ -439,7 +439,10 @@ impl Evolver {
                                 raw: coerce::cell_text(col, row).unwrap_or_default(),
                             }),
                             false => {
-                                failed.entry(row).or_insert(reason);
+                                failed.entry(row).or_insert_with(|| {
+                                    let cause = Cause::value(&reason, f.name(), not_held);
+                                    (reason, cause)
+                                });
                             }
                         }
                     }
@@ -501,8 +504,11 @@ impl Evolver {
                 None => false,
             });
         }
-        let mut failed: Failures = failed.into_iter().collect();
-        failed.sort_by_key(|(r, _)| *r);
+        let mut failed: Vec<(usize, String, Cause)> = failed
+            .into_iter()
+            .map(|(r, (reason, cause))| (r, reason, cause))
+            .collect();
+        failed.sort_by_key(|(r, ..)| *r);
         Ok(Conformed {
             batch: out,
             failed,
@@ -866,8 +872,20 @@ mod tests {
             "{}",
             c.failed[0].1
         );
+        assert_eq!(c.failed[0].2, Cause::new(crate::Code::Type).column("x"));
         let c = e.conform(&other).unwrap();
         assert_eq!(c.batch.num_rows(), 0);
+
+        // Where it holds cells, but not x's, it says why.
+        let mut e = start(Policy::IgnoreNew);
+        e.rules = Some(HoldRules {
+            cells: true,
+            unholdable: HashMap::from([("x".to_owned(), NotHeld::Cursor)]),
+            ..Default::default()
+        });
+        let c = e.conform(&wider).unwrap();
+        assert!(c.cells.is_empty());
+        assert_eq!(c.failed[0].2.not_held, Some(NotHeld::Cursor));
 
         // Before a schema is established, every policy takes changes.
         let mut e = Evolver::new(Policy::Block, None, BTreeMap::new());

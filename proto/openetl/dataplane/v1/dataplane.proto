@@ -220,8 +220,9 @@ message ReportCheckpointRequest {
   openetl.api.v1.Usage usage = 9;
   // The newest reset the checkpoint has taken, as GetSyncSpec gave it.
   string last_reset = 10;
-  // A SQL transform's outputs that hold columns or cells. The destination
-  // gets the outputs, so they hold, and the source's streams don't.
+  // A transform's outputs that hold columns or cells, or quarantined rows
+  // in the epoch. With a SQL transform the destination gets the outputs, so
+  // they hold, and the source's streams don't.
   repeated CheckpointOutput outputs = 11;
 }
 
@@ -231,6 +232,20 @@ message CheckpointOutput {
   // As CheckpointStream's.
   repeated CheckpointHold holds = 2;
   uint64 held_cells = 3;
+  repeated QuarantineFile quarantine_files = 4;
+}
+
+// QuarantineFile is one of an epoch's quarantine files: where it is, and
+// how many of its rows each cause quarantined. It never holds a value.
+message QuarantineFile {
+  // Below the pipeline's _quarantine directory: {g}/{N}/{stream}.jsonl, or
+  // {g}/{N}/{stream}.{k}.jsonl from the attempt's lane k, with a
+  // transform's outputs' below _outputs/.
+  string path = 1;
+  // Where it is in the data plane's object storage.
+  string url = 2;
+  uint64 rows = 3;
+  repeated openetl.api.v1.QuarantineCause causes = 4;
 }
 
 message CheckpointRef {
@@ -239,6 +254,8 @@ message CheckpointRef {
 }
 
 message CheckpointStream {
+  reserved 14;
+  reserved "quarantine_file";
   string name = 1;
   // Rows the source emitted in the epoch, quarantined ones included.
   uint64 rows = 2;
@@ -267,12 +284,12 @@ message CheckpointStream {
   openetl.api.v1.SyncMode read = 12;
   // Paused on its own: not read, its state carried from an earlier record.
   bool paused = 13;
-  // The newest of the epoch's quarantine files for the stream, in the data
-  // plane's object storage; empty if it quarantined nothing.
-  string quarantine_file = 14;
   // Rows the source emitted in the sync so far, quarantined ones included.
   // Unset in checkpoints made without a sync.
   optional uint64 sync_rows = 15;
+  // The epoch's quarantine files of the stream; none if it quarantined
+  // nothing.
+  repeated QuarantineFile quarantine_files = 16;
 }
 
 message CheckpointHold {

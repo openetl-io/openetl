@@ -1,7 +1,14 @@
 //! Records the engine can't take. Each stream's are kept per epoch as JSON
 //! lines in `{g}/{N}/{stream}.jsonl` below the job's quarantine URL, or
 //! `{stream}.{k}.jsonl` from the k-th of its lanes after the first, and the
-//! epoch's checkpoint lists the files.
+//! epoch's checkpoint lists the files with their rows by cause.
+//!
+//! Each line is an object: `stream`; `code`, the cause's code
+//! ([`openetl_normalize::Code`]); `column`, where one column caused it;
+//! `notHeld`, where the stream holds cells, why this record's value wasn't
+//! held ([`openetl_normalize::NotHeld`]); `reason`, a sentence; and
+//! `record`, the record as received as a JSON string: a raw record's text,
+//! or a typed one rendered as a JSON object. Only `record` holds values.
 
 use std::sync::Arc;
 

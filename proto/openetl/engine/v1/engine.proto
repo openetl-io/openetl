@@ -557,14 +557,31 @@ message StagedStream {
   uint32 lane = 3;
 }
 
-// QuarantineFile holds JSON lines, one per record: the stream, the reason
-// and the record as received.
+// QuarantineFile holds JSON lines, one per record: the stream, the cause's
+// code, column and why the record's value wasn't held where they apply, the
+// reason and the record as received.
 message QuarantineFile {
   string stream = 1;
   string url = 2;
   uint64 rows = 3;
   // stream is one of a transform's outputs.
   bool output = 4;
+  // Its rows by cause, each cause once.
+  repeated QuarantineCause causes = 5;
+}
+
+// QuarantineCause is how many of a file's rows were quarantined for one
+// cause. It never holds a value.
+message QuarantineCause {
+  // One of json, object, type, range, precision, nan, statement, unsent,
+  // late, event_time and aggregate.
+  string code = 1;
+  // The column that caused it; empty where no one column did.
+  string column = 2;
+  // Set where the stream holds cells: why the rows weren't held. One of
+  // key, cursor, destination, not_null, held_value, record and transform.
+  string not_held = 3;
+  uint64 rows = 4;
 }
 
 // StateSnapshot is an operator's state for a range of key groups, which

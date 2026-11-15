@@ -87,6 +87,9 @@ const (
 	// PipelineServiceDiscardHoldProcedure is the fully-qualified name of the PipelineService's
 	// DiscardHold RPC.
 	PipelineServiceDiscardHoldProcedure = "/openetl.api.v1.PipelineService/DiscardHold"
+	// PipelineServiceListQuarantineProcedure is the fully-qualified name of the PipelineService's
+	// ListQuarantine RPC.
+	PipelineServiceListQuarantineProcedure = "/openetl.api.v1.PipelineService/ListQuarantine"
 )
 
 // PipelineServiceClient is a client for the openetl.api.v1.PipelineService service.
@@ -148,6 +151,11 @@ type PipelineServiceClient interface {
 	// Discards a hold: its held values are dropped, and a column held whole
 	// stays as the destination has it.
 	DiscardHold(context.Context, *connect.Request[v1.DiscardHoldRequest]) (*connect.Response[v1.DiscardHoldResponse], error)
+	// The quarantine files of the pipeline's committed epochs, newest first:
+	// where each is, and how many of its rows each cause quarantined. Their
+	// records stay in the data plane's object storage. A file is listed until
+	// quarantine.retention deletes it, or the pipeline is deleted.
+	ListQuarantine(context.Context, *connect.Request[v1.ListQuarantineRequest]) (*connect.Response[v1.ListQuarantineResponse], error)
 }
 
 // NewPipelineServiceClient constructs a client for the openetl.api.v1.PipelineService service. By
@@ -269,6 +277,12 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("DiscardHold")),
 			connect.WithClientOptions(opts...),
 		),
+		listQuarantine: connect.NewClient[v1.ListQuarantineRequest, v1.ListQuarantineResponse](
+			httpClient,
+			baseURL+PipelineServiceListQuarantineProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("ListQuarantine")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -292,6 +306,7 @@ type pipelineServiceClient struct {
 	listHolds              *connect.Client[v1.ListHoldsRequest, v1.ListHoldsResponse]
 	releaseHold            *connect.Client[v1.ReleaseHoldRequest, v1.ReleaseHoldResponse]
 	discardHold            *connect.Client[v1.DiscardHoldRequest, v1.DiscardHoldResponse]
+	listQuarantine         *connect.Client[v1.ListQuarantineRequest, v1.ListQuarantineResponse]
 }
 
 // GetPipeline calls openetl.api.v1.PipelineService.GetPipeline.
@@ -384,6 +399,11 @@ func (c *pipelineServiceClient) DiscardHold(ctx context.Context, req *connect.Re
 	return c.discardHold.CallUnary(ctx, req)
 }
 
+// ListQuarantine calls openetl.api.v1.PipelineService.ListQuarantine.
+func (c *pipelineServiceClient) ListQuarantine(ctx context.Context, req *connect.Request[v1.ListQuarantineRequest]) (*connect.Response[v1.ListQuarantineResponse], error) {
+	return c.listQuarantine.CallUnary(ctx, req)
+}
+
 // PipelineServiceHandler is an implementation of the openetl.api.v1.PipelineService service.
 type PipelineServiceHandler interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
@@ -443,6 +463,11 @@ type PipelineServiceHandler interface {
 	// Discards a hold: its held values are dropped, and a column held whole
 	// stays as the destination has it.
 	DiscardHold(context.Context, *connect.Request[v1.DiscardHoldRequest]) (*connect.Response[v1.DiscardHoldResponse], error)
+	// The quarantine files of the pipeline's committed epochs, newest first:
+	// where each is, and how many of its rows each cause quarantined. Their
+	// records stay in the data plane's object storage. A file is listed until
+	// quarantine.retention deletes it, or the pipeline is deleted.
+	ListQuarantine(context.Context, *connect.Request[v1.ListQuarantineRequest]) (*connect.Response[v1.ListQuarantineResponse], error)
 }
 
 // NewPipelineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -560,6 +585,12 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		connect.WithSchema(pipelineServiceMethods.ByName("DiscardHold")),
 		connect.WithHandlerOptions(opts...),
 	)
+	pipelineServiceListQuarantineHandler := connect.NewUnaryHandler(
+		PipelineServiceListQuarantineProcedure,
+		svc.ListQuarantine,
+		connect.WithSchema(pipelineServiceMethods.ByName("ListQuarantine")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.PipelineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PipelineServiceGetPipelineProcedure:
@@ -598,6 +629,8 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServiceReleaseHoldHandler.ServeHTTP(w, r)
 		case PipelineServiceDiscardHoldProcedure:
 			pipelineServiceDiscardHoldHandler.ServeHTTP(w, r)
+		case PipelineServiceListQuarantineProcedure:
+			pipelineServiceListQuarantineHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -677,4 +710,8 @@ func (UnimplementedPipelineServiceHandler) ReleaseHold(context.Context, *connect
 
 func (UnimplementedPipelineServiceHandler) DiscardHold(context.Context, *connect.Request[v1.DiscardHoldRequest]) (*connect.Response[v1.DiscardHoldResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.DiscardHold is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) ListQuarantine(context.Context, *connect.Request[v1.ListQuarantineRequest]) (*connect.Response[v1.ListQuarantineResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ListQuarantine is not implemented"))
 }

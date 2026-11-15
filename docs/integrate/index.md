@@ -64,6 +64,7 @@ openetl webhook test ops-alerts
   | `pipeline.created`, `pipeline.updated`, `pipeline.deleted` | A pipeline is applied or deleted |
   | `pipeline.paused`, `pipeline.resumed`, `pipeline.rescaled` | Someone pauses, resumes or rescales a pipeline |
   | `stream.paused`, `stream.resumed` | Someone, or heal, pauses or resumes one of a pipeline's streams |
+  | `stream.quarantined` | A commit quarantines some of a stream's rows instead of writing them. `data.files` names each [quarantine file](../reference/quarantine-files.md) once, with its rows by cause, and never holds the rows' values |
   | `pipeline.overridden` | Heal changes how a pipeline runs, such as syncing less often, or someone undoes it |
   | `pipeline.reset` | Someone asks for a pipeline's streams to be read again from the start; `data.streams` names them, and is left out for every stream |
   | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline falls behind its source, and catches up |

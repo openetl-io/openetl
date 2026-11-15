@@ -49,7 +49,7 @@ func quarantined(p uuid.UUID, stream string, read apiv1.SyncMode, others int) he
 	sync := uuid.New()
 	return heal.Observation{
 		Pipeline: p, Stream: stream, Class: heal.Quarantine, Severity: heal.Warning, Message: "500 of 1000",
-		Details: map[string]string{"share": "50.0%", "quarantine_file": "s3://lake/o/p/_quarantine/1/4/" + stream + ".jsonl"},
+		Details: map[string]string{"share": "50.0%", "quarantine_files": "1", "quarantine_paths": "1/4/" + stream + ".jsonl"},
 		Sync:    &sync, Key: sync.String(), Read: read, OtherStreams: others,
 	}
 }

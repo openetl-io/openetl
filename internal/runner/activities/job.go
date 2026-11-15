@@ -224,10 +224,12 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		KeepSourceNames:    p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
 		SchemaPolicy:       policy,
 		QuarantineInfinity: p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_QUARANTINE,
-		Releases:           releases(spec.GetReleases()),
-		Resets:             resets(spec.GetResets()),
-		Rewind:             rewindPolicy(p.GetHeal().GetMode(), spec.GetRewind()),
-		KeyGroups:          int(spec.GetKeyGroups()),
+		// Unset: zero, and the files are kept.
+		QuarantineRetention: p.GetQuarantine().GetRetention().AsDuration(),
+		Releases:            releases(spec.GetReleases()),
+		Resets:              resets(spec.GetResets()),
+		Rewind:              rewindPolicy(p.GetHeal().GetMode(), spec.GetRewind()),
+		KeyGroups:           int(spec.GetKeyGroups()),
 	}, nil
 }
 

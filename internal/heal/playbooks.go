@@ -84,12 +84,16 @@ func describe(o Observation, t target) (summary, next string) {
 			"If the read doesn't catch up before the source discards the rest, it loses its position and needs a new start. " +
 				"Resume the pipeline if it's paused, and look for what holds the read back. The incident resolves under 40%."
 	case Quarantine:
-		where := "The rows are under _quarantine in the data plane's storage"
-		if f := o.Details["quarantine_file"]; f != "" {
-			where += " (the newest: " + f + ")"
+		where := "The rows weren't written. They're in files under _quarantine in the data plane's storage"
+		switch n := o.Details["quarantine_files"]; {
+		case n == "1":
+			where += " (" + o.Details["quarantine_paths"] + ")"
+		case n != "":
+			where += fmt.Sprintf(" (%s files in the last hour, the newest: %s)", n, strings.SplitN(o.Details["quarantine_paths"], ", ", 2)[0])
 		}
-		next := where + ", each with the reason it was refused: a value its column's type can't hold, such as a new enum " +
-			"value or a date in another format. Fix the source's data, or give the column a type that holds it."
+		next := where + ", each row with why it was quarantined, such as a value its column's type can't hold. " +
+			fmt.Sprintf("List the files and their causes with openetl quarantine %s%s --stream %s --since 1h. ", ws, t.pipeline, o.Stream) +
+			"Fix the source's data, or give the column a type that holds it."
 		resumeStream := fmt.Sprintf("openetl resume %s--stream %s %s", ws, o.Stream, t.pipeline)
 		switch s, why := quarantineStops(o, t); {
 		case t.mode == apiv1.HealMode_HEAL_MODE_OFF:

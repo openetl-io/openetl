@@ -136,6 +136,7 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServiceListHoldsProcedure:              {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceReleaseHoldProcedure:            {"pipelines.holds", inParent, false},
 	apiv1connect.PipelineServiceDiscardHoldProcedure:            {"pipelines.holds", inParent, false},
+	apiv1connect.PipelineServiceListQuarantineProcedure:         {"pipelines.get", inParent, false},
 
 	apiv1connect.SyncServiceListSyncsProcedure:   {"syncs.get", inParent, false},
 	apiv1connect.SyncServiceGetSyncProcedure:     {"syncs.get", inName, false},

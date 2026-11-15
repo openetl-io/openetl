@@ -832,6 +832,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 		}
 	}
 	prune(rctx, sess, restored, j.keep(), j.Staging, j.HeldURL != "", log)
+	pruneQuarantine(rctx, sess, restored, j.QuarantineRetention, log)
 	holds, holdPlans, err := j.startHolds(rctx, restored, limits)
 	if err != nil {
 		return res, err

@@ -179,6 +179,9 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err := s.recordHolds(ctx, id, arg.Generation, arg.Epoch, holds); err != nil {
 		return nil, err
 	}
+	if err := s.indexQuarantine(ctx, id, m, arg.Generation, arg.Epoch); err != nil {
+		return nil, err
+	}
 	if err := s.takeResets(ctx, id, m.GetLastReset()); err != nil {
 		return nil, err
 	}
@@ -444,8 +447,8 @@ func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync d
 					},
 					Sync: &sync.ID, Key: sync.ID.String(), Read: st.GetRead(), OtherStreams: max(others, 0),
 				}
-				if f := st.GetQuarantineFile(); f != "" {
-					o.Details["quarantine_file"] = f
+				if err := quarantineDetails(ctx, q, s.Tenant.Org, pipeline, t.Name, m.GetCreateTime().AsTime().Add(-quarantineWindow), o.Details); err != nil {
+					return err
 				}
 				seen, err := heal.Observe(ctx, q, s.Tenant.Org, o)
 				if err != nil {

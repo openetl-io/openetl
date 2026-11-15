@@ -124,6 +124,23 @@ func TestParseContinuousPipeline(t *testing.T) {
 	}
 }
 
+func TestParseQuarantineRetention(t *testing.T) {
+	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1m}\n  source: {ref: s}\n  destination: {ref: d}\n"
+	doc, err := Parse([]byte(header + "  quarantine: {retention: 720h}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := doc.Pipeline.GetQuarantine().GetRetention().AsDuration(); r != 720*time.Hour {
+		t.Errorf("retention %v", r)
+	}
+	if doc, err = Parse([]byte(header)); err != nil {
+		t.Fatal(err)
+	}
+	if q := doc.Pipeline.GetQuarantine(); q != nil {
+		t.Errorf("unset, files are kept: %v", q)
+	}
+}
+
 func TestParseResources(t *testing.T) {
 	header := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1m}\n  source: {ref: s}\n  destination: {ref: d}\n"
 	doc, err := Parse([]byte(header + "  resources: {size: m, min: s, max: {cpu: 6, memory: 12Gi}, finishWithin: 1h, pool: batch}\n"))
@@ -315,6 +332,8 @@ func TestParseErrors(t *testing.T) {
 		"zero finishWithin":          header + base + "  resources: {finishWithin: 0s}\n",
 		"continuous finishWithin":    header + "spec:\n  mode: continuous\n  source: {ref: s}\n  destination: {ref: d}\n  resources: {finishWithin: 1h}\n",
 		"pool":                       header + base + "  resources: {pool: 'a pool'}\n",
+		"quarantine retention":       header + base + "  quarantine: {retention: 30d}\n",
+		"zero quarantine retention":  header + base + "  quarantine: {retention: 0s}\n",
 	} {
 		if _, err := Parse([]byte(doc)); err == nil {
 			t.Errorf("%s: parsed", name)

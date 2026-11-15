@@ -72,6 +72,8 @@ Choose thresholds from each pipeline's schedule, commit interval and delivery de
 
 Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/index.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
 
+When the quarantine rate rises, run `openetl quarantine PIPELINE --since 1h` to see which streams, columns and codes the rows were quarantined for, and the files they are in. A webhook for `stream.quarantined` gets each committed epoch's files with the same counts. The metric and the event never carry a row's values. The files stay in the runners' `--checkpoints` store until the pipeline's `quarantine.retention` deletes them; [Quarantine files](../reference/quarantine-files.md) has their format and a lifecycle rule that deletes them instead.
+
 ## Follow a failure
 
 Start with its pipeline and sync IDs in the console or `openetl syncs PIPELINE`, then read `openetl logs --sync SYNC_ID PIPELINE`. Look at the matching runner's JSON logs and traces for recovery and commits. For jobs that never reached a runner, inspect orchestrator placement and runner registration logs. [openetld settings](../reference/openetld.md#logs) lists log destinations and rotation settings.

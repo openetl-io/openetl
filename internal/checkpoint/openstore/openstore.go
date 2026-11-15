@@ -94,3 +94,11 @@ func (p prefixed) List(ctx context.Context, prefix string) ([]string, error) {
 	}
 	return keys, err
 }
+
+func (p prefixed) ListObjects(ctx context.Context, prefix string) ([]checkpoint.Object, error) {
+	objects, err := p.s.ListObjects(ctx, p.prefix+prefix)
+	for i, o := range objects {
+		objects[i].Key = strings.TrimPrefix(o.Key, p.prefix)
+	}
+	return objects, err
+}

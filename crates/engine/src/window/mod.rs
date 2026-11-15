@@ -40,7 +40,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
-use openetl_normalize::{Control, Typed, key_groups, render_row};
+use openetl_normalize::{Cause, Code, Control, Typed, key_groups, render_row};
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_sql::{GroupWindow, Window};
 use openetl_state::{KeyRef, OperatorId, StateBackend};
@@ -124,10 +124,10 @@ pub struct Out {
     pub rows: Option<Typed>,
     /// Rows of the input the operator can't take, with why: late, without
     /// an event time, or failing a step.
-    pub rejected: Vec<(usize, String)>,
+    pub rejected: Vec<(usize, String, Cause)>,
     /// Windows whose row can't be given, rendered as JSON, with why: an
     /// aggregate that overflows, or a step after the window that fails.
-    pub failed: Vec<(String, String)>,
+    pub failed: Vec<(String, String, Cause)>,
 }
 
 impl Out {
@@ -245,7 +245,8 @@ impl Operator {
         let (ran, failed) = steps::run_rows(&plan.input.steps, input.clone(), true)
             .map_err(|e| JobError::internal(self.reason(&e.message)))?;
         for (r, why) in failed {
-            out.rejected.push((r, self.reason(&why)));
+            out.rejected
+                .push((r, self.reason(&why), Cause::new(Code::Statement)));
         }
         let rows = ran.batch;
         if rows.num_rows() == 0 {
@@ -294,18 +295,21 @@ impl Operator {
         // fails one is quarantined, and the rest are taken.
         let ((args, filters), bad) = self.arguments(&rows)?;
         for (r, why) in bad {
-            out.rejected.push((ran.rows[r], why));
+            out.rejected
+                .push((ran.rows[r], why, Cause::new(Code::Statement)));
         }
         let mut take: Vec<(usize, i64)> = Vec::with_capacity(n);
         for r in 0..n {
-            if out.rejected.iter().any(|(i, _)| *i == ran.rows[r]) {
+            if out.rejected.iter().any(|(i, ..)| *i == ran.rows[r]) {
                 continue;
             }
             match Value::read(times.as_ref(), r) {
                 Some(Value::Int(t)) => take.push((r, t)),
-                _ => out
-                    .rejected
-                    .push((ran.rows[r], self.reason("its event time is null"))),
+                _ => out.rejected.push((
+                    ran.rows[r],
+                    self.reason("its event time is null"),
+                    Cause::new(Code::EventTime),
+                )),
             }
         }
         let rows_of = |r: usize| ran.rows[r];
@@ -350,7 +354,7 @@ impl Operator {
             }
         };
         out.add(emitted)?;
-        out.rejected.sort_by_key(|(r, _)| *r);
+        out.rejected.sort_by_key(|(r, ..)| *r);
         Ok(out)
     }
 
@@ -499,6 +503,7 @@ impl Operator {
                 out.rejected.push((
                     rows_of(r),
                     self.reason("late: its windows closed past their allowed lateness"),
+                    Cause::new(Code::Late),
                 ));
             }
         }
@@ -621,6 +626,7 @@ impl Operator {
                     out.rejected.push((
                         rows_of(r),
                         self.reason("late: its session closed past its allowed lateness"),
+                        Cause::new(Code::Late),
                     ));
                     continue;
                 }
@@ -916,7 +922,11 @@ impl Operator {
             match why {
                 Some(m) => {
                     let grouped = self.grouped(&[&e], &[vs])?;
-                    out.failed.push((render_row(&grouped, 0), self.reason(&m)));
+                    out.failed.push((
+                        render_row(&grouped, 0),
+                        self.reason(&m),
+                        Cause::new(Code::Aggregate),
+                    ));
                     kept.push(e);
                 }
                 None => {
@@ -931,8 +941,11 @@ impl Operator {
             .map_err(|e| JobError::internal(self.reason(&e.message)))?;
         let failing: BTreeSet<usize> = failed.iter().map(|(r, _)| *r).collect();
         for (r, why) in &failed {
-            out.failed
-                .push((render_row(&grouped, *r), self.reason(why)));
+            out.failed.push((
+                render_row(&grouped, *r),
+                self.reason(why),
+                Cause::new(Code::Statement),
+            ));
         }
         let passing: BTreeSet<usize> = ran.rows.iter().copied().collect();
         let mut parts: Vec<(RecordBatch, Vec<(usize, &'static str)>)> = Vec::new();

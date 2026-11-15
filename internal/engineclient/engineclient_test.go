@@ -851,14 +851,15 @@ func TestRunAttemptQuarantinesBadRows(t *testing.T) {
 		}
 		files = append(files, rec.Quarantine...)
 	}
-	if len(files) != 1 || files[0].Stream != "users" || files[0].Rows != 1 {
+	if len(files) != 1 || files[0].Stream != "users" || files[0].Rows != 1 ||
+		!slices.Equal(files[0].Causes, []checkpoint.QuarantineCause{{Code: "object", Rows: 1}}) {
 		t.Fatalf("records list quarantine files %+v", files)
 	}
 	body, err := os.ReadFile(strings.TrimPrefix(files[0].URL, "file://"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), `"record":"[2]"`) {
+	if !strings.Contains(string(body), `"record":"[2]"`) || !strings.Contains(string(body), `"code":"object"`) {
 		t.Errorf("the quarantine file holds %s", body)
 	}
 }
