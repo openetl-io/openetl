@@ -156,6 +156,7 @@ func TestAGroupWindowBoundedAndContinuous(t *testing.T) {
 			Outputs:     []runner.Stream{{Name: "minutes", Replay: source.Exact, Mode: destination.Merge, PrimaryKey: []string{"window_start", "region"}, Transformed: true, From: "s"}},
 			SQL:         &runner.SQLTransform{SQL: sql, Expected: exp, Operators: []string{a.Statements[0].Operator}},
 			Destination: d, Dataflow: &Dataflow{Options: opts}, Lanes: 3, Logger: opts.Logger.With("job", name),
+			StateURL: "file://" + t.TempDir(),
 			Settings: delivery.Settings{Require: delivery.AtLeastOnce, CommitInterval: 20 * time.Millisecond, Scope: destination.ScopePipeline},
 		}
 	}

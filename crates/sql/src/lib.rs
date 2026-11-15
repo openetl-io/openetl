@@ -39,3 +39,4 @@ pub use plan::{
 };
 pub use sql::{Sql, plan};
 pub use types::{cast_type, ident};
+pub use window::WINDOW_STATE;

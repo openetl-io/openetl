@@ -73,8 +73,9 @@ struct State {
     accs: Vec<Acc>,
 }
 
-/// The layout of a window's state, and of a key's sessions.
-const LAYOUT: u8 = 2;
+/// The layout of a window's state, and of a key's sessions, which the
+/// operator's ID covers: a change of it is a new operator, with no state.
+const LAYOUT: u8 = openetl_sql::WINDOW_STATE;
 
 impl State {
     fn new(specs: &[Spec]) -> Self {

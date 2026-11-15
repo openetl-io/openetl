@@ -686,7 +686,14 @@ struct Got {
 async fn run_case(name: &str, case: &Case, seed: u64) -> Got {
     let dir = tempfile::tempdir().unwrap();
     let lanes = case.lanes.len();
-    let mut req = window_request(name, &case.window.sql(case.having), lanes as u32, 1, 1);
+    let mut req = window_request(
+        &dir.path().join("state"),
+        &case.window.sql(case.having),
+        lanes as u32,
+        1,
+        1,
+    );
+    req.pipeline = name.into();
     req.quarantine_url = format!("file://{}", dir.path().display());
     let et = event_time(&mut req);
     et.delay_micros = case.delay;
@@ -1004,4 +1011,86 @@ async fn a_bounded_read_and_a_continuous_one_leave_the_same_table() {
     }
     assert!(compared >= 650, "{compared} windows compared");
     assert!(open >= 100, "{open} windows left open by ordered reads");
+}
+
+/// A session the output has a row of when the record is taken, restored
+/// from its runs by another attempt, then grown by a late row past HAVING,
+/// is deleted with the end and the values of the row the output has.
+#[tokio::test]
+async fn a_restored_session_deletes_the_row_the_output_has() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let sql = "INSERT INTO minutes SELECT window_start, window_end, email, sum(v) AS total \
+               FROM a GROUP BY session(at, INTERVAL '30 seconds'), email HAVING sum(v) > 0";
+    let row = |id: i64, email: &str, v: i64, second: i64| {
+        format!(
+            r#"{{"id": {id}, "email": "{email}", "v": {v}, "at": "1970-01-01T00:{:02}:{:02}Z"}}"#,
+            second / 60,
+            second % 60
+        )
+    };
+    // What a writer lane gave of the output: op, end in seconds, total.
+    let given = |outs: &[Vec<frame::Frame>]| -> Vec<(String, i64, Option<i64>)> {
+        let mut got = Vec::new();
+        for frames in outs {
+            for b in batches(frames, 0) {
+                let ends: Vec<i64> = b
+                    .column_by_name("window_end")
+                    .unwrap()
+                    .as_primitive::<arrow_array::types::TimestampMicrosecondType>()
+                    .iter()
+                    .map(|e| e.unwrap() / SEC)
+                    .collect();
+                let ops = column_strings(&b, "_openetl_op");
+                let totals = column_ints(&b, "total");
+                for i in 0..b.num_rows() {
+                    got.push((ops[i].clone().unwrap(), ends[i], totals[i]));
+                }
+            }
+        }
+        got
+    };
+
+    let mut req = window_request(&state, sql, 1, 1, 1);
+    req.quarantine_url = format!("file://{}", dir.path().display());
+    event_time(&mut req).lateness_micros = 120 * SEC;
+    let mut h = start_lanes(req);
+    let w = &mut h.ins[0];
+    put(w, FrameKind::Split, 0, split("s", None)).await;
+    put(
+        w,
+        FrameKind::Rows,
+        0,
+        rows(&[&row(1, "x", 5, 0), &row(2, "y", 1, 100)]),
+    )
+    .await;
+    barriers(w, 1, 1).await;
+    h.end_all(2).await;
+    let (outs, first) = h.finish().await;
+    assert_eq!(given(&outs), [("insert".to_owned(), 30, Some(5))]);
+    let snapshots = first[0].snapshots.clone();
+    assert!(
+        snapshots.iter().any(|s| !s.runs.is_empty()),
+        "{snapshots:?}"
+    );
+
+    let mut req = window_request(&state, sql, 2, 2, 2);
+    req.quarantine_url = format!("file://{}", dir.path().display());
+    req.restored_snapshots = snapshots;
+    let et = event_time(&mut req);
+    et.lateness_micros = 120 * SEC;
+    et.floor = Some(100 * SEC);
+    let mut h = start_lanes(req);
+    for (l, w) in h.ins.iter_mut().enumerate() {
+        if l == 0 {
+            put(w, FrameKind::Split, 0, split("s", Some(100 * SEC))).await;
+            // Late, within the lateness: x's session grows to 50 seconds,
+            // with a sum below 0.
+            put(w, FrameKind::Rows, 0, rows(&[&row(3, "x", -9, 20)])).await;
+        }
+        barriers(w, 2, 2).await;
+    }
+    h.end_all(2).await;
+    let (outs, _) = h.finish().await;
+    assert_eq!(given(&outs), [("delete".to_owned(), 30, Some(5))]);
 }
