@@ -411,3 +411,209 @@ fn a_deep_chain_of_views_keeps_its_id_short() {
     };
     assert!(e.to_string().contains("views go at most 32 deep"), "{e}");
 }
+
+/// Values of two unnest steps of one list are two values, whatever names
+/// they go by.
+#[test]
+fn values_of_two_unnest_steps_are_apart() {
+    let c = lists();
+    let views = "CREATE VIEW a AS SELECT unnest(xs) AS x, xs, region, at FROM events;\n\
+                 CREATE VIEW b AS SELECT x, unnest(xs) AS y, region, at FROM a;\n";
+    let sum = |of: &str| {
+        id_in(
+            &c,
+            &format!(
+                "{views}INSERT INTO n SELECT window_start, region, sum({of}) AS total \
+                 FROM b WHERE x < y GROUP BY tumble(at, INTERVAL '1 minute'), region"
+            ),
+            "n",
+        )
+    };
+    assert_ne!(sum("x"), sum("y"));
+}
+
+/// Each call of a function that gives another value each time is another
+/// value; a column it computes is one value, however often it's read.
+#[test]
+fn each_call_of_random_is_its_own() {
+    let filtered = |views: &str, from: &str, filter: &str| {
+        id(&format!(
+            "{views}INSERT INTO revenue SELECT window_start, region, sum(amount) AS total \
+             FROM {from} WHERE {filter} GROUP BY tumble(created_at, INTERVAL '1 minute'), region"
+        ))
+    };
+    let once = filtered("", "orders", "random() < 0.5");
+    let twice = filtered("", "orders", "random() < 0.5 AND random() < 0.5");
+    assert_ne!(once, twice, "two calls filter as two");
+    let view = "CREATE VIEW v AS SELECT random() AS r, region, amount, created_at FROM orders;\n";
+    assert_eq!(
+        filtered(view, "v", "r < 0.5"),
+        filtered(view, "v", "r < 0.5 AND r < 0.5"),
+        "one value read twice filters as once"
+    );
+    assert_ne!(filtered(view, "v", "r < 0.5 AND r < 0.5"), twice);
+    assert_eq!(
+        filtered("", "orders", "qty > 0"),
+        filtered("", "orders", "qty > 0 AND qty > 0")
+    );
+}
+
+/// A small generator: xorshift64*.
+struct Gen(u64);
+
+impl Gen {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n as u64) as usize
+    }
+
+    fn coin(&mut self) -> bool {
+        self.below(2) == 0
+    }
+
+    fn shuffle<T>(&mut self, v: &mut [T]) {
+        for i in (1..v.len()).rev() {
+            let j = self.below(i + 1);
+            v.swap(i, j);
+        }
+    }
+}
+
+const KEYS: [&[&str]; 3] = [&["region"], &["country"], &["region", "country"]];
+/// An aggregate and the column it reads; none for `count(*)`.
+const AGGREGATES: [(&str, Option<&str>); 4] = [
+    ("sum", Some("amount")),
+    ("count", None),
+    ("max", Some("qty")),
+    ("min", Some("note")),
+];
+/// A filter: the column it reads, and the rest of it.
+const FILTERS: [(&str, &str); 2] = [("qty", "> 0"), ("note", "IS NOT NULL")];
+
+/// What a statement computes and keeps.
+#[derive(Clone, Debug, PartialEq)]
+struct Meaning {
+    /// 0: tumble of a minute, 1: of two, 2: hop of two every minute.
+    window: usize,
+    keys: usize,
+    aggregates: Vec<usize>,
+    filter: Option<usize>,
+}
+
+fn meaning(g: &mut Gen) -> Meaning {
+    let mut aggregates: Vec<usize> = (0..AGGREGATES.len()).filter(|_| g.coin()).collect();
+    if aggregates.is_empty() {
+        aggregates.push(g.below(AGGREGATES.len()));
+    }
+    Meaning {
+        window: g.below(3),
+        keys: g.below(KEYS.len()),
+        aggregates,
+        filter: match g.below(3) {
+            0 => None,
+            i => Some(i - 1),
+        },
+    }
+}
+
+/// The statement writing revenue that computes m, written one of many
+/// ways that don't change what it computes: keyword case, a FROM alias,
+/// column names, the order of SELECT and of GROUP BY, an equal interval,
+/// and the filter in the statement or in a view.
+fn written(g: &mut Gen, m: &Meaning) -> String {
+    let kw = |g: &mut Gen, k: &str| match g.coin() {
+        true => k.to_uppercase(),
+        false => k.to_lowercase(),
+    };
+    let alias = g.coin().then_some("o");
+    let q = |c: &str| match alias {
+        Some(a) => format!("{a}.{c}"),
+        None => c.to_owned(),
+    };
+    let time = q("created_at");
+    let window = match m.window {
+        0 => format!(
+            "tumble({time}, INTERVAL '{}')",
+            ["1 minute", "60 seconds"][g.below(2)]
+        ),
+        1 => format!(
+            "tumble({time}, INTERVAL '{}')",
+            ["2 minutes", "120 seconds"][g.below(2)]
+        ),
+        _ => format!("hop({time}, INTERVAL '1 minute', INTERVAL '2 minutes')"),
+    };
+    let mut select = vec![["window_start AS ws", "window_start"][g.below(2)].to_owned()];
+    for k in KEYS[m.keys] {
+        select.push(match g.coin() {
+            true => format!("{} AS k_{k}", q(k)),
+            false => q(k),
+        });
+    }
+    for (i, &a) in m.aggregates.iter().enumerate() {
+        let (f, col) = AGGREGATES[a];
+        let arg = col.map_or("*".to_owned(), q);
+        let n = g.below(100);
+        let as_ = kw(g, "as");
+        select.push(format!("{f}({arg}) {as_} a{i}_{n}"));
+    }
+    g.shuffle(&mut select);
+    let mut group = vec![window];
+    group.extend(KEYS[m.keys].iter().map(|k| q(k)));
+    g.shuffle(&mut group);
+    let in_view = g.coin();
+    let (view, from, filter) = match (m.filter.map(|f| FILTERS[f]), in_view) {
+        (Some((c, rest)), true) => (
+            format!("CREATE VIEW src AS SELECT * FROM orders WHERE {c} {rest};\n"),
+            "src",
+            String::new(),
+        ),
+        (Some((c, rest)), false) => (
+            String::new(),
+            "orders",
+            format!(" {} {} {rest}", kw(g, "where"), q(c)),
+        ),
+        (None, true) => (
+            "CREATE VIEW src AS SELECT * FROM orders;\n".to_owned(),
+            "src",
+            String::new(),
+        ),
+        (None, false) => (String::new(), "orders", String::new()),
+    };
+    let from = match alias {
+        Some(a) => format!("{from} {a}"),
+        None => from.to_owned(),
+    };
+    format!(
+        "{view}{} revenue\n{} {}\n{} {from}{filter} {} {}",
+        kw(g, "INSERT INTO"),
+        kw(g, "SELECT"),
+        select.join(", "),
+        kw(g, "FROM"),
+        kw(g, "GROUP BY"),
+        group.join(", ")
+    )
+}
+
+/// Random pairs of statements: two that compute and keep the same get one
+/// ID however they're written, and two that differ in any way get two.
+#[test]
+fn ids_follow_what_statements_compute() {
+    let mut g = Gen(0x05ee_d1d5);
+    let (mut same, mut apart) = (0, 0);
+    for _ in 0..120 {
+        let a = meaning(&mut g);
+        let b = if g.coin() { a.clone() } else { meaning(&mut g) };
+        let (sa, sb) = (written(&mut g, &a), written(&mut g, &b));
+        let (ia, ib) = (id(&sa), id(&sb));
+        if a == b {
+            same += 1;
+            assert_eq!(ia, ib, "{a:?} written two ways:\n{sa}\n---\n{sb}");
+        } else {
+            apart += 1;
+            assert_ne!(ia, ib, "{a:?} and {b:?} share an ID:\n{sa}\n---\n{sb}");
+        }
+    }
+    assert!(same > 20 && apart > 20, "{same} pairs alike, {apart} apart");
+}

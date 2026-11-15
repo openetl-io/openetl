@@ -465,6 +465,13 @@ func (s *simStore) List(ctx context.Context, prefix string) (keys []string, err 
 	return keys, nil
 }
 
+func (s *simStore) ListObjects(ctx context.Context, prefix string) (objects []checkpoint.Object, err error) {
+	if err := s.call(ctx, "store.list", func() error { objects, err = s.w.store.ListObjects(ctx, prefix); return err }); err != nil {
+		return nil, err
+	}
+	return objects, nil
+}
+
 var rowSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "_openetl_id", Type: arrow.BinaryTypes.String},
 	{Name: "_openetl_seq", Type: arrow.PrimitiveTypes.Int64},

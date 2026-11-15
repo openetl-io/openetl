@@ -263,6 +263,19 @@ type QuarantineFile struct {
 	Output bool   `json:"output,omitempty"`
 	URL    string `json:"url"`
 	Rows   uint64 `json:"rows"`
+	// Its rows by cause; none in records from before them.
+	Causes []QuarantineCause `json:"causes,omitempty"`
+}
+
+// QuarantineCause is how many of a file's rows were quarantined for one
+// cause, as the engine reports it.
+type QuarantineCause struct {
+	Code string `json:"code"`
+	// Empty where no one column was the cause.
+	Column string `json:"column,omitempty"`
+	// Set where the stream holds cells: why the rows weren't held.
+	NotHeld string `json:"not_held,omitempty"`
+	Rows    uint64 `json:"rows"`
 }
 
 // Snapshot is a stateful operator's state on one lane at a checkpoint, for

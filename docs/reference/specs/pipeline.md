@@ -206,6 +206,15 @@ The destination changes an existing column's type only when `typeChanges` permit
 | `delivery.commit.scope` | `pipeline` or `stream` | No | `pipeline` where the destination can, otherwise `stream` | Commit every stream together (`pipeline`), or each on its own (`stream`). A scope the destination can't do is a problem in the plan. |
 | `delivery.resumePointTimeout` | duration, positive, or `none` | No | `1m` | How long a commit waits for a point the source can resume from exactly, before it commits without one. It commits without one only where the stream keeps its guarantee anyway. `none` waits forever. |
 
+## Quarantined rows
+
+| Field | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `quarantine` | object | No | OpenETL keeps the files | What OpenETL does with the files of the pipeline's quarantined rows |
+| `quarantine.retention` | duration, positive | No | None: OpenETL never deletes the files | How long OpenETL keeps the files of committed epochs. A run deletes older files when it starts, and every hour while it runs. The control plane stops listing them. |
+
+[Quarantine files](../quarantine-files.md) describes the files, their format, and an object store rule that deletes them instead.
+
 ## Transforms
 
 A transform sits between the source and the destination. The source's streams are its inputs, and its outputs are what the destination gets. A pipeline has at most one transform: SQL statements, or your own code, which is Spark in a scheduled pipeline and Flink in a continuous one. The [Spark](../../integrate/spark.md) and [Flink](../../integrate/flink.md) guides cover writing and running your own code.
@@ -395,7 +404,7 @@ On a changelog stream, such as one read with `cdc`:
 - The statement cannot evaluate such an update if an output column depends on a column it did not send and on one it sent, or if the `WHERE` reads any column it did not send.
 - With a `WHERE`, an update that does not send a column is written in the same way where it passes the `WHERE`. If the row failed the `WHERE` before, the table does not have the current value of an output column that depends only on columns the update did not send, and the row comes back with what the table has: no value if the row never passed the `WHERE` or was deleted with `destination.deletes: hard`, or with `soft`, the value it had when it left the filter. The plan has a note for each statement with a `WHERE` that reads a changelog. To avoid such rows, have the source send whole rows on update, which its connector's page says how to do; or read such tables in a scheduled pipeline with `full_refresh` or `incremental`, which read whole rows; or accept them.
 
-The engine quarantines a row that a statement cannot evaluate, such as a value that a cast cannot convert or arithmetic whose result does not fit its type, as one of the output's records, under `_quarantine/_outputs/` next to the pipeline's checkpoints, as it quarantines a row whose value does not fit its type. It writes the rest of the batch.
+Some rows fail when a statement evaluates them. Examples are a value that a cast cannot convert, and arithmetic whose result does not fit its type. The engine quarantines such a row as one of the output's records, as it quarantines a row whose value does not fit its type. The files are under `_quarantine/_outputs/`, next to the pipeline's checkpoints. The engine writes the rest of the batch. The row's line has the code `statement`. [Quarantine files](../quarantine-files.md) gives the format.
 
 Each output row keeps the `_openetl_id` of the row it comes from. Each row that `UNNEST` gives gets an `_openetl_id` of its own.
 

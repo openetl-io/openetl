@@ -126,6 +126,21 @@ These commands have no flags beyond the common flags. Use the `FIELD` value from
 
 Release and discard do not change destination data during the CLI request. See [Handle schema changes and holds](../pipelines/schema-changes.md) for repair and verification steps.
 
+## List quarantined rows
+
+| Syntax | Result |
+|---|---|
+| `openetl quarantine PIPELINE` | List the files of rows that the pipeline's committed epochs quarantined, newest first. For each file, show when it committed, its stream, generation and epoch, its rows and its path. Then add up the rows by stream and cause. `quarantine list` is an alias. |
+
+| Flag | Type | Required | Default | Meaning |
+|---|---|---|---|---|
+| `--stream` | string | No | Every stream | List only this stream's files, or this transform output's. |
+| `--since` | duration | No | No limit | List only files committed in this period before now, such as `24h` or `7d`. |
+| `--limit` | integer | No | `100` | List at most this many files, the newest. |
+| `--json` | boolean | No | `false` | Print each file as a line of JSON, with its causes, and no sums. |
+
+A cause is a code, the column if one column caused it, and why OpenETL did not hold the value if the stream holds values. [Quarantine files](./quarantine-files.md) lists the codes and gives the format of the files' lines. The command needs the viewer role. It reads the control plane's list of files, not the files.
+
 ## Check connections and discover streams
 
 | Syntax | Result |

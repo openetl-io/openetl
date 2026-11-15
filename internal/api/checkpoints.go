@@ -180,6 +180,9 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	if err := s.recordHolds(ctx, id, arg.Generation, arg.Epoch, holds); err != nil {
 		return nil, err
 	}
+	if err := s.indexQuarantine(ctx, id, m, arg.Generation, arg.Epoch); err != nil {
+		return nil, err
+	}
 	if err := s.takeResets(ctx, id, m.GetLastReset()); err != nil {
 		return nil, err
 	}
@@ -438,15 +441,15 @@ func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync d
 				}
 				o := heal.Observation{
 					Pipeline: pipeline, Version: sync.Version, Stream: t.Name, Class: heal.Quarantine, Severity: heal.Warning,
-					Message: fmt.Sprintf("%d of the stream's %d rows in the last hour were quarantined.", t.QuarantinedRows, t.Rows),
+					Message: fmt.Sprintf("%d of the stream's %d rows in the hour before this commit were quarantined.", t.QuarantinedRows, t.Rows),
 					Details: map[string]string{
 						"share": fmt.Sprintf("%.1f%%", share*100), "quarantined_rows": strconv.FormatInt(t.QuarantinedRows, 10),
 						"rows": strconv.FormatInt(t.Rows, 10),
 					},
 					Sync: &sync.ID, Key: sync.ID.String(), Read: st.GetRead(), OtherStreams: max(others, 0),
 				}
-				if f := st.GetQuarantineFile(); f != "" {
-					o.Details["quarantine_file"] = f
+				if err := quarantineDetails(ctx, q, s.Tenant.Org, pipeline, t.Name, m.GetCreateTime().AsTime().Add(-quarantineWindow), o.Details); err != nil {
+					return err
 				}
 				seen, err := heal.Observe(ctx, q, s.Tenant.Org, o)
 				if err != nil {
@@ -457,7 +460,7 @@ func (s *Server) checkQuarantine(ctx context.Context, pipeline uuid.UUID, sync d
 			case share < quarantineShare/2:
 				stream := t.Name
 				_, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.Quarantine)}, &stream,
-					fmt.Sprintf("%.2f%% of the stream's rows in the last hour were quarantined", share*100))
+					fmt.Sprintf("%.2f%% of the stream's rows in the hour before this commit were quarantined", share*100))
 				if err != nil {
 					return err
 				}

@@ -49,7 +49,7 @@ func quarantined(p uuid.UUID, stream string, read apiv1.SyncMode, others int) he
 	sync := uuid.New()
 	return heal.Observation{
 		Pipeline: p, Stream: stream, Class: heal.Quarantine, Severity: heal.Warning, Message: "500 of 1000",
-		Details: map[string]string{"share": "50.0%", "quarantine_file": "s3://lake/o/p/_quarantine/1/4/" + stream + ".jsonl"},
+		Details: map[string]string{"share": "50.0%", "quarantine_files": "1", "quarantine_paths": "1/4/" + stream + ".jsonl"},
 		Sync:    &sync, Key: sync.String(), Read: read, OtherStreams: others,
 	}
 }
@@ -72,7 +72,7 @@ func TestQuarantinePausesTheStream(t *testing.T) {
 	if as := actions(t, seen.Incident); len(as) != 1 || as[0].Kind != "pause_stream" || as[0].State != "applied" {
 		t.Errorf("actions %+v", as)
 	}
-	for _, want := range []string{"s3://lake/o/p/_quarantine/1/4/items.jsonl", "Heal paused the stream", "openetl resume --stream items p0"} {
+	for _, want := range []string{"(1/4/items.jsonl)", "openetl quarantine --stream items p0", "Heal paused the stream", "openetl resume --stream items p0"} {
 		if !strings.Contains(seen.Incident.NextSteps, want) {
 			t.Errorf("next steps don't say %q: %s", want, seen.Incident.NextSteps)
 		}

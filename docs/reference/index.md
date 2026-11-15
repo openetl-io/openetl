@@ -81,6 +81,7 @@ spec:
 | `incident list`, `get`, `resolve` | Shows what's wrong with pipelines, and what OpenETL did about it |
 | `holds NAME` | Lists the columns and cells a pipeline holds back |
 | `holds release NAME STREAM COLUMN`, `holds discard NAME STREAM COLUMN` | Patches a hold's values in, or drops them; `release --new-version` patches them into `COLUMN__v2` |
+| `quarantine NAME` | Lists the files of rows a pipeline quarantined, newest first, and their rows by cause |
 
 `openetl connector` has commands of its own:
 
@@ -178,6 +179,7 @@ OpenETL records these events, and [webhooks](../../examples/webhook.yaml) delive
 | `pipeline.created`, `pipeline.updated`, `pipeline.deleted` | A pipeline's changes |
 | `pipeline.paused`, `pipeline.resumed`, `pipeline.rescaled` | A pipeline paused, resumed or rescaled |
 | `stream.paused`, `stream.resumed` | One of a pipeline's streams paused or resumed on its own; `data.stream` names it, and `data.incident` the incident whose playbook paused it |
+| `stream.quarantined` | A committed epoch quarantined some of a stream's rows: `data.files` names the [quarantine files](./quarantine-files.md), with their rows by cause |
 | `pipeline.overridden` | Heal set an override of a field of the pipeline's spec, or someone removed one: `data.field`, and `data.value` as JSON, empty once it's removed |
 | `pipeline.reset` | A pipeline's streams are to be read again from the start: `data.streams`, or every stream when it's left out |
 | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline fell behind its source, or caught up |
@@ -187,6 +189,10 @@ OpenETL records these events, and [webhooks](../../examples/webhook.yaml) delive
 | `webhook.test` | Sent to one webhook when it's tested, such as by `openetl webhook test` |
 
 [Platform events](./events.md) lists every field of each type's `data`, from the JSON Schema in [`internal/events/event.schema.json`](../../internal/events/event.schema.json).
+
+## Quarantine files
+
+[Quarantine files](./quarantine-files.md) gives where OpenETL keeps a pipeline's quarantined rows, the fields of each line and the codes that say why. It also gives how long OpenETL keeps the files.
 
 ## The connector protocol
 

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -85,7 +84,12 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 }
 
 func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
-	var keys []string
+	objects, err := s.ListObjects(ctx, prefix)
+	return checkpoint.Keys(objects), err
+}
+
+func (s *Store) ListObjects(ctx context.Context, prefix string) ([]checkpoint.Object, error) {
+	var out []checkpoint.Object
 	pages := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: &prefix})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
@@ -93,12 +97,12 @@ func (s *Store) List(ctx context.Context, prefix string) ([]string, error) {
 			return nil, fmt.Errorf("checkpoint: s3 list %s: %w", prefix, err)
 		}
 		for _, o := range page.Contents {
-			keys = append(keys, aws.ToString(o.Key))
+			out = append(out, checkpoint.Object{Key: aws.ToString(o.Key), Modified: aws.ToTime(o.LastModified)})
 		}
 	}
 	// S3 lists in UTF-8 byte order already; compatible stores may not.
-	slices.Sort(keys)
-	return keys, nil
+	checkpoint.SortObjects(out)
+	return out, nil
 }
 
 // status returns 0 if err is nil or has no HTTP response.

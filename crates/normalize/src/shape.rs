@@ -22,8 +22,8 @@ use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
 use crate::typed::{Typed, Typer, input_rows, remap};
 use crate::{
-    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, Rejected, TypeOptions, UUID_EXTENSION,
-    coerce,
+    EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, NotHeld, Rejected, TypeOptions,
+    UUID_EXTENSION, coerce,
 };
 
 #[derive(Debug)]
@@ -59,8 +59,8 @@ struct Holds {
     columns: BTreeMap<String, Holding>,
     /// Held columns not seen yet, by destination name.
     pending: HashMap<String, ColumnHold>,
-    /// Source columns whose cells can't be held.
-    unholdable: HashSet<String>,
+    /// Source columns whose cells can't be held, with why.
+    unholdable: HashMap<String, NotHeld>,
     /// Each held value, as a one-row array, by source name.
     values: HashMap<String, ArrayRef>,
     /// The stream has `_openetl_held`.
@@ -215,10 +215,20 @@ impl Shaper {
             started,
             ..Default::default()
         };
-        h.unholdable.extend(self.identity.key.iter().cloned());
-        h.unholdable.extend(self.identity.cursor.iter().cloned());
+        // The first reason a column can't be held is its reason.
+        let mut unholdable = |c: String, why: NotHeld| {
+            h.unholdable.entry(c).or_insert(why);
+        };
+        for k in &self.identity.key {
+            unholdable(k.clone(), NotHeld::Key);
+        }
+        if let Some(c) = &self.identity.cursor {
+            unholdable(c.clone(), NotHeld::Cursor);
+        }
         for d in &config.limits.unholdable {
-            h.unholdable.extend(source(&self.namer, d));
+            if let Some(src) = source(&self.namer, d) {
+                unholdable(src, NotHeld::Destination);
+            }
         }
         let fields: Vec<Field> = self
             .declared
@@ -240,7 +250,9 @@ impl Shaper {
                         h.values.insert(f.name().clone(), a);
                     }
                     None => {
-                        h.unholdable.insert(f.name().clone());
+                        h.unholdable
+                            .entry(f.name().clone())
+                            .or_insert(NotHeld::HeldValue);
                     }
                 }
             }
@@ -249,7 +261,7 @@ impl Shaper {
             if let Some(src) = source(&self.namer, d)
                 && config.show(&src).value().is_none()
             {
-                h.unholdable.insert(src);
+                h.unholdable.entry(src).or_insert(NotHeld::NotNull);
             }
         }
         let mut rules = HoldRules {
@@ -369,13 +381,13 @@ impl Shaper {
 
     /// Where the first half holds cells, the source columns whose cells it
     /// can't hold; None where a value that doesn't fit rejects its row.
-    pub fn cell_holds(&self) -> Option<HashSet<String>> {
+    pub fn cell_holds(&self) -> Option<HashMap<String, NotHeld>> {
         self.typer.hold_cells.clone()
     }
 
     /// The first half holds cells as [`Shaper::cell_holds`] gives them,
     /// for a stream another shaper's second half takes.
-    pub fn with_cell_holds(mut self, holds: Option<HashSet<String>>) -> Self {
+    pub fn with_cell_holds(mut self, holds: Option<HashMap<String, NotHeld>>) -> Self {
         self.typer.hold_cells = holds;
         self
     }
@@ -528,9 +540,10 @@ impl Shaper {
         let c = self.evolver.conform(&batch)?;
         if !c.failed.is_empty() {
             let rows = input_rows(rows, &rejected, batch.num_rows());
-            rejected.extend(c.failed.iter().map(|(i, reason)| Rejected {
+            rejected.extend(c.failed.iter().map(|(i, reason, cause)| Rejected {
                 row: rows[*i],
                 reason: reason.clone(),
+                cause: cause.clone(),
             }));
             rejected.sort_by_key(|r| r.row);
         }
@@ -545,7 +558,7 @@ impl Shaper {
         rejected: Vec<Rejected>,
         cells: Vec<HeldCell>,
     ) -> Result<Shaped, Error> {
-        let gone: HashSet<usize> = c.failed.iter().map(|(r, _)| *r).collect();
+        let gone: HashSet<usize> = c.failed.iter().map(|(r, ..)| *r).collect();
         let mut cells = remap(cells, ids.len(), &gone);
         cells.extend(c.cells.iter().cloned());
         let (ids, control) = if c.failed.is_empty() {
@@ -1238,6 +1251,7 @@ fn deliver_schema(current: &Schema, columns: &BTreeMap<String, Holding>) -> Sche
 mod tests {
     use super::*;
     use crate::hold::{CELL, COLUMN};
+    use crate::{Cause, Code};
     use arrow_array::Int64Array;
     use arrow_array::cast::AsArray;
 
@@ -1904,6 +1918,11 @@ mod tests {
         let mut plain = price_shaper(HoldConfig::default());
         let without = plain.batch(&prices()).unwrap();
         assert_eq!(without.rejected.len(), 1);
+        assert_eq!(
+            without.rejected[0].cause,
+            Cause::new(Code::Nan).column("price"),
+            "a stream that doesn't hold cells says nothing of holds"
+        );
 
         let mut s = price_shaper(HoldConfig {
             cells: true,
@@ -2009,7 +2028,72 @@ mod tests {
         )]);
         let n = s.batch(&b).unwrap();
         assert_eq!(n.rejected.len(), 1);
+        assert_eq!(
+            n.rejected[0].cause,
+            Cause::new(Code::Type).column("id").not_held(NotHeld::Key)
+        );
         assert!(n.held.is_empty());
+    }
+
+    /// As price_shaper, restored from a schema with the columns, as the
+    /// destination's limits name them.
+    fn restored_price_shaper(config: HoldConfig) -> Shaper {
+        let mut first = price_shaper(HoldConfig::default());
+        first.batch(&prices()).unwrap();
+        let declared = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("price", DataType::Decimal128(10, 2), true),
+        ]));
+        keyed(Policy::AllowAll, first.schema(), Some(declared))
+            .with_holds(config)
+            .unwrap()
+    }
+
+    /// A cell that would show a null where the destination takes none, or
+    /// a heldValue that doesn't fit, quarantines its row and says why.
+    #[test]
+    fn a_cell_that_cant_be_held_says_why() {
+        let mut s = restored_price_shaper(HoldConfig {
+            cells: true,
+            limits: crate::hold::Limits {
+                not_null: HashSet::from(["price".to_owned()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let n = s.batch(&prices()).unwrap();
+        assert_eq!(n.rejected.len(), 1);
+        assert_eq!(
+            n.rejected[0].cause,
+            Cause::new(Code::Nan)
+                .column("price")
+                .not_held(NotHeld::NotNull)
+        );
+
+        let mut s = restored_price_shaper(HoldConfig {
+            cells: true,
+            columns: HashMap::from([("price".into(), Show::Value("\"abc\"".into()))]),
+            ..Default::default()
+        });
+        let n = s.batch(&prices()).unwrap();
+        assert_eq!(n.rejected.len(), 1);
+        assert_eq!(n.rejected[0].cause.not_held, Some(NotHeld::HeldValue));
+
+        let mut s = restored_price_shaper(HoldConfig {
+            cells: true,
+            limits: crate::hold::Limits {
+                unholdable: HashSet::from(["price".to_owned()]),
+                not_null: HashSet::from(["price".to_owned()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let n = s.batch(&prices()).unwrap();
+        assert_eq!(
+            n.rejected[0].cause.not_held,
+            Some(NotHeld::Destination),
+            "the first reason wins"
+        );
     }
 
     fn established(policy: Policy, config: HoldConfig) -> Shaper {

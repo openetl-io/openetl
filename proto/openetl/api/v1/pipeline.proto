@@ -134,6 +134,13 @@ service PipelineService {
       body: "*"
     };
   }
+  // The quarantine files of the pipeline's committed epochs, newest first:
+  // where each is, and how many of its rows each cause quarantined. Their
+  // records stay in the data plane's object storage. A file is listed until
+  // quarantine.retention deletes it, or the pipeline is deleted.
+  rpc ListQuarantine(ListQuarantineRequest) returns (ListQuarantineResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/quarantine"};
+  }
 }
 
 // PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
@@ -303,6 +310,17 @@ message PipelineSpec {
   FlinkAccess flink_access = 13;
   // Unset: sized automatically, in the default pool.
   JobResources resources = 14;
+  // What becomes of the rows the pipeline quarantines. Unset: their files
+  // are kept.
+  Quarantine quarantine = 15;
+}
+
+// Quarantine is what becomes of the files a pipeline's committed epochs
+// quarantined rows to.
+message Quarantine {
+  // Each file is deleted, by the run that starts after it is this old, and
+  // the control plane stops listing it. Unset: files are never deleted.
+  google.protobuf.Duration retention = 1;
 }
 
 // JobResources sizes the pipeline's jobs.
@@ -1393,4 +1411,60 @@ message DiscardHoldRequest {
 
 message DiscardHoldResponse {
   Hold hold = 1;
+}
+
+// QuarantineFile is one stream's quarantined rows from one committed
+// epoch: JSON lines, one per row, in the data plane's object storage.
+message QuarantineFile {
+  // The stream, or the transform's output, whose rows it holds.
+  string stream = 1;
+  // stream is one of a transform's outputs.
+  bool output = 2;
+  // Below the pipeline's _quarantine directory: {g}/{N}/{stream}.jsonl, or
+  // {g}/{N}/{stream}.{k}.jsonl from the attempt's lane k, with a
+  // transform's outputs' below _outputs/.
+  string path = 3;
+  // Where it is in the data plane's object storage.
+  string url = 4;
+  uint64 rows = 5;
+  // Its rows by cause, the most first.
+  repeated QuarantineCause causes = 6;
+  // The checkpoint that committed it.
+  uint64 generation = 7;
+  uint64 epoch = 8;
+  // The sync that committed it; empty if the control plane has no record of
+  // the sync.
+  string sync = 9;
+  google.protobuf.Timestamp commit_time = 10;
+}
+
+// QuarantineCause is how many of a file's rows were quarantined for one
+// cause. It never holds a value.
+message QuarantineCause {
+  // What was wrong: json, object, type, range, precision, nan, statement,
+  // unsent, late, event_time or aggregate.
+  string code = 1;
+  // The column that caused it; empty where no one column did.
+  string column = 2;
+  // Set where the stream holds values that don't fit (unfitValues: hold):
+  // why these rows' values couldn't be held. One of key, cursor,
+  // destination, not_null, held_value, record and transform.
+  string not_held = 3;
+  uint64 rows = 4;
+}
+
+message ListQuarantineRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  // Only this stream's or output's files; empty for every one's.
+  string stream = 2;
+  // Only files committed at or after it.
+  google.protobuf.Timestamp since = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message ListQuarantineResponse {
+  repeated QuarantineFile files = 1;
+  string next_page_token = 2;
 }

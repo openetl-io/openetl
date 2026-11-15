@@ -23,7 +23,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use base64::Engine;
 use serde_json::Value;
 
-use crate::{EXTENSION_NAME_KEY, Error, JSON_EXTENSION, TypeOptions, UUID_EXTENSION};
+use crate::{Code, EXTENSION_NAME_KEY, Error, JSON_EXTENSION, TypeOptions, UUID_EXTENSION};
 
 /// What becomes of infinite dates and timestamps: `infinity` and
 /// `-infinity` in text, and in typed batches the largest and smallest
@@ -42,7 +42,7 @@ impl Infinity {
     fn apply<T>(self, limit: T) -> Result<T, Unfit> {
         match self {
             Infinity::Clamp => Ok(limit),
-            Infinity::Unfit => Err(Unfit::new("range", "is infinite")),
+            Infinity::Unfit => Err(Unfit::new(Code::Range, "is infinite")),
         }
     }
 }
@@ -148,12 +148,13 @@ pub fn nanoseconds(schema: &Schema) -> SchemaRef {
 }
 
 pub(crate) struct Unfit {
-    code: &'static str,
+    /// Type, Range, Precision or Nan: the code its reason starts with.
+    code: Code,
     why: String,
 }
 
 impl Unfit {
-    fn new(code: &'static str, why: impl Into<String>) -> Self {
+    fn new(code: Code, why: impl Into<String>) -> Self {
         Self {
             code,
             why: why.into(),
@@ -161,12 +162,12 @@ impl Unfit {
     }
 
     fn reason(&self, column: &str) -> String {
-        format!("{}: column {column:?} {}", self.code, self.why)
+        format!("{}: column {column:?} {}", self.code.as_str(), self.why)
     }
 }
 
 fn not_a(what: &str) -> Unfit {
-    Unfit::new("type", format!("isn't {what}"))
+    Unfit::new(Code::Type, format!("isn't {what}"))
 }
 
 enum Builder {
@@ -551,7 +552,12 @@ fn temporal(f: &Field, a: &ArrayRef, opts: TypeOptions) -> Converted {
             }
             let (from_n, to_n) = (per_second(unit), per_second(&to));
             let (min, max) = limits(&to);
-            let range = || Unfit::new("range", format!("is out of range for {}", unit_name(&to)));
+            let range = || {
+                Unfit::new(
+                    Code::Range,
+                    format!("is out of range for {}", unit_name(&to)),
+                )
+            };
             let (out, failed) = scale::<Int64Type, Int64Type>(&ticks, name, |v| match v {
                 i64::MAX => inf.apply(max),
                 i64::MIN => inf.apply(min),
@@ -729,17 +735,17 @@ fn int<T: TryFrom<i128>>(s: &str) -> Result<T, Unfit> {
     let v = match s.parse::<i64>() {
         Ok(v) => i128::from(v),
         Err(_) => decimal(s, 38, 0).map_err(|u| match u.code {
-            "precision" => not_a("an integer"),
+            Code::Precision => not_a("an integer"),
             _ => u,
         })?,
     };
-    T::try_from(v).map_err(|_| Unfit::new("range", "is out of range"))
+    T::try_from(v).map_err(|_| Unfit::new(Code::Range, "is out of range"))
 }
 
 fn float<T: std::str::FromStr + Into<f64> + Copy>(s: &str) -> Result<T, Unfit> {
     let v: T = s.parse().map_err(|_| not_a("a number"))?;
     if v.into().is_infinite() && !s.to_ascii_lowercase().contains("inf") {
-        return Err(Unfit::new("range", "is out of range"));
+        return Err(Unfit::new(Code::Range, "is out of range"));
     }
     Ok(v)
 }
@@ -749,13 +755,13 @@ fn decimal(s: &str, p: u8, scale: i8) -> Result<i128, Unfit> {
     let bare = s.strip_prefix(['+', '-']).unwrap_or(s);
     if bare.eq_ignore_ascii_case("nan") {
         return Err(Unfit::new(
-            "nan",
+            Code::Nan,
             format!("is NaN, which decimal({p}, {scale}) can't hold"),
         ));
     }
     if bare.eq_ignore_ascii_case("infinity") || bare.eq_ignore_ascii_case("inf") {
         return Err(Unfit::new(
-            "range",
+            Code::Range,
             format!("is infinite, which decimal({p}, {scale}) can't hold"),
         ));
     }
@@ -810,7 +816,7 @@ fn decimal(s: &str, p: u8, scale: i8) -> Result<i128, Unfit> {
 }
 
 fn precision(p: u8, s: i8) -> Unfit {
-    Unfit::new("precision", format!("doesn't fit decimal({p}, {s})"))
+    Unfit::new(Code::Precision, format!("doesn't fit decimal({p}, {s})"))
 }
 
 fn digits(s: &str, n: usize) -> Option<(u32, &str)> {
@@ -869,7 +875,7 @@ fn date(s: &str, inf: Infinity) -> Result<i32, Unfit> {
         return d;
     }
     match date_part(s) {
-        Some((d, "")) => i32::try_from(d).map_err(|_| Unfit::new("range", "is out of range")),
+        Some((d, "")) => i32::try_from(d).map_err(|_| Unfit::new(Code::Range, "is out of range")),
         _ => Err(not_a("a date")),
     }
 }
@@ -942,11 +948,11 @@ fn timestamp(s: &str, ts: Ts) -> Result<i64, Unfit> {
         return Err(not_a("a date-time"));
     };
     let nanos = match (zone, ts.utc) {
-        ("", true) => return Err(Unfit::new("type", "has no UTC offset")),
+        ("", true) => return Err(Unfit::new(Code::Type, "has no UTC offset")),
         ("", false) => local,
         (_, false) => {
             return Err(Unfit::new(
-                "type",
+                Code::Type,
                 "has a UTC offset, but its column has no time zone",
             ));
         }
@@ -961,7 +967,7 @@ fn timestamp(s: &str, ts: Ts) -> Result<i64, Unfit> {
     };
     i64::try_from(v).map_err(|_| {
         Unfit::new(
-            "range",
+            Code::Range,
             format!("is out of range for {}", unit_name(&ts.unit())),
         )
     })
@@ -987,6 +993,14 @@ fn uuid(s: &str) -> Option<[u8; 16]> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reason_starts_with_its_code() {
+        for code in [Code::Type, Code::Range, Code::Precision, Code::Nan] {
+            let reason = Unfit::new(code, "doesn't fit").reason("a: b");
+            assert_eq!(Code::of_reason(&reason), code, "{reason}");
+        }
+    }
     use arrow_array::BooleanArray;
     use arrow_array::StringArray;
     use arrow_array::types::{Decimal128Type, Int16Type};

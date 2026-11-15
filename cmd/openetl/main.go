@@ -88,6 +88,8 @@ Commands:
   holds release|discard NAME STREAM COLUMN
                   patch a hold's values in, or drop them; release
                   --new-version patches them into COLUMN__v2
+  quarantine NAME list the files of rows a pipeline quarantined, newest
+                  first, and their rows by cause
   version         print the CLI's version
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
@@ -144,6 +146,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runIncident(ctx, args[1:], out)
 	case "holds":
 		return runHolds(ctx, args[1:], out)
+	case "quarantine":
+		return runQuarantine(ctx, args[1:], out)
 	case "pause", "resume", "sync":
 		return runPipeline(ctx, args[0], args[1:], out)
 	case "reset":

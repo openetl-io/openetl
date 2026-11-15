@@ -21,7 +21,7 @@ use arrow_array::{
     new_null_array,
 };
 use arrow_schema::{Field, Schema, SchemaRef};
-use openetl_normalize::{Control, Rejected, Typed, element_ids};
+use openetl_normalize::{Cause, Code, Control, NotHeld, Rejected, Typed, element_ids};
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_sql::{RowWise, Step};
 
@@ -60,8 +60,11 @@ pub struct Applied {
     pub typed: Typed,
     /// Rows the statement couldn't evaluate, by their row among those the
     /// stream's batch was typed from, and why.
-    pub failed: Vec<(usize, String)>,
+    pub failed: Failed,
 }
+
+/// Rows a statement couldn't evaluate: each one's row, and why.
+pub type Failed = Vec<(usize, String, Cause)>;
 
 impl Stage {
     /// Statement `statement` of `transform`, on a lane.
@@ -374,10 +377,14 @@ impl Bound {
         let mut held = BTreeMap::new();
         for c in &typed.cells {
             held.entry(c.row).or_insert_with(|| {
-                self.reason(&format!(
+                let why = self.reason(&format!(
                     "column {} has a value that doesn't fit its type, which the stream holds: {}",
                     c.column, c.reason
-                ))
+                ));
+                (
+                    why,
+                    Cause::value(&c.reason, &c.column, Some(NotHeld::Transform)),
+                )
             });
         }
         match self.op.changelog {
@@ -392,14 +399,14 @@ impl Bound {
         input: RecordBatch,
         pushed: &[usize],
         cursor: Option<&str>,
-        held: BTreeMap<usize, String>,
+        held: BTreeMap<usize, (String, Cause)>,
     ) -> Result<Applied, JobError> {
         let all: Vec<usize> = (0..input.num_rows())
             .filter(|r| !held.contains_key(r))
             .collect();
         let (ran, mut failed) = self.run_rows(&input, &typed.ids, &all, &BTreeSet::new(), true)?;
-        failed.extend(held);
-        failed.sort_by_key(|(r, _)| *r);
+        failed.extend(held.into_iter().map(|(r, (why, cause))| (r, why, cause)));
+        failed.sort_by_key(|(r, ..)| *r);
         let seq = match (
             &typed.control.seq,
             cursor.and_then(|c| typed.batch.column_by_name(c)),
@@ -423,7 +430,7 @@ impl Bound {
             },
             failed: failed
                 .into_iter()
-                .map(|(r, why)| (pushed[r], why))
+                .map(|(r, why, cause)| (pushed[r], why, cause))
                 .collect(),
         })
     }
@@ -438,7 +445,7 @@ impl Bound {
         typed: &Typed,
         input: RecordBatch,
         pushed: &[usize],
-        mut held: BTreeMap<usize, String>,
+        mut held: BTreeMap<usize, (String, Cause)>,
     ) -> Result<Applied, JobError> {
         let n = input.num_rows();
         let ops: Vec<Option<&str>> = match &typed.control.op {
@@ -466,8 +473,8 @@ impl Bound {
                 }
                 continue;
             }
-            if let Some(why) = held.remove(&r) {
-                failed.push((r, why));
+            if let Some((why, cause)) = held.remove(&r) {
+                failed.push((r, why, cause));
                 dead[r] = true;
                 continue;
             }
@@ -482,8 +489,8 @@ impl Bound {
                     *u = Some(unsent.unchanged);
                     runs.entry(unsent.reads).or_default().push(r);
                 }
-                Err(why) => {
-                    failed.push((r, why));
+                Err((why, cause)) => {
+                    failed.push((r, why, cause));
                     dead[r] = true;
                 }
             }
@@ -493,9 +500,9 @@ impl Bound {
         let mut parts = Vec::with_capacity(runs.len());
         for (unsent, rows) in &runs {
             let (ran, more) = self.run_rows(&input, &typed.ids, rows, unsent, true)?;
-            for (r, why) in more {
+            for (r, why, cause) in more {
                 dead[r] = true;
-                failed.push((r, why));
+                failed.push((r, why, cause));
             }
             for (i, &r) in ran.rows.iter().enumerate() {
                 passed[r] = Some((parts.len(), i));
@@ -511,7 +518,7 @@ impl Bound {
             }
             parts.push(self.output(&ran.batch)?);
         }
-        failed.sort_by_key(|(r, _)| *r);
+        failed.sort_by_key(|(r, ..)| *r);
 
         // Rows that pass, then deletes of the rest's keys, interleaved in
         // the order they came.
@@ -589,7 +596,7 @@ impl Bound {
             },
             failed: failed
                 .into_iter()
-                .map(|(r, why)| (pushed[r], why))
+                .map(|(r, why, cause)| (pushed[r], why, cause))
                 .collect(),
         })
     }
@@ -598,7 +605,7 @@ impl Bound {
     /// columns that depend only on such columns. An update whose filter, or
     /// one of whose output columns, depends on both kinds can't be
     /// evaluated.
-    fn unchanged(&self, names: Option<ArrayRef>) -> Result<Option<Unsent>, String> {
+    fn unchanged(&self, names: Option<ArrayRef>) -> Result<Option<Unsent>, (String, Cause)> {
         let Some(names) = names else {
             return Ok(None);
         };
@@ -611,10 +618,13 @@ impl Bound {
             .collect();
         let name = |i: usize| reads.field(i).name().clone();
         if let Some(&i) = unsent.intersection(&self.deps.filters).next() {
-            return Err(self.reason(&format!(
-                "the update didn't send column {}, which the statement's filter reads",
-                name(i)
-            )));
+            return Err((
+                self.reason(&format!(
+                    "the update didn't send column {}, which the statement's filter reads",
+                    name(i)
+                )),
+                Cause::new(Code::Unsent).column(name(i)),
+            ));
         }
         let mut out = Vec::new();
         for (c, deps) in self.deps.columns.iter().enumerate() {
@@ -627,11 +637,14 @@ impl Bound {
                     .next()
                     .copied()
                     .unwrap_or_default();
-                return Err(self.reason(&format!(
-                    "the update didn't send column {}, which output column {} needs with columns it did send",
-                    name(i),
-                    self.names[c]
-                )));
+                return Err((
+                    self.reason(&format!(
+                        "the update didn't send column {}, which output column {} needs with columns it did send",
+                        name(i),
+                        self.names[c]
+                    )),
+                    Cause::new(Code::Unsent).column(name(i)),
+                ));
             }
             out.push(self.names[c].clone());
         }
@@ -720,7 +733,7 @@ impl Bound {
         rows: &[usize],
         unsent: &BTreeSet<usize>,
         filter: bool,
-    ) -> Result<(Ran, Vec<(usize, String)>), JobError> {
+    ) -> Result<(Ran, Failed), JobError> {
         let (some, some_ids) = match rows.len() == input.num_rows() {
             true => (input.clone(), ids.clone()),
             false => (
@@ -741,7 +754,11 @@ impl Bound {
                     match self.run(some.slice(i, 1), some_ids.slice(i, 1), unsent, filter) {
                         Ok(_) => true,
                         Err(e) => {
-                            failed.push((rows[i], self.reason(&e.message)));
+                            failed.push((
+                                rows[i],
+                                self.reason(&e.message),
+                                Cause::new(Code::Statement),
+                            ));
                             false
                         }
                     }
@@ -1270,6 +1287,7 @@ mod tests {
             "{}",
             out.failed[0].1
         );
+        assert_eq!(out.failed[0].2, Cause::new(Code::Unsent).column("email"));
         assert_eq!(ints(&out.typed.batch, "id"), [Some(2)]);
         assert_eq!(out.typed.rows, Some(vec![6]));
 
@@ -1283,6 +1301,7 @@ mod tests {
             "{}",
             out.failed[0].1
         );
+        assert_eq!(out.failed[0].2, Cause::new(Code::Unsent).column("email"));
     }
 
     #[test]
@@ -1309,6 +1328,7 @@ mod tests {
             "{}",
             out.failed[0].1
         );
+        assert_eq!(out.failed[0].2, Cause::new(Code::Statement));
         assert_eq!(ints(&out.typed.batch, "n"), [Some(12), Some(7)]);
         assert_eq!(out.typed.rows, Some(vec![0, 2]));
         assert_eq!(id(&out.typed.ids, 1), id(&t.ids, 2));

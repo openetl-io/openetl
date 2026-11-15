@@ -44,20 +44,22 @@ const (
 	PipelineOverridden = "pipeline.overridden"
 	StreamPaused       = "stream.paused"
 	StreamResumed      = "stream.resumed"
-	PipelineReset      = "pipeline.reset"
-	SchemaChanged      = "schema.changed"
-	SchemaBlocked      = "schema.blocked"
-	IncidentOpened     = "incident.opened"
-	IncidentEscalated  = "incident.escalated"
-	IncidentResolved   = "incident.resolved"
-	WebhookTest        = "webhook.test"
+	// A committed epoch quarantined some of a stream's rows.
+	StreamQuarantined = "stream.quarantined"
+	PipelineReset     = "pipeline.reset"
+	SchemaChanged     = "schema.changed"
+	SchemaBlocked     = "schema.blocked"
+	IncidentOpened    = "incident.opened"
+	IncidentEscalated = "incident.escalated"
+	IncidentResolved  = "incident.resolved"
+	WebhookTest       = "webhook.test"
 )
 
 // Types is every event type there is.
 var Types = []string{
 	SyncStarted, SyncSucceeded, SyncFailed, SyncStopped,
 	PipelineCreated, PipelineUpdated, PipelineDeleted, PipelineTeardownFailed, PipelinePaused, PipelineResumed, PipelineLagging, PipelineRecovered,
-	PipelineRescaled, PipelineOverridden, StreamPaused, StreamResumed, PipelineReset,
+	PipelineRescaled, PipelineOverridden, StreamPaused, StreamResumed, StreamQuarantined, PipelineReset,
 	SchemaChanged, SchemaBlocked,
 	IncidentOpened, IncidentEscalated, IncidentResolved,
 	WebhookTest,
@@ -195,6 +197,35 @@ type Rescale struct {
 	// The job loop's lanes, and those of the job it rescales.
 	Lanes     int `json:"lanes,omitempty"`
 	FromLanes int `json:"fromLanes,omitempty"`
+}
+
+// Quarantine is what a committed epoch quarantined of one stream, or of one
+// of a transform's outputs: its files, never their rows' values.
+type Quarantine struct {
+	Pipeline string `json:"pipeline"`
+	Sync     string `json:"sync,omitempty"`
+	Stream   string `json:"stream"`
+	// The stream is one of a transform's outputs.
+	Output     bool             `json:"output,omitempty"`
+	Generation uint64           `json:"generation"`
+	Epoch      uint64           `json:"epoch"`
+	Rows       uint64           `json:"rows"`
+	Files      []QuarantineFile `json:"files"`
+}
+
+type QuarantineFile struct {
+	// Below the pipeline's _quarantine directory.
+	Path   string            `json:"path"`
+	URL    string            `json:"url"`
+	Rows   uint64            `json:"rows"`
+	Causes []QuarantineCause `json:"causes"`
+}
+
+type QuarantineCause struct {
+	Code    string `json:"code"`
+	Column  string `json:"column,omitempty"`
+	NotHeld string `json:"notHeld,omitempty"`
+	Rows    uint64 `json:"rows"`
 }
 
 type Column struct {

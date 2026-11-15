@@ -341,6 +341,7 @@ async fn windows_closing_together_keep_their_own_state() {
         .await
         .unwrap();
     assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
+    assert_eq!(out.failed[0].2.code, openetl_normalize::Code::Aggregate);
     let late = batch(&run.ops[0], &[("us", 1, MIN + 2)]);
     let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
     let t = out.rows.unwrap();

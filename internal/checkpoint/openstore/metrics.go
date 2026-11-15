@@ -77,3 +77,10 @@ func (i instrumented) List(ctx context.Context, prefix string) ([]string, error)
 	i.record(ctx, "list", start, err)
 	return keys, err
 }
+
+func (i instrumented) ListObjects(ctx context.Context, prefix string) ([]checkpoint.Object, error) {
+	start := time.Now()
+	objects, err := i.s.ListObjects(ctx, prefix)
+	i.record(ctx, "list", start, err)
+	return objects, err
+}

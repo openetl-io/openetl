@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -156,6 +155,17 @@ func (s *FSStore) Delete(_ context.Context, key string) error {
 }
 
 func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
+	objects, err := s.list(prefix, false)
+	return Keys(objects), err
+}
+
+func (s *FSStore) ListObjects(_ context.Context, prefix string) ([]Object, error) {
+	return s.list(prefix, true)
+}
+
+// list lists the keys that start with prefix, sorted, with their files'
+// modification times if timed.
+func (s *FSStore) list(prefix string, timed bool) ([]Object, error) {
 	start := s.dir
 	if i := strings.LastIndex(prefix, "/"); i > 0 {
 		p, err := s.path(prefix[:i])
@@ -164,7 +174,7 @@ func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
 		}
 		start = filepath.Join(s.dir, p)
 	}
-	var keys []string
+	var out []Object
 	err := filepath.WalkDir(start, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if p == start && errors.Is(err, fs.ErrNotExist) {
@@ -179,16 +189,29 @@ func (s *FSStore) List(_ context.Context, prefix string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if key := filepath.ToSlash(rel); strings.HasPrefix(key, prefix) {
-			keys = append(keys, key)
+		key := filepath.ToSlash(rel)
+		if !strings.HasPrefix(key, prefix) {
+			return nil
 		}
+		o := Object{Key: key}
+		if timed {
+			info, err := d.Info()
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			o.Modified = info.ModTime()
+		}
+		out = append(out, o)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	slices.Sort(keys)
-	return keys, nil
+	SortObjects(out)
+	return out, nil
 }
 
 // writeTemp writes data to a new .tmp- file beside p, and returns its path.

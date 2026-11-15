@@ -478,6 +478,21 @@ type Principal struct {
 	CreateTime  time.Time
 }
 
+type QuarantineFile struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Path       string
+	Url        string
+	Stream     string
+	Output     bool
+	Generation int64
+	Epoch      int64
+	RunID      string
+	CommitTime time.Time
+	Rows       int64
+	Causes     []byte
+}
+
 type RoleBinding struct {
 	OrgID       uuid.UUID
 	PrincipalID uuid.UUID

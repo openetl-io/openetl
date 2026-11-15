@@ -8,6 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"slices"
+	"strings"
+	"time"
 )
 
 var (
@@ -32,6 +35,28 @@ type Store interface {
 	Delete(ctx context.Context, key string) error
 	// List returns the keys that start with prefix, sorted.
 	List(ctx context.Context, prefix string) ([]string, error)
+	// ListObjects is List, with when each key was last written.
+	ListObjects(ctx context.Context, prefix string) ([]Object, error)
+}
+
+// Object is a key, and when it was last written.
+type Object struct {
+	Key      string
+	Modified time.Time
+}
+
+// SortObjects sorts objects by key.
+func SortObjects(objects []Object) {
+	slices.SortFunc(objects, func(a, b Object) int { return strings.Compare(a.Key, b.Key) })
+}
+
+// Keys are objects' keys, in their order.
+func Keys(objects []Object) []string {
+	out := make([]string, len(objects))
+	for i, o := range objects {
+		out[i] = o.Key
+	}
+	return out
 }
 
 func contentVersion(data []byte) Version {

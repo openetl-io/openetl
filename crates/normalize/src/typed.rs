@@ -12,7 +12,7 @@ use arrow_schema::{Schema, SchemaRef};
 use crate::control::Control;
 use crate::hold::HeldCell;
 use crate::ids::Identity;
-use crate::{Error, Normalizer, Rejected, TypeOptions, coerce};
+use crate::{Cause, Error, Normalizer, NotHeld, Rejected, TypeOptions, coerce};
 
 /// A batch between the two halves. A stage between them may change the
 /// batch's schema and rows, keeping `ids`, `control`, `cells` and `rows` row
@@ -56,8 +56,8 @@ pub(crate) struct Typer {
     /// Typed batches must carry op and seq control columns.
     pub changelog: bool,
     /// Some: a declared value that doesn't fit holds its cell instead of
-    /// rejecting its row, except in these source columns.
-    pub hold_cells: Option<HashSet<String>>,
+    /// rejecting its row, except in these source columns, which say why.
+    pub hold_cells: Option<HashMap<String, NotHeld>>,
     norm: Option<Normalizer>,
 }
 
@@ -149,23 +149,27 @@ impl Typer {
         }
         let (typed, all) = coerce::conform_cells(batch, self.declared.as_deref(), self.types)?;
         let schema = batch.schema();
-        let mut first: HashMap<usize, String> = HashMap::new();
+        let mut first: HashMap<usize, (String, Cause)> = HashMap::new();
         let mut cells = Vec::new();
         for (row, col, reason) in all {
             let name = schema.field(col).name();
             match &self.hold_cells {
-                Some(unholdable) if !unholdable.contains(name) => cells.push(HeldCell {
+                Some(unholdable) if !unholdable.contains_key(name) => cells.push(HeldCell {
                     row,
                     column: name.clone(),
                     reason,
                     raw: coerce::cell_text(batch.column(col), row).unwrap_or_default(),
                 }),
                 _ => {
-                    first.entry(row).or_insert(reason);
+                    let why = self.hold_cells.as_ref().and_then(|u| u.get(name)).copied();
+                    first.entry(row).or_insert_with(|| {
+                        let cause = Cause::value(&reason, name, why);
+                        (reason, cause)
+                    });
                 }
             }
         }
-        let mut failed: Vec<(usize, String)> = first.into_iter().collect();
+        let mut failed: Vec<(usize, (String, Cause))> = first.into_iter().collect();
         failed.sort_by_key(|(r, _)| *r);
         let gone: HashSet<usize> = failed.iter().map(|(r, _)| *r).collect();
         let typed = match gone.is_empty() {
@@ -187,7 +191,7 @@ impl Typer {
             cells,
             rejected: failed
                 .into_iter()
-                .map(|(row, reason)| Rejected { row, reason })
+                .map(|(row, (reason, cause))| Rejected { row, reason, cause })
                 .collect(),
             rows: None,
         })

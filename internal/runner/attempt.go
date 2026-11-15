@@ -153,6 +153,10 @@ type Job struct {
 	SchemaPolicy    SchemaPolicy
 	// Where the dataflow keeps records it can't take, as Plan says.
 	QuarantineURL string
+	// How long the files of committed epochs' quarantined records are
+	// kept: the attempt deletes older ones when it starts, and hourly while
+	// it runs. Zero: they're kept.
+	QuarantineRetention time.Duration
 	// Where the dataflow's stateful operators keep their state, as Plan
 	// says.
 	StateURL string
@@ -588,6 +592,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		ws = append(ws, lw)
 	}
 	prune(rctx, sess, restored, job.keep(), job.Staging, job.HeldURL != "", log)
+	pruneQuarantine(rctx, sess, restored, job.QuarantineRetention, log)
 	holds, holdPlans, err := job.startHolds(rctx, restored, limits)
 	if err != nil {
 		return res, err
@@ -976,6 +981,24 @@ func prune(ctx context.Context, sess *checkpoint.Session, restored *checkpoint.R
 	}
 }
 
+// How often a long attempt deletes the quarantine files past their
+// retention after it starts.
+const quarantinePruneEvery = time.Hour
+
+// pruneQuarantine deletes the quarantine files of epochs up to restored's
+// written more than retention ago; nothing if retention is zero. It's best
+// effort, as prune is.
+func pruneQuarantine(ctx context.Context, sess *checkpoint.Session, restored *checkpoint.Record, retention time.Duration, log *slog.Logger) {
+	if retention <= 0 {
+		return
+	}
+	if n, err := sess.PruneQuarantine(ctx, restored, time.Now().Add(-retention)); err != nil {
+		log.Warn("deleting quarantine files past their retention failed", "deleted", n, "err", err)
+	} else if n > 0 {
+		log.Info("deleted quarantine files past their retention", "deleted", n, "retention", retention)
+	}
+}
+
 // handOver lets the destination read an epoch's staged files, and hands them
 // to its writer, stream by stream.
 func handOver(ctx context.Context, staging Staging, w destination.Writer, e destination.Epoch, files map[string][]destination.StagedFile) error {
@@ -1358,14 +1381,17 @@ type coordinator struct {
 	readStarts    map[string]int64
 	// The paused streams' states and splits in the restored record, which
 	// every record carries.
-	carried     map[string]carried
-	sincePrune  int    // owned by the committer: commits since it last pruned
-	seen        uint64 // what the source had emitted when the last barrier was requested
-	lastBarrier time.Time
-	lastStaged  destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
-	syncStart   *checkpoint.RecordRef               // the record the sync started after; nil if unknown
-	syncRows    map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
-	measures    map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
+	carried    map[string]carried
+	sincePrune int // owned by the committer: commits since it last pruned
+	// Owned by the committer: when it last deleted quarantine files past
+	// their retention; zero until then.
+	quarantinePruned time.Time
+	seen             uint64 // what the source had emitted when the last barrier was requested
+	lastBarrier      time.Time
+	lastStaged       destination.Epoch                   // owned by the committer: the last recorded epoch with staged files
+	syncStart        *checkpoint.RecordRef               // the record the sync started after; nil if unknown
+	syncRows         map[string]uint64                   // owned by the committer: rows by stream in the sync so far; nil without a sync
+	measures         map[string]metric.MeasurementOption // owned by the committer: metrics' attributes by stream, "" for the job
 	// Called on the committer's goroutine after it pruned the log.
 	afterPrune func(ctx context.Context, head *checkpoint.Record)
 	// Owned by the committer: each holding stream's holds as last recorded,
@@ -2022,6 +2048,16 @@ func (c *coordinator) acknowledge(ctx context.Context, st *epochState, rec *chec
 		prune(ctx, c.sess, rec, c.job.keep(), c.job.Staging, c.job.HeldURL != "", c.log)
 		if c.afterPrune != nil {
 			c.afterPrune(ctx, rec)
+		}
+	}
+	if c.job.QuarantineRetention > 0 {
+		switch {
+		case c.quarantinePruned.IsZero():
+			// The attempt pruned them when it started.
+			c.quarantinePruned = time.Now()
+		case time.Since(c.quarantinePruned) >= quarantinePruneEvery:
+			c.quarantinePruned = time.Now()
+			pruneQuarantine(ctx, c.sess, rec, c.job.QuarantineRetention, c.log)
 		}
 	}
 }

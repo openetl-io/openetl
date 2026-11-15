@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use arrow_schema::{DataType, TimeUnit};
 use datafusion_common::{Column, NullHandling};
 use datafusion_expr::utils::split_conjunction;
-use datafusion_expr::{Expr as DfExpr, LogicalPlan};
+use datafusion_expr::{Expr as DfExpr, LogicalPlan, Volatility};
 use twox_hash::XxHash3_64;
 
 /// The longest text an expression is written as. A longer one is written
@@ -31,6 +31,9 @@ fn bounded(text: String) -> String {
 #[derive(Default)]
 pub(crate) struct Canon {
     columns: HashMap<(usize, usize), String>,
+    /// The calls written so far of functions that give another value each
+    /// time, as `random()`.
+    draws: usize,
 }
 
 impl Canon {
@@ -113,6 +116,14 @@ impl Canon {
                 self.over(&c.expr, node)?,
                 type_text(c.field.data_type())
             ),
+            // Each call of a function that gives another value each time is
+            // another value: numbered, so two never read as one. A column
+            // that one computes is written once, so it's one value.
+            E::ScalarFunction(f) if f.func.signature().volatility != Volatility::Immutable => {
+                self.draws += 1;
+                let n = self.draws;
+                format!("{}#{n}({})", f.func.name(), self.list(&f.args, node)?)
+            }
             E::ScalarFunction(f) => format!("{}({})", f.func.name(), self.list(&f.args, node)?),
             E::InList(l) => format!(
                 "{}in({}, [{}])",
@@ -159,7 +170,7 @@ impl Canon {
                 let src = u.dependency_indices[i];
                 let value = self.below(&u.input, src)?;
                 match u.list_type_columns.iter().any(|(j, _)| *j == src) {
-                    true => unnested(&value, u.options.null_handling),
+                    true => unnested(&value, u.options.null_handling, step(node)),
                     false => value,
                 }
             }
@@ -179,7 +190,8 @@ impl Canon {
     /// What the steps from `input` down to its scan do to the rows, other
     /// than computing columns: each conjunct of each filter, and each unnest
     /// step with the lists it unnests together, over the stream's columns,
-    /// sorted. A conjunct written twice filters as once does; an unnest step
+    /// sorted. A conjunct written twice filters as once does: two that each
+    /// call `random()` are written apart, as each call is. An unnest step
     /// written twice multiplies the rows again, so each stays.
     pub(crate) fn rows(&mut self, input: &LogicalPlan) -> Result<Vec<String>, String> {
         let mut out = Vec::new();
@@ -207,7 +219,7 @@ impl Canon {
                     lists.sort();
                     out.push(format!(
                         "unnest step {}",
-                        unnested(&lists.join(", "), u.options.null_handling)
+                        unnested(&lists.join(", "), u.options.null_handling, step(node))
                     ));
                 }
                 LogicalPlan::TableScan(_) => break,
@@ -225,14 +237,31 @@ impl Canon {
     }
 }
 
-/// An unnest of a list, which no stream column's name can read as: a name
-/// with brackets is quoted.
-fn unnested(list: &str, nulls: NullHandling) -> String {
+/// An unnest of a list by the `step`th unnest from the scan, which no stream
+/// column's name can read as: a name with brackets is quoted. Values of two
+/// steps that unnest one list are two values.
+fn unnested(list: &str, nulls: NullHandling, step: usize) -> String {
     let outer = match nulls {
         NullHandling::Drop => "",
         _ => "_outer",
     };
-    format!("unnest{outer}({list})")
+    format!("unnest{outer}#{step}({list})")
+}
+
+/// How many unnest steps there are from `node` down to the scan, `node`
+/// included: an unnest's place among them.
+fn step(node: &LogicalPlan) -> usize {
+    let mut n = 0;
+    let mut node = node;
+    loop {
+        if matches!(node, LogicalPlan::Unnest(_)) {
+            n += 1;
+        }
+        match node.inputs().as_slice() {
+            [next] => node = next,
+            _ => return n,
+        }
+    }
 }
 
 /// A type's name of ours.

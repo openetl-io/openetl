@@ -13,7 +13,7 @@ Sometimes OpenETL cannot write a value as the source sent it. The value does not
 | What OpenETL keeps | The held value, with the row's key and version | The whole record as the source sent it, with the reason |
 | The way back | **Release** patches the value into the same row. **Discard** drops it. | There is no row to patch. Read the record again from the source, or load it yourself. |
 | What it needs | A primary key, and a destination that patches the stream's write mode | Nothing |
-| Where you see it | **Held** in the console, and `openetl holds` | **Quarantined** in the console, and the **Quarantine** incident |
+| Where you see it | **Held** in the console, and `openetl holds` | **Quarantined** in the console, `openetl quarantine`, and the **Quarantine** incident |
 | Where OpenETL keeps it | Parquet files under `_held/`, next to the pipeline's checkpoints | JSON lines under `_quarantine/`, next to the pipeline's checkpoints |
 
 A hold keeps a value back from a row that OpenETL writes. Quarantine keeps a row back from the destination, as a dead-letter queue does. A hold has a way back into the destination. A quarantined row has none.
@@ -36,7 +36,7 @@ A partial row changes what a row means. So OpenETL holds single values only if y
 
 ## Choose what a value that does not fit does
 
-A value does not fit when its column's type cannot keep it. The reason for each quarantined row and each held cell starts with one of these codes:
+A value does not fit when its column's type cannot keep it. Each held cell and each quarantined row has one of these codes:
 
 | Code | The value |
 |---|---|
@@ -45,7 +45,7 @@ A value does not fit when its column's type cannot keep it. The reason for each 
 | `precision` | Has more digits or decimal places than the column keeps |
 | `nan` | Is NaN, in a type that has no NaN |
 
-The reason names the column. It never contains the value.
+For these codes, the reason names the column. It never contains the value. A quarantined row can also have a code that is not about one value. Examples are `object` for a record that is not a JSON object, and `statement` for a row that a SQL statement cannot evaluate. [Quarantine files](../reference/quarantine-files.md#codes) lists every code.
 
 The stream setting `unfitValues` chooses what such a value does:
 
@@ -81,6 +81,8 @@ With `unfitValues: hold`, if a row has no safe place to hold its value, OpenETL 
   - a column that cannot be null, unless `heldValue` gives a value to write in its place;
   - a column whose `heldValue` does not fit the column's type.
 - **A SQL transform reads the row.** A statement cannot compute from a value that OpenETL holds. So OpenETL quarantines a row whose input holds a cell, as one of the statement output's records. A delete is the exception: it passes with its key. OpenETL also quarantines a row that a statement cannot evaluate, whatever `unfitValues` says. Examples are a cast that fails, a division by zero and a row that comes too late for its window ([SQL reference](../reference/sql.md)).
+
+In each of these cases, the row's line in the quarantine file has a `notHeld` field. It says why OpenETL did not hold the value: `record`, `key`, `cursor`, `destination`, `not_null`, `held_value` or `transform`. [Quarantine files](../reference/quarantine-files.md#why-a-value-was-not-held) explains each value.
 
 A stream without a primary key cannot set `hold`. The streams of a pipeline with a Spark or Flink transform cannot set it either. If they do, the plan has a problem.
 
@@ -163,6 +165,10 @@ Held values:
 Quarantined rows:
 
 - The **Quarantined** counts on a pipeline's **Overview**, its **Syncs** and **Checkpoints** tabs, and a sync's page count the rows that OpenETL did not write.
-- The rows are in the data plane's object storage, under `_quarantine/` next to the pipeline's checkpoints, in files of JSON lines. A job reads in parallel parts, called lanes. For each stream, a commit has one file from each lane that quarantined rows: `STREAM.jsonl` from the first lane, and `STREAM.N.jsonl` from lane `N`. Read all of a commit's files for the stream. Each line has the stream, the reason and the record. OpenETL keeps the files of every commit and deletes the files of commits that failed.
-- If a stream quarantines a large share of its rows, the **Quarantine** incident opens, and its **Next steps** names the newest file.
+- `openetl quarantine PIPELINE` lists the files of quarantined rows, newest first. It also adds up their rows by stream and cause, such as `312  type on amount`. Add `--stream STREAM` or `--since 7d` to list fewer files. The API method is `ListQuarantine`.
+- The rows are in the data plane's object storage, under `_quarantine/` next to the pipeline's checkpoints, in files of JSON lines. A job reads in parallel parts, called lanes. For each stream, a commit has one file from each lane that quarantined rows: `STREAM.jsonl` from the first lane, and `STREAM.N.jsonl` from lane `N`. Read all of a commit's files for the stream.
+- Each line has the stream, a code, the column, the reason and the record. On a stream with `unfitValues: hold`, it also has `notHeld`. [Quarantine files](../reference/quarantine-files.md) describes the format, which you can use to load the rows again yourself.
+- OpenETL keeps the files of every commit, and deletes the files of commits that failed. To delete old files, set the pipeline's `quarantine.retention`, such as `720h`. Without it, OpenETL keeps the files.
+- After each commit that quarantined rows, OpenETL sends a `stream.quarantined` event, with the commit's files and their rows by cause. A [webhook](../integrate/index.md#events-and-webhooks) can deliver it to your own system.
+- If a stream quarantines a large share of its rows, the **Quarantine** incident opens. Its **Next steps** names the newest file and the command that lists the others.
 - The `openetl.job.rows.quarantined` metric counts quarantined rows.

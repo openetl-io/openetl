@@ -163,7 +163,7 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 			if q.Stream == name {
 				cs.QuarantinedRows += q.Rows
 				if !q.Output {
-					cs.QuarantineFile = withoutQuery(q.URL)
+					cs.QuarantineFiles = append(cs.QuarantineFiles, quarantineFile(q))
 				}
 			}
 		}
@@ -176,12 +176,39 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 		}
 		req.Streams = append(req.Streams, cs)
 	}
-	for _, name := range slices.Sorted(maps.Keys(rec.Outputs)) {
-		if h := rec.Outputs[name].Holds; h != nil {
-			req.Outputs = append(req.Outputs, &dataplanev1.CheckpointOutput{Name: name, Holds: mirroredHolds(h), HeldCells: held[name]})
+	outputs := map[string][]*dataplanev1.CheckpointQuarantineFile{}
+	for _, q := range rec.Quarantine {
+		if q.Output {
+			outputs[q.Stream] = append(outputs[q.Stream], quarantineFile(q))
 		}
 	}
+	for name := range rec.Outputs {
+		if _, ok := outputs[name]; !ok {
+			outputs[name] = nil
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(outputs)) {
+		h := rec.Outputs[name].Holds
+		if h == nil && len(outputs[name]) == 0 {
+			continue
+		}
+		o := &dataplanev1.CheckpointOutput{Name: name, QuarantineFiles: outputs[name]}
+		if h != nil {
+			o.Holds, o.HeldCells = mirroredHolds(h), held[name]
+		}
+		req.Outputs = append(req.Outputs, o)
+	}
 	return req
+}
+
+// quarantineFile is q as the control plane's index keeps it: its path,
+// without the URL's query, and its rows by cause.
+func quarantineFile(q checkpoint.QuarantineFile) *dataplanev1.CheckpointQuarantineFile {
+	f := &dataplanev1.CheckpointQuarantineFile{Path: checkpoint.QuarantinePath(q.URL), Url: withoutQuery(q.URL), Rows: q.Rows}
+	for _, c := range q.Causes {
+		f.Causes = append(f.Causes, &apiv1.QuarantineCause{Code: c.Code, Column: c.Column, NotHeld: c.NotHeld, Rows: c.Rows})
+	}
+	return f
 }
 
 func progressProto(p source.Progress) *protocolv1.Progress {
