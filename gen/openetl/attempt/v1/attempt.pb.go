@@ -1917,7 +1917,10 @@ type Settle struct {
 	// Indexes into its committables.
 	Committables []uint32 `protobuf:"varint,2,rep,packed,name=committables,proto3" json:"committables,omitempty"`
 	// As Assignment.forced.
-	Forced        []string `protobuf:"bytes,3,rep,name=forced,proto3" json:"forced,omitempty"`
+	Forced []string `protobuf:"bytes,3,rep,name=forced,proto3" json:"forced,omitempty"`
+	// The record before it, as the log holds it, where a redo needs the
+	// state the epoch started from; empty for none.
+	Previous      []byte `protobuf:"bytes,4,opt,name=previous,proto3" json:"previous,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1969,6 +1972,13 @@ func (x *Settle) GetCommittables() []uint32 {
 func (x *Settle) GetForced() []string {
 	if x != nil {
 		return x.Forced
+	}
+	return nil
+}
+
+func (x *Settle) GetPrevious() []byte {
+	if x != nil {
+		return x.Previous
 	}
 	return nil
 }
@@ -2914,11 +2924,12 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\x06limits\x18\x02 \x03(\v2).openetl.attempt.v1.Recovered.LimitsEntryR\x06limits\x1a\\\n" +
 	"\vLimitsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
-	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"\\\n" +
+	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"x\n" +
 	"\x06Settle\x12\x16\n" +
 	"\x06record\x18\x01 \x01(\fR\x06record\x12\"\n" +
 	"\fcommittables\x18\x02 \x03(\rR\fcommittables\x12\x16\n" +
-	"\x06forced\x18\x03 \x03(\tR\x06forced\"I\n" +
+	"\x06forced\x18\x03 \x03(\tR\x06forced\x12\x1a\n" +
+	"\bprevious\x18\x04 \x01(\fR\bprevious\"I\n" +
 	"\aSettled\x12>\n" +
 	"\n" +
 	"recoveries\x18\x01 \x03(\x0e2\x1e.openetl.connector.v1.RecoveryR\n" +

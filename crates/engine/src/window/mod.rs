@@ -1216,7 +1216,7 @@ pub fn operator(id: &str) -> OperatorId {
 }
 
 fn state_error(e: &openetl_state::Error) -> JobError {
-    JobError::internal(format!("a group window's state: {e}"))
+    crate::state::state_error("a group window's state", e)
 }
 
 /// `a` then `b`, of one schema.

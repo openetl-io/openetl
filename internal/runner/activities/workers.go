@@ -157,6 +157,9 @@ func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 		if job.HeldURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.HeldDir); err != nil {
 			return errs.Wrap(errs.ConfigInvalid, err, "held values' location")
 		}
+		if job.StateURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.StateDir); err != nil {
+			return errs.Wrap(errs.ConfigInvalid, err, "state's location")
+		}
 	}
 	if size != (resources.Size{}) {
 		job.Lanes = size.Threads()

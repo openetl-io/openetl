@@ -200,11 +200,6 @@ func TestPipelineSQLSettings(t *testing.T) {
 			&sqlplan.Answer{Statements: []sqlplan.Statement{{At: sqlplan.Position{Line: 1, Column: 1}, Output: "minutes", Class: "group_window", Tier: 2,
 				Inputs: []string{"events"}, Key: []string{"window_start"}, Operator: "window-1"}}},
 			`stream "events" sets watermark.lateness, so a row that comes late gives its window's row again, and output "minutes" isn't merged`},
-		{"a window over a scheduled read in time order", sqlSpec("INSERT INTO minutes SELECT window_start, count(*) AS n FROM events GROUP BY tumble(at, INTERVAL '1 minute')", 0, nil,
-			&apiv1.PipelineStream{Name: "events", EventTime: "at"}), warehouse,
-			&sqlplan.Answer{Statements: []sqlplan.Statement{{At: sqlplan.Position{Line: 1, Column: 1}, Output: "minutes", Class: "group_window", Tier: 2,
-				Inputs: []string{"events"}, Key: []string{"window_start"}, Operator: "window-1"}}},
-			`the group window writing "minutes" reads stream "events" with incremental in a scheduled pipeline, so a window open at the end of a sync would go on in the next one`},
 	} {
 		if got := problemsOf(c.spec, c.caps, c.a); !strings.Contains(got, c.want) {
 			t.Errorf("%s: problems %q, want %q", c.name, got, c.want)
@@ -235,29 +230,25 @@ func TestSQLPlanKeepsOutputs(t *testing.T) {
 }
 
 // A group window takes a stream read whole, or in the order of its event
-// time in a continuous pipeline, and no other read.
+// time, whose windows open at a sync's end go on in the next, and no other
+// read. A changelog the statement's own planning refuses.
 func TestGroupWindowReads(t *testing.T) {
 	a := &sqlplan.Answer{Statements: []sqlplan.Statement{{Output: "minutes", Inputs: []string{"events"}, Operator: "window-1"}}}
-	scheduled, continuous := &apiv1.PipelineSpec{}, &apiv1.PipelineSpec{Mode: apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS}
 	for _, c := range []struct {
 		name   string
-		spec   *apiv1.PipelineSpec
 		read   apiv1.SyncMode
 		cursor string
 		want   string
 	}{
-		{"read whole", scheduled, apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, "", ""},
-		{"read by another cursor", scheduled, apiv1.SyncMode_SYNC_MODE_INCREMENTAL, "id",
+		{"read whole", apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, "", ""},
+		{"read by another cursor", apiv1.SyncMode_SYNC_MODE_INCREMENTAL, "id",
 			`the group window writing "minutes" reads stream "events" with incremental by cursor "id", not by its eventTime "at", so each sync's windows would hold only the rows that sync reads: read it with full_refresh`},
-		{"read by its event time", scheduled, apiv1.SyncMode_SYNC_MODE_INCREMENTAL, "AT",
-			`the group window writing "minutes" reads stream "events" with incremental in a scheduled pipeline, so a window open at the end of a sync would go on in the next one; ` +
-				`each sync runs in an engine of its own, and a group window's state is in the engine's memory: read the stream with full_refresh, or run the pipeline with mode: continuous`},
-		{"changes in a scheduled pipeline", scheduled, apiv1.SyncMode_SYNC_MODE_CDC, "", `reads stream "events" with cdc in a scheduled pipeline`},
-		{"changes in a continuous pipeline", continuous, apiv1.SyncMode_SYNC_MODE_CDC, "", ""},
-		{"a stream in a continuous pipeline", continuous, apiv1.SyncMode_SYNC_MODE_STREAM, "", ""},
+		{"read by its event time", apiv1.SyncMode_SYNC_MODE_INCREMENTAL, "AT", ""},
+		{"a stream", apiv1.SyncMode_SYNC_MODE_STREAM, "", ""},
+		{"changes", apiv1.SyncMode_SYNC_MODE_CDC, "", ""},
 	} {
 		in := Input{Name: "events", Read: c.read, Cursor: c.cursor, Spec: &apiv1.PipelineStream{Name: "events", EventTime: "at"}}
-		got := errors.Join(windowProblems(c.spec, a, []Input{in}, []Output{{Name: "minutes", Mode: destination.Merge}})...)
+		got := errors.Join(windowProblems(a, []Input{in}, []Output{{Name: "minutes", Mode: destination.Merge}})...)
 		switch {
 		case c.want == "" && got != nil:
 			t.Errorf("%s: %v", c.name, got)

@@ -488,18 +488,28 @@ func TestACompletedSplitsWatermarkIsInAnEpoch(t *testing.T) {
 // A reset of a stream drops the state of the statements that read it, which
 // build it again from the new read, and state no statement keeps, as a
 // changed statement's old operator's, which the engine wouldn't restore; it
-// keeps the rest.
+// keeps the rest. Once no record retention keeps names the dropped state,
+// it's deleted from storage.
 func TestAResetDropsTheStateOfWhatReadsItsStream(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
-		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		store := checkpoint.NewMemStore()
+		log := checkpoint.NewLog(store, "org", "p")
 		windows := func(j *runner.Job) {
 			j.SQL.Expected[0].Input, j.SQL.Expected[0].Operator = "a", "window-a"
 			j.SQL.Expected[1].Input, j.SQL.Expected[1].Operator = "b", "window-b"
 			j.SQL.Operators = []string{"window-a", "window-b"}
+			j.KeepRecords = 2
 		}
-		state := []checkpoint.Snapshot{{Operator: "window-a", URL: "memory:1/a"}, {Operator: "window-b", URL: "memory:1/b"}, {Operator: "window-old", URL: "memory:1/old"}}
+		var state []checkpoint.Snapshot
+		for _, op := range []string{"window-a", "window-b", "window-old"} {
+			run := op + "/g1/e1/kg0-255.run"
+			if _, err := store.Create(ctx, "org/p/"+checkpoint.StateDir+"/"+run, []byte("run")); err != nil {
+				t.Fatal(err)
+			}
+			state = append(state, checkpoint.Snapshot{Operator: op, KeyGroups: checkpoint.KeyGroupRange{Last: 255}, Layout: 1, Data: []byte(op), Runs: []string{run}})
+		}
 		first := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}, snapshots: state}
 		j := sqlJob(log, "a1", nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
 		windows(&j)
@@ -507,16 +517,44 @@ func TestAResetDropsTheStateOfWhatReadsItsStream(t *testing.T) {
 		if _, err := runner.RunAttempt(ctx, j); err != nil {
 			t.Fatal(err)
 		}
-		second := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}}
-		j = sqlJob(log, "a2", nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
-		windows(&j)
-		j.Dataflow = second
-		j.Resets = []runner.Reset{{ID: "0001", Streams: []string{"a"}}}
-		if _, err := runner.RunAttempt(ctx, j); err != nil {
-			t.Fatal(err)
+		left := func() []string {
+			keys, err := store.List(ctx, "org/p/"+checkpoint.StateDir+"/")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return keys
 		}
-		if len(second.plans) != 1 || !slices.Equal(second.plans[0].Snapshots, state[1:2]) {
+		// Each later attempt names window-b's state, as its engine would.
+		// The reset's attempt's first record names the stream it read
+		// again, which a redo of its epoch starts without.
+		var second *seenFlow
+		var resetStreams [][]string
+		for n := 2; n <= 5 && len(left()) > 1; n++ {
+			flow := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}, snapshots: state[1:2]}
+			j = sqlJob(log, fmt.Sprintf("a%d", n), nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
+			windows(&j)
+			j.Dataflow = flow
+			j.Resets = []runner.Reset{{ID: "0001", Streams: []string{"a"}}}
+			if second == nil {
+				j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+					resetStreams = append(resetStreams, rec.ResetStreams)
+				}
+			}
+			if _, err := runner.RunAttempt(ctx, j); err != nil {
+				t.Fatal(err)
+			}
+			if second == nil {
+				second = flow
+			}
+		}
+		if len(second.plans) != 1 || !slices.EqualFunc(second.plans[0].Snapshots, state[1:2], func(a, b checkpoint.Snapshot) bool { return a.Operator == b.Operator }) {
 			t.Fatalf("after a reset of a, the attempt restores %+v, want window-b's alone", second.plans[0].Snapshots)
+		}
+		if len(resetStreams) == 0 || !slices.Equal(resetStreams[0], []string{"a"}) || slices.ContainsFunc(resetStreams[1:], func(s []string) bool { return s != nil }) {
+			t.Errorf("the reset's attempt's records name the streams it read again as %v, want [a] on its first alone", resetStreams)
+		}
+		if got, want := left(), []string{"org/p/" + checkpoint.StateDir + "/window-b/g1/e1/kg0-255.run"}; !slices.Equal(got, want) {
+			t.Errorf("state left %v, want %v", got, want)
 		}
 	})
 }

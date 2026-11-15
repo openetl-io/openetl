@@ -38,7 +38,9 @@ message StartJobRequest {
   repeated Edge edges = 6;
   SinkPlan sink = 7;
   Limits limits = 8;
-  // Operator state in the restored checkpoint, as EpochReady reported it.
+  // Operator state in the restored checkpoint, as EpochReady reported it:
+  // each lane's of each stateful operator, which this job's lanes open by
+  // their own ranges of key groups.
   repeated StateSnapshot restored_snapshots = 9;
   Naming naming = 10;
   // Where records the engine can't take are kept: file:// and an absolute
@@ -105,6 +107,14 @@ message StartJobRequest {
   // Where several engines run the attempt and their exchanges cross them.
   // Unset: a stream's exchange stays inside the engine.
   Mesh mesh = 25;
+  // Where stateful operators keep their state, as quarantine_url: each
+  // operator's runs below a directory of its own, which StateSnapshot.runs
+  // name. A run counts once a record names it. Empty: a job with a
+  // stateful operator fails with CONFIG_INVALID.
+  string state_url = 26;
+  // A redo's job, of one epoch: its stateful operators read the restored
+  // snapshots and write nothing, and EpochReady names no state.
+  bool state_read_only = 27;
 }
 
 // Mesh is the attempt's engines, whose lanes send an exchanged stream's rows
@@ -569,13 +579,19 @@ message QuarantineFile {
   bool output = 4;
 }
 
-// StateSnapshot is an operator's state for a range of key groups, which
-// names it, never the lane that wrote it.
+// StateSnapshot is a stateful operator's state on one lane at a barrier,
+// for the lane's range of key groups, which names it, never the lane: a
+// lane of any later job opens the part of it that its own range holds. An
+// operator's snapshots in an epoch hold every key group between them.
 message StateSnapshot {
   string operator = 1;
-  string url = 2;
-  // Unset: all of them.
-  KeyGroupRange key_groups = 3;
+  KeyGroupRange key_groups = 2;
+  // The layout of the state's keys.
+  uint32 layout = 3;
+  // The sections of runs it reads, which only the engine reads.
+  bytes data = 4;
+  // The runs it names, below state_url: what retention keeps.
+  repeated string runs = 5;
 }
 
 // KeyGroupRange is key groups first to last, inclusive.
