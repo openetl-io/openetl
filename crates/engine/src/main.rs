@@ -224,6 +224,10 @@ fn serve(args: ServeArgs) -> ExitCode {
     }
 }
 
+/// A StartJob names every held file a release replays, which tonic's
+/// default of 4 MiB would cap at about 100,000.
+const MAX_CONTROL_MESSAGE: usize = 256 << 20;
+
 async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     let control = bind(&args.control)?;
     let data = bind(&args.data)?;
@@ -240,7 +244,10 @@ async fn run(args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     info!(version = VERSION, "engine ready");
 
     let server = tonic::transport::Server::builder()
-        .add_service(EngineServiceServer::new(service::Control(engine)))
+        .add_service(
+            EngineServiceServer::new(service::Control(engine))
+                .max_decoding_message_size(MAX_CONTROL_MESSAGE),
+        )
         .serve_with_incoming_shutdown(
             UnixListenerStream::new(control),
             shutdown.clone().cancelled_owned(),
