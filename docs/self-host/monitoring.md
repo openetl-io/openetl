@@ -40,6 +40,7 @@ These are OpenTelemetry instrument names; Prometheus replaces dots with undersco
 | `openetl.job.retention_left.bytes` | bytes | Additional retained data available before unread data is discarded, when reported. |
 | `openetl.job.commit.duration` | seconds, histogram | Time spent writing a checkpoint, applying schemas and committing at the destination. |
 | `openetl.job.hold.age` | seconds | Age of an open hold, updated at commits. |
+| `openetl.job.watermark` | seconds since the Unix epoch | For a stream with `eventTime` in a SQL transform: the least watermark of the lanes of a job's runner, or of each worker. It is absent until the stream has a watermark, and is not updated after the stream's input ends. |
 
 Source progress gauges are present only while a job reports them. Missing lag is not zero lag. Freshness is time since commit rather than the age of source records; use it alongside the expected schedule and source-reported lag. A pipeline that has never committed needs a separate check in the console or API, because the freshness series is absent.
 
