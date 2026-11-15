@@ -1094,17 +1094,45 @@ impl Operator {
         Ok((out, updated))
     }
 
-    /// Deletes' rows through the steps after the window, but HAVING: each
-    /// row's values are ones its steps took before, so none fails.
+    /// Deletes' rows of grouped rows that hold what the output's rows were
+    /// given from. HAVING doesn't run. An output column that gives the same
+    /// value for the same input gives the row's again, which its steps took
+    /// before. One that may not, as one that reads `now()`, isn't evaluated
+    /// again: a delete is by the output's key, which its window and keys
+    /// give, so it's null, or its type's zero where it can't be.
     fn delete_rows(&self, rows: RecordBatch) -> Result<steps::Ran, JobError> {
-        let (ran, failed) = steps::run_rows(&self.plan.steps, rows, false)
-            .map_err(|e| JobError::internal(self.reason(&e.message)))?;
-        match failed.first() {
-            Some((_, why)) => Err(JobError::internal(
-                self.reason(&format!("a delete of a row it gave: {why}")),
-            )),
-            None => Ok(ran),
+        let bad =
+            |e: String| JobError::internal(self.reason(&format!("a delete of a row it gave: {e}")));
+        let n = rows.num_rows();
+        let mut cur = rows;
+        for step in &self.plan.steps {
+            match step {
+                openetl_sql::Step::Filter(_) => {}
+                openetl_sql::Step::Project(p) => {
+                    let mut columns = Vec::with_capacity(p.columns.len());
+                    for (c, f) in p.columns.iter().zip(p.schema.fields()) {
+                        let a = match c.expr.is_deterministic() {
+                            true => c.expr.eval(&cur).map_err(|e| bad(e.message))?,
+                            false => empty(f, n).map_err(bad)?,
+                        };
+                        columns.push(a);
+                    }
+                    cur = RecordBatch::try_new_with_options(
+                        p.schema.clone(),
+                        columns,
+                        &arrow_array::RecordBatchOptions::new().with_row_count(Some(n)),
+                    )
+                    .map_err(|e| bad(e.to_string()))?;
+                }
+                openetl_sql::Step::Unnest(_) => {
+                    return Err(bad("a window's output that unnests".into()));
+                }
+            }
         }
+        Ok(steps::Ran {
+            batch: cur,
+            rows: (0..n).collect(),
+        })
     }
 
     fn schema_of(&self, batches: &[RecordBatch]) -> SchemaRef {
@@ -1290,6 +1318,22 @@ fn canonical_json(a: &ArrayRef) -> ArrayRef {
         })
         .collect();
     Arc::new(out)
+}
+
+/// `n` values of `f` for a column whose value doesn't matter: nulls, or
+/// where it can't be null, its type's zero.
+fn empty(f: &Field, n: usize) -> Result<ArrayRef, String> {
+    let nulls = arrow_array::new_null_array(f.data_type(), n);
+    if f.is_nullable() {
+        return Ok(nulls);
+    }
+    let zeros = nulls
+        .to_data()
+        .into_builder()
+        .nulls(None)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(arrow_array::make_array(zeros))
 }
 
 /// The state layer's operator for a plan's operator ID.

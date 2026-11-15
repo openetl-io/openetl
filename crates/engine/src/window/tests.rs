@@ -564,6 +564,61 @@ async fn a_delete_without_aggregates_gives_the_end_the_output_has() {
     );
 }
 
+/// A delete of a window's row doesn't evaluate again an output column
+/// that reads the clock: one that gave its row before a moment and would
+/// fail after it gives a delete, with its key and its other values.
+#[tokio::test]
+async fn a_delete_doesnt_evaluate_the_clock_again() {
+    let soon = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 1;
+    let sql = format!(
+        "INSERT INTO o SELECT window_start, region, count(*) AS n, \
+         CAST(CASE WHEN now() < to_timestamp({soon}) THEN '1' ELSE 'bad' END AS BIGINT) AS r \
+         FROM orders GROUP BY tumble(at, INTERVAL '1 minute'), region HAVING count(*) = 1"
+    );
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(&sql, MIN, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 1)]).await;
+    run.advance(MIN).await;
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        ["window_start=1970-01-01T00:00:00Z region=eu n=1 r=1"]
+    );
+    while std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        < soon
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    // A late row: the window no longer passes HAVING.
+    let late = batch(&run.ops[0], &[("eu", 1, 2)]);
+    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    assert!(out.failed.is_empty(), "{:?}", out.failed);
+    let t = out.rows.unwrap();
+    let ops: Vec<Option<&str>> = t
+        .control
+        .op
+        .as_ref()
+        .unwrap()
+        .as_string::<i32>()
+        .iter()
+        .collect();
+    assert_eq!(ops, [Some("delete")]);
+    let cell = |name: &str| {
+        let c = t.batch.column(t.batch.schema().index_of(name).unwrap());
+        arrow_cast::display::array_value_to_string(c, 0).unwrap()
+    };
+    assert_eq!(
+        [cell("window_start"), cell("region"), cell("n")],
+        ["1970-01-01T00:00:00Z", "eu", "1"]
+    );
+}
+
 fn next(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *seed;

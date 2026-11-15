@@ -175,6 +175,7 @@ A window closes when the stream's watermark reaches the window's end: the engine
 - A split that reads no rows holds windows open. In a continuous pipeline, a split that reads no rows for 1 minute is idle, and its watermark moves on with the clock.
 - A row is late if it comes after the watermark has passed its time. A late row of a window that has not closed yet goes into the window.
 - `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
+- A delete has the output's key, and the values of the row it deletes. The engine does not evaluate a column that can change between runs, such as one that reads `now()` or `random()`, again for a delete. That column is null in the delete, or its type's zero if the column cannot be null.
 - A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start.
 - A row that comes later than its window's end and the lateness is quarantined with the reason `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
 - `watermark.lateness` needs `destination.write: merge` for the output.
