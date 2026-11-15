@@ -166,6 +166,7 @@ type fakeChecks struct {
 	apiv1connect.UnimplementedPipelineServiceHandler
 	applied     *apiv1.ApplyResponse
 	destination *apiv1.CheckResult
+	preflight   *apiv1.PreflightResult
 	problems    []string
 	mu          sync.Mutex
 	calls       []string
@@ -207,6 +208,28 @@ func (f *fakeChecks) GetPipeline(_ context.Context, r *connect.Request[apiv1.Get
 	}}}), nil
 }
 
+func (f *fakeChecks) PreflightPipeline(_ context.Context, r *connect.Request[apiv1.PreflightPipelineRequest]) (*connect.Response[apiv1.PreflightPipelineResponse], error) {
+	f.called("preflight " + r.Msg.GetName())
+	return connect.NewResponse(&apiv1.PreflightPipelineResponse{Result: f.preflight}), nil
+}
+
+// preflight is a result whose destination check fails with code and
+// message, and passes otherwise.
+func preflight(code, message string, items ...*apiv1.CheckItem) *apiv1.PreflightResult {
+	ok := code == ""
+	parts := []*apiv1.PreflightPart{
+		{Role: "source", Stage: "check", Resource: "workspaces/default/sources/shop", Ok: true},
+		{Role: "destination", Stage: "check", Resource: "workspaces/default/destinations/lake", Ok: ok, Code: code, Message: message, Items: items},
+		{Role: "source", Stage: "preflight", Resource: "workspaces/default/sources/shop", Ok: true, Items: []*apiv1.CheckItem{{Name: "s", Title: "Read orders", Status: "passed"}}},
+		{Role: "destination", Stage: "preflight", Resource: "workspaces/default/destinations/lake", Ok: ok},
+		{Role: "sync", Stage: "plan", Ok: true},
+	}
+	if !ok {
+		parts[3].Skipped = "the destination's check failed"
+	}
+	return &apiv1.PreflightResult{Ok: ok, Version: "abababababababab", Parts: parts}
+}
+
 func (f *fakeChecks) GetPipelinePlan(_ context.Context, r *connect.Request[apiv1.GetPipelinePlanRequest]) (*connect.Response[apiv1.GetPipelinePlanResponse], error) {
 	return connect.NewResponse(&apiv1.GetPipelinePlanResponse{Plan: &apiv1.PipelinePlan{Pipeline: r.Msg.GetName(), Version: "0123456789abcdef", Problems: f.problems}}), nil
 }
@@ -242,30 +265,33 @@ func createdPipeline() *apiv1.ApplyResponse {
 	}
 }
 
-// What an apply changed is checked, each connection once, on the pipeline's
-// data plane, and a check that fails warns without failing the apply.
+// What an apply changed is checked: a preflight of each pipeline it
+// changed, and a check of each other connection. One that fails warns
+// without failing the apply.
 func TestApplyChecksWhatChanged(t *testing.T) {
+	applied := createdPipeline()
+	applied.Resources = append(applied.Resources, &apiv1.AppliedResource{Name: "workspaces/default/sources/other", Action: apiv1.ApplyAction_APPLY_ACTION_UPDATED, Version: "cdcdcdcdcdcdcdcd"})
 	f := &fakeChecks{
-		applied:     createdPipeline(),
-		destination: &apiv1.CheckResult{Code: "AUTH_INVALID", Message: "no CREATE on schema"},
-		problems:    []string{`the source has no stream "gone"`},
+		applied:   applied,
+		preflight: preflight("AUTH_INVALID", "no CREATE on schema", &apiv1.CheckItem{Name: "c", Title: "Create tables", Status: "failed", Fix: "GRANT CREATE"}),
 	}
 	url := checksServer(t, f)
 	var out bytes.Buffer
 	if err := run(t.Context(), []string{"apply", "--api-url", url, "-f", documentFile(t)}, &out); err != nil {
-		t.Fatalf("a failing check failed the apply: %v", err)
+		t.Fatalf("a failing preflight failed the apply: %v", err)
 	}
 	want := "unchanged workspaces/default/sources/shop (version 0123456789ab)\n" +
 		"created workspaces/default/pipelines/shop-to-lake (version abababababab)\n" +
-		"checked source shop\n" +
+		"updated workspaces/default/sources/other (version cdcdcdcdcdcd)\n" +
+		"checked source other\n" +
 		"\nthe apply stands, but its checks found:\n" +
-		"  destination lake: AUTH_INVALID: no CREATE on schema\n" +
-		"  workspaces/default/pipelines/shop-to-lake: the source has no stream \"gone\"\n"
+		"  pipeline shop-to-lake: destination lake's check failed: AUTH_INVALID: no CREATE on schema\n" +
+		"    Create tables: GRANT CREATE\n"
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
 	}
 	slices.Sort(f.calls)
-	if got := strings.Join(f.calls, ", "); got != "check workspaces/default/destinations/lake@dp1, check workspaces/default/sources/shop@dp1, discover workspaces/default/sources/shop" {
+	if got := strings.Join(f.calls, ", "); got != "check workspaces/default/sources/other@, discover workspaces/default/sources/other, preflight workspaces/default/pipelines/shop-to-lake" {
 		t.Errorf("calls: %s", got)
 	}
 }
@@ -294,43 +320,52 @@ func TestApplyWithoutChangesOrWithNoCheckChecksNothing(t *testing.T) {
 	}
 }
 
-func TestCheckPipeline(t *testing.T) {
-	f := &fakeChecks{applied: createdPipeline(), destination: &apiv1.CheckResult{Ok: true}}
+func TestPreflight(t *testing.T) {
+	f := &fakeChecks{preflight: preflight("", "")}
 	url := checksServer(t, f)
 	var out bytes.Buffer
-	if err := run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out); err != nil {
+	if err := run(t.Context(), []string{"preflight", "--api-url", url, "shop-to-lake"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "source shop passed its check, and offers 2 streams\ndestination lake passed its check\n\nworkspaces/default/pipelines/shop-to-lake (version 0123456789ab)\n"
+	want := "source shop's check: passed\ndestination lake's check: passed\nsource shop's preflight: passed\n  passed   Read orders\n" +
+		"destination lake's preflight: passed\nthe sync's plan: passed\n\nworkspaces/default/pipelines/shop-to-lake (version 0123456789ab)\n"
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
 	}
 
-	f.destination = &apiv1.CheckResult{Code: "AUTH_INVALID", Message: "denied"}
+	f.preflight = preflight("PERMISSION_DENIED", "no PutRecords",
+		&apiv1.CheckItem{Name: "connect", Title: "Reach Kinesis", Status: "passed"},
+		&apiv1.CheckItem{Name: "write", Title: "Write to clicks", Status: "failed", Code: "PERMISSION_DENIED", Message: "no PutRecords", Fix: "allow kinesis:PutRecords", Field: "streams"})
 	out.Reset()
-	err := run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out)
-	if err == nil || !strings.Contains(out.String(), "destination lake failed its check: AUTH_INVALID: denied") {
-		t.Errorf("a failing check: %v, printed\n%s", err, out.String())
+	err := run(t.Context(), []string{"preflight", "--api-url", url, "shop-to-lake"}, &out)
+	if err == nil || !strings.Contains(err.Error(), "destination lake's check failed: PERMISSION_DENIED: no PutRecords") {
+		t.Errorf("a failing preflight: %v", err)
 	}
-
-	f.destination = &apiv1.CheckResult{Code: "PERMISSION_DENIED", Message: "no PutRecords", Items: []*apiv1.CheckItem{
-		{Name: "connect", Title: "Reach Kinesis", Status: "passed"},
-		{Name: "write", Title: "Write to clicks", Status: "failed", Code: "PERMISSION_DENIED", Message: "no PutRecords", Fix: "allow kinesis:PutRecords", Field: "streams"},
-	}}
-	out.Reset()
-	_ = run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out)
 	for _, line := range []string{
+		"destination lake's check: failed: PERMISSION_DENIED: no PutRecords\n",
 		"  passed   Reach Kinesis\n",
 		"  failed   Write to clicks: PERMISSION_DENIED: no PutRecords\n           field: streams\n           fix: allow kinesis:PutRecords\n",
+		"destination lake's preflight: skipped, the destination's check failed\n",
 	} {
 		if !strings.Contains(out.String(), line) {
 			t.Errorf("no %q in\n%s", line, out.String())
 		}
 	}
 
-	f.destination, f.problems = &apiv1.CheckResult{Ok: true}, []string{"a problem"}
-	if err := run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out); err == nil {
-		t.Error("a plan with problems passed")
+	if err := run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out); err == nil || !strings.Contains(err.Error(), "openetl preflight") {
+		t.Errorf("check pipeline: %v", err)
+	}
+}
+
+func TestCheckPrintsItems(t *testing.T) {
+	f := &fakeChecks{destination: &apiv1.CheckResult{Ok: true, Version: "0123456789abcdef", Items: []*apiv1.CheckItem{{Name: "connect", Title: "Reach Kinesis", Status: "passed"}}}}
+	url := checksServer(t, f)
+	var out bytes.Buffer
+	if err := run(t.Context(), []string{"check", "--api-url", url, "destination", "lake"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if want := "workspaces/default/destinations/lake passed its check (version 0123456789ab)\n  passed   Reach Kinesis\n"; out.String() != want {
+		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
 	}
 }
 

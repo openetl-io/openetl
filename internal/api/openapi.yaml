@@ -1915,6 +1915,49 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:preflight:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Whether the current version would run, without reading or writing
+                 records. On a runner of the pipeline's data plane it checks the source's
+                 and the destination's connections, settles what a sync would read and
+                 write, and runs both connectors' preflights for that; then it refreshes
+                 the source's catalog and plans the pipeline. It waits for all of it.
+            operationId: PipelineService_PreflightPipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/PreflightPipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/PreflightPipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}:removeOverride:
         post:
             tags:
@@ -5460,6 +5503,71 @@ components:
                     $ref: '#/components/schemas/DbtStep'
                 spark:
                     $ref: '#/components/schemas/SparkStep'
+        PreflightPart:
+            type: object
+            properties:
+                role:
+                    type: string
+                    description: source, destination or sync.
+                stage:
+                    type: string
+                    description: check, preflight or plan.
+                resource:
+                    type: string
+                    description: |-
+                        workspaces/{workspace}/sources/{source}, or destinations; empty for the
+                         sync's plan.
+                version:
+                    type: string
+                    description: |-
+                        The connector version that answered, by digest; empty for a built-in
+                         connector and for the plan.
+                ok:
+                    type: boolean
+                code:
+                    type: string
+                    description: 'When not ok: a code of the error taxonomy, and what failed.'
+                message:
+                    type: string
+                skipped:
+                    type: string
+                    description: |-
+                        Why it didn't run, such as a check before it that failed; empty if it
+                         ran.
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CheckItem'
+            description: |-
+                PreflightPart is one part of a pipeline's preflight: a connection's
+                 check, a connector's preflight for the pipeline's streams, or the plan.
+        PreflightPipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}
+        PreflightPipelineResponse:
+            type: object
+            properties:
+                result:
+                    $ref: '#/components/schemas/PreflightResult'
+        PreflightResult:
+            type: object
+            properties:
+                ok:
+                    type: boolean
+                    description: No part failed; warnings don't count.
+                version:
+                    type: string
+                    description: The pipeline version checked.
+                parts:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PreflightPart'
+            description: |-
+                PreflightResult is a pipeline's preflight: its parts, in the order they
+                 ran.
         Principal:
             type: object
             properties:

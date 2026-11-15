@@ -34,8 +34,9 @@ Commands:
   apply -f FILE   create or update the connector versions, connector
                   sources, sources, destinations, dbt projects, Spark and
                   Flink clusters, pipelines and webhooks in FILE, then
-                  check what changed on a runner, which only warns;
-                  --no-check skips that
+                  check what changed on a runner, which only warns: a
+                  preflight of each pipeline it changed, and a check of
+                  each other source and destination; --no-check skips that
   plan -f FILE    show what apply would change, and how each pipeline
                   would sync
   pause NAME      stop a pipeline's scheduled syncs; --stream STREAM
@@ -61,9 +62,11 @@ Commands:
   syncs NAME      list a pipeline's syncs, newest first
   versions NAME   list a pipeline's versions, newest first
   logs NAME       print a sync's log; -f follows a running one
-  check source|destination|pipeline NAME
-                  check that a source or destination is reachable; for a
-                  pipeline, both of its connections, then print its plan
+  check source|destination NAME
+                  check that a source's or destination's connection works
+  preflight NAME  check that a pipeline would run: both connections, then
+                  both connectors for the streams it reads and writes,
+                  then print its plan
   discover NAME   list a source's streams and columns
   connector COMMAND
                   package, publish, validate and apply connector versions,
@@ -168,6 +171,8 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return runLogs(ctx, args[1:], out)
 	case "check":
 		return runCheck(ctx, args[1:], out)
+	case "preflight":
+		return runPreflight(ctx, args[1:], out)
 	case "discover":
 		return runDiscover(ctx, args[1:], out)
 	}
@@ -735,16 +740,16 @@ func connectorFlags(cmd, usage string) (fs *flag.FlagSet, conn *api, workspace, 
 }
 
 func runCheck(ctx context.Context, args []string, out io.Writer) error {
-	fs, conn, workspace, dataPlane := connectorFlags("check", "source|destination|pipeline NAME")
+	fs, conn, workspace, dataPlane := connectorFlags("check", "source|destination NAME")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	kind := fs.Arg(0)
-	if fs.NArg() != 2 || (kind != "source" && kind != "destination" && kind != "pipeline") {
-		return errors.New("check takes source, destination or pipeline, then a name, after its flags")
-	}
 	if kind == "pipeline" {
-		return checkPipeline(ctx, conn, *workspace, *dataPlane, fs.Arg(1), out)
+		return errors.New("a pipeline has a preflight, not a check: openetl preflight NAME")
+	}
+	if fs.NArg() != 2 || (kind != "source" && kind != "destination") {
+		return errors.New("check takes source or destination, then a name, after its flags")
 	}
 	name := "workspaces/" + *workspace + "/" + kind + "s/" + fs.Arg(1)
 	var res *apiv1.CheckResult
