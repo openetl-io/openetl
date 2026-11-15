@@ -71,8 +71,8 @@ Sources can also implement these operations:
 
 | Operation | Contract |
 |---|---|
-| `Check` | Check the connection alone, without reading: for example, sign in. See [Checks and preflights](#checks-and-preflights). |
-| `PreflightSource` | Check a pipeline's streams as a sync would read them, without reading records. See [Checks and preflights](#checks-and-preflights). |
+| `Check` | Check the connection alone, without reading: for example, sign in. See [Checks and preflights](./checks.md). |
+| `PreflightSource` | Check a pipeline's streams as a sync would read them, without reading records. See [Checks and preflights](./checks.md). |
 | `Committed` | Acknowledge upstream offsets or replication positions. Notifications are one checkpoint behind. |
 | `Splits`, `Resplit` | Divide streams into concurrent reads. |
 | `Retention` | Report retention usage for saved positions while the pipeline is stopped. Set `Retention: true` in `sdk.Connector` to enable checks every 15 minutes. Reports can open a **Retention at risk** incident. |
@@ -97,7 +97,7 @@ A reply to **PreCommit** or **Commit** names the epoch of the request it answers
 
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.
 
-A destination can also implement `Check` and `PreflightDestination`, as [Checks and preflights](#checks-and-preflights) describes.
+A destination can also implement `Check` and `PreflightDestination`, as [Checks and preflights](./checks.md) describes.
 
 ### Setup and teardown
 
@@ -113,52 +113,12 @@ OpenETL holds the affected column where supported, or stops the stream. It shows
 
 ### Checks and preflights
 
-A connector answers two questions before any data moves:
+A connector can tell people whether its configuration works before any data moves, and whether a pipeline would run:
 
-- **Check:** does this configuration reach the system? A check is about one source or destination, with no pipeline. Keep it light: connect, sign in, reach a schema registry. Users run it from a source's or destination's page and with `openetl check`.
-- **Preflight:** would this pipeline work? A preflight gets what a sync of the pipeline would read or write, and examines each stream. Users run it from a pipeline's page, with `openetl preflight`, and after each `apply` that changes a pipeline.
+- **Check:** does this configuration reach the system? A check is about one source or destination, with no pipeline. Keep it light: connect, sign in, find what the config names.
+- **Preflight:** would this pipeline work? A preflight gets what a sync of the pipeline would read or write, and examines each stream. OpenETL calls it only after the connector's check passed.
 
-OpenETL runs a pipeline's preflight in parts: the source's check, then the destination's check. Then it calls `PreflightSource` if the source's check passed, and `PreflightDestination` if the destination's check passed. Last, it plans the sync.
-
-| | Check | Preflight |
-|---|---|---|
-| RPC | `ConnectorService.Check` | `SourceService.PreflightSource`, `DestinationService.PreflightDestination` |
-| Gets | The config | The config, and the pipeline's ID |
-| A source also gets | Nothing | The streams, with their sync modes and cursors; whether the pipeline is continuous; the longest interval between its scheduled syncs |
-| A destination also gets | Nothing | The namespace; the streams, with their write modes, keys and delete modes; each stream's declared columns and its table, in the `openetl.table` schema metadata |
-| Belongs here | Reach the service, credentials, the account's own permissions | Each stream: exists, readable or writable, a mode the connector has; retention against the schedule; resources the pipeline will create |
-
-Which items a connector reports depends on its configuration. For example, a source that reads through a consumer checks that consumer only in the mode that uses one.
-
-Both answer with items, in the order they ran. Each item has these fields:
-
-- `name`: unique and the same from one run to the next, such as `stream.clicks.read`.
-- `title`: for people, such as "Read clicks".
-- A status: `passed`, `warning`, `failed` or `skipped`.
-- `message`: what it found.
-- `error`: the classified error of a failed item.
-- `fix`: what to do about a failure or a warning.
-- `field`: the config field it concerns, as a dotted path.
-
-The response's `error` is the first failed item's error. A warning does not fail it: the pipeline can still run, but not as configured or not as well as it could. Skip an item that an earlier failure makes pointless. Also skip an item that cannot be checked without a change, such as writing a record, and name the permission it needs in its `fix`. Item text is shown and kept, so it never holds secrets or records. A connector without a preflight answers with no items, and `sdk.Serve` does that for you.
-
-In Go, implement `source.CheckReporter` or `destination.CheckReporter` in place of `Checker` for an itemised check. Implement `source.Preflighter` or `destination.Preflighter` for a preflight. Record failures in the report rather than stopping at the first, so one run shows everything that is wrong:
-
-```go
-func (s *Source) CheckReport(ctx context.Context, r *check.Report) {
-	r.Run("connect", "Reach the API", func() error { return s.ping(ctx) }, check.Field("url"))
-}
-
-func (s *Source) Preflight(ctx context.Context, req source.PreflightRequest, r *check.Report) {
-	for _, st := range req.Streams {
-		r.Run("stream."+st.Name+".read", "Read "+st.Name, func() error {
-			return check.Fix(s.peek(ctx, st.Name), "Grant the API key the "+st.Name+":read scope.")
-		}, check.Field("streams"))
-	}
-}
-```
-
-`check.Fix` attaches a fix to an error, so the code that classifies errors can say what to do about each. `Warn`, `Pass` and `Skip` record the other statuses.
+Both answer with items, one for each thing the connector looked at: passed, warning, failed or skipped, with a fix for what failed. A connector can have neither, either or both. In Go, a connector declares each as a list of named checks that the SDK runs. The SDK's toolkits check networks, HTTP APIs and databases, and a connector adds checks of its own. [Checks and preflights](./checks.md) explains what belongs in each, how to declare and test them, and the protocol for other languages.
 
 ### The config schema
 

@@ -2,5 +2,5 @@
   "title": "Build a connector",
   "description": "Write, test, package and publish connectors",
   "icon": "Blocks",
-  "pages": ["index"]
+  "pages": ["index", "checks"]
 }
