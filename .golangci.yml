@@ -134,6 +134,11 @@ linters:
       - path: internal/notices/main\.go
         linters: [gosec]
         text: "G306:"
+      # The test's fake statement implements ADBC's Statement, whose method
+      # is named SetSqlQuery.
+      - path: sdk/go/check/adbccheck/adbccheck_test\.go
+        linters: [revive]
+        text: "var-naming: method SetSqlQuery"
       # The kit's container runs as another user, which may map to any host
       # uid, so the socket it's given must be open to everyone.
       - path: sdk/go/conformance/container\.go

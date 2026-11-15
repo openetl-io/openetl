@@ -124,7 +124,7 @@ jobs:
           export PATH="$PWD/bin:$PATH"
           buf lint
           buf format --diff --exit-code
-          for m in . sdk/go; do (cd "$m" && golangci-lint run ./...); done
+          for m in . sdk/go sdk/go/check/adbccheck; do (cd "$m" && golangci-lint run ./...); done
           workflowcheck ./internal/orchestration/...
       - if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
@@ -158,10 +158,13 @@ jobs:
       # the slowest package.
       - name: Unit tests
         run: |
-          mapfile -t packages < <(go list ./... ./sdk/go/... | grep -v '/test/sim$')
+          mapfile -t packages < <(go list ./... ./sdk/go/... ./sdk/go/check/adbccheck/... | grep -v '/test/sim$')
           go test -race "${packages[@]}"
       - name: The SDK builds without the workspace
         working-directory: sdk/go
+        run: GOWORK=off go build ./...
+      - name: adbccheck builds without the workspace
+        working-directory: sdk/go/check/adbccheck
         run: GOWORK=off go build ./...
       - name: Commit-protocol simulation (fixed seeds)
         run: go test -count=1 ./test/sim -seeds=200

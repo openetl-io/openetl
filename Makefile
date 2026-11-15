@@ -20,8 +20,8 @@ CARGO_DENY_VERSION := 0.20.2
 # Mounted at the same path in the compose stack's Spark containers.
 export OPENETL_SPARK_SHARE ?= $(CURDIR)/.openetl/spark
 
-GO_MODULES := . sdk/go
-GO_PACKAGES := ./... ./sdk/go/...
+GO_MODULES := . sdk/go sdk/go/check/adbccheck
+GO_PACKAGES := ./... ./sdk/go/... ./sdk/go/check/adbccheck/...
 SEEDS ?= 500
 
 .DEFAULT_GOAL := help
@@ -215,6 +215,7 @@ test: tools web/node_modules/.modules.yaml ## Unit tests (fast, no Docker), incl
 	cargo build -p openetl-engine
 	OPENETL_ENGINE=$(CURDIR)/target/debug/openetl-engine $(BIN)/gotestsum --format pkgname -- $(GO_PACKAGES)
 	cd sdk/go && GOWORK=off go build ./...
+	cd sdk/go/check/adbccheck && GOWORK=off go build ./...
 	cargo test --workspace
 	pnpm --dir web test
 

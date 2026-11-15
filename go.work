@@ -5,4 +5,5 @@ toolchain go1.26.10
 use (
 	.
 	./sdk/go
+	./sdk/go/check/adbccheck
 )
