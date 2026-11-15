@@ -560,6 +560,11 @@ impl Shaper {
     ) -> Result<Shaped, Error> {
         let gone: HashSet<usize> = c.failed.iter().map(|(r, ..)| *r).collect();
         let mut cells = remap(cells, ids.len(), &gone);
+        // The first half names a cell by its source column, whose values may
+        // go to a version of it.
+        for h in &mut cells {
+            h.column = self.evolver.current(&h.column);
+        }
         cells.extend(c.cells.iter().cloned());
         let (ids, control) = if c.failed.is_empty() {
             (ids, control)
@@ -2055,6 +2060,84 @@ mod tests {
         assert!(!s.declare().unwrap(), "nothing left to take");
         let mut fresh = keyed(Policy::AllowAll, None, None);
         assert!(!fresh.declare().unwrap());
+    }
+
+    #[test]
+    fn a_cell_of_a_versioned_column_is_held_in_its_version() {
+        // The source's price was int64; it became decimal(10, 2), which
+        // allow_all sends to price__v2.
+        let ints = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("price", DataType::Int64, true),
+        ]));
+        let mut first = keyed(Policy::AllowAll, None, Some(ints));
+        first
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+                ("price", Arc::new(Int64Array::from(vec![10, 20]))),
+            ]))
+            .unwrap();
+        let decimal = |p: u8| {
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("price", DataType::Decimal128(p, 2), true),
+            ]))
+        };
+        let last = || HoldConfig {
+            cells: true,
+            show: Show::Last(None),
+            ..Default::default()
+        };
+        let batch = typed(vec![
+            ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+            (
+                "price",
+                Arc::new(StringArray::from(vec!["1.5", "123456789.5"])),
+            ),
+        ]);
+        let check = |n: &Shaped| {
+            assert!(n.batch.column_by_name("price__v2").unwrap().is_null(1));
+            assert_eq!(
+                held_lists(&n.batch),
+                [None, Some(vec!["price__v2".to_owned()])],
+                "the cell is held where the value goes"
+            );
+            assert_eq!(
+                n.cells.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+                ["price__v2"]
+            );
+            assert_eq!(n.held[0].schema().field(5).name(), "price__v2");
+        };
+        // The run that starts the version, and the next one, restored.
+        let mut s = keyed(Policy::AllowAll, first.schema(), Some(decimal(10)))
+            .with_holds(last())
+            .unwrap();
+        let n = s.batch(&batch).unwrap();
+        assert!(!n.versioned.is_empty());
+        check(&n);
+        let mut s = keyed(Policy::AllowAll, s.schema(), Some(decimal(10)))
+            .with_holds(last())
+            .unwrap();
+        let n = s.batch(&batch).unwrap();
+        check(&n);
+
+        // The source widens to decimal(20, 2) and the hold is released: the
+        // patch fills price__v2, not the old int64 price.
+        let mut r = keyed(Policy::AllowAll, s.schema(), Some(decimal(20)))
+            .with_holds(last())
+            .unwrap();
+        r.version(&[]).unwrap();
+        r.declare().unwrap();
+        let (p, still) = r
+            .patch(&n.held[0], &HashSet::from(["price__v2".to_owned()]))
+            .unwrap();
+        let p = p.unwrap();
+        assert_eq!(still, 0);
+        assert!(p.schema().field_with_name("price").is_err());
+        assert_eq!(
+            p.schema().field_with_name("price__v2").unwrap().data_type(),
+            &DataType::Decimal128(20, 2)
+        );
     }
 
     #[test]

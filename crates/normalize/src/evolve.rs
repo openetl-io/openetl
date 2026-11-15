@@ -170,7 +170,8 @@ impl Evolver {
         &self.versions
     }
 
-    fn current(&self, source: &str) -> String {
+    /// The column a source column's values go to.
+    pub(crate) fn current(&self, source: &str) -> String {
         match self.versions.get(source) {
             Some(k) => format!("{source}__v{k}"),
             None => source.to_owned(),
