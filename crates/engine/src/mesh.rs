@@ -441,23 +441,26 @@ pub async fn bind(plan: &Plan) -> Result<Option<TcpListener>, JobError> {
     let Some(id) = plan.mesh.as_ref().and_then(|m| m.identity.as_ref()) else {
         return Ok(None);
     };
-    // Go's ":7720" is every address: IPv6's, which takes IPv4's where the
-    // host has both, then IPv4's.
-    let at: Vec<String> = match id.listen.strip_prefix(':') {
-        Some(port) => vec![format!("[::]:{port}"), format!("0.0.0.0:{port}")],
-        None => vec![id.listen.clone()],
+    // Go's ":7720" is every address.
+    let every = match id.listen.strip_prefix(':') {
+        Some(port) => Some(port.parse::<u16>().map_err(|_| {
+            JobError::config(format!(
+                "the mesh listens at {}, whose port isn't one",
+                id.listen
+            ))
+        })?),
+        None => None,
     };
     let deadline = Instant::now() + BIND_TIMEOUT;
-    let mut i = 0;
     loop {
-        match TcpListener::bind(&at[i]).await {
+        let bound = match every {
+            Some(port) => bind_every(port),
+            None => TcpListener::bind(&id.listen).await,
+        };
+        match bound {
             Ok(l) => return Ok(Some(l)),
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(200)).await;
-            }
-            Err(e) if e.kind() != std::io::ErrorKind::AddrInUse && i + 1 < at.len() => {
-                debug!(listen = %at[i], error = %e, "binding for the other engines; trying another address");
-                i += 1;
             }
             Err(e) => {
                 return Err(transient(format!(
@@ -467,6 +470,32 @@ pub async fn bind(plan: &Plan) -> Result<Option<TcpListener>, JobError> {
             }
         }
     }
+}
+
+/// Listens at `port` on every address: IPv6's with IPv4's mapped onto it,
+/// whatever the host's default (net.ipv6.bindv6only), or IPv4's alone on a
+/// host without IPv6.
+fn bind_every(port: u16) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+    let dual = || -> std::io::Result<std::net::TcpListener> {
+        let s = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+        s.set_only_v6(false)?;
+        s.set_reuse_address(true)?;
+        s.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+        s.listen(1024)?;
+        Ok(s.into())
+    };
+    let l = match dual() {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => return Err(e),
+        Err(e) => {
+            debug!(error = %e, "listening on IPv6 for the other engines failed; IPv4 alone");
+            std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?
+        }
+    };
+    l.set_nonblocking(true)?;
+    TcpListener::from_std(l)
 }
 
 fn tune(tcp: &TcpStream) {

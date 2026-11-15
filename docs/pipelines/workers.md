@@ -114,10 +114,9 @@ With a [SQL transform](./sql-transforms.md), these rules apply to each statement
 
 ## The exchange between workers
 
-A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Every worker writes the keys that it owns:
+A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Every worker writes the keys that it owns, whichever worker read them.
 
-- A stream that the source does not split by key is read by all the workers, each of them some of its splits.
-- A stream read with `cdc` is read by one worker, as [Streams that one worker reads](#streams-that-one-worker-reads) says.
+Where the rows are read does not depend on the exchange. The workers can share a stream's splits, unless the stream is read with `cdc` or written with `overwrite`; then one worker reads all of them, as [Streams that one worker reads](#streams-that-one-worker-reads) says. A worker gets no split when there are fewer splits than workers.
 
 Each worker's engine connects to every other worker's engine once, on TCP port 7720 in Kubernetes. The connection uses TLS 1.3 with a certificate that the coordinator makes for each attempt. The engines trust only that certificate, and each connection proves a secret of the attempt. An engine refuses a connection of another attempt, or of an earlier try of the same attempt. [The route between pods](../self-host/kubernetes.md#the-route-between-pods) says what the network must allow.
 

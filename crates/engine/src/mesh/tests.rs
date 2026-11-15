@@ -683,7 +683,28 @@ async fn a_listen_address_without_a_host_binds_every_address() {
     req.mesh.as_mut().unwrap().listen = ":0".into();
     let plan = Plan::from_request(req).unwrap();
     let l = bind(&plan).await.unwrap().unwrap();
-    assert!(l.local_addr().unwrap().ip().is_unspecified());
+    let at = l.local_addr().unwrap();
+    assert!(at.ip().is_unspecified(), "{at}");
+    // IPv4 peers reach it, whatever the host's net.ipv6.bindv6only.
+    let (dialed, accepted) = tokio::join!(
+        TcpStream::connect(("127.0.0.1", at.port())),
+        tokio::time::timeout(Duration::from_secs(5), l.accept())
+    );
+    dialed.expect("an IPv4 connection");
+    accepted
+        .expect("no IPv4 connection accepted")
+        .expect("an IPv4 connection");
+    // And IPv6 peers, where the listener has IPv6.
+    if at.is_ipv6() {
+        let (dialed, accepted) = tokio::join!(
+            TcpStream::connect(("::1", at.port())),
+            tokio::time::timeout(Duration::from_secs(5), l.accept())
+        );
+        dialed.expect("an IPv6 connection");
+        accepted
+            .expect("no IPv6 connection accepted")
+            .expect("an IPv6 connection");
+    }
 }
 
 /// A watermark crosses engines as it goes, and back as it came.
