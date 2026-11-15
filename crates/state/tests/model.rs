@@ -1,18 +1,21 @@
 //! The layer against a model of a few maps, over random sequences of the
 //! primitives, barriers, recorded or not, failed epochs, kills and restores
 //! of a recorded epoch onto other numbers of lanes, older attempts still
-//! writing, and released versions. Each seed is a sequence:
-//! `OPENETL_STATE_SEEDS=n` runs n of them, and `OPENETL_STATE_SEED=s` the
-//! one.
+//! writing, and released versions, over each store. Each seed is a
+//! sequence: `OPENETL_STATE_SEEDS=n` runs n of them, and
+//! `OPENETL_STATE_SEED=s` the one.
 
 #![allow(clippy::unwrap_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use bytes::Bytes;
+use object_store::memory::InMemory;
+use object_store::path::Path;
 use openetl_state::{
-    DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, NEVER, OperatorId, Result, Snapshot,
-    StateBackend, Timer,
+    DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, NEVER, ObjectStorage, OperatorId, Result,
+    RunConfig, RunStores, Snapshot, StateBackend, Stores, Timer,
 };
 
 const GROUPS: u32 = 16;
@@ -265,7 +268,10 @@ struct Lane {
 struct World {
     seed: u64,
     rng: Rng,
-    bucket: MemoryBucket,
+    stores: Arc<dyn Stores>,
+    /// Whether the store holds in memory exactly what it keeps, as the
+    /// memory bucket does, and runs don't.
+    exact: bool,
     generation: u64,
     /// The open epoch.
     epoch: u64,
@@ -302,9 +308,15 @@ impl World {
             self.zombies.drain(..excess);
         }
         for range in ranges(lanes) {
-            let layer = Layer::open(&self.bucket, self.generation, self.epoch, range, &snapshots)
-                .await
-                .unwrap_or_else(|e| panic!("{}: open: {e}", self.ctx()));
+            let layer = Layer::open(
+                &*self.stores,
+                self.generation,
+                self.epoch,
+                range,
+                &snapshots,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{}: open: {e}", self.ctx()));
             self.lanes.push(Lane { range, layer });
         }
         self.now = from.map_or_else(Logical::default, |e| self.records[&e].0.clone());
@@ -482,11 +494,13 @@ impl World {
             snapshots.extend(got.unwrap_or_else(|e| panic!("{ctx}: barrier: {e}")));
             let memory = l.layer.memory();
             assert_eq!(memory.changes, 0, "{ctx}");
-            assert_eq!(
-                memory.store > 0,
-                self.now.holds(l.range),
-                "{ctx}: {memory:?}"
-            );
+            if self.exact {
+                assert_eq!(
+                    memory.store > 0,
+                    self.now.holds(l.range),
+                    "{ctx}: {memory:?}"
+                );
+            }
         }
         self.last = self.now.clone();
         if self.rng.chance(75) {
@@ -563,11 +577,34 @@ impl World {
     }
 }
 
-async fn run(seed: u64) {
+/// Runs over an in-memory object store, with blocks, filters, a cache
+/// and reads that vary by seed: tiny blocks and filters that let most keys
+/// through, so lookups go past false positives and scans across blocks.
+fn runs(seed: u64) -> Arc<dyn Stores> {
+    let mut rng = Rng(seed ^ 0x5eed);
+    let config = RunConfig {
+        block_bytes: rng.pick(&[1, 40, 200, 4096]),
+        compress: rng.chance(50),
+        bits: match rng.below(3) {
+            0 => [1, 1, 2, 1],
+            1 => [0, 0, 0, 0],
+            _ => [10, 10, 20, 10],
+        },
+        cache_bytes: rng.pick(&[0, 2048, 1 << 20]),
+        gap_bytes: rng.pick(&[0, 100, 1 << 16]),
+        max_read_bytes: rng.pick(&[1, 300, 1 << 20]),
+        concurrency: rng.pick(&[1, 4]),
+    };
+    let objects = ObjectStorage::new(Arc::new(InMemory::new()), Path::from("state"));
+    Arc::new(RunStores::new(Arc::new(objects), config))
+}
+
+async fn run(seed: u64, stores: Arc<dyn Stores>, exact: bool) {
     let mut w = World {
         seed,
         rng: Rng(seed),
-        bucket: MemoryBucket::new(),
+        stores,
+        exact,
         generation: 0,
         epoch: 1,
         lanes: Vec::new(),
@@ -603,6 +640,16 @@ fn the_layer_matches_the_model() {
         .build()
         .unwrap();
     for seed in seeds() {
-        rt.block_on(run(seed));
+        rt.block_on(run(seed, Arc::new(MemoryBucket::new()), true));
+    }
+}
+
+#[test]
+fn the_layer_matches_the_model_over_runs() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    for seed in seeds() {
+        rt.block_on(run(seed, runs(seed), false));
     }
 }

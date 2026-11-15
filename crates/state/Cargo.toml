@@ -8,7 +8,11 @@ publish.workspace = true
 
 [dependencies]
 bytes.workspace = true
+futures-util.workspace = true
+lz4_flex.workspace = true
+object_store.workspace = true
 thiserror.workspace = true
+twox-hash.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
