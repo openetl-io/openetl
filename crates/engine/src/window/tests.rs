@@ -503,6 +503,67 @@ async fn a_delete_gives_the_end_of_the_row_the_output_has() {
     assert_eq!(cell("total"), "5");
 }
 
+/// The ops and window ends of what a call gave.
+fn ops_and_ends(out: super::Out) -> Vec<(String, String)> {
+    let t = out.rows.unwrap();
+    let ends = t
+        .batch
+        .column(t.batch.schema().index_of("window_end").unwrap())
+        .clone();
+    t.control
+        .op
+        .as_ref()
+        .unwrap()
+        .as_string::<i32>()
+        .iter()
+        .enumerate()
+        .map(|(i, op)| {
+            (
+                op.unwrap().to_owned(),
+                arrow_cast::display::array_value_to_string(&ends, i).unwrap(),
+            )
+        })
+        .collect()
+}
+
+/// Without aggregates too, a session that grew after its row was given
+/// deletes the row with the end it has: merged away, or failing HAVING.
+#[tokio::test]
+async fn a_delete_without_aggregates_gives_the_end_the_output_has() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, window_end, region FROM orders \
+               GROUP BY session(at, INTERVAL '30 seconds'), region";
+    let mut run = Run::new(sql, 2 * MIN, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 0), ("eu", 1, 60 * SEC)]).await;
+    run.advance(100 * SEC).await;
+    // The second session grows to 115 seconds; then a row bridges the two.
+    run.rows(&[("eu", 1, 85 * SEC)]).await;
+    let late = batch(&run.ops[0], &[("eu", 1, 30 * SEC)]);
+    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    assert_eq!(
+        ops_and_ends(out),
+        [("delete".to_owned(), "1970-01-01T00:01:30Z".to_owned())]
+    );
+
+    let sql = "INSERT INTO o SELECT window_start, window_end, region FROM orders \
+               GROUP BY session(at, INTERVAL '30 seconds'), region \
+               HAVING window_end - window_start < INTERVAL '40 seconds'";
+    let mut run = Run::new(sql, 2 * MIN, &bucket, 2, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 0)]).await;
+    run.advance(40 * SEC).await;
+    assert_eq!(run.table.0.len(), 1);
+    // It grows to 50 seconds, which fails HAVING once it closes.
+    run.rows(&[("eu", 1, 20 * SEC)]).await;
+    let out = run.ops[0]
+        .advance(&mut run.layers[0], 60 * SEC)
+        .await
+        .unwrap();
+    assert_eq!(
+        ops_and_ends(out),
+        [("delete".to_owned(), "1970-01-01T00:00:30Z".to_owned())]
+    );
+}
+
 fn next(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *seed;

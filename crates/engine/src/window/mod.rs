@@ -128,7 +128,7 @@ impl State {
     /// The values a delete of its row gives: those of the row the output
     /// has, which its steps took once.
     fn deleted(&self, specs: &[Spec]) -> Vec<Option<Value>> {
-        match self.shown.len() == specs.len() {
+        match self.visible {
             true => self.shown.clone(),
             false => self
                 .accs
@@ -719,10 +719,7 @@ impl Operator {
                         group: g,
                         key: k.clone(),
                         start: old.start,
-                        end: match old.state.shown.is_empty() {
-                            true => old.end,
-                            false => old.state.shown_end,
-                        },
+                        end: old.state.shown_end,
                         state: State {
                             emitted: old.state.emitted,
                             visible: true,
@@ -1009,10 +1006,7 @@ impl Operator {
                         group: e.group,
                         key: e.key.clone(),
                         start: e.start,
-                        end: match e.state.shown.is_empty() {
-                            true => e.end,
-                            false => e.state.shown_end,
-                        },
+                        end: e.state.shown_end,
                         state: e.state.clone(),
                         merged: false,
                     }
