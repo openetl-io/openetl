@@ -7,13 +7,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { DataTable } from "@/components/data-table/data-table";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { Empty, ErrorNote } from "@/components/empty";
+import { QuarantineCount, QuarantineView } from "@/components/quarantine";
 import { RelativeTime } from "@/components/relative-time";
 import { StatusBadge } from "@/components/status";
 import { SyncService, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { errorMessage } from "@/lib/api";
 import { compact, dateOf, duration, errorSummary, full } from "@/lib/format";
 import { lastSegment, pipelineName, shortDigest } from "@/lib/names";
-import { heldLabel, rows, syncStatus } from "@/lib/status";
+import { heldLabel, quarantinedStream, rows, syncStatus } from "@/lib/status";
 
 const columns: ColumnDef<Sync>[] = [
   {
@@ -41,11 +42,21 @@ const columns: ColumnDef<Sync>[] = [
     header: "Rows",
     cell: ({ row }) => {
       const r = rows(row.original);
-      const notes = [r.quarantined > 0n && `${compact(r.quarantined)} quarantined`, r.held > 0 && heldLabel(r.held)].filter(Boolean);
+      const quarantined = r.quarantined > 0n && (
+        <QuarantineCount stream={quarantinedStream(row.original)} focus={{ sync: row.original.name }}>
+          {compact(r.quarantined)} quarantined
+        </QuarantineCount>
+      );
       return (
         <span className="tabular-nums">
           <span title={full(r.all)}>{compact(r.all)}</span>
-          {notes.length > 0 && <span className="text-degraded"> ({notes.join(", ")})</span>}
+          {(quarantined || r.held > 0) && (
+            <span className="text-degraded">
+              {" "}({quarantined}
+              {quarantined && r.held > 0 && ", "}
+              {r.held > 0 && heldLabel(r.held)})
+            </span>
+          )}
         </span>
       );
     },
@@ -88,17 +99,19 @@ export function SyncsTab({ workspace, pipeline, running }: { workspace: string; 
     return <Empty title="No syncs yet" command={`openetl sync ${pipeline}`}>The schedule starts them, or you can start one now.</Empty>;
   }
   return (
-    <div className="grid gap-3">
-      <DataTable
-        table={table}
-        loading={syncs.isPending}
-        onRowClick={(r) => navigate({ to: "/workspaces/$workspace/pipelines/$pipeline/syncs/$sync", params: { workspace, pipeline, sync: lastSegment(r.original.name) } })}
-      />
-      {syncs.hasNextPage && (
-        <Button variant="outline" size="sm" className="w-fit" disabled={syncs.isFetchingNextPage} onClick={() => syncs.fetchNextPage()}>
-          {syncs.isFetchingNextPage ? "Loading…" : "Load older syncs"}
-        </Button>
-      )}
-    </div>
+    <QuarantineView workspace={workspace} pipeline={pipeline}>
+      <div className="grid gap-3">
+        <DataTable
+          table={table}
+          loading={syncs.isPending}
+          onRowClick={(r) => navigate({ to: "/workspaces/$workspace/pipelines/$pipeline/syncs/$sync", params: { workspace, pipeline, sync: lastSegment(r.original.name) } })}
+        />
+        {syncs.hasNextPage && (
+          <Button variant="outline" size="sm" className="w-fit" disabled={syncs.isFetchingNextPage} onClick={() => syncs.fetchNextPage()}>
+            {syncs.isFetchingNextPage ? "Loading…" : "Load older syncs"}
+          </Button>
+        )}
+      </div>
+    </QuarantineView>
   );
 }

@@ -54,7 +54,9 @@ type holdsEnv struct {
 	url      string
 }
 
-func newHoldsEnv(t *testing.T) *holdsEnv {
+// newHoldsEnv is a server with a continuous pipeline, its running sync, a
+// runner token of its data plane and a viewer. opts change the server.
+func newHoldsEnv(t *testing.T, opts ...func(*api.Server)) *holdsEnv {
 	t.Helper()
 	ctx := t.Context()
 	url := storetest.NewDatabase(t)
@@ -107,6 +109,9 @@ func newHoldsEnv(t *testing.T) *holdsEnv {
 		t.Fatal(err)
 	}
 	srv := &api.Server{Store: s, Tenant: tenant, Schedules: e.sched, DefaultDataPlane: "dp1", Authless: true, Logger: slog.New(slog.DiscardHandler)}
+	for _, o := range opts {
+		o(srv)
+	}
 	h, err := srv.Handler()
 	if err != nil {
 		t.Fatal(err)

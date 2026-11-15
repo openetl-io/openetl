@@ -125,6 +125,23 @@ If the pipeline holds values, **Holds** lists each affected column. Entries iden
 
 **To clear it** lists the available recovery choices in recommended order. These include a destination repair, where applicable, and commands to release or discard the hold.
 
+### Quarantined rows
+
+A number in **Quarantined** is a link. Select it to see the files of the stream's quarantined rows. The number is a link in four places: the **Streams** table, the **Syncs** tab, the **Checkpoints** tab, and a sync's page. Quarantined rows are not in the destination. Held values are different: OpenETL wrote their rows, and a release writes the values in later.
+
+The panel lists the stream's files, newest first. Each file shows:
+
+- its rows, and **Output** if the stream is an output of a SQL transform;
+- the sync that committed it, its epoch, and when it committed;
+- its rows by cause, such as 312 rows: `type` on `amount`;
+- its path below the pipeline's `_quarantine/` folder in the data plane's storage.
+
+A file of the sync or checkpoint that you selected is marked **This sync** or **This checkpoint**. Select **Load older files** to see more. A cause names a code, and the column if one column caused it. [Quarantine files](../reference/quarantine-files.md#codes) explains each code.
+
+If the stream holds values that do not fit (`unfitValues: hold`), a cause can also show **not held**. These rows had values that OpenETL could not hold, so it quarantined the rows. Point to the word after **not held** to see why.
+
+If you are an editor or above, each file has **Show records**. Select it to see the file's first 20 records, with the cause and the reason of each. A runner of the pipeline's data plane reads them from the data plane's storage. OpenETL does not keep the records, and the audit log records each read. If the file has more records, the panel shows the command that reads up to 100.
+
 ### SQL
 
 A pipeline with a SQL transform has a **SQL** tab. A SQL transform is SQL statements that change rows on their way to the destination. Each `INSERT INTO` statement writes an **output**, which the destination gets as a stream.
@@ -248,7 +265,7 @@ Each role includes the ones before it. A role is given for one workspace, or for
 |---|---|
 | Viewer | Reads resources in their role's scope, including sync logs and incidents. The audit log requires Admin; no role sees secret values. |
 | Operator | **Sync now**, **Pause** and **Resume**; resolving incidents; sending a webhook a test event, and disabling or enabling it. With the CLI, also checking that sources and destinations can be reached, and resizing a pipeline's syncs. |
-| Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects, clusters and webhooks; setting secrets; releasing and discarding holds. With the CLI, also reading a pipeline's streams again from the start, and letting it restart from an earlier checkpoint. |
+| Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects, clusters and webhooks; setting secrets; releasing and discarding holds; reading quarantined records with **Show records**. With the CLI, also reading a pipeline's streams again from the start, and letting it restart from an earlier checkpoint. |
 | Admin | Installing connectors; adding people and service accounts, and giving them roles, API keys and password links; runner tokens; the audit log; signing people out everywhere. |
 | Owner | Managing other owners. |
 
@@ -283,6 +300,7 @@ openetl holds PIPELINE                   # what it holds back
 openetl holds release PIPELINE STREAM COLUMN
 openetl holds discard PIPELINE STREAM COLUMN
 openetl quarantine PIPELINE              # the files of rows it quarantined, and why
+openetl quarantine show PIPELINE PATH    # Show records
 ```
 
 `openetl principal password-link NAME` makes the link a person sets their password with, and `openetl principal sign-out NAME` signs them out everywhere. `openetl COMMAND -h` lists a command's flags.

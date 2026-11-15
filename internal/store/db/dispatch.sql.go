@@ -372,6 +372,22 @@ func (q *Queries) ClaimPlaced(ctx context.Context, arg ClaimPlacedParams) ([]Dis
 	return items, nil
 }
 
+const deleteDispatch = `-- name: DeleteDispatch :exec
+DELETE FROM dispatches WHERE org_id = $1 AND id = $2
+`
+
+type DeleteDispatchParams struct {
+	OrgID uuid.UUID
+	ID    string
+}
+
+// Work whose sender took its outcome, and keeps none of it: a read of a
+// quarantine file, whose result is the pipeline's data.
+func (q *Queries) DeleteDispatch(ctx context.Context, arg DeleteDispatchParams) error {
+	_, err := q.db.Exec(ctx, deleteDispatch, arg.OrgID, arg.ID)
+	return err
+}
+
 const deleteFinishedDispatches = `-- name: DeleteFinishedDispatches :exec
 DELETE FROM dispatches
 WHERE org_id = $1 AND state = 'finished' AND woken

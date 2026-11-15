@@ -82,6 +82,7 @@ spec:
 | `holds NAME` | Lists the columns and cells a pipeline holds back |
 | `holds release NAME STREAM COLUMN`, `holds discard NAME STREAM COLUMN` | Patches a hold's values in, or drops them; `release --new-version` patches them into `COLUMN__v2` |
 | `quarantine NAME` | Lists the files of rows a pipeline quarantined, newest first, and their rows by cause |
+| `quarantine show NAME PATH` | Prints a quarantine file's first lines, which a runner of the pipeline's data plane reads |
 
 `openetl connector` has commands of its own:
 
@@ -151,7 +152,7 @@ A principal's roles are bound on the org, which covers every workspace, or on on
 |---|---|---|
 | `viewer` | The org or a workspace | Reads every resource but the audit log, syncs' logs and incidents included. No role reads secrets' values. |
 | `operator` | The org or a workspace | Pauses, resumes, syncs and rescales pipelines; checks and discovers sources and destinations; disables, enables and tests webhooks; resolves incidents; refreshes the connector catalog |
-| `editor` | The org or a workspace | Applies sources, destinations, pipelines, dbt projects, webhooks, and Spark and Flink clusters, and deletes them; releases and discards holds; sets and deletes secrets |
+| `editor` | The org or a workspace | Applies sources, destinations, pipelines, dbt projects, webhooks, and Spark and Flink clusters, and deletes them; releases and discards holds; reads quarantined records; sets and deletes secrets |
 | `admin` | The org only | Applies connector versions and connector sources; manages principals, their keys and their roles below owner; manages runner tokens; reads the audit log; signs users out and resets their passwords |
 | `owner` | The org only | Grants and revokes owner, and manages owners and their keys |
 

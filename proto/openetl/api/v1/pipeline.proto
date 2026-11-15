@@ -141,6 +141,15 @@ service PipelineService {
   rpc ListQuarantine(ListQuarantineRequest) returns (ListQuarantineResponse) {
     option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/quarantine"};
   }
+  // The first lines of one of the files ListQuarantine lists, which a
+  // runner of the pipeline's data plane reads from its object storage. The
+  // records are the pipeline's data: the control plane hands them to the
+  // caller, and doesn't keep them. Each read is in the audit log. Fails
+  // with NOT_FOUND for a path ListQuarantine doesn't list, and UNAVAILABLE
+  // when no runner of the data plane takes the read within a minute.
+  rpc ReadQuarantineFile(ReadQuarantineFileRequest) returns (ReadQuarantineFileResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/quarantine:read"};
+  }
 }
 
 // PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
@@ -1379,4 +1388,22 @@ message ListQuarantineRequest {
 message ListQuarantineResponse {
   repeated QuarantineFile files = 1;
   string next_page_token = 2;
+}
+
+message ReadQuarantineFileRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  // The file's path, as ListQuarantine gives it.
+  string path = 2;
+  // At most this many lines, from the first. 0: 20; at most 100.
+  int32 limit = 3;
+}
+
+message ReadQuarantineFileResponse {
+  // The file's first lines, each a JSON object with the quarantined
+  // record and why, without their newlines. They stop before the limit
+  // where the next would take them past 256 KiB.
+  repeated string lines = 1;
+  // The file has lines after these.
+  bool more = 2;
 }

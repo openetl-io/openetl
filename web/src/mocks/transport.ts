@@ -12,7 +12,7 @@ import { WebhookService } from "@/gen/openetl/api/v1/webhook_pb";
 import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, sources, syncs } from "./fixtures";
-import { checkpoints, holds, log, plan, schemas, versions } from "./detail";
+import { checkpoints, holds, log, plan, quarantineFiles, quarantineLines, schemas, versions } from "./detail";
 import {
   auditEntries,
   dataPlanes,
@@ -52,6 +52,19 @@ export const mockTransport = createRouterTransport(({ service }) => {
     listStreamSchemas: async ({ parent }) => (await latency(), { streamSchemas: schemas(parent) }),
     listCheckpoints: async ({ parent }) => (await latency(), { checkpoints: checkpoints(parent) }),
     listHolds: async ({ parent }) => (await latency(), { holds: holds(parent) }),
+    listQuarantine: async ({ parent, stream, pageSize, pageToken }) => {
+      await latency();
+      const all = quarantineFiles(parent, stream || undefined);
+      const from = Number(pageToken || 0);
+      const to = from + (pageSize || 50);
+      return { files: all.slice(from, to), nextPageToken: to < all.length ? String(to) : "" };
+    },
+    readQuarantineFile: async ({ parent, path, limit }) => {
+      await latency();
+      const read = quarantineLines(parent, path, limit);
+      if (!read) throw new ConnectError(`no quarantine file ${path} of ${parent}`, Code.NotFound);
+      return read;
+    },
     listPipelineVersions: async ({ parent }) => (await latency(), { pipelineVersions: versions(find(pipelines, parent)) }),
     pausePipeline: async ({ name, stream }) => (await latency(), setPaused(find(pipelines, name), true, stream)),
     resumePipeline: async ({ name, stream }) => (await latency(), setPaused(find(pipelines, name), false, stream)),

@@ -9,12 +9,13 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 )
 
-// Reads aren't audited, everything else on the public API is, and so are
-// the runner calls that get secrets' values.
+// Reads aren't audited, but for reads of quarantined records, which are the
+// pipeline's data; everything else on the public API is, and so are the
+// runner calls that get secrets' values.
 func TestAudited(t *testing.T) {
 	for proc, r := range rules {
 		name := proc[strings.LastIndex(proc, "/")+1:]
-		want := !strings.HasPrefix(name, "Get") && !strings.HasPrefix(name, "List") && !strings.HasPrefix(name, "Read")
+		want := !strings.HasPrefix(name, "Get") && !strings.HasPrefix(name, "List") && !strings.HasPrefix(name, "Read") || name == "ReadQuarantineFile"
 		if r.runner {
 			want = name == "GetSyncSpec" || name == "GetConnectorConfig" || name == "GetFlinkTeardown"
 		}

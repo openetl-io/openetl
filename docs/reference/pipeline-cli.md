@@ -131,15 +131,19 @@ Release and discard do not change destination data during the CLI request. See [
 | Syntax | Result |
 |---|---|
 | `openetl quarantine PIPELINE` | List the files of rows that the pipeline's committed epochs quarantined, newest first. For each file, show when it committed, its stream, generation and epoch, its rows and its path. Then add up the rows by stream and cause. `quarantine list` is an alias. |
+| `openetl quarantine show PIPELINE PATH` | Print the first lines of the file at `PATH`, as `openetl quarantine` gives it. Each line is a JSON object with a record and its cause. The command prints them as the file has them, so you can pipe them to `jq`. |
 
-| Flag | Type | Required | Default | Meaning |
-|---|---|---|---|---|
-| `--stream` | string | No | Every stream | List only this stream's files, or this transform output's. |
-| `--since` | duration | No | No limit | List only files committed in this period before now, such as `24h` or `7d`. |
-| `--limit` | integer | No | `100` | List at most this many files, the newest. |
-| `--json` | boolean | No | `false` | Print each file as a line of JSON, with its causes, and no sums. |
+| Flag | Command | Type | Required | Default | Meaning |
+|---|---|---|---|---|---|
+| `--stream` | `quarantine` | string | No | Every stream | List only this stream's files, or this transform output's. |
+| `--since` | `quarantine` | duration | No | No limit | List only files committed in this period before now, such as `24h` or `7d`. |
+| `--limit` | `quarantine` | integer | No | `100` | List at most this many files, the newest. |
+| `--json` | `quarantine` | boolean | No | `false` | Print each file as a line of JSON, with its causes, and no sums. |
+| `--limit` | `quarantine show` | integer | No | `20` | Print at most this many lines, from 1 to 100. The command also stops before 256 KiB of lines. |
 
-A cause is a code, the column if one column caused it, and why OpenETL did not hold the value if the stream holds values. [Quarantine files](./quarantine-files.md) lists the codes and gives the format of the files' lines. The command needs the viewer role. It reads the control plane's list of files, not the files.
+A cause is a code, the column if one column caused it, and why OpenETL did not hold the value if the stream holds values. [Quarantine files](./quarantine-files.md) lists the codes and gives the format of the files' lines. `quarantine` needs the viewer role. It reads the control plane's list of files, not the files.
+
+`quarantine show` needs the editor role, and the audit log records each read. A runner of the pipeline's data plane reads the file. The control plane passes the lines to the command, and does not keep them. If the file has more lines, the command says so on standard error. If the pipeline's `quarantine.retention` or a rule of the store deleted the file, the command fails with `not_found`.
 
 ## Check connections and discover streams
 

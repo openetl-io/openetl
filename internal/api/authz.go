@@ -32,6 +32,9 @@ var permissions = map[string]auth.Role{
 	"pipelines.delete":   auth.Editor,
 	// Releasing a hold approves its change.
 	"pipelines.holds": auth.Editor,
+	// Quarantined records are the pipeline's data, which only those who
+	// change the pipeline read; each read is audited.
+	"pipelines.quarantine": auth.Editor,
 	// Reading again and restarting from an older checkpoint change what lands
 	// in the destination.
 	"pipelines.reset":      auth.Editor,
@@ -137,6 +140,7 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServiceReleaseHoldProcedure:            {"pipelines.holds", inParent, false},
 	apiv1connect.PipelineServiceDiscardHoldProcedure:            {"pipelines.holds", inParent, false},
 	apiv1connect.PipelineServiceListQuarantineProcedure:         {"pipelines.get", inParent, false},
+	apiv1connect.PipelineServiceReadQuarantineFileProcedure:     {"pipelines.quarantine", inParent, false},
 
 	apiv1connect.SyncServiceListSyncsProcedure:   {"syncs.get", inParent, false},
 	apiv1connect.SyncServiceGetSyncProcedure:     {"syncs.get", inName, false},

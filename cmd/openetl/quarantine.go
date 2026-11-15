@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -22,8 +23,12 @@ import (
 )
 
 // runQuarantine lists the files a pipeline's committed epochs quarantined
-// rows to, newest first, then sums their rows by cause.
+// rows to, newest first, then sums their rows by cause; or, with show,
+// prints a file's first lines.
 func runQuarantine(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) > 0 && args[0] == "show" {
+		return showQuarantine(ctx, args[1:], out, os.Stderr)
+	}
 	if len(args) > 0 && args[0] == "list" {
 		args = args[1:]
 	}
@@ -154,4 +159,38 @@ func quarantineBase(f *apiv1.QuarantineFile) string {
 		return ""
 	}
 	return base + "/"
+}
+
+// showQuarantine prints a quarantine file's first lines to out, as the file
+// has them, so they pipe to jq, and says on notes when the file has more.
+func showQuarantine(ctx context.Context, args []string, out, notes io.Writer) error {
+	var workspace *string
+	var limit *int
+	conn, rest, err := subcommand("quarantine show", args, 2, "PIPELINE PATH", func(fs *flag.FlagSet) {
+		workspace = fs.String("workspace", "default", "the pipeline's workspace")
+		limit = fs.Int("limit", 20, "at most this many lines, from the first; at most 100")
+	})
+	if err != nil {
+		return err
+	}
+	if *limit <= 0 || *limit > 100 {
+		return fmt.Errorf("--limit %d isn't from 1 to 100", *limit)
+	}
+	c, err := client(conn, apiv1connect.NewPipelineServiceClient)
+	if err != nil {
+		return err
+	}
+	res, err := c.ReadQuarantineFile(ctx, connect.NewRequest(&apiv1.ReadQuarantineFileRequest{
+		Parent: "workspaces/" + *workspace + "/pipelines/" + rest[0], Path: rest[1], Limit: ints.Int32(*limit),
+	}))
+	if err != nil {
+		return err
+	}
+	for _, l := range res.Msg.GetLines() {
+		fmt.Fprintln(out, l)
+	}
+	if res.Msg.GetMore() {
+		fmt.Fprintf(notes, "the file has more lines than these %d; read it from the data plane's storage for the rest\n", len(res.Msg.GetLines()))
+	}
+	return nil
 }

@@ -154,6 +154,8 @@ The control plane does not know what a lifecycle rule deletes. It lists the file
 
 `openetl quarantine PIPELINE` lists a pipeline's files, newest first, and adds up their rows by stream and cause. Use `--stream STREAM` and `--since 7d` to list fewer files, and `--json` to print each file as a line of JSON. The API method is `ListQuarantine`, at `GET /v1/workspaces/WORKSPACE/pipelines/PIPELINE/quarantine`. It needs the viewer role.
 
+`openetl quarantine show PIPELINE PATH` prints the first lines of a file, at most 100. A runner of the pipeline's data plane reads the file, and the control plane does not keep the lines. The API method is `ReadQuarantineFile`, at `GET /v1/workspaces/WORKSPACE/pipelines/PIPELINE/quarantine:read`. It needs the editor role, and the audit log records each read. In the console, **Show records** does the same.
+
 After each committed epoch that quarantined rows, OpenETL sends a [`stream.quarantined`](./events.md#when-type-is-streamquarantined) event. The event has the epoch's files and their rows by cause.
 
 To read a file from S3, print the records of one code:

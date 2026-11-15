@@ -603,6 +603,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			contract.TeardownFlink:       {Handler: dpworker.Handle(connectorOps.TeardownFlink)},
 			contract.ProbeRetention:      {Handler: dpworker.Handle(connectorOps.ProbeRetention)},
 			contract.ReadLogs:            {Handler: dpworker.Handle((&dpactivities.Logs{Store: cps}).ReadLogs)},
+			contract.ReadQuarantine:      {Handler: dpworker.Handle((&dpactivities.Quarantine{Store: cps}).ReadQuarantine)},
 			contract.PlanSQL:             {Handler: dpworker.Handle((&dpactivities.Plans{Engine: sync.Engine}).PlanSQL)},
 		},
 	}
