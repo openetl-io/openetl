@@ -175,6 +175,7 @@ A window closes when the stream's watermark reaches the window's end: the engine
 - A split that reads no rows holds windows open. In a continuous pipeline, a split that reads no rows for 1 minute is idle, and its watermark moves on with the clock.
 - A row is late if it comes after the watermark has passed its time. A late row of a window that has not closed yet goes into the window.
 - `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
+- A delete has the output's key, and the values of the row it deletes. The engine does not evaluate a column that can change between runs, such as one that reads `now()` or `random()`, again for a delete. That column is null in the delete, or its type's zero if the column cannot be null.
 - A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start.
 - The engine quarantines a row that comes later than its window's end and the lateness, with the code `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
 - `watermark.lateness` needs `destination.write: merge` for the output.
@@ -200,7 +201,7 @@ A group window over a stream read another way is a problem in the plan:
 A group window keeps each window's aggregates as state, by key group, until its row is written and its lateness has passed. `openetl plan` shows the statement's operator, which keeps the state:
 
 ```text
-    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-b20660707787f280
+    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-1566d23a39b0adbe
 ```
 
 - The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.

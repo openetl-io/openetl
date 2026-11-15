@@ -26,7 +26,7 @@ statement 1:1 revenue_by_minute group_window
   project window_start := __openetl_window_start, region, revenue := sum(orders.amount), orders := count(*)
   need region
   passes region -> region
-  operator window-b20660707787f280
+  operator window-1566d23a39b0adbe
 
 plan
 INSERT INTO x SELECT window_start, window_end, avg(qty) AS a, min(amount) AS lo, max(region) AS hi, approx_distinct(id) AS n, median(qty) AS m, percentile_cont(0.9) WITHIN GROUP (ORDER BY qty) AS p90
@@ -54,7 +54,7 @@ statement 1:1 x group_window
   project window_start := __openetl_window_start, window_end := __openetl_window_end, a := avg(orders.qty), lo := min(orders.amount), hi := max(orders.region), n := CAST(approx_distinct(orders.id) AS Int64), m := median(orders.qty), p90 := percentile_cont(Float64(0.9)) WITHIN GROUP [orders.qty ASC NULLS LAST]
   need 
   passes 
-  operator window-7ce2bd02f60e0daa
+  operator window-8502403263decec7
 
 plan
 INSERT INTO s SELECT window_start, window_end, region AS r, count(qty) FILTER (WHERE qty > 1) AS n
@@ -72,7 +72,7 @@ statement 1:1 s group_window
   project window_start := __openetl_window_start, window_end := __openetl_window_end, r := orders.region, n := count(orders.qty) FILTER (WHERE orders.qty > Int64(1))
   need region
   passes region -> r
-  operator window-3d2cbe860ca8f178
+  operator window-78fd17611c2e5856
 
 # A view's rows, renamed, are grouped: the key follows the renames, and the
 # need is the stream's column.
@@ -101,7 +101,7 @@ statement 2:1 hourly group_window
   project hour := __openetl_window_start, area, revenue := sum(paid.amount)
   need region
   passes region -> area
-  operator window-c777da57db8de31b
+  operator window-adea73d001d22442
 
 stream ticks time(at)
   sym utf8
@@ -126,7 +126,7 @@ statement 1:1 bars group_window
   project window_start := __openetl_window_start, sym, lo := min(ticks.price), hi := max(ticks.price), total := sum(ticks.price)
   need sym
   passes sym -> sym
-  operator window-58e2101cf08e2533
+  operator window-c8eb2cff204b6e88
 
 plan
 INSERT INTO x SELECT tumble(created_at, INTERVAL '1 minute') AS w, count(*) AS n FROM orders

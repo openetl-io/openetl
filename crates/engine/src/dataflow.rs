@@ -2792,6 +2792,8 @@ pub(crate) mod tests {
 
     use crate::plan::tests::request;
 
+    mod event_time;
+
     struct Harness {
         to_engine: DuplexStream,
         from_engine: BufReader<DuplexStream>,
