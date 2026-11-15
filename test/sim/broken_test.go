@@ -39,6 +39,9 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"replay-own-watermarks", "exactly-once", "a redo from the source closes the windows its own read's watermarks close, not the record's"},
 	{"prune-to-head", "restore", "recovery's retention keeps only the record HEAD names, before the epoch is settled"},
 	{"replay-not-exact", "exactly-once", "the source's replay of a range returns a row twice"},
+	{"routed-own-splits", "exactly-once", "a committable names only its own worker's splits for an exchanged row-wise output, so a redo misses the rows the exchange brought from other workers"},
+	{"routed-redo-whole", "exactly-once", "a redo of an exchanged row-wise output keeps the rows of every key group, not only the lane's"},
+	{"redo-every-output", "exactly-once", "a redo writes every output's rows of every split the committable names, so a split that reached the lane only through the exchange gives it rows of an output its own lane didn't write there"},
 	// State's runs (workers_state_test.go, variantShapes).
 	{"state-before-record", "restore", "a lane's state commits when its run is written, in a manifest of its key groups that a restore reads instead of the record"},
 	{"restore-by-listing", "restore", "a restore takes every run in the store for its key groups, not the sections the record names"},

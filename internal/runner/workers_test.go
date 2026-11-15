@@ -561,8 +561,8 @@ func TestAStoppedWorkerFailsTheAttemptAsTransient(t *testing.T) {
 	var once sync.Once
 	j.OnCommit = func(uint64) { once.Do(func() { p.kill("a1", 1) }) }
 	_, err := runner.RunAttempt(ctx, j)
-	if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "worker 1") {
-		t.Fatalf("the attempt failed with %v (%s), want worker 1 transient", err, errs.CodeOf(err))
+	if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "worker 2") {
+		t.Fatalf("the attempt failed with %v (%s), want worker 2 transient", err, errs.CodeOf(err))
 	}
 	ended := p.wait("a1")
 	if !slices.ContainsFunc(ended, func(err error) bool {
@@ -1117,8 +1117,9 @@ func TestAFlinkJobIsRefusedWorkers(t *testing.T) {
 	}
 }
 
-// What only one pod runs is refused workers; a SQL transform and holds
-// aren't.
+// What only one pod runs is refused workers; a SQL transform of row-wise
+// statements, into a destination whose lanes commit on their own too, and
+// holds aren't.
 func TestWhatRunsOnOnePod(t *testing.T) {
 	p := newPool(t, ranges(1, 1, 1))
 	for name, c := range map[string]struct {
@@ -1132,9 +1133,13 @@ func TestWhatRunsOnOnePod(t *testing.T) {
 			j.SQL = &runner.SQLTransform{}
 			j.Outputs = j.Streams
 		}, false},
-		// A redo of one lane's part wouldn't run the statement's exchange.
 		"a SQL transform into lane commits": {2, func(j *runner.Job) {
 			j.SQL = &runner.SQLTransform{}
+			j.Outputs = j.Streams
+			j.Destination = txnDest{s: newTxnStore(t)}
+		}, false},
+		"a group window into lane commits": {2, func(j *runner.Job) {
+			j.SQL = &runner.SQLTransform{Operators: []string{"window-1"}}
 			j.Outputs = j.Streams
 			j.Destination = txnDest{s: newTxnStore(t)}
 		}, true},

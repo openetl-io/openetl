@@ -268,9 +268,12 @@ func (m *wModel) check() {
 			}
 		}
 	}
-	filtered, effects := map[string]int{}, map[string]int{}
+	filtered, routed, effects := map[string]int{}, map[string]int{}, map[string]int{}
 	for _, r := range m.wh.tables["filtered"] {
 		filtered[r.ID]++
+	}
+	for _, r := range m.wh.tables["routed"] {
+		routed[r.ID]++
 	}
 	for _, s := range []string{"agg", "late"} {
 		for _, r := range m.wh.tables[s] {
@@ -281,14 +284,15 @@ func (m *wModel) check() {
 	}
 	once("filtered", kept, filtered)
 	if !m.cfg.exchange {
-		// Without the keyed operator, only filtered is written.
+		// Without the exchange, only filtered is written.
 		want = nil
-		for _, s := range []string{"agg", "late"} {
+		for _, s := range []string{"agg", "late", "routed"} {
 			if n := len(m.wh.tables[s]); n > 0 {
-				m.problem("aggregate", "%s has %d rows, with no keyed operator", s, n)
+				m.problem("aggregate", "%s has %d rows, with no exchange", s, n)
 			}
 		}
 	} else {
+		once("routed", kept, routed)
 		once("agg and late", firsts, effects)
 	}
 

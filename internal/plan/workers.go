@@ -13,9 +13,9 @@ import (
 // WorkerJob is what decides whether a job runs on workers.
 type WorkerJob struct {
 	Workers int
-	// A Spark or Flink transform; a SQL transform.
-	OwnCode, SQL bool
-	Caps         destination.Capabilities
+	// A Spark or Flink transform.
+	OwnCode bool
+	Caps    destination.Capabilities
 	// The engine writes the destination's data.
 	EngineWritten bool
 	// A SQL statement keeps state, as a group window does.
@@ -24,9 +24,9 @@ type WorkerJob struct {
 
 // OnePod says why a job that asks for workers runs on one pod; empty if it
 // can run on them. What needs one writer, or what only one pod runs, stays
-// on one pod. A SQL transform runs on workers, but into a destination whose
-// lanes commit on their own, and so do holds: the attempt's coordinator owns
-// each stream's schema and what it holds.
+// on one pod. A SQL transform of row-wise statements runs on workers, and
+// so do holds: the attempt's coordinator owns each stream's schema and what
+// it holds.
 func OnePod(j WorkerJob) string {
 	caps := j.Caps
 	switch {
@@ -42,11 +42,6 @@ func OnePod(j WorkerJob) string {
 		// Its exchange runs inside one engine, and its state restores where
 		// the record's lanes were, until engines exchange rows between pods.
 		return "a SQL statement with state, as a group window, runs on one pod"
-	case j.SQL && caps.LaneCommits:
-		// A lane's part of an epoch, written again from the source, holds the
-		// rows of the input's splits that reached it, which an exchange of a
-		// statement's output sends to any lane.
-		return "a SQL transform into a destination whose writer lanes commit on their own runs on one pod"
 	case caps.Delivery == destination.DeliveryStaged:
 		return "a destination that loads staged epochs runs on one pod"
 	case j.EngineWritten:
@@ -86,7 +81,7 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 	if asked <= 1 {
 		return 0, "", nil
 	}
-	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec), SQL: spec.GetTransform().GetSql() != nil,
+	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec),
 		Stateful: a != nil && slices.ContainsFunc(a.Statements, func(st sqlplan.Statement) bool { return st.Operator != "" })}
 	if why := OnePod(j); why != "" {
 		return 0, why, nil

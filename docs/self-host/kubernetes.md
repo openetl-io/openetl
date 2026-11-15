@@ -268,7 +268,7 @@ kubectl -n openetl get pods -l app.kubernetes.io/component=attempt
 kubectl -n openetl logs POD
 ```
 
-The launcher deletes the pods when the attempt ends, and their logs with them. To keep workers' logs, collect pod logs with your cluster's log collector. A worker's lines about its part of the attempt carry the `pipeline` and `sync` IDs.
+The launcher deletes the pods when the attempt ends, and their logs with them. To keep workers' logs, collect pod logs with your cluster's log collector. A worker's lines about its part of the attempt carry the `pipeline` and `sync` IDs, and `worker`, the worker's number. Workers are numbered from 1, as in their pods' names: `worker=2` is the pod whose name ends in `-w2`.
 
 #### The process launcher
 

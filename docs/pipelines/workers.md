@@ -80,7 +80,6 @@ The pipeline still applies, and its jobs run on one pod. These are the reasons, 
 | `the destination declares one writer lane` | Nothing: the destination takes one writer lane, so its jobs run on one pod. |
 | `the destination takes N writer lanes, fewer than M workers` | Set `resources.workers` to `N` or fewer. |
 | `a transactional destination runs on one pod unless its writer lanes commit on their own` | Nothing today: a transactional destination runs on workers only if its connector declares lane commits. Its documentation says whether it does. |
-| `a SQL transform into a destination whose writer lanes commit on their own runs on one pod` | Nothing today: a pipeline with a [SQL transform](./sql-transforms.md) runs on one pod when its destination declares lane commits. |
 | `a SQL statement with state, as a group window, runs on one pod` | Nothing today: a pipeline whose SQL has a [group window](../reference/sql.md#group-windows) runs on one pod. |
 | `a destination that loads staged epochs runs on one pod` | Nothing today: a destination that loads files that OpenETL stages runs on one pod. |
 | `a destination the engine writes runs on one pod` | Nothing today: the built-in `parquet` destination runs on one pod. |
@@ -155,6 +154,11 @@ Some transactional destinations commit each writer lane in a transaction of its 
 - It commits the copy that the lane kept, if the destination keeps one.
 - It reads that lane's part of the epoch again from the source, from the same positions, and commits it. With an exchange, the lane's part holds its keys' rows of every split that the epoch read, on any worker, so the next attempt reads all those splits again.
 
+With a [SQL transform](./sql-transforms.md), the next attempt runs the statements again on what it reads. It commits each output's rows that the lane wrote, and no others:
+
+- Of an output without an exchange, the rows of the splits that the lane's own worker read and wrote to that lane.
+- Of an output with an exchange, the rows of the lane's keys, from every split that the statement read in the epoch, on any worker.
+
 > [!IMPORTANT]
 > Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records from a saved position. If the part ended at a resume point, the source must also return the resume point the epoch recorded; the resume points before it may differ. A source that stops where OpenETL asks sends that resume point as it stops, and a source that doesn't must arrive at it by itself. The source's documentation says whether it stops where OpenETL asks. If the part ended its read in the epoch, OpenETL asks for no stop. It reads that part to its end, and the source must complete it at the same position as the first read, with no fewer records. You make sure that the records are the same through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read where OpenETL asks, or once it has caught up. The attempt fails with `POSITION_LOST` in these cases:
 >
@@ -166,8 +170,16 @@ Some transactional destinations commit each writer lane in a transaction of its 
 
 Do not change the primary key of a keyed stream while an epoch waits to be finished. Each lane's part of such a stream holds the rows of some of the key's values, so OpenETL cannot read it again under another key. The attempt then fails with `CONFIG_INVALID`, and names the key that the epoch used. Apply the pipeline with that key again, and change the key once the pipeline has committed again.
 
+With a SQL transform, do not change `transform.sql` while an epoch waits to be finished. The attempt fails with `CONFIG_INVALID` in these cases:
+
+- The statements are not the ones that wrote the epoch, even if only a comment or a space changed.
+- An output that the epoch wrote is no longer written, or is written from another stream.
+- An output that the epoch sent to the lanes by its key now has another key.
+
+An output's key comes from the primary key of the stream it is written from (see [Primary keys](../reference/sql.md#primary-keys)), so a changed key of that stream can change the output's key too. Apply the pipeline with the statements that wrote the epoch, and with the primary key that each stream they read had then. Change the statements and the keys once the pipeline has committed again.
+
 ## Logs and usage
 
-`openetl logs PIPELINE`, and the sync's **Log** in the console, have the coordinator's log. It says where the workers join. If a worker fails, the attempt's error names the worker and gives its error, when the worker could report it. The workers' own logs stay in their pods. [Logs of workers](../self-host/kubernetes.md#logs-of-workers) tells your operator how to read them.
+`openetl logs PIPELINE`, and the sync's **Log** in the console, have the coordinator's log. It says where the workers join. If a worker fails, the attempt's error names the worker, such as `worker 2`, and gives its error, when the worker could report it. Workers are numbered from 1. The workers' own logs stay in their pods. [Logs of workers](../self-host/kubernetes.md#logs-of-workers) tells your operator how to read them.
 
 A sync's page in the console shows **Size**, which is each worker's size, and **Used**, which is what the largest worker used. The sync's attempts in the API also say how many workers each attempt ran on (`workers`), and why an attempt ran on one pod (`onePod`).
