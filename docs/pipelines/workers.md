@@ -17,7 +17,8 @@ Workers give a job more CPU and memory than one pod can have. A job gains from t
 
 Some work does not spread:
 
-- A stream that one worker reads is no faster. [Streams that one worker reads](#streams-that-one-worker-reads) lists them.
+- A stream that one worker reads is read no faster. [Streams that one worker reads](#streams-that-one-worker-reads) lists them.
+- A keyed stream that the source does not split by key sends rows between the workers. [The exchange between workers](#the-exchange-between-workers) says what that costs.
 - The first worker commits each checkpoint for all the workers, so a job whose time goes to commits gains little. A destination with lane commits is different: each worker commits its own part.
 - Each attempt starts more pods. The coordinator also starts the source and destination connectors to set them up before the workers start.
 
@@ -96,13 +97,10 @@ When the coordinator finds that a job cannot run on workers, OpenETL places the 
 
 The workers read the source's splits between them. Each attempt reads all the splits of these streams on one worker:
 
-- a keyed stream that the source does not split by key;
 - a stream read with `cdc`;
 - a stream written with `overwrite`.
 
-A keyed stream of the first two kinds has an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). A destination with one writer lane needs no exchange, but its jobs run on one pod, so a job on workers always has an exchange for such a stream. An exchange moves rows between the lanes of one worker only.
-
-The source reads the changes of every stream read with `cdc` from one log, such as a replication slot, and only one reader can hold the log. So one worker reads all of a job's `cdc` streams together.
+The source reads the changes of every stream read with `cdc` from one log, such as a replication slot, and only one reader can hold the log. So one worker reads all of a job's `cdc` streams together. If such a stream has a primary key, the [exchange](#the-exchange-between-workers) still sends its rows to the writer lanes of every worker.
 
 The plan warns about each one, in this form:
 
@@ -110,9 +108,23 @@ The plan warns about each one, in this form:
 STREAM: each attempt reads it on one of its 4 workers: REASON
 ```
 
-Each such stream is no faster than on one pod. Different such streams can go to different workers, which read them at the same time, except that every `cdc` stream goes to one worker. A worker with no stream or split to read has no work. For example, a job with only two such streams leaves two of four workers with nothing to read. If both streams are read with `cdc`, the job leaves three of four workers with nothing to read.
+Each such stream is read no faster than on one pod. Different such streams can go to different workers, which read them at the same time, except that every `cdc` stream goes to one worker. A worker with no stream or split to read has no rows to read. For example, a job with only two such streams leaves two of four workers with nothing to read. They still write the rows that the exchange sends them.
 
-With a [SQL transform](./sql-transforms.md), these rules apply to each statement's output, and to each stream that passes through. One worker reads all the splits of a stream when an output written from it has an exchange in the `partitioning` section, or is written with `overwrite`. For example, a statement that passes the key through keeps the stream's split by key, and an output without a key needs no exchange. The plan's warning names the stream that the statement reads.
+With a [SQL transform](./sql-transforms.md), these rules apply to each statement's output, and to each stream that passes through. One worker reads all the splits of a stream that is read with `cdc`, or when an output written from it is written with `overwrite`. The plan's warning names the stream that the statement reads.
+
+## The exchange between workers
+
+A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. So each worker reads some of the stream's splits, and every worker writes the keys that it owns.
+
+Each worker's engine connects to every other worker's engine once, on TCP port 7720 in Kubernetes. The connection uses TLS 1.3 with a certificate that the coordinator makes for each attempt. The engines trust only that certificate, and each connection proves a secret of the attempt. An engine refuses a connection of another attempt, or of an earlier try of the same attempt. [The route between pods](../self-host/kubernetes.md#the-route-between-pods) says what the network must allow.
+
+The exchange costs a job on workers more than an exchange in one pod:
+
+- Each row that goes to another worker is encoded, encrypted, sent, decrypted and decoded again. That takes CPU on both workers, and network bandwidth between them. With `N` workers, about `(N-1)/N` of such a stream's rows go to another worker.
+- A writer lane that falls behind slows the workers that send it rows. Each worker's engine holds at most an eighth of the job's memory, and at most 8 MiB for each other worker, in rows that wait to be sent.
+- A writer lane passes a checkpoint only after every lane of every worker has passed it. So the slowest worker sets the pace of every checkpoint.
+
+If a connection between workers breaks, or a worker cannot reach another within a minute, the attempt fails with `TRANSIENT`, and OpenETL retries it from the last checkpoint.
 
 ## Schema changes and holds
 
@@ -137,7 +149,7 @@ A job on workers fails as a whole. OpenETL then retries it from the last checkpo
 Some transactional destinations commit each writer lane in a transaction of its own. Their connector declares **lane commits**. With such a destination, a pod can fail after a checkpoint and before every lane commits. The next attempt finishes the epoch before it reads anything new. For each lane that did not commit, it does one of these:
 
 - It commits the copy that the lane kept, if the destination keeps one.
-- It reads that lane's part of the epoch again from the source, from the same positions, and commits it.
+- It reads that lane's part of the epoch again from the source, from the same positions, and commits it. With an exchange, the lane's part holds its keys' rows of every split that the epoch read, on any worker, so the next attempt reads all those splits again.
 
 > [!IMPORTANT]
 > Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records from a saved position. If the part ended at a resume point, the source must also return the resume point the epoch recorded; the resume points before it may differ. A source that stops where OpenETL asks sends that resume point as it stops, and a source that doesn't must arrive at it by itself. The source's documentation says whether it stops where OpenETL asks. If the part ended its read in the epoch, OpenETL asks for no stop. It reads that part to its end, and the source must complete it at the same position as the first read, with no fewer records. You make sure that the records are the same through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read where OpenETL asks, or once it has caught up. The attempt fails with `POSITION_LOST` in these cases:
