@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -36,9 +37,12 @@ type SourceSuite struct {
 	// read from where the last one ended must return. Nil skips that part
 	// of the incremental check.
 	AddRecords func(ctx context.Context, stream string) (n int, err error)
-	// How many of a stream's resume points the resume check restarts from:
-	// 0 means 5.
+	// How many of a stream's resume points the resume check restarts from,
+	// and the until check stops at: 0 means 5.
 	ResumePoints int
+	// The source stops a read at its until, as source.Split's Until says.
+	// False skips the until check: a source may ignore until.
+	StopsAtUntil bool
 	// How long one read may take: 0 means 2 minutes.
 	ReadTimeout time.Duration
 }
@@ -93,6 +97,7 @@ func (r *sourceRun) checks() []Check {
 		Check{"discover", r.checkDiscover},
 		Check{"read/full", r.checkFull},
 		Check{"read/resume", r.checkResume},
+		Check{"read/until", r.checkUntil},
 		Check{"read/incremental", r.checkIncremental},
 		Check{"read/committed", r.checkCommitted},
 		Check{"read/continuous", r.checkContinuous},
@@ -418,10 +423,116 @@ func (r *sourceRun) checkResume(t T) {
 	}
 }
 
+// Read: until: a read given a resume point's state as its until, from the
+// resume point before it, reads the records between them and nothing past,
+// then sends a resume point at until and completes there, as a redo of an
+// epoch's part does. A read from the last resume point with no until, as a
+// redo of a part that ended at the completion, completes where the first
+// read did.
+func (r *sourceRun) checkUntil(t T) {
+	if !r.s.StopsAtUntil {
+		t.Skipf("the suite doesn't say the source stops at until")
+	}
+	res, streams := r.fullRead(t)
+	cat := r.discover(t)
+	n := r.s.ResumePoints
+	if n <= 0 {
+		n = 5
+	}
+	for _, cs := range streams {
+		name := cs.GetName()
+		events := res.of(name)
+		var points []int
+		for i, e := range events {
+			if e.resume {
+				points = append(points, i)
+			}
+		}
+		for _, j := range spread(points, n) {
+			k := slices.Index(points, j)
+			from := -1
+			st := &protocolv1.ConfiguredStream{Name: name, SyncMode: cs.GetSyncMode(), Cursor: cs.GetCursor(), Until: events[j].state}
+			if k > 0 {
+				from = points[k-1]
+				st.State = events[from].state
+			}
+			again := r.read(t, st).of(name)
+			want := countRows(rowsBetween(events, from, j))
+			got := countRows(allRows(again))
+			if missing := want.minus(got); len(missing) > 0 {
+				t.Errorf("%s: a read until resume point %d skipped %d of the %d records before it: %s", name, k+1, len(missing), len(rowsBetween(events, from, j)), sample(missing))
+			}
+			if past := novel(allRows(again), countRows(rowsBetween(events, -1, j))); len(past) > 0 {
+				t.Errorf("%s: a read until resume point %d read %d records past it: %s", name, k+1, len(past), sample(past))
+			} else if extra := got.minus(want); len(extra) > 0 && cat[name].GetReplay() == protocolv1.Replay_REPLAY_EXACT {
+				t.Errorf("%s: the replay is exact, but a read until resume point %d read %d records again: %s", name, k+1, len(extra), sample(extra))
+			}
+			endsAt(t, name, k+1, again, events[j].state)
+		}
+		end, ok := completion(events)
+		if !ok {
+			continue
+		}
+		st := &protocolv1.ConfiguredStream{Name: name, SyncMode: cs.GetSyncMode(), Cursor: cs.GetCursor()}
+		if len(points) > 0 {
+			st.State = events[points[len(points)-1]].state
+		}
+		again, ok := completion(r.read(t, st).of(name))
+		switch {
+		case !ok:
+			t.Errorf("%s: the read from its last resume point didn't complete", name)
+		case again.hasNext != end.hasNext || !bytes.Equal(again.next, end.next):
+			t.Errorf("%s: read from its last resume point, the stream completed at %q, not at %q as the first read did", name, again.next, end.next)
+		}
+	}
+}
+
+// endsAt: a read until the i-th resume point's state sends a resume point
+// with it after its last record, then completes with it, and sends nothing
+// more.
+func endsAt(t T, name string, i int, events []event, until []byte) {
+	t.Helper()
+	end := slices.IndexFunc(events, func(e event) bool { return e.complete })
+	if end < 0 {
+		t.Errorf("%s: a read until resume point %d didn't complete", name, i)
+		return
+	}
+	last := -1
+	for k, e := range events[:end] {
+		if e.resume {
+			last = k
+		}
+	}
+	if last < 0 || !bytes.Equal(events[last].state, until) {
+		t.Errorf("%s: a read until resume point %d didn't send a resume point at it before completing", name, i)
+	} else if len(rowsAfter(events, last)) > 0 {
+		t.Errorf("%s: a read until resume point %d sent records after its resume point there", name, i)
+	}
+	if !events[end].hasNext || !bytes.Equal(events[end].next, until) {
+		t.Errorf("%s: a read until resume point %d completed at %q, not at it", name, i, events[end].next)
+	}
+	if k := slices.IndexFunc(events[end+1:], func(e event) bool { return !e.progress }); k >= 0 {
+		t.Errorf("%s: a read until resume point %d sent a %s after it completed", name, i, kindOf(events[end+1+k]))
+	}
+}
+
+// rowsBetween is the stream's records after its i-th event, up to and
+// including its j-th.
+func rowsBetween(events []event, i, j int) []row {
+	var out []row
+	for _, e := range events[i+1 : j+1] {
+		out = append(out, e.rows...)
+	}
+	return out
+}
+
 // spread picks up to n of points, the first and last among them.
 func spread(points []int, n int) []int {
 	if len(points) <= n {
 		return points
+	}
+	if n <= 1 {
+		return points[:n]
 	}
 	out := make([]int, 0, n)
 	for i := range n {
