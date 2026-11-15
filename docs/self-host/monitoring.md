@@ -73,7 +73,11 @@ Choose thresholds from each pipeline's schedule, commit interval and delivery de
 
 Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/index.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
 
-If the quarantine rate rises, run `openetl quarantine --since 1h PIPELINE`. It lists the files of quarantined rows, and adds up their rows by stream, column and code. It lists the newest 100 files, and its sums count only those files. If it says that there are more, add `--limit` with a larger number. A webhook for `stream.quarantined` gets each commit's files and counts, one commit at a time. The metric and the event never carry the values of a row. The files stay in the runners' `--checkpoints` store. If the pipeline sets `quarantine.retention`, OpenETL deletes them after that period. If it does not, OpenETL keeps them until you delete them. [Quarantine files](../reference/quarantine-files.md) gives their format, and an object store rule that deletes them.
+If the quarantine rate rises, run `openetl quarantine --since 1h PIPELINE`. It lists the files of quarantined rows, and adds up their rows by stream, column and code. It lists the newest 100 files, and its sums count only those files. If it says that there are more, add `--limit` with a larger number.
+
+A webhook for `stream.quarantined` gets each commit's files and counts, one commit at a time. The metric and the event never carry the values of a row.
+
+The files stay in the runners' `--checkpoints` store. If the pipeline does not set `quarantine.retention`, OpenETL keeps them until you delete them. If it does, a run deletes the files of committed epochs that are older than that period. The run does this when it starts, and every hour while it runs. So a pipeline that does not run keeps its files until its next run. [Quarantine files](../reference/quarantine-files.md) gives their format, and an object store rule that deletes them.
 
 ## Follow a failure
 
