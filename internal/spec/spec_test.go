@@ -44,7 +44,7 @@ spec:
     commit: { interval: 5s, maxBytes: 256MB, scope: stream }
     resumePointTimeout: none
   types:
-    infinity: quarantine
+    infinity: unfit
   postSync:
     - dbt: { project: analytics, select: "tag:shop", schema: marts }
     - dbt: { project: checks, command: test }
@@ -96,7 +96,7 @@ func TestParsePipeline(t *testing.T) {
 		t.Errorf("commit = %v", p.GetDelivery().GetCommit())
 	case p.GetDelivery().GetResumePointTimeout() == nil || p.GetDelivery().GetResumePointTimeout().AsDuration() != 0:
 		t.Error("resumePointTimeout: none should be an explicit zero")
-	case p.GetTypes().GetInfinity() != apiv1.Infinity_INFINITY_QUARANTINE:
+	case p.GetTypes().GetInfinity() != apiv1.Infinity_INFINITY_UNFIT:
 		t.Error("types.infinity")
 	case p.GetHeal().GetMode() != apiv1.HealMode_HEAL_MODE_SUGGEST:
 		t.Error("heal.mode")
@@ -357,7 +357,7 @@ func TestSize(t *testing.T) {
 func TestParseHolds(t *testing.T) {
 	head := "apiVersion: openetl.io/v1alpha1\nkind: Pipeline\nmetadata: {name: p}\nspec:\n  schedule: {every: 1h}\n  destination: {ref: d}\n  source:\n    ref: s\n    streams:\n"
 	doc, err := Parse([]byte(head + `      - name: orders
-        quarantine: cell
+        unfitValues: hold
         heldValue: 0
         groups: [[amount, currency]]
         columns:
@@ -370,8 +370,8 @@ func TestParseHolds(t *testing.T) {
 	}
 	st := doc.Pipeline.GetSource().GetStreams()[0]
 	switch {
-	case st.GetQuarantine() != apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL:
-		t.Errorf("quarantine = %v", st.GetQuarantine())
+	case st.GetUnfitValues() != apiv1.UnfitValues_UNFIT_VALUES_HOLD:
+		t.Errorf("unfitValues = %v", st.GetUnfitValues())
 	case st.GetHeld().GetMode() != apiv1.HeldMode_HELD_MODE_VALUE || st.GetHeld().GetValue() != "0":
 		t.Errorf("held = %v: a value alone means value", st.GetHeld())
 	case len(st.GetGroups()) != 1 || len(st.GetGroups()[0].GetColumns()) != 2:
@@ -387,14 +387,14 @@ func TestParseHolds(t *testing.T) {
 		"null with a value":     "      - {name: a, held: null, heldValue: 1}\n",
 		"an unknown mode":       "      - {name: a, held: sometimes}\n",
 		"a one-column group":    "      - {name: a, groups: [[x]]}\n",
-		"an unknown scope":      "      - {name: a, quarantine: table}\n",
+		"an unknown choice":     "      - {name: a, unfitValues: cell}\n",
 	} {
 		if _, err := Parse([]byte(head + streams)); err == nil {
 			t.Errorf("%s: no error", name)
 		}
 	}
 	flink := strings.Replace(head, "  schedule: {every: 1h}\n", "  mode: continuous\n  transform: {flink: {cluster: c, code: {jar: 's3://j/a.jar', sha256: "+strings.Repeat("cd", 32)+"}}}\n", 1)
-	if _, err := Parse([]byte(flink + "      - {name: a, quarantine: cell}\n")); err == nil || !strings.Contains(err.Error(), "transform") {
+	if _, err := Parse([]byte(flink + "      - {name: a, unfitValues: hold}\n")); err == nil || !strings.Contains(err.Error(), "transform") {
 		t.Errorf("a transform's input holds: %v", err)
 	}
 }

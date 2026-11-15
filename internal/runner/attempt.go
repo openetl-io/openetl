@@ -161,10 +161,10 @@ type Job struct {
 	// says.
 	StateURL string
 	// Infinite dates and timestamps are quarantined instead of clamped.
-	QuarantineInfinity bool
-	Dataflow           Dataflow
-	Settings           delivery.Settings
-	Logger             *slog.Logger
+	UnfitInfinity bool
+	Dataflow      Dataflow
+	Settings      delivery.Settings
+	Logger        *slog.Logger
 	// Called on the coordinator's goroutine after each epoch commits. It
 	// must not block.
 	OnCommit func(epoch uint64)
@@ -1480,11 +1480,11 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 			KeepSource: j.KeepSourceNames,
 			MaxLength:  j.Destination.Capabilities().MaxIdentifierLength,
 		},
-		Policy:             j.SchemaPolicy,
-		QuarantineURL:      j.QuarantineURL,
-		QuarantineInfinity: j.QuarantineInfinity,
-		ReadStarts:         readStarts,
-		Schemas:            schemas,
+		Policy:        j.SchemaPolicy,
+		QuarantineURL: j.QuarantineURL,
+		UnfitInfinity: j.UnfitInfinity,
+		ReadStarts:    readStarts,
+		Schemas:       schemas,
 	}
 	if j.SQL != nil {
 		plan.SQL, plan.Outputs, plan.OutputSchemas = j.SQL, j.Outputs, outputSchemas

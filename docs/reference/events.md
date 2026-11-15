@@ -306,7 +306,7 @@ How many of a file's rows were quarantined for one cause.
 |---|---|---|---|
 | `code` | string | Yes | What was wrong, as the file's lines name it: `json`, `object`, `type`, `range`, `precision`, `nan`, `statement`, `unsent`, `late`, `event_time` or `aggregate`. |
 | `column` | string | No | The column that caused it. Left out where no one column did. |
-| `notHeld` | string | No | Where the stream holds values that don't fit (`unfitValues: hold`), why these rows' values couldn't be held: `key`, `cursor`, `destination`, `not_null`, `held_value`, `record` or `transform`. Left out otherwise. |
+| `notHeld` | string | No | Where the stream holds values that do not fit (`unfitValues: hold`), why these rows' values could not be held: `key`, `cursor`, `destination`, `not_null`, `held_value`, `record` or `transform`. Left out otherwise. |
 | `rows` | integer | Yes | How many rows. |
 
 ### `schemaChange`

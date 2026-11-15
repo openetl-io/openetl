@@ -137,7 +137,7 @@ Each worker reads different rows, so one worker can see a schema change before t
 - A worker whose change came second writes its rows again by the schema that the coordinator took.
 - With a SQL transform, the coordinator decides the schema of each stream that a statement reads, and of each statement's output.
 
-[Holds](../get-started/concepts.md#schema-changes-and-holds) work the same way. When a worker starts to hold a column, the coordinator sends the hold to every worker, and every worker then holds that column. Each checkpoint records the hold once. If the destination refuses a column, the coordinator starts the attempt again at once, and the same worker pods join it and hold the column. When you release a hold, only the first worker writes the held values to the destination.
+[Holds](../get-started/concepts.md#holds-and-quarantine) work the same way. When a worker starts to hold a column, the coordinator sends the hold to every worker, and every worker then holds that column. Each checkpoint records the hold once. If the destination refuses a column, the coordinator starts the attempt again at once, and the same worker pods join it and hold the column. When you release a hold, only the first worker writes the held values to the destination.
 
 ## When a pod fails
 

@@ -130,7 +130,7 @@ Release and discard do not change destination data during the CLI request. See [
 
 | Syntax | Result |
 |---|---|
-| `openetl quarantine PIPELINE` | List the files of rows the pipeline's committed epochs quarantined, newest first: when each committed, its stream, generation and epoch, its rows and its path. Then sum their rows by stream and cause. `quarantine list` is an alias. |
+| `openetl quarantine PIPELINE` | List the files of rows that the pipeline's committed epochs quarantined, newest first. For each file, show when it committed, its stream, generation and epoch, its rows and its path. Then add up the rows by stream and cause. `quarantine list` is an alias. |
 
 | Flag | Type | Required | Default | Meaning |
 |---|---|---|---|---|
@@ -139,7 +139,7 @@ Release and discard do not change destination data during the CLI request. See [
 | `--limit` | integer | No | `100` | List at most this many files, the newest. |
 | `--json` | boolean | No | `false` | Print each file as a line of JSON, with its causes, and no sums. |
 
-A cause is a code, the column where one column caused it, and why the value was not held where the stream holds values. [Quarantine files](./quarantine-files.md) lists the codes, and the format of the files' lines. The command needs the viewer role. It reads the control plane's list of files, not the files.
+A cause is a code, the column if one column caused it, and why OpenETL did not hold the value if the stream holds values. [Quarantine files](./quarantine-files.md) lists the codes and gives the format of the files' lines. The command needs the viewer role. It reads the control plane's list of files, not the files.
 
 ## Check connections and discover streams
 

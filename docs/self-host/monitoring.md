@@ -33,7 +33,8 @@ These are OpenTelemetry instrument names; Prometheus replaces dots with undersco
 |---|---|---|
 | `openetl.pipeline.freshness` | seconds | Time since the pipeline's latest commit. The API reads its checkpoint mirror every 15 seconds. Pipelines with no commit in the last 30 days are absent. |
 | `openetl.job.rows.committed` | rows, counter | Rows in committed epochs, including quarantined rows. It is not a count of usable destination rows. |
-| `openetl.job.rows.quarantined` | rows, counter | Rows held back in committed epochs. Compare its rate with the committed-row rate. |
+| `openetl.job.rows.quarantined` | rows, counter | Rows quarantined in committed epochs: not written, and kept aside with the reason. Compare its rate with the committed-row rate. |
+| `openetl.job.cells.held` | cells, counter | Cells held back in committed epochs, by stream and column, from rows that were written. |
 | `openetl.job.lag` | seconds | Time lag last reported by the source. |
 | `openetl.job.lag.bytes`, `openetl.job.lag.records` | bytes or records | Unacknowledged backlog last reported by the source. |
 | `openetl.job.retention_left` | seconds | Time left before the source discards unread data, when reported. |
@@ -72,7 +73,7 @@ Choose thresholds from each pipeline's schedule, commit interval and delivery de
 
 Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/index.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
 
-When the quarantine rate rises, run `openetl quarantine PIPELINE --since 1h` to see which streams, columns and codes the rows were quarantined for, and the files they are in. A webhook for `stream.quarantined` gets each committed epoch's files with the same counts. The metric and the event never carry a row's values. The files stay in the runners' `--checkpoints` store until the pipeline's `quarantine.retention` deletes them; [Quarantine files](../reference/quarantine-files.md) has their format and a lifecycle rule that deletes them instead.
+If the quarantine rate rises, run `openetl quarantine PIPELINE --since 1h`. It lists the files of quarantined rows, and adds up their rows by stream, column and code. A webhook for `stream.quarantined` gets the same files and counts after each commit. The metric and the event never carry the values of a row. The files stay in the runners' `--checkpoints` store until the pipeline's `quarantine.retention` deletes them. [Quarantine files](../reference/quarantine-files.md) gives their format, and an object store rule that deletes them.
 
 ## Follow a failure
 

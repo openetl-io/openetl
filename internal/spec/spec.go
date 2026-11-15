@@ -396,7 +396,7 @@ type streamYAML struct {
 	Timestamps  string `yaml:"timestamps"`
 	Require     string `yaml:"require"`
 	Collapse    *bool  `yaml:"collapse"`
-	Quarantine  string `yaml:"quarantine"`
+	UnfitValues string `yaml:"unfitValues"`
 	heldYAML    `yaml:",inline"`
 	Groups      [][]string     `yaml:"groups"`
 	TypeChanges string         `yaml:"typeChanges"`
@@ -649,7 +649,7 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}
 		at := fmt.Sprintf("source.streams[%d]", i)
-		if st.Quarantine, err = enum(apiv1.QuarantineScope_value, "QUARANTINE_SCOPE_", at+".quarantine", s.Quarantine, apiv1.QuarantineScope_QUARANTINE_SCOPE_UNSPECIFIED); err != nil {
+		if st.UnfitValues, err = enum(apiv1.UnfitValues_value, "UNFIT_VALUES_", at+".unfitValues", s.UnfitValues, apiv1.UnfitValues_UNFIT_VALUES_UNSPECIFIED); err != nil {
 			return nil, err
 		}
 		if st.Held, err = parseHeld(at, s.heldYAML); err != nil {
@@ -670,7 +670,7 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			}
 			st.Groups = append(st.Groups, &apiv1.ColumnGroup{Columns: g})
 		}
-		holds := s.Quarantine != "" || st.Held != nil || len(st.Groups) > 0
+		holds := st.UnfitValues == apiv1.UnfitValues_UNFIT_VALUES_HOLD || st.Held != nil || len(st.Groups) > 0
 		for name, c := range s.Columns {
 			field := fmt.Sprintf("source.streams[%d].columns.%s", i, name)
 			col := &apiv1.PipelineColumn{}
@@ -690,7 +690,7 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			st.Columns[name] = col
 		}
 		if holds && (spark || flink) {
-			return nil, fmt.Errorf("%s: a transform's inputs can't be held: no quarantine, held, heldValue or groups, here or in its columns", at)
+			return nil, fmt.Errorf("%s: a transform's inputs can't be held: no unfitValues: hold, held, heldValue or groups, here or in its columns", at)
 		}
 		p.Source.Streams = append(p.Source.Streams, st)
 	}

@@ -238,7 +238,7 @@ func Holds(caps destination.Capabilities, mode destination.WriteMode, keyed bool
 
 // AsksHolds reports whether a stream's spec sets how it holds.
 func AsksHolds(ps *apiv1.PipelineStream) bool {
-	if ps.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL || ps.GetHeld() != nil || len(ps.GetGroups()) > 0 {
+	if ps.GetUnfitValues() == apiv1.UnfitValues_UNFIT_VALUES_HOLD || ps.GetHeld() != nil || len(ps.GetGroups()) > 0 {
 		return true
 	}
 	for _, c := range ps.GetColumns() {

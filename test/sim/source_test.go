@@ -27,7 +27,7 @@ type record struct {
 	Seq   int64  `json:"s"`
 	Value string `json:"v"`
 	// Its value doesn't fit the column's type: 1 until a type override, 2
-	// even after one. Its cell is held, with quarantine: cell.
+	// even after one. Its cell is held, with unfitValues: hold.
 	Bad int `json:"b,omitempty"`
 	// Its value has the type the column changed to.
 	Wide bool `json:"w,omitempty"`

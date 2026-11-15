@@ -176,7 +176,7 @@ A window closes when the stream's watermark reaches the window's end: the engine
 - A row is late if it comes after the watermark has passed its time. A late row of a window that has not closed yet goes into the window.
 - `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
 - A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start.
-- A row that comes later than its window's end and the lateness is quarantined with the code `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
+- The engine quarantines a row that comes later than its window's end and the lateness, with the code `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
 - `watermark.lateness` needs `destination.write: merge` for the output.
 - After a restore, the watermark starts where the checkpoint's watermarks are. A window that closed before the checkpoint stays closed, and a row of it is late.
 
@@ -659,6 +659,6 @@ The plan also has a problem where a group window's stream is read in a way that 
 
 ### When rows run
 
-A statement that plans can still fail on a row, such as a cast of a value that does not convert, or an integer divided by zero. The engine quarantines such a row, and writes the rest of the batch. The [Pipeline reference](./specs/pipeline.md#statements-that-run) says where quarantined rows go, and what a change to a stream's schema does to the statements that read it. [Quarantine files](./quarantine-files.md) has the format of their lines, and the code each failure gives.
+A statement that plans can still fail on a row, such as a cast of a value that does not convert, or an integer divided by zero. The engine quarantines such a row, and writes the rest of the batch. The [Pipeline reference](./specs/pipeline.md#statements-that-run) says where quarantined rows go, and what a change to a stream's schema does to the statements that read it. [Quarantine files](./quarantine-files.md) gives the format of their lines, and the code of each failure.
 
 The settings that streams can and cannot have beside `transform.sql` are in the [Pipeline reference](./specs/pipeline.md#transforms).

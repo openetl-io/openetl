@@ -192,7 +192,7 @@ OpenETL records these events, and [webhooks](../../examples/webhook.yaml) delive
 
 ## Quarantine files
 
-[Quarantine files](./quarantine-files.md) has where a pipeline's quarantined rows are kept, the fields of each line, the codes that say why, and how long the files are kept.
+[Quarantine files](./quarantine-files.md) gives where OpenETL keeps a pipeline's quarantined rows, the fields of each line and the codes that say why. It also gives how long OpenETL keeps the files.
 
 ## The connector protocol
 

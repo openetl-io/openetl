@@ -361,7 +361,7 @@ To accept what the outputs get, do one of these:
 
 ## Rows a statement cannot evaluate
 
-A row can fail when a statement runs, such as a cast of a value that does not convert. The engine quarantines that row, as one of the output's records, and writes the rest of the batch. Quarantined output rows go under `_quarantine/_outputs/`, next to the pipeline's checkpoints, with the code `statement`. `openetl quarantine PIPELINE` lists the files, and [Quarantine files](../reference/quarantine-files.md) has their format.
+A row can fail when a statement runs, such as a cast of a value that does not convert. The engine quarantines that row, as one of the output's records, and writes the rest of the batch. The engine keeps quarantined output rows under `_quarantine/_outputs/`, next to the pipeline's checkpoints, with the code `statement`. `openetl quarantine PIPELINE` lists the files. [Quarantine files](../reference/quarantine-files.md) gives their format.
 
 To keep such rows, use `TRY_CAST`, which gives null instead of failing:
 

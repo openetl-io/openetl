@@ -146,7 +146,7 @@ type Plan struct {
 	// Where the dataflow keeps records it can't take; empty: they fail it.
 	QuarantineURL string
 	// Infinite dates and timestamps are quarantined instead of clamped.
-	QuarantineInfinity bool
+	UnfitInfinity bool
 	// Each stream's read start, in microseconds since the Unix epoch.
 	ReadStarts map[string]int64
 	// What each stream's schema starts as: the restored checkpoint's, as

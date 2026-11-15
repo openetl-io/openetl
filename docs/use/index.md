@@ -107,8 +107,8 @@ A diagram then shows the source, each stream, the destination, and any step that
 | **Delivery** | Its [delivery guarantee](../get-started/concepts.md#delivery-guarantees): **Exactly once**, **Effectively once** or **At least once**. Hover over it for the reason. **Checked when it syncs** means the control plane can't work it out ahead of time, and checks it before each sync instead. |
 | **Schema** | Its schema's version. Click it to see the columns. |
 | **Rows** | Rows the latest sync copied. |
-| **Quarantined** | Rows held back because a value didn't fit its column's type. |
-| **Held** | Columns [held back](../get-started/concepts.md#schema-changes-and-holds). |
+| **Quarantined** | Rows that the latest sync did not write, because a value did not fit its column's type. OpenETL keeps each row aside with the reason ([quarantine](../get-started/concepts.md#holds-and-quarantine)). |
+| **Held** | Columns with values [held back](../get-started/concepts.md#holds-and-quarantine) from rows that OpenETL wrote. A release of the hold writes the values into the same rows. |
 | **Collapsed** | Repeated rows that weren't written again, because a row with the same ID was already there. |
 
 Messages above the table say what's wrong with the pipeline's plan, what to look out for, and what the plan couldn't check.
@@ -200,7 +200,7 @@ And these kinds:
 | **Crash loop** | A continuous pipeline's attempts fail or lose their runner, three in a row within a day, without committing anything. |
 | **Lagging** | A continuous pipeline has fallen too far behind its source. |
 | **Retention at risk** | The pipeline's reading is so far behind that it has used half or more of what the source keeps for it, such as a database's log of changes. |
-| **Quarantine** | A stream is holding back a large share of its rows. |
+| **Quarantine** | A stream quarantines a large share of its rows, so OpenETL does not write them. |
 | **Held** | A stream is holding a column, or some of its cells, back. |
 | **Checkpoint corrupt** | The checkpoint the pipeline would carry on from can't be read, or the pipeline restarted from the one before it. |
 
@@ -213,7 +213,7 @@ An incident page has four sections:
 
 Some incidents pause the pipeline because another sync would repeat the failure. Others change how it runs:
 
-- **Quarantine** pauses the stream, so it holds back no more rows while the others carry on. A stream that can't stop on its own, such as one read with CDC, isn't paused, and **Next steps** says why. A stream that's the pipeline's only one pauses the pipeline. **Next steps** says where the quarantined rows are, and the command that lists their files. **Details** names the newest files, under `quarantine_paths`, and how many there are in the last hour, under `quarantine_files`. Each row in a file says why it was quarantined.
+- **Quarantine** pauses the stream, so it quarantines no more rows while the other streams continue. A stream that cannot stop on its own, such as one read with CDC, is not paused, and **Next steps** says why. If the stream is the pipeline's only stream, heal pauses the pipeline. **Next steps** names the newest file of quarantined rows, and gives the command that lists the stream's files. **Details** gives how many files the stream has in the last hour, under `quarantine_files`, and the newest of them, under `quarantine_paths`. Each row in a file has the reason it was quarantined.
 - **Rate limited** reduces request rate where supported, or increases the sync interval, after 3 consecutive rate-limit failures. It repeats the adjustment after every 3 further failures.
 
 What they changed shows under **Not as the spec says** on the pipeline's **Overview**, where you can undo it. A pipeline's definition decides how far heal goes: it can propose these actions without taking them, or take none.
