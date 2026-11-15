@@ -3,10 +3,11 @@ import { CircleCheck, CircleMinus, CircleX, ListChecks, LoaderCircle, type Lucid
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { CheckItemList, checkCounts } from "@/components/check-result";
+import { CheckItemList, FailureNote } from "@/components/check-result";
 import { ErrorNote } from "@/components/empty";
 import { PipelineService, type PreflightPart, type PreflightResult } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorMessage } from "@/lib/api";
+import { checkCounts, itemFailed, partFailed, preflightFailed } from "@/lib/checks";
 import { cn } from "@/lib/utils";
 
 const stageLabel: Record<string, string> = { check: "Connection", preflight: "Pipeline's streams", plan: "Plan" };
@@ -18,32 +19,39 @@ function partTitle(p: PreflightPart): string {
 }
 
 function PartMark({ part }: { part: PreflightPart }) {
-  const [Icon, className]: [LucideIcon, string] = part.skipped
-    ? [CircleMinus, "text-muted-foreground"]
-    : part.ok
-      ? [CircleCheck, "text-healthy"]
-      : [CircleX, "text-failed"];
-  return <Icon className={cn("size-4 shrink-0", className)} aria-hidden />;
+  const [Icon, className, label]: [LucideIcon, string, string] = partFailed(part)
+    ? [CircleX, "text-failed", "Failed"]
+    : part.skipped
+      ? [CircleMinus, "text-muted-foreground", "Skipped"]
+      : [CircleCheck, "text-healthy", "Passed"];
+  return (
+    <>
+      <Icon className={cn("size-4 shrink-0", className)} aria-hidden />
+      <span className="sr-only">{label}: </span>
+    </>
+  );
 }
 
 function Part({ part }: { part: PreflightPart }) {
   const counts = checkCounts(part.items);
+  const unexplained = partFailed(part) && !part.items.some(itemFailed);
   const what = part.skipped
     ? `Skipped: ${part.skipped}.`
     : part.items.length > 0
       ? `${counts.charAt(0).toUpperCase()}${counts.slice(1)}.`
-      : part.ok
-        ? part.stage === "preflight"
+      : unexplained
+        ? ""
+        : part.stage === "preflight"
           ? "Passed. The connector has no checks of its own for a pipeline."
-          : "Passed."
-        : `Failed: ${part.code}: ${part.message}`;
+          : "Passed.";
   return (
     <section className="grid gap-2">
-      <div className="flex items-center gap-2">
+      <h3 className="flex items-center gap-2 text-sm font-medium">
         <PartMark part={part} />
-        <h3 className="text-sm font-medium">{partTitle(part)}</h3>
-      </div>
-      <p className="text-sm break-words text-muted-foreground">{what}</p>
+        {partTitle(part)}
+      </h3>
+      {unexplained && <FailureNote title="Failed" code={part.code} message={part.message} />}
+      {what && <p className="text-sm break-words text-muted-foreground">{what}</p>}
       {part.items.length > 0 && <CheckItemList items={part.items} />}
     </section>
   );
@@ -53,8 +61,8 @@ function Part({ part }: { part: PreflightPart }) {
 export function PreflightView({ result }: { result: PreflightResult }) {
   return (
     <div className="grid gap-6">
-      {result.parts.map((p) => (
-        <Part key={`${p.role}/${p.stage}`} part={p} />
+      {result.parts.map((p, i) => (
+        <Part key={`${i}:${p.role}/${p.stage}`} part={p} />
       ))}
     </div>
   );
@@ -76,8 +84,8 @@ export function PreflightButton({ name }: { name: string }) {
         <SheetHeader>
           <SheetTitle>Preflight</SheetTitle>
           <SheetDescription>
-            Checks the source's and the destination's connections, then asks each connector whether the streams this pipeline reads and writes
-            would work, then plans the sync. Nothing is read or written.
+            Checks the source's and the destination's connections, plans the sync, then asks each connector whether the streams this pipeline
+            reads and writes would work. Nothing is read or written.
           </SheetDescription>
         </SheetHeader>
         <div className="grid gap-4 px-4 pb-6">
@@ -95,8 +103,8 @@ export function PreflightButton({ name }: { name: string }) {
           ) : (
             result && (
               <>
-                <p className={cn("text-sm font-medium", result.ok ? "text-healthy" : "text-failed")}>
-                  {result.ok ? "The pipeline would run." : "The pipeline wouldn't run as it is."}
+                <p className={cn("text-sm font-medium", preflightFailed(result) ? "text-failed" : "text-healthy")}>
+                  {preflightFailed(result) ? "The pipeline wouldn't run as it is." : "The pipeline would run."}
                 </p>
                 <PreflightView result={result} />
                 <Button variant="outline" size="sm" className="justify-self-start" onClick={() => preflight.mutate({ name })}>
