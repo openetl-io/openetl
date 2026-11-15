@@ -2,6 +2,7 @@ package sim
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,22 +46,24 @@ import (
 // lane sends the least of its splits' watermarks through the exchange.
 //
 // A barrier flows in band from the splits through the exchange. Each lane
-// aligns it across every sender of the attempt, snapshots the key groups that
-// changed, and stages its epoch; each worker sends its share of the epoch;
-// the coordinator writes the record, with a watermark per split, and asks
-// workers to commit it, and the workers acknowledge the record before
-// upstream. Any lost pod or
-// broken exchange fails the attempt, and the next one restores every worker
-// from the record under a new generation, on as many workers and lanes as
-// its seed says.
+// aligns it across every sender of the attempt, writes its state's changes
+// as a run (workers_state_test.go), and stages its epoch; each worker sends
+// its share of the epoch; the coordinator writes the record, with a
+// watermark per split and the sections of state it names, and asks workers
+// to commit it, and the workers acknowledge the record before upstream. Any
+// lost pod or broken exchange fails the attempt, and the next one restores
+// every worker from the record under a new generation, on as many workers
+// and lanes as its seed says.
 //
 // The model's contract, checked on every seed:
-//   - exactly-once: each row the filter keeps lands once in filtered, and its
-//     effect once: in one row of agg, or in late;
+//   - exactly-once: each row the filter keeps lands once in filtered, and the
+//     effect of it and its repeats once: in one row of agg, or in late;
 //   - aggregate: agg is what a run without failures gives;
 //   - restore: what a lane restores, and every record kept, is with what
 //     committed epochs emitted the fold of the rows before the record's
-//     positions;
+//     positions; every object a record names is there, and no lane reads
+//     one that isn't;
+//   - retention: nothing the records HEAD keeps name is deleted;
 //   - watermark: a split's watermark never goes back, within an attempt,
 //     after a restore, along the records, or on an exchange; nor does a
 //     keyed operator's across a restore;
@@ -108,7 +111,12 @@ type wEvent struct {
 	Key string `json:"key"`
 	T   int64  `json:"t"`
 	V   int64  `json:"v"`
+	// A repeat's: the row it repeats.
+	Of string `json:"of,omitempty"`
 }
+
+// uid is the row's dedupe ID: a repeat's is its first row's.
+func (e wEvent) uid() string { return cmp.Or(e.Of, e.ID) }
 
 // kept is the row-wise statement's WHERE, and value its projection.
 func (e wEvent) kept() bool   { return e.V%4 != 0 }
@@ -167,6 +175,14 @@ type wCfg struct {
 	stageMask                           int
 	exchange                            bool
 	txnTimeout, msgFaults, commitFaults int
+	// State (workers_state_test.go): whether the keyed operator dedupes,
+	// and how long after its event time a dedupe ID expires; the later
+	// steps' features; and the job's threshold for pending sets, in
+	// entries.
+	dedupe                            bool
+	horizon                           int64
+	drop, vdrop, merge, pending, lazy bool
+	threshold                         int
 }
 
 func (c wCfg) String() string {
@@ -191,6 +207,9 @@ func (c wCfg) String() string {
 			fmt.Fprintf(&b, " stageMask=%06b", c.stageMask)
 		}
 	}
+	if c.exchange {
+		b.WriteString(" " + c.stateString())
+	}
 	if c.broken != "" {
 		fmt.Fprintf(&b, " broken=%s", c.broken)
 	}
@@ -198,8 +217,8 @@ func (c wCfg) String() string {
 }
 
 // randomWorkersCfg takes the destination's settings from a stream of their
-// own, dest.
-func randomWorkersCfg(rng, dest *rand.Rand, broken string) wCfg {
+// own, dest, and state's from state.
+func randomWorkersCfg(rng, dest, state *rand.Rand, broken string) wCfg {
 	c := wCfg{
 		size: 3 + int64(rng.IntN(10)), delay: int64(rng.IntN(5)), page: 1 + rng.IntN(4),
 		faults: rng.IntN(9), pauses: rng.IntN(3), netFaults: rng.IntN(4), zombies: rng.IntN(3), slowConnects: rng.IntN(3), slowWrites: rng.IntN(3),
@@ -237,6 +256,7 @@ func randomWorkersCfg(rng, dest *rand.Rand, broken string) wCfg {
 		c.splits, c.resumeAt, c.avail = append(c.splits, evs), append(c.resumeAt, at), append(c.avail, avail)
 	}
 	randomShape(&c, dest)
+	randomState(&c, state)
 	return c
 }
 
@@ -318,8 +338,8 @@ type wSplit struct {
 }
 
 // wRecord is a checkpoint record as the design has it: the record of today,
-// whose snapshots name files by operator and key-group range, with a
-// watermark per split.
+// with a watermark per split, which names the sections of state's runs and
+// carries the lanes' pending sets.
 type wRecord struct {
 	Epoch        uint64                `json:"epoch"`
 	Generation   uint64                `json:"generation"`
@@ -327,7 +347,8 @@ type wRecord struct {
 	KeyGroups    int                   `json:"key_groups"`
 	Splits       []wSplit              `json:"splits"`
 	Committables [][]byte              `json:"committables"`
-	Snapshots    []checkpoint.Snapshot `json:"snapshots,omitempty"`
+	Sections     []wSection            `json:"sections,omitempty"`
+	Pending      []wStEntry            `json:"pending,omitempty"`
 	// The generations of the shares merged into it, for the checks.
 	sharedBy []uint64
 }
@@ -362,13 +383,6 @@ func (r *wRecord) split(id int) wSplit {
 	return wSplit{ID: id, Watermark: wNoMark}
 }
 
-func (r *wRecord) snapshots() []checkpoint.Snapshot {
-	if r == nil {
-		return nil
-	}
-	return r.Snapshots
-}
-
 // final says every split completed: the attempt that restores it has
 // nothing to do.
 func (r *wRecord) final() bool {
@@ -398,14 +412,7 @@ func parseWRecordKey(key string) (checkpoint.RecordRef, bool) {
 	return checkpoint.RecordRef{Epoch: epoch, Generation: gen}, ok && err1 == nil && err2 == nil
 }
 
-// wStateFile is a snapshot file: some of an operator's key groups at a
-// barrier, and who wrote it.
-type wStateFile struct {
-	Generation uint64           `json:"generation"`
-	Epoch      uint64           `json:"epoch"`
-	Groups     map[int][]wEntry `json:"groups"`
-}
-
+// wEntry is an agg row's value.
 type wEntry struct {
 	Key   string     `json:"key"`
 	W     int64      `json:"w"`
@@ -430,33 +437,6 @@ type wKey struct {
 type wAcc struct {
 	Sum, Count int64
 	Rows       []wContrib
-}
-
-// stateURL names a snapshot file by generation, epoch, operator and the
-// lane's key groups, as quarantined and held files are named by generation
-// and epoch. Two broken variants drop parts of the name.
-func (m *wModel) stateURL(gen, epoch uint64, kg checkpoint.KeyGroupRange) string {
-	groups := fmt.Sprintf("kg-%03d-%03d", kg.First, kg.Last)
-	switch m.cfg.broken {
-	case "names-without-generation":
-		return fmt.Sprintf("%s_state/%d/%s/%s", wPipeline, epoch, wOperator, groups)
-	case "names-by-group":
-		return fmt.Sprintf("%s_state/%s/%s", wPipeline, wOperator, groups)
-	}
-	return fmt.Sprintf("%s_state/g%d/%d/%s/%s", wPipeline, gen, epoch, wOperator, groups)
-}
-
-// stateGenEpoch is the generation and epoch a snapshot file's name says
-// wrote it.
-func stateGenEpoch(key string) (gen, epoch uint64, ok bool) {
-	rest, ok := strings.CutPrefix(key, wPipeline+"_state/g")
-	if !ok {
-		return 0, 0, false
-	}
-	parts := strings.Split(rest, "/")
-	gen, err1 := strconv.ParseUint(parts[0], 10, 64)
-	epoch, err2 := strconv.ParseUint(parts[1], 10, 64)
-	return gen, epoch, err1 == nil && err2 == nil
 }
 
 // ---- The model: its durable world, its pods, and the scheduler.
@@ -534,7 +514,7 @@ type wAttempt struct {
 
 func newWorkersModel(seed uint64, broken string) *wModel {
 	rng := rand.New(rand.NewPCG(seed, uint64(len("workers"))))
-	cfg := randomWorkersCfg(rng, rand.New(rand.NewPCG(seed, wDestStream)), broken)
+	cfg := randomWorkersCfg(rng, rand.New(rand.NewPCG(seed, wDestStream)), rand.New(rand.NewPCG(seed, wStateStream)), broken)
 	return &wModel{
 		cfg: cfg, rng: rng, store: checkpoint.NewMemStore(), wh: newWarehouse(true),
 		broker: newTxnBroker(), headed: map[checkpoint.RecordRef]bool{}, decided: map[wMarker]uint64{}, msgFaults: cfg.msgFaults, commitFaults: cfg.commitFaults,
@@ -818,36 +798,6 @@ func (m *wModel) readHead() (checkpoint.Head, checkpoint.Version, error) {
 	return h, v, json.Unmarshal(data, &h)
 }
 
-func (m *wModel) readState(url string) (wStateFile, error) {
-	var f wStateFile
-	data, _, err := m.store.Get(context.Background(), url)
-	if err != nil {
-		return f, err
-	}
-	return f, json.Unmarshal(data, &f)
-}
-
-// putState writes a snapshot file, over one of the same name, as object
-// storage does.
-func (m *wModel) putState(url string, f wStateFile) error {
-	ctx := context.Background()
-	data := must(json.Marshal(f))
-	if h, _, _ := m.readHead(); h.Generation > f.Generation {
-		m.stats["snapshot files a fenced generation wrote"]++
-	}
-	if old, v, err := m.store.Get(ctx, url); err == nil {
-		var was wStateFile
-		if json.Unmarshal(old, &was) == nil && (was.Generation != f.Generation || was.Epoch != f.Epoch) {
-			m.stats["snapshot files written over"]++
-			m.tracef("generation %d writes %s over generation %d's epoch %d", f.Generation, url, was.Generation, was.Epoch)
-		}
-		_, err = m.store.Swap(ctx, url, data, v)
-		return err
-	}
-	_, err := m.store.Create(ctx, url, data)
-	return err
-}
-
 func sameHead(a, b checkpoint.Head) bool {
 	same := func(x, y *checkpoint.RecordRef) bool { return x == nil && y == nil || x != nil && y != nil && *x == *y }
 	return a.Generation == b.Generation && a.Owner == b.Owner && a.First == b.First && same(a.Record, b.Record) && same(a.Previous, b.Previous)
@@ -926,14 +876,16 @@ func (m *wModel) applyEpoch(gen uint64, st warehouseStaged, streams []stagedStre
 // prune deletes what no later attempt of generation gen, restored from from,
 // can need, as checkpoint.Session.Prune does: records more than keep back
 // along the chain, and older generations' records of epochs after from;
-// and snapshot files of older generations no record it keeps names.
+// then objects of state's runs that no record it keeps names any section
+// of: of older generations, and of its own up to from's epoch, which its
+// lanes have named or never will.
 func (m *wModel) prune(gen uint64, from *wRecord, keep int) error {
 	ctx := context.Background()
 	kept, named := map[string]bool{}, map[string]bool{}
 	floor := uint64(0)
 	for r, i := from, 0; r != nil && i < keep; i++ {
 		kept[wRecordKey(r.ref())] = true
-		for _, s := range r.Snapshots {
+		for _, s := range r.Sections {
 			named[s.URL] = true
 		}
 		floor = r.Epoch
@@ -963,26 +915,35 @@ func (m *wModel) prune(gen uint64, from *wRecord, keep int) error {
 			doomed = append(doomed, k)
 		}
 	}
-	files, err := m.store.List(ctx, wPipeline+"_state/")
-	if err != nil {
-		return err
-	}
-	for _, k := range files {
-		g, n, ok := stateGenEpoch(k)
-		switch {
-		case !ok:
-		case m.cfg.broken == "prune-by-epoch" && g <= gen && n < floor:
-			doomed = append(doomed, k)
-		case g < gen && !named[k]:
-			doomed = append(doomed, k)
-		}
-	}
 	for _, k := range doomed {
 		if err := m.store.Delete(ctx, k); err != nil {
 			return err
 		}
 	}
-	m.stats["pruned objects"] += len(doomed)
+	files, err := m.store.List(ctx, wPipeline+"_state/")
+	if err != nil {
+		return err
+	}
+	var objects []string
+	for _, k := range files {
+		g, n, ok := stateGenEpoch(k)
+		switch {
+		case !ok:
+		case m.cfg.broken == "prune-by-epoch" && g <= gen && n < floor:
+			objects = append(objects, k)
+		case m.cfg.broken == "prune-unnamed" && !named[k]:
+			objects = append(objects, k)
+		case g < gen && !named[k]:
+			objects = append(objects, k)
+		case g == gen && !named[k] && n <= from.epoch():
+			objects = append(objects, k)
+			m.stats["orphans of the pruning generation"]++
+		}
+	}
+	if err := m.deleteState(gen, objects); err != nil {
+		return err
+	}
+	m.stats["pruned objects"] += len(doomed) + len(objects)
 	return nil
 }
 
@@ -1361,13 +1322,15 @@ func (c *wCoord) takeShare(s *wShare) {
 		s := c.shares[w]
 		rec.sharedBy = append(rec.sharedBy, s.Gen)
 		rec.Splits = append(rec.Splits, s.Splits...)
-		rec.Snapshots = append(rec.Snapshots, s.Snapshots...)
+		rec.Sections = append(rec.Sections, s.Sections...)
+		rec.Pending = append(rec.Pending, s.Pending...)
 		for _, l := range slices.Sorted(maps.Keys(s.Committables)) {
 			cs = append(cs, lc{l, s.Committables[l]})
 		}
 	}
 	slices.SortFunc(rec.Splits, func(a, b wSplit) int { return a.ID - b.ID })
-	slices.SortFunc(rec.Snapshots, func(a, b checkpoint.Snapshot) int { return a.KeyGroups.First - b.KeyGroups.First })
+	slices.SortFunc(rec.Sections, func(a, b wSection) int { return cmp.Or(cmp.Compare(a.KG.First, b.KG.First), cmpSection(a, b)) })
+	slices.SortFunc(rec.Pending, func(a, b wStEntry) int { return strings.Compare(a.slot(), b.slot()) })
 	slices.SortFunc(cs, func(a, b lc) int { return a.lane - b.lane })
 	for _, x := range cs {
 		rec.Committables = append(rec.Committables, x.c)
@@ -1513,14 +1476,16 @@ type wMsg struct {
 }
 
 // wShare is a worker's share of an epoch: its splits' positions and
-// watermarks, its lanes' committables and snapshots.
+// watermarks, its lanes' committables, and the sections and pending sets
+// of their state.
 type wShare struct {
 	Gen          uint64
 	Worker       int
 	Epoch        uint64
 	Splits       []wSplit
 	Committables map[int][]byte
-	Snapshots    []checkpoint.Snapshot
+	Sections     []wSection
+	Pending      []wStEntry
 }
 
 // wInbox keeps each sender's messages in order, and the senders apart.
