@@ -346,13 +346,13 @@ func (s *slot) stopWorker(pipeline string, pid int) bool {
 	return true
 }
 
-// crashWorker kills the pipeline's worker that commits, worker 0, and
+// crashWorker kills the pipeline's worker that commits, worker 1, and
 // reports whether there was one.
 func (s *slot) crashWorker(pipeline string) bool {
 	s.mu.Lock()
 	pid := 0
 	if w := s.workers[pipeline]; w != nil {
-		pid = w.pids[0]
+		pid = w.pids[1]
 	}
 	s.mu.Unlock()
 	if !openetld(pid) || !s.stopWorker(pipeline, pid) {

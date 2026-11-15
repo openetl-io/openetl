@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
@@ -47,7 +48,7 @@ func (s *Server) planSQL(ctx context.Context, q *db.Queries, p *planned, cat *ap
 	if p.applied, err = s.appliedSQLPlan(ctx, q, p); err != nil {
 		return nil, err
 	}
-	if p.read, err = s.readStreams(ctx, q, p); err != nil {
+	if p.read, p.held, err = s.lastCheckpoint(ctx, q, p); err != nil {
 		return nil, err
 	}
 	return s.planSQLWith(ctx, p, cat, history, out)
@@ -96,7 +97,7 @@ func (s *Server) planSQLWith(ctx context.Context, p *planned, cat *apiv1.Catalog
 		return nil, nil
 	}
 	out.Transform = plan.Transform(spec, cat, &answer)
-	ops, warnings, notes := plan.Operators(spec, cat, &answer, p.applied, p.read)
+	ops, warnings, notes := plan.Operators(spec, cat, &answer, p.applied, p.read, p.held)
 	out.Transform.Operators = ops
 	out.Warnings, out.Notes = append(out.Warnings, warnings...), append(out.Notes, notes...)
 	p.sqlPlan = plan.SQLPlan(&answer, p.applied)
@@ -122,25 +123,36 @@ func (s *Server) appliedSQLPlan(ctx context.Context, q *db.Queries, p *planned) 
 	return sqlPlanOf(row.SqlPlan)
 }
 
-// readStreams are the streams of the pipeline's newest mirrored checkpoint:
-// those it has read.
-func (s *Server) readStreams(ctx context.Context, q *db.Queries, p *planned) (map[string]bool, error) {
+// lastCheckpoint is what the pipeline's newest mirrored checkpoint says:
+// the streams it has read, and the stateful operators whose state it names,
+// which is nil where the checkpoint was mirrored before they were. A
+// pipeline without one has read nothing and holds no state.
+func (s *Server) lastCheckpoint(ctx context.Context, q *db.Queries, p *planned) (read, held map[string]bool, err error) {
 	if p.action == apiv1.ApplyAction_APPLY_ACTION_CREATED {
-		return nil, nil
+		return nil, map[string]bool{}, nil
 	}
-	rows, err := q.ListCheckpoints(ctx, db.ListCheckpointsParams{OrgID: s.Tenant.Org, PipelineID: p.id, MaxRows: 1})
-	if err != nil || len(rows) == 0 {
-		return nil, err
+	row, err := q.LatestCheckpointState(ctx, db.LatestCheckpointStateParams{OrgID: s.Tenant.Org, PipelineID: p.id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, nil, err
 	}
 	var streams []mirroredStream
-	if err := json.Unmarshal(rows[0].Streams, &streams); err != nil {
-		return nil, err
+	if err := json.Unmarshal(row.Streams, &streams); err != nil {
+		return nil, nil, err
 	}
-	out := map[string]bool{}
+	read = map[string]bool{}
 	for _, st := range streams {
-		out[st.Name] = true
+		read[st.Name] = true
 	}
-	return out, nil
+	if row.Operators != nil {
+		held = map[string]bool{}
+		for _, op := range row.Operators {
+			held[op] = true
+		}
+	}
+	return read, held, nil
 }
 
 // metadataColumns are the columns the engine adds to a stream. A source's

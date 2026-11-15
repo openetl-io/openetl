@@ -248,7 +248,7 @@ WHERE details ? 'plan';
 
 ### Aggregate rows by windows of time
 
-A group window writes one row for each window of a stream's event time and each value of its keys. Set the stream's `eventTime`, and group by a window and columns. In a scheduled pipeline, read the stream with `full_refresh`:
+A group window writes one row for each window of a stream's event time and each value of its keys. Set the stream's `eventTime`, and group by a window and columns. In a scheduled pipeline, read the stream with `full_refresh`, or with `incremental` and the `eventTime` column as the cursor:
 
 ```yaml
   source:
@@ -266,7 +266,7 @@ FROM orders
 GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 ```
 
-The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates, the reads they take and when rows are written.
+The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. With `incremental`, a window that is open at the end of a sync goes on in the next sync, from the state that the checkpoint keeps. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates, the reads they take and when rows are written.
 
 ### Change a group window
 

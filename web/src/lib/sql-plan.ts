@@ -84,10 +84,13 @@ export const changeLabel: Record<OperatorChange, string> = {
 /** For an operator an earlier version had: when its state comes back. Empty for another. */
 function earlierText(op: OperatorPlan) {
   if (!op.earlier) return "";
-  return (
-    "An earlier version had it. If no sync has run since the current version, the next sync restores that state where it can be restored, " +
-    "and otherwise it starts empty. If the state can't be restored, the sync fails until you read the stream again with openetl reset --stream."
-  );
+  return "An earlier version had it. If the last checkpoint still holds its state, as when no sync has run since the current version, the next sync restores that state; otherwise it starts empty.";
+}
+
+/** Whether the pipeline's last checkpoint holds an operator's state; empty where that isn't known. */
+export function heldText(op: OperatorPlan) {
+  if (op.held === undefined) return "";
+  return op.held ? "The last checkpoint holds its state." : "The last checkpoint holds none of its state.";
 }
 
 /** What happens to an operator's state, in a sentence. */

@@ -48,10 +48,14 @@ func TestMirroredCheckpoint(t *testing.T) {
 		Forced:     []string{"orders"},
 		Reread:     []string{"orders"},
 		SyncRows:   map[string]uint64{"users": 25},
+		Snapshots:  []checkpoint.Snapshot{{Operator: "window-b"}, {Operator: "window-a"}, {Operator: "window-b"}},
 	}, map[string]uint64{"users": 5}, nil, []source.Progress{{LagBytes: new(uint64(4096)), Lag: new(1500 * time.Millisecond)}})
 	if req.GetPipelineId() != "p" || req.GetRunId() != "run" || req.GetEpoch() != 7 || req.GetGeneration() != 3 ||
 		req.GetPrevious().GetEpoch() != 6 || req.GetPrevious().GetGeneration() != 2 || !req.GetCreateTime().AsTime().Equal(created) {
 		t.Errorf("request %v", req)
+	}
+	if !slices.Equal(req.GetOperators(), []string{"window-a", "window-b"}) {
+		t.Errorf("operators %v", req.GetOperators())
 	}
 	streams := req.GetStreams()
 	slices.SortFunc(streams, func(a, b *dataplanev1.CheckpointStream) int { return strings.Compare(a.GetName(), b.GetName()) })

@@ -596,7 +596,7 @@ func operatorText(op *apiv1.OperatorPlan) string {
 	}
 	start := "starts empty"
 	if op.GetEarlier() {
-		start = "an earlier version's, so it restores that state if the checkpoint still holds it and it can be restored, or starts empty"
+		start = "an earlier version's, so it restores that state if the checkpoint still holds it, or starts empty"
 	}
 	var then string
 	switch op.GetChange() {
@@ -609,6 +609,13 @@ func operatorText(op *apiv1.OperatorPlan) string {
 	}
 	if len(op.GetBackfill()) > 0 {
 		then += "; a backfill reads again " + strings.Join(op.GetBackfill(), ", ")
+	}
+	if op.Held != nil {
+		held := "the last checkpoint holds its state"
+		if !op.GetHeld() {
+			held = "the last checkpoint holds none of its state"
+		}
+		then = strings.TrimPrefix(then+"; "+held, "; ")
 	}
 	switch {
 	case what == "":

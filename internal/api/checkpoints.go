@@ -156,7 +156,8 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 	var b bigints
 	arg := db.InsertMirroredCheckpointParams{
 		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), CommitTime: created, Streams: raw, Progress: progress, Usage: usage,
-		Epoch: b.of("epoch", m.GetEpoch()), Generation: b.of("generation", m.GetGeneration()),
+		Operators: append([]string{}, m.GetOperators()...),
+		Epoch:     b.of("epoch", m.GetEpoch()), Generation: b.of("generation", m.GetGeneration()),
 	}
 	if p := m.GetPrevious(); p != nil {
 		e, g := b.of("previous.epoch", p.GetEpoch()), b.of("previous.generation", p.GetGeneration())

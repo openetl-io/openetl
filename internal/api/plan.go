@@ -112,10 +112,11 @@ type planned struct {
 	// the plan couldn't give it.
 	sqlPlan *apiv1.SqlPlan
 	// What planning gave the current version, which the plan's stateful
-	// operators are compared with, and the streams the pipeline has read;
+	// operators are compared with, the streams the pipeline has read, and
+	// the operators whose state its last checkpoint names (nil: unknown);
 	// set by planSQL.
-	applied *apiv1.SqlPlan
-	read    map[string]bool
+	applied    *apiv1.SqlPlan
+	read, held map[string]bool
 }
 
 func (v *pinned) pins() plan.Version {

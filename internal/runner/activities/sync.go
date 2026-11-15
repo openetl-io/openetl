@@ -259,6 +259,11 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 		if job.HeldURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.HeldDir); err != nil {
 			return out, errs.Wrap(errs.ConfigInvalid, err, "held values' location")
 		}
+		// Next to the checkpoints, where retention finds what no record
+		// names.
+		if job.StateURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.StateDir); err != nil {
+			return out, errs.Wrap(errs.ConfigInvalid, err, "state's location")
+		}
 	}
 	if workers := worker.From(ctx).Workers; workers > 0 {
 		srv, err := a.coordinate(ctx, &job, workers, log)

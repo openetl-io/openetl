@@ -86,6 +86,7 @@ type CheckpointMirror struct {
 	CreateTime         time.Time
 	Progress           []byte
 	Usage              []byte
+	Operators          []string
 }
 
 type CheckpointRequest struct {

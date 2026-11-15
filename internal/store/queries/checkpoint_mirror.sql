@@ -1,6 +1,6 @@
 -- name: InsertMirroredCheckpoint :execrows
-INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage)
-VALUES (@org_id, @pipeline_id, @epoch, @generation, @previous_epoch, @previous_generation, @run_id, @commit_time, @streams, @progress, @usage)
+INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage, operators)
+VALUES (@org_id, @pipeline_id, @epoch, @generation, @previous_epoch, @previous_generation, @run_id, @commit_time, @streams, @progress, @usage, @operators)
 ON CONFLICT DO NOTHING;
 
 -- name: ListCheckpoints :many
@@ -48,6 +48,14 @@ FROM checkpoint_mirror c
 WHERE c.org_id = @org_id AND c.pipeline_id = @pipeline_id AND c.run_id = ANY(@run_ids::text[])
   AND c.commit_time >= @since AND c.progress IS NOT NULL
 ORDER BY c.run_id, c.commit_time DESC;
+
+-- name: LatestCheckpointState :one
+-- The streams and the stateful operators of the pipeline's newest mirrored
+-- checkpoint.
+SELECT c.streams, c.operators FROM checkpoint_mirror c
+WHERE c.org_id = @org_id AND c.pipeline_id = @pipeline_id
+ORDER BY c.epoch DESC, c.generation DESC
+LIMIT 1;
 
 -- name: LastCommits :many
 -- Each pipeline's latest mirrored checkpoint, for freshness; pipelines the

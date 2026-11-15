@@ -125,7 +125,7 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 
 - The stream has an event time: its `eventTime` in the [Pipeline](./specs/pipeline.md#source-and-streams). The window's first argument is that column, as the statement reads it.
 - `GROUP BY` has one window, and any number of the stream's columns, renamed or not. A computed key, such as `lower(region)`, is refused.
-- The stream is read whole, with `full_refresh`. In a continuous pipeline, it is read with `stream`. A group window over a stream read another way is a problem in the plan: [Reads](#reads) says why.
+- The stream is read whole, with `full_refresh`, or in the order of its event time: with `incremental` and its `eventTime` as the cursor, or with `stream`. A group window over a stream read another way is a problem in the plan: [Reads](#reads) says why.
 - A group window is in the statement's own `SELECT`. It reads the stream or a view of it, and the view is row-wise.
 
 ### Windows
@@ -188,13 +188,13 @@ How the stream is read decides when windows close:
 | Read | Pipeline | When windows close |
 |---|---|---|
 | `full_refresh` | Scheduled | The watermark holds until the sync's read ends. Every window closes at the end of the read. The next sync starts its windows again, from the whole stream. |
+| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. A window that is still open goes on in the next sync, which restores its state. |
 | `stream` | Continuous | The watermark follows the rows as they come. Each window closes while the pipeline runs. |
 
 A group window over a stream read another way is a problem in the plan:
 
 - With `cdc`, the stream is a changelog, and a group window groups appended rows.
 - With `incremental` and a cursor other than the stream's `eventTime`, each sync's windows would hold only the rows that the sync reads.
-- In a scheduled pipeline, a stream read with `incremental` by its `eventTime`, or with `stream`, leaves windows open at the end of each sync. The next sync runs in another engine, which does not have their state.
 
 ### State
 
@@ -206,8 +206,11 @@ A group window keeps each window's aggregates as state, by key group, until its 
 
 - The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.
 - A window over no group keys runs on one lane.
-- Each checkpoint names the state. The engine keeps the state in its memory, and each attempt runs in an engine of its own. If an attempt ends while windows are open, the next attempt cannot restore their state, and fails with `CONFIG_INVALID`. For example, a continuous pipeline's attempt that restarts, or a sync's attempt that fails, ends this way.
-- To recover, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)).
+- At each checkpoint, each lane writes what its state changed since the last checkpoint, if anything, as a file under `_state/`, next to the pipeline's checkpoints. The checkpoint record names the files that hold the state. A file that no checkpoint names, such as one from an epoch that did not commit, is never read.
+- The next attempt restores the state that its checkpoint names, on any number of lanes. A continuous pipeline's attempt that restarts, or a sync's attempt that fails, goes on with its open windows. Each window's row has every row of the window, each one time.
+- The engine reads a file of state when a lane first needs it, not at the start of the attempt.
+- A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names.
+- To build a window's state again from the stream, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)). A run deletes the files of the dropped state once none of the records it keeps names them.
 - After a reset, each window's row comes only from the rows that the new read returns. If the read starts partway through a window, `merge` replaces that window's row with a row of part of its rows. A window that the new read does not reach keeps its row in the destination. Start the read where it includes every row of the windows it changes, or correct those rows in the destination.
 - A pipeline with a group window runs on one pod, whatever its `resources.workers`.
 
@@ -234,7 +237,7 @@ These edits give the operator a new ID:
 
 `watermark.lateness` is not part of the ID. A changed lateness keeps the state, and applies to the windows that are open.
 
-`openetl plan` and `openetl apply` show each operator in a `state` section of `transform.sql`. Each line has the statement's place, the output, the ID, what the operator is against the pipeline's current version, and what it keeps. In this example, the current version has the statement of [Group windows](#group-windows) and a second statement, `orders_by_hour`, with `tumble(created_at, INTERVAL '1 hour')`. The new version gives the first statement a `FROM` alias and other column names, and changes the second one's window to 30 minutes. The stream has `watermark.lateness: 1m`:
+`openetl plan` and `openetl apply` show each operator in a `state` section of `transform.sql`. Each line has the statement's place, the output, the ID, what the operator is against the pipeline's current version, and what it keeps. Where the pipeline's last checkpoint says which operators' state it names, the line ends with whether it holds the operator's state. In this example, the current version has the statement of [Group windows](#group-windows) and a second statement, `orders_by_hour`, with `tumble(created_at, INTERVAL '1 hour')`. The new version gives the first statement a `FROM` alias and other column names, and changes the second one's window to 30 minutes. The stream has `watermark.lateness: 1m`:
 
 ```text
   state:
@@ -246,8 +249,8 @@ The plan's warnings say the same for `orders_by_hour`, with the command for the 
 
 | What | Means | Its state |
 |---|---|---|
-| `kept` | The current version has the operator. | The next sync restores it, if the checkpoint's state can be restored: [State](#state) says when an attempt fails with `CONFIG_INVALID` instead, and how to recover. |
-| `new` | The current version has no operator that writes the output. | Starts empty. If an earlier version had the operator and the current version dropped it, the line says so. If no sync has run since, the checkpoint still holds that state, and the next sync restores it as for `kept`, failing as [State](#state) says where it cannot. |
+| `kept` | The current version has the operator. | The next sync restores it. |
+| `new` | The current version has no operator that writes the output. | Starts empty. If an earlier version had the operator, the current version dropped it, and the last checkpoint still holds its state, as when no sync has run since, the line says so, and the next sync restores that state. |
 | `changed` | The current version's operator for the output computes or keeps something else. | Starts empty, or, if an earlier version had the operator, as for `new`. The next sync drops the old operator's state. |
 | `dropped` | No statement keeps the current version's operator. | The next sync drops it. |
 | `unknown` | The current version's statements were not planned when it was applied. | As for `kept` if the ID is the same, otherwise the next sync fails as below. |
@@ -263,7 +266,7 @@ To build the state from the stream's start, read the stream again after you appl
 openetl reset --stream orders NAME
 ```
 
-If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the next attempt fails with `CONFIG_INVALID`. Its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
+The next attempt drops the state of each operator that the version dropped or replaced, so the records after it stop naming that state, and retention deletes its files once no record it keeps names them. If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the version did not drop the old operator. The next attempt then fails with `CONFIG_INVALID`, and its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
 
 An operator has no name of its own in the SQL. Its ID is the only name.
 

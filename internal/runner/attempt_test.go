@@ -160,7 +160,7 @@ func TestRecordsCarryTheDataflowsReport(t *testing.T) {
 		if got, want := string(rec.Streams["s"].Schema), fmt.Sprintf("schema-%d", last); got != want {
 			t.Errorf("record %d has schema %q, want %q", last, got, want)
 		}
-		if len(rec.Snapshots) != 1 || rec.Snapshots[0].URL != fmt.Sprintf("mem://chk-%d", last) {
+		if len(rec.Snapshots) != 1 || string(rec.Snapshots[0].Data) != fmt.Sprintf("chk-%d", last) {
 			t.Errorf("record %d has snapshots %+v", last, rec.Snapshots)
 		}
 
@@ -169,7 +169,7 @@ func TestRecordsCarryTheDataflowsReport(t *testing.T) {
 		if got, want := string(first.Schemas["s"]), fmt.Sprintf("schema-%d", restored); got != want {
 			t.Errorf("the second attempt restored schema %q, want %q", got, want)
 		}
-		if len(first.Snapshots) != 1 || first.Snapshots[0].URL != fmt.Sprintf("mem://chk-%d", restored) {
+		if len(first.Snapshots) != 1 || string(first.Snapshots[0].Data) != fmt.Sprintf("chk-%d", restored) {
 			t.Errorf("the second attempt restored snapshots %+v", first.Snapshots)
 		}
 	})
@@ -484,7 +484,7 @@ func (f reportingFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runn
 	for fr := range mid {
 		if fr.Kind == runner.FrameReady {
 			fr.Ready.Schemas = map[string][]byte{"s": fmt.Appendf(nil, "schema-%d", fr.Epoch)}
-			fr.Ready.Snapshots = []checkpoint.Snapshot{{Operator: "op", URL: fmt.Sprintf("mem://chk-%d", fr.Epoch)}}
+			fr.Ready.Snapshots = []checkpoint.Snapshot{{Operator: "op", Data: fmt.Appendf(nil, "chk-%d", fr.Epoch), Runs: []string{fmt.Sprintf("op/g1/e%d/kg0-255.run", fr.Epoch)}}}
 		}
 		select {
 		case out <- fr:

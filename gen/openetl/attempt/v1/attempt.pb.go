@@ -1092,7 +1092,8 @@ type Committable struct {
 	// writer's producer.
 	Local bool `protobuf:"varint,3,opt,name=local,proto3" json:"local,omitempty"`
 	// What it holds: the splits whose rows its writer lane got in the epoch,
-	// in this attempt's layout.
+	// in this attempt's layout. With a SQL transform, a split is named once
+	// for each output whose rows of it the writer lane got.
 	Splits        []*SplitRef `protobuf:"bytes,4,rep,name=splits,proto3" json:"splits,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1169,8 +1170,12 @@ type SplitRef struct {
 	From []byte `protobuf:"bytes,4,opt,name=from,proto3" json:"from,omitempty"`
 	// The rows the split emitted in the epoch, to every writer lane.
 	Rows uint64 `protobuf:"varint,5,opt,name=rows,proto3" json:"rows,omitempty"`
-	// With key_groups: the stream's primary key, whose groups they are.
-	Key           []string `protobuf:"bytes,6,rep,name=key,proto3" json:"key,omitempty"`
+	// With key_groups: the primary key whose groups they are, the output's
+	// with output, else the stream's.
+	Key []string `protobuf:"bytes,6,rep,name=key,proto3" json:"key,omitempty"`
+	// With a SQL transform: the output, written from the stream by a
+	// statement, whose rows of the split these are.
+	Output        string `protobuf:"bytes,7,opt,name=output,proto3" json:"output,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1245,6 +1250,13 @@ func (x *SplitRef) GetKey() []string {
 		return x.Key
 	}
 	return nil
+}
+
+func (x *SplitRef) GetOutput() string {
+	if x != nil {
+		return x.Output
+	}
+	return ""
 }
 
 // Commit asks the worker to commit what a record names, at the
@@ -1905,7 +1917,10 @@ type Settle struct {
 	// Indexes into its committables.
 	Committables []uint32 `protobuf:"varint,2,rep,packed,name=committables,proto3" json:"committables,omitempty"`
 	// As Assignment.forced.
-	Forced        []string `protobuf:"bytes,3,rep,name=forced,proto3" json:"forced,omitempty"`
+	Forced []string `protobuf:"bytes,3,rep,name=forced,proto3" json:"forced,omitempty"`
+	// The record before it, as the log holds it, where a redo needs the
+	// state the epoch started from; empty for none.
+	Previous      []byte `protobuf:"bytes,4,opt,name=previous,proto3" json:"previous,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1957,6 +1972,13 @@ func (x *Settle) GetCommittables() []uint32 {
 func (x *Settle) GetForced() []string {
 	if x != nil {
 		return x.Forced
+	}
+	return nil
+}
+
+func (x *Settle) GetPrevious() []byte {
+	if x != nil {
+		return x.Previous
 	}
 	return nil
 }
@@ -2854,7 +2876,7 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"writerLane\x12\x16\n" +
 	"\x06staged\x18\x02 \x01(\fR\x06staged\x12\x14\n" +
 	"\x05local\x18\x03 \x01(\bR\x05local\x124\n" +
-	"\x06splits\x18\x04 \x03(\v2\x1c.openetl.attempt.v1.SplitRefR\x06splits\"\xb3\x01\n" +
+	"\x06splits\x18\x04 \x03(\v2\x1c.openetl.attempt.v1.SplitRefR\x06splits\"\xcb\x01\n" +
 	"\bSplitRef\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x14\n" +
 	"\x05split\x18\x02 \x01(\tR\x05split\x12?\n" +
@@ -2862,7 +2884,8 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"key_groups\x18\x03 \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12\x12\n" +
 	"\x04from\x18\x04 \x01(\fR\x04from\x12\x12\n" +
 	"\x04rows\x18\x05 \x01(\x04R\x04rows\x12\x10\n" +
-	"\x03key\x18\x06 \x03(\tR\x03key\"f\n" +
+	"\x03key\x18\x06 \x03(\tR\x03key\x12\x16\n" +
+	"\x06output\x18\a \x01(\tR\x06output\"f\n" +
 	"\x06Commit\x129\n" +
 	"\x06commit\x18\x01 \x01(\v2!.openetl.connector.v1.WriteCommitR\x06commit\x12!\n" +
 	"\fwriter_lanes\x18\x02 \x03(\rR\vwriterLanes\"r\n" +
@@ -2901,11 +2924,12 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\x06limits\x18\x02 \x03(\v2).openetl.attempt.v1.Recovered.LimitsEntryR\x06limits\x1a\\\n" +
 	"\vLimitsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x127\n" +
-	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"\\\n" +
+	"\x05value\x18\x02 \x01(\v2!.openetl.connector.v1.TableLimitsR\x05value:\x028\x01\"x\n" +
 	"\x06Settle\x12\x16\n" +
 	"\x06record\x18\x01 \x01(\fR\x06record\x12\"\n" +
 	"\fcommittables\x18\x02 \x03(\rR\fcommittables\x12\x16\n" +
-	"\x06forced\x18\x03 \x03(\tR\x06forced\"I\n" +
+	"\x06forced\x18\x03 \x03(\tR\x06forced\x12\x1a\n" +
+	"\bprevious\x18\x04 \x01(\fR\bprevious\"I\n" +
 	"\aSettled\x12>\n" +
 	"\n" +
 	"recoveries\x18\x01 \x03(\x0e2\x1e.openetl.connector.v1.RecoveryR\n" +

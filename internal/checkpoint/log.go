@@ -265,13 +265,35 @@ type QuarantineFile struct {
 	Rows   uint64 `json:"rows"`
 }
 
-// Snapshot is one operator's state at a checkpoint, for the key groups it
-// covers.
+// Snapshot is a stateful operator's state on one lane at a checkpoint, for
+// the lane's key groups. An operator's snapshots in a record hold every key
+// group between them.
 type Snapshot struct {
-	Operator string `json:"operator"`
-	URL      string `json:"url"`
-	// Nil: all of them.
-	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
+	Operator  string        `json:"operator"`
+	KeyGroups KeyGroupRange `json:"key_groups"`
+	// The layout of the state's keys.
+	Layout uint32 `json:"layout"`
+	// What the engine opens it by.
+	Data []byte `json:"data,omitempty"`
+	// The objects it names, below StateDir: what retention keeps.
+	Runs []string `json:"runs,omitempty"`
+}
+
+// KeptSnapshots are the snapshots a record names of those an epoch's
+// lanes reported: an operator's on every lane, unless none of its lanes has
+// written any state yet.
+func KeptSnapshots(snapshots []Snapshot) []Snapshot {
+	wrote := map[string]bool{}
+	for _, s := range snapshots {
+		wrote[s.Operator] = wrote[s.Operator] || len(s.Runs) > 0
+	}
+	var out []Snapshot
+	for _, s := range snapshots {
+		if wrote[s.Operator] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // KeyGroups is how many key groups a pipeline has, unless its record says
@@ -305,6 +327,9 @@ type Record struct {
 	// What each committable holds, by its index, in the layout of the
 	// attempt that wrote it; nil from an attempt without workers.
 	Coverage []Coverage `json:"coverage,omitempty"`
+	// The SHA-256, in hex, of the SQL transform's statements that wrote the
+	// epoch; empty without one.
+	SQLDigest string `json:"sql_digest,omitempty"`
 	// The files the dataflow staged for a destination that loads them, by
 	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
@@ -332,8 +357,13 @@ type Record struct {
 	Flink *FlinkCheckpoint `json:"flink,omitempty"`
 	// The newest reset the log has taken, carried from record to record: an
 	// attempt reads again the streams of resets newer than it.
-	Reset     string    `json:"reset,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Reset string `json:"reset,omitempty"`
+	// The streams that this record's attempt read again from the start, by
+	// the resets it took, set only on its first record: its epoch started
+	// from the record before without their positions and the state of the
+	// statements that read them.
+	ResetStreams []string  `json:"reset_streams,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // FlinkCheckpoint is where a Flink pipeline's record stands in Flink's
@@ -348,7 +378,9 @@ type FlinkCheckpoint struct {
 	From string `json:"from,omitempty"`
 }
 
-// Coverage is what one committable holds: rows of its splits.
+// Coverage is what one committable holds: rows of its splits. With a SQL
+// transform, a split is named once for each output whose rows of it the
+// committable holds.
 type Coverage struct {
 	Splits []CoveredSplit `json:"splits,omitempty"`
 }
@@ -357,6 +389,9 @@ type Coverage struct {
 type CoveredSplit struct {
 	Stream string `json:"stream"`
 	ID     string `json:"id,omitempty"`
+	// With a SQL transform: the output, which a statement writes from
+	// Stream, whose rows of the split these are.
+	Output string `json:"output,omitempty"`
 	// Nil: all of them.
 	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
 	// Where the split's part of the epoch began: its state at the barrier
@@ -366,7 +401,8 @@ type CoveredSplit struct {
 	// The rows the split emitted in the epoch, to every writer lane; 0 if
 	// not known.
 	Rows uint64 `json:"rows,omitempty"`
-	// With KeyGroups: the stream's primary key, whose groups they are.
+	// With KeyGroups: the primary key whose groups they are, Output's with
+	// one, else the stream's.
 	Key []string `json:"key,omitempty"`
 }
 

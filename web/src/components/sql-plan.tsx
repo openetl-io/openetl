@@ -5,7 +5,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Callout } from "@/components/callout";
 import { OperatorChange, type OperatorPlan, type SchemaColumn, type StatementPlan, type ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
 import { duration, durationMs } from "@/lib/format";
-import { changeLabel, changeText, classLabel, operatorComputes, position, type SqlMessage } from "@/lib/sql-plan";
+import { changeLabel, changeText, classLabel, heldText, operatorComputes, position, type SqlMessage } from "@/lib/sql-plan";
 
 /** A place in the SQL, as line:column. */
 export function SqlPosition({ line, column }: { line: number; column: number }) {
@@ -202,7 +202,9 @@ export function SqlOperators({ operators }: { operators: OperatorPlan[] }) {
                   <div>
                     <Badge variant={op.change === OperatorChange.KEPT ? "secondary" : "outline"}>{changeLabel[op.change]}</Badge>
                   </div>
-                  <span className="text-[0.8125rem] text-muted-foreground">{changeText(op)}</span>
+                  <span className="text-[0.8125rem] text-muted-foreground">
+                    {changeText(op)} {heldText(op)}
+                  </span>
                   {op.backfill.length > 0 && (
                     <span className="text-[0.8125rem] text-muted-foreground">
                       A backfill builds it from the start:{" "}

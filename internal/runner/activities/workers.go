@@ -113,7 +113,7 @@ func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", in.Attempt, "worker", j.GetWorker())
+	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", in.Attempt, "worker", j.GetWorker()+1)
 	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
 	if err != nil {
 		return err
@@ -156,6 +156,9 @@ func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 		}
 		if job.HeldURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.HeldDir); err != nil {
 			return errs.Wrap(errs.ConfigInvalid, err, "held values' location")
+		}
+		if job.StateURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.StateDir); err != nil {
+			return errs.Wrap(errs.ConfigInvalid, err, "state's location")
 		}
 	}
 	if size != (resources.Size{}) {

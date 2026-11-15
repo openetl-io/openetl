@@ -201,6 +201,7 @@ func TestAGroupWindowClosesAsItsReadGoesOn(t *testing.T) {
 		SQL:         &runner.SQLTransform{SQL: sql, Expected: exp, Operators: []string{a.Statements[0].Operator}},
 		Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 2, Logger: opts.Logger,
 		QuarantineURL: "file://" + dir,
+		StateURL:      "file://" + t.TempDir(),
 		Settings:      delivery.Settings{Require: delivery.AtLeastOnce, CommitInterval: 20 * time.Millisecond, Scope: destination.ScopePipeline},
 		Drain:         drain,
 		OnCheckpoint: func(rec *checkpoint.Record, _ map[string]uint64) {

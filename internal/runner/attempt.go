@@ -153,6 +153,9 @@ type Job struct {
 	SchemaPolicy    SchemaPolicy
 	// Where the dataflow keeps records it can't take, as Plan says.
 	QuarantineURL string
+	// Where the dataflow's stateful operators keep their state, as Plan
+	// says.
+	StateURL string
 	// Infinite dates and timestamps are quarantined instead of clamped.
 	QuarantineInfinity bool
 	Dataflow           Dataflow
@@ -356,6 +359,9 @@ func (j *Job) transformed() bool { return j.ownCode() || j.SQL != nil }
 // destination.
 func (j *Job) ownCode() bool { return j.Transform != nil || j.Flink != nil }
 
+// keepsState: the SQL has stateful operators, whose state the records name.
+func (j *Job) keepsState() bool { return j.SQL != nil && len(j.SQL.Operators) > 0 }
+
 // sinkStreams are the destination's streams.
 func (j *Job) sinkStreams() []Stream {
 	if j.transformed() {
@@ -500,7 +506,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		for i := range every {
 			every[i] = i
 		}
-		rs, err := job.settleCommittables(rctx, res.Generation, recovering, every, forced, log)
+		rs, err := job.settleCommittables(rctx, res.Generation, recovering, prev, every, forced, log)
 		if err != nil {
 			return res, err
 		}
@@ -562,7 +568,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 		restored = prev
 	}
-	restored, reset := job.restoring(restored, log)
+	restored, reset, resetStreams := job.restoring(restored, log)
 	if restored != nil {
 		res.Restored = restored.Epoch
 	}
@@ -590,7 +596,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	span.End()
 
 	c := &coordinator{job: &job, sess: sess, w: w, ws: ws, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reset: reset,
-		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
+		resetStreams: resetStreams, reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
 		holds: holds, holdPlans: holdPlans}
 	for _, p := range holdPlans {
 		c.replaying = c.replaying || p.Replay != nil
@@ -761,10 +767,10 @@ func markForced(rec *checkpoint.Record, streams []Stream) {
 	}
 }
 
-// reset returns rec with the positions of the streams of resets newer than
-// its own dropped, as a copy, the newest reset it then carries, and those
-// streams. A stream keeps its schema and holds: the destination still has
-// them. A paused stream is reset too, so it carries no position and reads
+// reset returns rec with the positions and watermarks of the streams of
+// resets newer than its own dropped, as a copy, the newest reset it then
+// carries, and those streams. A stream keeps its schema and holds: the
+// destination still has them. A paused stream is reset too, so it carries no position and reads
 // from the start once it's resumed. The state of a statement that reads one
 // goes too, so the statement builds it again from the new read, and so does
 // state no statement of the job keeps, which the engine wouldn't restore.
@@ -797,6 +803,15 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 	if rec == nil {
 		return nil, newest, streams
 	}
+	cp := j.restart(rec, streams)
+	cp.Reset = newest
+	return cp, newest, streams
+}
+
+// restart is rec as an attempt that reads streams again from the start
+// restores it, a copy: without their positions, the state of the
+// statements that read them, or the state no statement keeps.
+func (j *Job) restart(rec *checkpoint.Record, streams []string) *checkpoint.Record {
 	cp := *rec
 	cp.Streams = maps.Clone(rec.Streams)
 	cp.Forced, cp.Reread = slices.Clone(rec.Forced), slices.Clone(rec.Reread)
@@ -805,7 +820,7 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 		if !ok {
 			continue
 		}
-		st.State, st.Splits, st.Complete, st.ReadStart = nil, nil, false, 0
+		st.State, st.Splits, st.Complete, st.ReadStart, st.Watermark = nil, nil, false, 0, nil
 		cp.Streams[name] = st
 		cp.Forced = slices.DeleteFunc(cp.Forced, func(s string) bool { return s == name })
 		cp.Reread = slices.DeleteFunc(cp.Reread, func(s string) bool { return s == name })
@@ -822,14 +837,19 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 		}
 	}
 	cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return !kept[s.Operator] })
-	cp.Reset = newest
-	return &cp, newest, streams
+	return &cp
 }
 
 // doneStreams are those a retry within the sync doesn't read again.
 func (j *Job) doneStreams(restored *checkpoint.Record) map[string]bool {
+	return doneIn(restored, j.Sync)
+}
+
+// doneIn are the streams that an attempt of sync, restoring restored,
+// doesn't read again: those that completed earlier in the sync.
+func doneIn(restored *checkpoint.Record, sync string) map[string]bool {
 	done := map[string]bool{}
-	if restored != nil && j.Sync != "" && restored.Sync == j.Sync {
+	if restored != nil && sync != "" && restored.Sync == sync {
 		for name, st := range restored.Streams {
 			done[name] = st.Complete
 		}
@@ -987,6 +1007,26 @@ func flush(ctx context.Context, staging Staging, e destination.Epoch, log *slog.
 // restored splits, and a read that starts gets the source's, from where the
 // last one's ended.
 func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done map[string]bool) (map[string][]checkpoint.SplitState, error) {
+	return j.startSplits(restored, done, func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error) {
+		splits, err := j.newSplits(ctx, s, ended)
+		if err != nil {
+			return nil, err
+		}
+		var out []checkpoint.SplitState
+		for _, sp := range splits {
+			out = append(out, checkpoint.SplitState{ID: sp.ID, State: sp.State})
+		}
+		return out, nil
+	})
+}
+
+// startSplits are each stream's splits as an attempt that restores
+// restored starts: a read it continues, or one that completed earlier in
+// the sync (done), keeps its restored splits, and a read that starts gets
+// those fresh gives it, from where the last read's ended (nil for none),
+// with the last read's watermarks carried. The floors of an attempt's
+// lanes are these splits'.
+func (j *Job) startSplits(restored *checkpoint.Record, done map[string]bool, fresh func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error)) (map[string][]checkpoint.SplitState, error) {
 	out := make(map[string][]checkpoint.SplitState, len(j.Streams))
 	for _, s := range j.Streams {
 		prev, starts := j.startsRead(restored, done, s)
@@ -1001,14 +1041,11 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		if prev == nil {
 			ended = nil
 		}
-		splits, err := j.newSplits(ctx, s, ended)
+		splits, err := fresh(s, ended)
 		if err != nil {
 			return nil, err
 		}
-		for _, sp := range splits {
-			out[s.Name] = append(out[s.Name], checkpoint.SplitState{ID: sp.ID, State: sp.State})
-		}
-		out[s.Name] = carryMarks(s.EventTime, prev, out[s.Name])
+		out[s.Name] = carryMarks(s.EventTime, prev, splits)
 	}
 	return out, nil
 }
@@ -1294,6 +1331,9 @@ type coordinator struct {
 	res *Result
 	// The newest reset the attempt took, which its records carry.
 	reset string
+	// Owned by the committer: the streams the attempt reads again from the
+	// start by the resets it took, which its first record names.
+	resetStreams []string
 
 	events      chan event
 	commits     chan commitReq
@@ -1419,6 +1459,7 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 	}
 	if j.SQL != nil {
 		plan.SQL, plan.Outputs, plan.OutputSchemas = j.SQL, j.Outputs, outputSchemas
+		plan.StateURL = j.StateURL
 	}
 	if len(holdPlans) > 0 {
 		plan.HeldURL, plan.Holds = j.HeldURL, holdPlans
@@ -1823,13 +1864,15 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		KeyGroups:    c.job.keyGroups(),
 		Committables: make([][]byte, len(st.descs)),
 		Files:        recordFiles(st.flow.Files()),
-		Snapshots:    st.flow.Snapshots,
+		Snapshots:    checkpoint.KeptSnapshots(st.flow.Snapshots),
 		Quarantine:   st.flow.Quarantine,
 		Sync:         c.job.Sync,
 		Flink:        st.flink,
 		Reset:        c.reset,
+		ResetStreams: c.resetStreams,
 		CreatedAt:    time.Now().UTC(),
 	}
+	c.resetStreams = nil
 	if c.syncRows != nil {
 		for name, rows := range st.rows {
 			c.syncRows[name] += rows
@@ -1873,7 +1916,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for i, d := range st.descs {
 		rec.Committables[i] = d
 	}
-	rec.Coverage = st.coverage
+	rec.Coverage, rec.SQLDigest = st.coverage, c.job.SQL.digest()
 	if err := retry(ctx, func() error { return c.sess.Commit(ctx, rec) }, checkpoint.ErrFenced); err != nil {
 		return nil, fmt.Errorf("runner: record checkpoint %d: %w", n, err)
 	}

@@ -13,8 +13,8 @@ import (
 )
 
 const insertMirroredCheckpoint = `-- name: InsertMirroredCheckpoint :execrows
-INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage, operators)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 ON CONFLICT DO NOTHING
 `
 
@@ -30,6 +30,7 @@ type InsertMirroredCheckpointParams struct {
 	Streams            []byte
 	Progress           []byte
 	Usage              []byte
+	Operators          []string
 }
 
 func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirroredCheckpointParams) (int64, error) {
@@ -45,6 +46,7 @@ func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirror
 		arg.Streams,
 		arg.Progress,
 		arg.Usage,
+		arg.Operators,
 	)
 	if err != nil {
 		return 0, err
@@ -90,6 +92,32 @@ func (q *Queries) LastCommits(ctx context.Context, orgID uuid.UUID) ([]LastCommi
 		return nil, err
 	}
 	return items, nil
+}
+
+const latestCheckpointState = `-- name: LatestCheckpointState :one
+SELECT c.streams, c.operators FROM checkpoint_mirror c
+WHERE c.org_id = $1 AND c.pipeline_id = $2
+ORDER BY c.epoch DESC, c.generation DESC
+LIMIT 1
+`
+
+type LatestCheckpointStateParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+type LatestCheckpointStateRow struct {
+	Streams   []byte
+	Operators []string
+}
+
+// The streams and the stateful operators of the pipeline's newest mirrored
+// checkpoint.
+func (q *Queries) LatestCheckpointState(ctx context.Context, arg LatestCheckpointStateParams) (LatestCheckpointStateRow, error) {
+	row := q.db.QueryRow(ctx, latestCheckpointState, arg.OrgID, arg.PipelineID)
+	var i LatestCheckpointStateRow
+	err := row.Scan(&i.Streams, &i.Operators)
+	return i, err
 }
 
 const latestMirroredStreams = `-- name: LatestMirroredStreams :one

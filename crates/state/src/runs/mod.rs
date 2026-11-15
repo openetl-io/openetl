@@ -218,7 +218,8 @@ pub trait Objects: Send + Sync {
     /// Writes `name`, and refuses with [`Error::Store`] if it exists.
     fn put_new<'a>(&'a self, name: &'a str, data: Bytes) -> BoxFuture<'a, Result<()>>;
 
-    /// Bytes `range` of `name`, all of them.
+    /// Bytes `range` of `name`, all of them. A missing `name` is
+    /// [`Error::Corrupt`]: only a snapshot names a run to read.
     fn get_range<'a>(&'a self, name: &'a str, range: Range<u64>) -> BoxFuture<'a, Result<Bytes>>;
 }
 
@@ -272,9 +273,13 @@ impl Objects for ObjectStorage {
                     .bytes()
                     .await
             };
-            let b = read
-                .await
-                .map_err(|e| Error::Store(format!("reading run {name}: {e}")))?;
+            // A run a snapshot names that isn't there won't be on a retry.
+            let b = read.await.map_err(|e| match e {
+                object_store::Error::NotFound { .. } => {
+                    Error::Corrupt(format!("run {name}, which a snapshot names, is missing"))
+                }
+                e => Error::Store(format!("reading run {name}: {e}")),
+            })?;
             match b.len() as u64 == want {
                 true => Ok(b),
                 false => Err(Error::Corrupt(format!(

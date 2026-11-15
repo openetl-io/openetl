@@ -153,7 +153,7 @@ Below the cards, **State** lists each statement that keeps state between rows, s
 
 - **Operator**: the name that the pipeline's checkpoints give the statement's state, with the output and the statement's place.
 - **Keeps**: what the statement computes, and how long it keeps each window, in the time of the rows.
-- **State**: **Kept**, **New**, **Changed**, **Dropped** or **Unknown**, against the pipeline's current version. **Changed** means that an edit changed what the statement computes, so its state starts empty. When the pipeline has already read the stream, the row also shows the command that reads the stream again to build the state.
+- **State**: **Kept**, **New**, **Changed**, **Dropped** or **Unknown**, against the pipeline's current version. **Changed** means that an edit changed what the statement computes, so its state starts empty. When the pipeline has already read the stream, the row also shows the command that reads the stream again to build the state. The row also says whether the pipeline's last checkpoint holds the state, where that is known.
 
 **Passed through** lists the source's streams that no statement writes, and **Not delivered** the ones left out.
 

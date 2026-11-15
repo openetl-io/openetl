@@ -77,7 +77,7 @@ func TestPlanShowsWhatAnEditDoesToState(t *testing.T) {
 	sp, after := planned("INSERT INTO revenue_by_minute\nSELECT count(*) AS n, sum(o.amount) AS revenue, o.region, window_start AS minute\nFROM orders AS o\n" +
 		"GROUP BY tumble(o.created_at, INTERVAL '60 seconds'), o.region;\n\n" +
 		"INSERT INTO orders_by_hour\nSELECT window_start, count(*) AS orders\nFROM orders\nGROUP BY tumble(created_at, INTERVAL '30 minutes')")
-	ops, warnings, notes := plan.Operators(sp, cat, after, applied, map[string]bool{"orders": true})
+	ops, warnings, notes := plan.Operators(sp, cat, after, applied, map[string]bool{"orders": true}, nil)
 	var out bytes.Buffer
 	printOperators(&out, ops)
 	t.Logf("\n%s", out.String())

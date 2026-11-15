@@ -51,7 +51,7 @@ func TestOperatorsAgainstTheCurrentVersion(t *testing.T) {
 		window(8, "clicks_by_minute", "clicks", "window-c"),
 	}}
 	read := map[string]bool{"orders": true, "clicks": true}
-	ops, warnings, notes := Operators(windowSpec(30*time.Second), windowCatalog, a, applied, read)
+	ops, warnings, notes := Operators(windowSpec(30*time.Second), windowCatalog, a, applied, read, nil)
 	type row struct {
 		id, output, replaces string
 		change               apiv1.OperatorChange
@@ -97,11 +97,11 @@ func TestOperatorsAgainstTheCurrentVersion(t *testing.T) {
 // the current version's plan, what each is to it isn't known.
 func TestOperatorsOfANewPipelineAndAnUnplannedVersion(t *testing.T) {
 	a := &sqlplan.Answer{Statements: []sqlplan.Statement{window(1, "kept", "orders", "window-k")}}
-	ops, warnings, notes := Operators(windowSpec(0), windowCatalog, a, &apiv1.SqlPlan{}, nil)
+	ops, warnings, notes := Operators(windowSpec(0), windowCatalog, a, &apiv1.SqlPlan{}, nil, nil)
 	if len(ops) != 1 || ops[0].GetChange() != apiv1.OperatorChange_OPERATOR_CHANGE_NEW || len(ops[0].GetBackfill()) != 0 || len(warnings) != 0 || len(notes) != 0 {
 		t.Errorf("new pipeline: %v %v %v", ops, warnings, notes)
 	}
-	ops, warnings, notes = Operators(windowSpec(0), windowCatalog, a, nil, map[string]bool{"orders": true})
+	ops, warnings, notes = Operators(windowSpec(0), windowCatalog, a, nil, map[string]bool{"orders": true}, nil)
 	if len(ops) != 1 || ops[0].GetChange() != apiv1.OperatorChange_OPERATOR_CHANGE_UNSPECIFIED || len(ops[0].GetBackfill()) != 0 || len(warnings) != 0 || len(notes) != 0 {
 		t.Errorf("unplanned: %v %v %v", ops, warnings, notes)
 	}
@@ -113,11 +113,11 @@ func TestOperatorsOfANewPipelineAndAnUnplannedVersion(t *testing.T) {
 func TestOperatorsSayAnEarlierOperatorMayRestore(t *testing.T) {
 	applied := &apiv1.SqlPlan{Outputs: []*apiv1.SqlOutput{{Name: "other", Operator: "window-o"}}, Operators: []string{"window-o"}, Dropped: []string{"window-a"}}
 	a := &sqlplan.Answer{Statements: []sqlplan.Statement{window(1, "other", "orders", "window-o"), window(3, "back", "orders", "window-a")}}
-	ops, warnings, _ := Operators(windowSpec(0), windowCatalog, a, applied, nil)
+	ops, warnings, _ := Operators(windowSpec(0), windowCatalog, a, applied, nil, nil)
 	if len(ops) != 2 || ops[1].GetChange() != apiv1.OperatorChange_OPERATOR_CHANGE_NEW || !ops[1].GetEarlier() || ops[0].GetEarlier() {
 		t.Fatalf("%v", ops)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0].GetMessage(), "if no sync has run since, the checkpoint still holds its state, and the next sync restores it if it can") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0].GetMessage(), "if no sync has run since, the checkpoint still holds its state, and the next sync restores it;") {
 		t.Errorf("%v", warnings)
 	}
 
@@ -125,7 +125,7 @@ func TestOperatorsSayAnEarlierOperatorMayRestore(t *testing.T) {
 	// A again: A takes B's place, and its state may still be there.
 	b := &apiv1.SqlPlan{Outputs: []*apiv1.SqlOutput{{Name: "out", Operator: "window-b"}}, Operators: []string{"window-b"}, Dropped: []string{"window-a"}}
 	a = &sqlplan.Answer{Statements: []sqlplan.Statement{window(1, "out", "orders", "window-a")}}
-	ops, warnings, _ = Operators(windowSpec(0), windowCatalog, a, b, nil)
+	ops, warnings, _ = Operators(windowSpec(0), windowCatalog, a, b, nil, nil)
 	if len(ops) != 1 || ops[0].GetChange() != apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED || ops[0].GetReplaces() != "window-b" || !ops[0].GetEarlier() {
 		t.Fatalf("%v", ops)
 	}
@@ -145,5 +145,32 @@ func TestSQLPlanDropsWhatTheVersionBeforeKept(t *testing.T) {
 	if !slices.Equal(p.GetOperators(), []string{"window-b", "window-z"}) || !slices.Equal(p.GetDropped(), []string{"window-a", "window-c"}) ||
 		p.GetOutputs()[0].GetOperator() != "window-b" {
 		t.Errorf("%v", p)
+	}
+}
+
+// Where the pipeline's last checkpoint says which operators' state it
+// holds, each operator says so, an earlier operator restores only state
+// that's there, and a dropped one with nothing held has nothing to drop.
+func TestOperatorsSayWhatTheLastCheckpointHolds(t *testing.T) {
+	applied := &apiv1.SqlPlan{Outputs: []*apiv1.SqlOutput{{Name: "kept", Operator: "window-k"}, {Name: "gone", Operator: "window-g"}},
+		Operators: []string{"window-k", "window-g"}, Dropped: []string{"window-a", "window-b"}}
+	a := &sqlplan.Answer{Statements: []sqlplan.Statement{
+		window(1, "kept", "orders", "window-k"), window(2, "back", "orders", "window-a"), window(3, "also", "orders", "window-b")}}
+	ops, warnings, notes := Operators(windowSpec(0), windowCatalog, a, applied, nil, map[string]bool{"window-k": true, "window-a": true})
+	if len(ops) != 4 {
+		t.Fatalf("%v", ops)
+	}
+	held := func(i int) bool { return ops[i].Held != nil && ops[i].GetHeld() }
+	if !held(0) || !held(1) || held(2) || ops[2].Held == nil || held(3) || ops[3].Held == nil {
+		t.Errorf("held: %v", ops)
+	}
+	if !ops[1].GetEarlier() || ops[2].GetEarlier() {
+		t.Errorf("earlier: %v", ops)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0].GetMessage(), "window-a is an operator an earlier version had, and the pipeline's last checkpoint still holds its state") {
+		t.Errorf("warnings: %v", warnings)
+	}
+	if len(notes) != 0 {
+		t.Errorf("notes for a dropped operator with nothing held: %v", notes)
 	}
 }

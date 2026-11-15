@@ -65,7 +65,7 @@ func (j *Job) OnWorkers(workers int) error {
 		return errs.New(errs.ConfigInvalid, "runner: %d workers", workers)
 	}
 	_, engineSink := j.Destination.(EngineSink)
-	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode(), SQL: j.SQL != nil, Stateful: j.stateful()}
+	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode(), Stateful: j.stateful()}
 	if why := plan.OnePod(facts); why != "" {
 		return errs.Wrap(errs.ConfigInvalid, &OnePodError{Why: why}, "")
 	}
@@ -97,10 +97,11 @@ type fleet struct {
 	writerWorkers []int
 	order         map[checkpoint.SplitRef]int
 	// Where the workers' engines exchange rows: each writer lane's key
-	// groups, and the primary key of each of the destination's streams
-	// whose rows any worker's lanes send to any writer lane.
+	// groups, and by stream, the destination's streams its rows reach
+	// through the exchange, which any worker's lanes send to any writer
+	// lane.
 	ranges   []plan.KeyGroupRange
-	crossing map[string][]string
+	crossing map[string][]crossed
 	// The bytes an epoch reads before the coordinator asks for a barrier,
 	// each worker's share of it its threshold.
 	maxBytes atomic.Int64
@@ -320,11 +321,13 @@ func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 // cross adds to each writer lane's part of an epoch, refs by writer lane,
 // the splits of streams whose rows the workers' engines exchange that
 // another worker read: any lane sends their rows to any writer lane, so a
-// writer lane's committable holds its key groups of every split read.
+// writer lane's committable holds its key groups of every split read, for
+// each of the destination's streams they reach through the exchange.
 func (f *fleet) cross(refs [][]*attemptv1.SplitRef) {
 	if len(f.crossing) == 0 {
 		return
 	}
+	type covered struct{ stream, split, output string }
 	var read []*attemptv1.SplitRef
 	seen := map[checkpoint.SplitRef]bool{}
 	for _, rs := range refs {
@@ -337,17 +340,19 @@ func (f *fleet) cross(refs [][]*attemptv1.SplitRef) {
 		}
 	}
 	for w := range refs {
-		has := map[checkpoint.SplitRef]bool{}
+		has := map[covered]bool{}
 		for _, r := range refs[w] {
-			has[checkpoint.SplitRef{Stream: r.GetStream(), ID: r.GetSplit()}] = true
+			has[covered{r.GetStream(), r.GetSplit(), r.GetOutput()}] = true
 		}
 		for _, r := range read {
-			if has[checkpoint.SplitRef{Stream: r.GetStream(), ID: r.GetSplit()}] {
-				continue
+			for _, x := range f.crossing[r.GetStream()] {
+				if has[covered{r.GetStream(), r.GetSplit(), x.output}] {
+					continue
+				}
+				c := proto.CloneOf(r)
+				c.Output, c.KeyGroups, c.Key = x.output, attempt.KeyGroups(f.ranges[w].First, f.ranges[w].Last), x.key
+				refs[w] = append(refs[w], c)
 			}
-			c := proto.CloneOf(r)
-			c.KeyGroups, c.Key = attempt.KeyGroups(f.ranges[w].First, f.ranges[w].Last), f.crossing[r.GetStream()]
-			refs[w] = append(refs[w], c)
 		}
 	}
 }
@@ -461,7 +466,7 @@ func splitStateOf(p *attemptv1.SplitPosition) checkpoint.SplitState {
 func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
 	var c checkpoint.Coverage
 	for _, r := range refs {
-		cs := checkpoint.CoveredSplit{Stream: r.GetStream(), ID: r.GetSplit(), From: r.GetFrom(), Rows: r.GetRows(), Key: r.GetKey()}
+		cs := checkpoint.CoveredSplit{Stream: r.GetStream(), ID: r.GetSplit(), Output: r.GetOutput(), From: r.GetFrom(), Rows: r.GetRows(), Key: r.GetKey()}
 		if kg := r.GetKeyGroups(); kg != nil {
 			cs.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
 		}
@@ -629,7 +634,7 @@ func (r remoteWriter) Commit(ctx context.Context, e destination.Epoch, staged []
 				err = answerErr(ans.GetError())
 			}
 			if err != nil {
-				failed[worker] = fmt.Errorf("worker %d's writer lanes %v: %w", worker, lanes, err)
+				failed[worker] = fmt.Errorf("worker %d's writer lanes %v: %w", worker+1, lanes, err)
 			}
 		})
 	}
@@ -753,7 +758,13 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	byLane := settlesByLane(j.Destination.Capabilities(), recovering)
 	var settled destination.Recovery
 	if byLane {
-		if settled, err = settleOnWorkers(rctx, co, n, recovering, settle.GetRecord(), settle.GetForced()); err != nil {
+		var previous []byte
+		if at.prev != nil {
+			if previous, err = json.Marshal(at.prev); err != nil {
+				return res, err
+			}
+		}
+		if settled, err = settleOnWorkers(rctx, co, n, recovering, settle.GetRecord(), previous, settle.GetForced()); err != nil {
 			return res, err
 		}
 	}
@@ -787,7 +798,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 		}
 		restored = at.prev
 	}
-	restored, reset := j.restoring(restored, log)
+	restored, reset, resetStreams := j.restoring(restored, log)
 	if restored != nil {
 		res.Restored = restored.Epoch
 	}
@@ -812,9 +823,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 		if a.Exchange, err = attempt.NewExchange(); err != nil {
 			return res, err
 		}
-		if f.crossing, err = j.crossing(); err != nil {
-			return res, err
-		}
+		f.crossing = j.crossing()
 	}
 	for i, s := range a.GetSplits() {
 		f.order[checkpoint.SplitRef{Stream: s.GetSplit().GetStream(), ID: s.GetSplit().GetSplit().GetId()}] = i
@@ -840,7 +849,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	span.End()
 
 	c := &coordinator{job: j, sess: sess, w: remoteWriter{f}, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reset: reset,
-		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}, fleet: f,
+		resetStreams: resetStreams, reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}, fleet: f,
 		holds: holds, holdPlans: holdPlans}
 	for _, p := range holdPlans {
 		c.replaying = c.replaying || p.Replay != nil
@@ -872,8 +881,9 @@ func (j *Job) startSchemas(restored *checkpoint.Record) map[ownedKey][]byte {
 
 // settleOnWorkers has the workers settle rec's committables, raw as the
 // log holds it, those that hold rows of one split on one worker, and says
-// how: Redone if any was.
-func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *checkpoint.Record, raw []byte, forced []string) (destination.Recovery, error) {
+// how: Redone if any was. previous is the record before rec, as JSON; nil
+// for none.
+func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *checkpoint.Record, raw, previous []byte, forced []string) (destination.Recovery, error) {
 	groups := settleGroups(rec, n)
 	got := make([][]destination.Recovery, n)
 	g, gctx := errgroup.WithContext(ctx)
@@ -882,16 +892,16 @@ func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *ch
 			continue
 		}
 		g.Go(func() error {
-			ans, err := co.Call(gctx, w, &attemptv1.Call{Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{Record: raw, Committables: which, Forced: forced}}})
+			ans, err := co.Call(gctx, w, &attemptv1.Call{Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{Record: raw, Committables: which, Forced: forced, Previous: previous}}})
 			if err == nil {
 				err = answerErr(ans.GetError())
 			}
 			if err != nil {
-				return fmt.Errorf("runner: worker %d settling writer lanes %v of epoch %d: %w", w, which, rec.Epoch, err)
+				return fmt.Errorf("runner: worker %d settling writer lanes %v of epoch %d: %w", w+1, which, rec.Epoch, err)
 			}
 			rs := ans.GetSettled().GetRecoveries()
 			if len(rs) != len(which) {
-				return errs.New(errs.Internal, "runner: worker %d settled %d of writer lanes %v", w, len(rs), which)
+				return errs.New(errs.Internal, "runner: worker %d settled %d of writer lanes %v", w+1, len(rs), which)
 			}
 			for _, r := range rs {
 				got[w] = append(got[w], destination.Recovery(r))
@@ -1116,27 +1126,51 @@ func capLanes(groups int, lanes, writers []int) error {
 	return nil
 }
 
-// crossing is, for an attempt whose workers' engines exchange rows, the
-// primary key of each stream whose rows they exchange, by the name its
-// committables' coverage gives its splits. A SQL transform's coverage names
-// the splits of the streams it reads, not of the outputs its exchange
-// sends, so it has none: only a destination whose writer lanes commit on
-// their own reads coverage, to redo a lane, and plan.OnePod keeps a SQL
-// transform into one on one pod.
-func (j *Job) crossing() (map[string][]string, error) {
-	if j.SQL != nil {
-		if j.Destination.Capabilities().LaneCommits {
-			return nil, errs.New(errs.Internal, "runner: a SQL transform on workers into a destination whose writer lanes commit on their own, whose redo couldn't find what its exchange sent")
-		}
-		return nil, nil
-	}
-	out := map[string][]string{}
+// crossed is one of the destination's streams that a stream's rows reach
+// through an exchange, as its coverage names it: Output, with a SQL
+// transform, and the key whose groups the exchange sends rows by.
+type crossed struct {
+	output string
+	key    []string
+}
+
+// crossing is, for an attempt whose workers' engines exchange rows, by each
+// stream the source reads whose rows they exchange, the destination's
+// streams its rows reach through the exchange.
+func (j *Job) crossing() map[string][]crossed {
+	out := map[string][]crossed{}
 	for _, s := range j.Streams {
-		if j.keyGrouped(s) {
-			out[s.Name] = s.PrimaryKey
+		for _, d := range j.fedBy(s.Name) {
+			if !j.keyGrouped(d) {
+				continue
+			}
+			c := crossed{key: d.PrimaryKey}
+			if j.SQL != nil {
+				c.output = d.Name
+			}
+			out[s.Name] = append(out[s.Name], c)
 		}
 	}
-	return out, nil
+	return out
+}
+
+// fedBy is the destination's streams that a stream the source reads
+// reaches: itself, or with a SQL transform, each output written from it,
+// the stream passed through among them.
+func (j *Job) fedBy(stream string) []Stream {
+	if j.SQL == nil {
+		if k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == stream }); k >= 0 {
+			return j.Streams[k : k+1]
+		}
+		return nil
+	}
+	var out []Stream
+	for _, o := range j.Outputs {
+		if o.From == stream {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 // meshed says an attempt on n workers has their engines exchange rows
@@ -1211,7 +1245,7 @@ func layoutString(a *attemptv1.Assignment) string {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		fmt.Fprintf(&b, "%s/%s→%d", s.GetSplit().GetStream(), s.GetSplit().GetSplit().GetId(), a.GetLanes()[s.GetLane()].GetWorker())
+		fmt.Fprintf(&b, "%s/%s→%d", s.GetSplit().GetStream(), s.GetSplit().GetSplit().GetId(), a.GetLanes()[s.GetLane()].GetWorker()+1)
 	}
 	return b.String()
 }
