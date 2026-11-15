@@ -30,6 +30,7 @@ mod staging;
 mod store;
 mod telemetry;
 mod transform;
+mod watermark;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

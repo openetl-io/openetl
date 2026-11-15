@@ -208,6 +208,30 @@ message StreamPlan {
   // lane's part of an epoch. A destination's stream with a primary key.
   // Unset: every row.
   KeyGroupRange key_groups = 14;
+  // A stream a transform reads whose rows' time is a column's: how its
+  // watermarks go. Its edges' Split frames say which split each batch is
+  // of. Unset: it has none, and neither do the outputs it feeds.
+  EventTime event_time = 15;
+}
+
+// EventTime is how a stream's watermarks are made. A split's watermark is
+// the latest time it has read less delay_micros, or what its Split frames
+// say, whichever is later, and never goes back. A lane's is the least of
+// its splits', and a lane without splits holds none back from its first
+// barrier on. An output's watermark is the least of the streams it's
+// written from, each the least of its lanes'.
+message EventTime {
+  // Its name in the stream, under source names. Its values are timestamps
+  // or dates.
+  string column = 1;
+  int64 delay_micros = 2;
+  // Its rows aren't read in the order of their time, so a split's
+  // watermark comes only from its Split frames.
+  bool held = 3;
+  // The least watermark of the stream's splits as the attempt starts, of
+  // every engine's, in microseconds since the Unix epoch: what a lane that
+  // takes the stream's outputs from others starts at. Unset: none.
+  optional int64 floor = 4;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -443,6 +467,16 @@ message EpochReady {
   // without a transform: destination names and metadata columns. Empty
   // without a transform.
   map<string, bytes> output_schemas = 9;
+  // The watermarks of the splits of each stream with event time, by
+  // stream, each at its lane's barrier: every split a lane has, complete
+  // ones included.
+  map<string, SplitWatermarks> watermarks = 10;
+}
+
+message SplitWatermarks {
+  // By split ID, in microseconds since the Unix epoch; the largest int64 is
+  // the end of its input. A split without one is missing.
+  map<string, int64> splits = 1;
 }
 
 // StreamHolds is a stream's holds at its barrier.
@@ -521,6 +555,10 @@ message StreamMetrics {
   uint64 bytes_out = 5;
   uint64 rows_quarantined = 6;
   uint64 cells_held = 7;
+  // A stream with event time: the least of its lanes' watermarks, in
+  // microseconds since the Unix epoch; for an output, the least of its
+  // writer lanes'. Unset: it has none yet.
+  optional int64 watermark = 8;
 }
 
 message CommitRequest {
