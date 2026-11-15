@@ -349,7 +349,7 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 
 		QuarantineUrl:      plan.QuarantineURL,
 		SchemaPolicy:       schemaPolicies[plan.Policy],
-		QuarantineInfinity: plan.QuarantineInfinity,
+		UnfitInfinity:      plan.UnfitInfinity,
 		HeldUrl:            plan.HeldURL,
 		Lanes:              ints.Uint32(plan.Lanes),
 		WriterLanes:        ints.Uint32(plan.WriterLanes),

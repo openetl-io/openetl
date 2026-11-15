@@ -250,12 +250,12 @@ func TestAWidenedColumnIsReleasedToANewVersion(t *testing.T) {
 }
 
 // A value that doesn't fit its type holds its cell when the stream says
-// quarantine: cell, and the rest of its row lands. Once the column's type
+// unfitValues: hold, and the rest of its row lands. Once the column's type
 // is overridden to one that takes it, and the user has altered the column
 // to match, a release patches it in.
 func TestAHeldCellIsPatchedInAfterAnOverride(t *testing.T) {
 	startRunner(t)
-	stream := `{"name": "items", "sync": "incremental", "cursor": "at", "quarantine": "cell"}`
+	stream := `{"name": "items", "sync": "incremental", "cursor": "at", "unfitValues": "hold"}`
 	name, _, dst := heldSetup(t, "heldcell", "p numeric(10, 2), note text",
 		"(id, p, note) SELECT i, CASE WHEN i = 7 THEN 'NaN'::numeric ELSE i END, 'n' || i FROM generate_series(1, 20) i", stream)
 	if status, stats := syncNow(t, name); status != "succeeded" {
@@ -276,7 +276,7 @@ func TestAHeldCellIsPatchedInAfterAnOverride(t *testing.T) {
 	in := schema(name)
 	apply(t, fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
 		"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q, "streams": [{"name": "items", "sync": "incremental", "cursor": "at",
-			"quarantine": "cell", "columns": {"p": {"type": "string"}}}]},
+			"unfitValues": "hold", "columns": {"p": {"type": "string"}}}]},
 		"destination": {"ref": %q, "namespace": %q, "write": "merge"}, "delivery": {"require": "effectively_once"}}}`,
 		name, name, name, in+"_dst"))
 	run(t, "ALTER TABLE "+dst+" ALTER COLUMN p TYPE text")

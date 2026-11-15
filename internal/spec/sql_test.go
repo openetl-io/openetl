@@ -71,10 +71,10 @@ func TestParseSQLTransform(t *testing.T) {
 		// The stream as the destination gets it holds, collapses and
 		// changes types as these say; the plan checks where it can.
 		"holds, collapse and typeChanges": {strings.Replace(continuous, "eventTime: at}",
-			"eventTime: at, quarantine: cell, held: last, groups: [[x, y]], collapse: false, typeChanges: allow, columns: {x: {held: null}}}", 1) +
+			"eventTime: at, unfitValues: hold, held: last, groups: [[x, y]], collapse: false, typeChanges: allow, columns: {x: {held: null}}}", 1) +
 			"  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
 			s := p.GetSource().GetStreams()[0]
-			return s.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL && s.GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_LAST &&
+			return s.GetUnfitValues() == apiv1.UnfitValues_UNFIT_VALUES_HOLD && s.GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_LAST &&
 				len(s.GetGroups()) == 1 && s.Collapse != nil && !*s.Collapse && s.GetTypeChanges() == apiv1.TypeChanges_TYPE_CHANGES_ALLOW &&
 				s.GetColumns()["x"].GetHeld().GetMode() == apiv1.HeldMode_HELD_MODE_NULL
 		}},

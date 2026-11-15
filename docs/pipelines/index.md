@@ -206,7 +206,7 @@ The `transform.sql` section has:
 
 A statement that writes a source stream's name replaces that stream: the output is written in its place. The output takes the stream's entry in `destination.tables` and its `require`. The `streams` section lists what the destination gets: the outputs, and the streams that pass through.
 
-The output also takes the stream's `quarantine`, `held`, `heldValue`, `groups` and `typeChanges`, and holds columns as the stream would without a transform. The `streams` section says `columns' types change in place` for each output whose `typeChanges` is `allow`. A setting that applies to nothing the destination gets is a problem, such as `collapse` on a stream that a statement replaces. [Settings and holds of outputs](../reference/specs/pipeline.md#settings-and-holds-of-outputs) lists these cases.
+The output also takes the stream's `unfitValues`, `held`, `heldValue`, `groups` and `typeChanges`, and holds columns as the stream would without a transform. The `streams` section says `columns' types change in place` for each output whose `typeChanges` is `allow`. A setting that applies to nothing the destination gets is a problem, such as `collapse` on a stream that a statement replaces. [Settings and holds of outputs](../reference/specs/pipeline.md#settings-and-holds-of-outputs) lists these cases.
 
 Errors in the SQL are problems, with the line and column in the SQL text. A statement of a class that only a later tier runs, such as a group window, is a problem that names the tier:
 
@@ -341,7 +341,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | `timestamps` | `microsecond`, or `nanosecond` for a destination that keeps them | `microsecond`; finer values are truncated |
 | `require` | This stream's lowest acceptable delivery guarantee, overriding `delivery.require` | The pipeline's |
 | `collapse` | For a stream without a primary key: rows with the same content become one row | On for a stream that may be read twice and requires more than at least once |
-| `quarantine` | What a value that doesn't fit its type holds back: its `row`, or only its `cell` (a keyed stream into a destination that patches) | `row` |
+| `unfitValues` | What a value that doesn't fit its column's type does: `quarantine` its row, which isn't written, or `hold` its cell, for a keyed stream into a destination that patches. `hold` still quarantines a row whose value can't be held ([Holds and quarantine](./holds-and-quarantine.md)) | `quarantine` |
 | `held`, `heldValue` | What a held cell shows: `null`, a `value` given in `heldValue`, or `last`, the destination's value (merge only); also under `columns.NAME` for one column | `null` |
 | `groups` | Lists of columns held together: holding one holds the rest | |
 | `typeChanges` | `refuse` or `allow`, overriding `destination.typeChanges` for this stream | The destination's |
@@ -362,13 +362,13 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 
 | Field | What it does | Unset |
 |---|---|---|
-| `schemaPolicy` | What a change to a stream's schema does. `allow_all` adds columns and widens types, and sends a type change that isn't a widening to a new column; `allow_columns` adds columns and widens types, but holds other type changes or fails when they cannot be held; `block` holds changes or fails the stream; `ignore_new` drops new columns and quarantines values that don't fit | `allow_all` |
+| `schemaPolicy` | What a change to a stream's schema does. `allow_all` adds columns and widens types, and sends a type change that isn't a widening to a new column; `allow_columns` adds columns and widens types, but holds other type changes or fails when they cannot be held; `block` holds changes or fails the stream; `ignore_new` drops new columns, and values that don't fit follow `unfitValues` | `allow_all` |
 | `delivery.require` | The lowest guarantee any stream may have: `at_least_once`, `effectively_once` or `exactly_once` | `exactly_once` |
 | `delivery.commit.interval` | How often to commit what's been read | 5 minutes in a scheduled pipeline; in a continuous one, the destination's own interval, or 10 seconds |
 | `delivery.commit.maxBytes` | Commit once this much has been read since the last commit | `256MB`, which grows when commits can't keep up |
 | `delivery.commit.scope` | Commit every stream together (`pipeline`) or each on its own (`stream`) | `pipeline` where the destination can, otherwise `stream` |
 | `delivery.resumePointTimeout` | How long a commit waits for a point the source can resume from exactly, before committing without one where the stream keeps its guarantee anyway; `none` waits forever | `1m` |
-| `types.infinity` | What becomes of infinite dates and timestamps: `clamp` to the type's largest or smallest value, or `quarantine` | `clamp` |
+| `types.infinity` | What becomes of infinite dates and timestamps: `clamp` to the type's largest or smallest value, or `unfit`, which makes them values that don't fit, for `unfitValues` | `clamp` |
 
 ### After and between
 

@@ -3,7 +3,7 @@ title: Handle schema changes and holds
 description: Inspect a schema change, repair and release a hold, or choose a new column or discard its held values.
 ---
 
-A stream's schema and a destination's existing columns are separate. OpenETL can widen the stream's type without permission to change the destination's column. By default, the destination refuses that type change and OpenETL holds the column where it can, or stops the stream. [Concepts](../get-started/concepts.md#schema-changes-and-holds) explains holds; this guide walks through inspecting and clearing one.
+A stream's schema and a destination's existing columns are separate. OpenETL can widen the stream's type without permission to change the destination's column. By default, the destination refuses that type change and OpenETL holds the column where it can, or stops the stream. [Holds and quarantine](./holds-and-quarantine.md) explains holds; this guide walks through inspecting and clearing one.
 
 ## Choose the policy
 
@@ -11,9 +11,9 @@ Set `schemaPolicy` on the pipeline and `destination.typeChanges` on the write si
 
 | Setting | Decision |
 |---|---|
-| `schemaPolicy` | Whether new columns and changes to the stream's schema are accepted, blocked, versioned or quarantined. |
+| `schemaPolicy` | Whether new columns and changes to the stream's schema are accepted, held, versioned or ignored. |
 | `destination.typeChanges` | Whether a destination connector may change an existing column's type. The default is `refuse`. |
-| `source.streams[].quarantine` | Whether a value that does not fit holds back its row or its cell. Cell holds require a primary key and a destination that can patch values. |
+| `source.streams[].unfitValues` | Whether a value that does not fit its type quarantines its row, which is not written, or holds its cell. Cell holds require a primary key and a destination that can patch values. [Holds and quarantine](./holds-and-quarantine.md) explains the difference. |
 | `held`, `heldValue`, `groups` | What replaces held cells in delivered rows, and which columns must be held together. |
 
 Use the [pipeline reference](../reference/specs/pipeline.md#schema) for each policy and its requirements. Allowing a type change can rewrite or lock a destination table; keep the default when a person should review that change first. A destination without hold support fails the stream rather than continuing with held values.
@@ -55,7 +55,7 @@ openetl apply -f examples/schema-holds.yaml
 openetl syncs schema-demo
 ```
 
-Run from the repository root. [`examples/schema-holds.yaml`](../../examples/schema-holds.yaml) defines both connections and the pipeline. It reads `docs_source.orders` incrementally by `updated_at`, merges by `id` into `docs_target.orders`, requires effectively-once delivery, and uses cell quarantine. It leaves `typeChanges` at `refuse`.
+Run from the repository root. [`examples/schema-holds.yaml`](../../examples/schema-holds.yaml) defines both connections and the pipeline. It reads `docs_source.orders` incrementally by `updated_at`, merges by `id` into `docs_target.orders`, requires effectively-once delivery, and holds cells whose values do not fit (`unfitValues: hold`). It leaves `typeChanges` at `refuse`.
 
 Wait until the first sync succeeds. Query the destination to confirm the row with `amount = 100` landed.
 

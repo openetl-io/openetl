@@ -33,15 +33,16 @@ pub enum Infinity {
     /// To the logical type's largest or smallest value.
     #[default]
     Clamp,
-    /// Rejected with reason `range`.
-    Quarantine,
+    /// A value that doesn't fit, with reason `range`: its row is
+    /// quarantined, or its cell held.
+    Unfit,
 }
 
 impl Infinity {
     fn apply<T>(self, limit: T) -> Result<T, Unfit> {
         match self {
             Infinity::Clamp => Ok(limit),
-            Infinity::Quarantine => Err(Unfit::new("range", "is infinite")),
+            Infinity::Unfit => Err(Unfit::new("range", "is infinite")),
         }
     }
 }
@@ -1224,7 +1225,7 @@ mod tests {
     #[test]
     fn infinities_clamp_or_quarantine() {
         use arrow_array::{Date32Array, TimestampMicrosecondArray, TimestampNanosecondArray};
-        let q = Infinity::Quarantine;
+        let q = Infinity::Unfit;
         assert_eq!(
             reason(date("infinity", q)),
             "range: column \"c\" is infinite"

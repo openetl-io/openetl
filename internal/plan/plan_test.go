@@ -409,7 +409,7 @@ func TestTransformOutputs(t *testing.T) {
 
 func TestHoldProblem(t *testing.T) {
 	takes := destination.Capabilities{Holds: destination.Holds{ByKey: true, ByID: true, Guarded: true}}
-	cell := &apiv1.PipelineStream{Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL}
+	cell := &apiv1.PipelineStream{UnfitValues: apiv1.UnfitValues_UNFIT_VALUES_HOLD}
 	last := &apiv1.PipelineStream{Columns: map[string]*apiv1.PipelineColumn{"c": {Held: &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_LAST}}}}
 	for name, c := range map[string]struct {
 		caps  destination.Capabilities

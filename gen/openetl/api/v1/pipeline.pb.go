@@ -197,8 +197,10 @@ type Infinity int32
 const (
 	Infinity_INFINITY_UNSPECIFIED Infinity = 0
 	// To the type's largest or smallest value. The default.
-	Infinity_INFINITY_CLAMP      Infinity = 1
-	Infinity_INFINITY_QUARANTINE Infinity = 2
+	Infinity_INFINITY_CLAMP Infinity = 1
+	// A value that doesn't fit its type, which the stream's unfit_values
+	// decides.
+	Infinity_INFINITY_UNFIT Infinity = 2
 )
 
 // Enum value maps for Infinity.
@@ -206,12 +208,12 @@ var (
 	Infinity_name = map[int32]string{
 		0: "INFINITY_UNSPECIFIED",
 		1: "INFINITY_CLAMP",
-		2: "INFINITY_QUARANTINE",
+		2: "INFINITY_UNFIT",
 	}
 	Infinity_value = map[string]int32{
 		"INFINITY_UNSPECIFIED": 0,
 		"INFINITY_CLAMP":       1,
-		"INFINITY_QUARANTINE":  2,
+		"INFINITY_UNFIT":       2,
 	}
 )
 
@@ -349,54 +351,58 @@ func (TypeChanges) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{5}
 }
 
-type QuarantineScope int32
+// What a value that doesn't fit its column's type does.
+type UnfitValues int32
 
 const (
-	QuarantineScope_QUARANTINE_SCOPE_UNSPECIFIED QuarantineScope = 0
-	// The default.
-	QuarantineScope_QUARANTINE_SCOPE_ROW QuarantineScope = 1
-	// For a keyed stream into a destination that patches its write mode.
-	QuarantineScope_QUARANTINE_SCOPE_CELL QuarantineScope = 2
+	UnfitValues_UNFIT_VALUES_UNSPECIFIED UnfitValues = 0
+	// Its row isn't written, and is quarantined with the reason. The default.
+	UnfitValues_UNFIT_VALUES_QUARANTINE UnfitValues = 1
+	// The row is written with the cell held, to be patched in on release.
+	// For a keyed stream into a destination that patches its write mode. A
+	// value in a column that can't be held, such as a key, still quarantines
+	// its row.
+	UnfitValues_UNFIT_VALUES_HOLD UnfitValues = 2
 )
 
-// Enum value maps for QuarantineScope.
+// Enum value maps for UnfitValues.
 var (
-	QuarantineScope_name = map[int32]string{
-		0: "QUARANTINE_SCOPE_UNSPECIFIED",
-		1: "QUARANTINE_SCOPE_ROW",
-		2: "QUARANTINE_SCOPE_CELL",
+	UnfitValues_name = map[int32]string{
+		0: "UNFIT_VALUES_UNSPECIFIED",
+		1: "UNFIT_VALUES_QUARANTINE",
+		2: "UNFIT_VALUES_HOLD",
 	}
-	QuarantineScope_value = map[string]int32{
-		"QUARANTINE_SCOPE_UNSPECIFIED": 0,
-		"QUARANTINE_SCOPE_ROW":         1,
-		"QUARANTINE_SCOPE_CELL":        2,
+	UnfitValues_value = map[string]int32{
+		"UNFIT_VALUES_UNSPECIFIED": 0,
+		"UNFIT_VALUES_QUARANTINE":  1,
+		"UNFIT_VALUES_HOLD":        2,
 	}
 )
 
-func (x QuarantineScope) Enum() *QuarantineScope {
-	p := new(QuarantineScope)
+func (x UnfitValues) Enum() *UnfitValues {
+	p := new(UnfitValues)
 	*p = x
 	return p
 }
 
-func (x QuarantineScope) String() string {
+func (x UnfitValues) String() string {
 	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
 }
 
-func (QuarantineScope) Descriptor() protoreflect.EnumDescriptor {
+func (UnfitValues) Descriptor() protoreflect.EnumDescriptor {
 	return file_openetl_api_v1_pipeline_proto_enumTypes[6].Descriptor()
 }
 
-func (QuarantineScope) Type() protoreflect.EnumType {
+func (UnfitValues) Type() protoreflect.EnumType {
 	return &file_openetl_api_v1_pipeline_proto_enumTypes[6]
 }
 
-func (x QuarantineScope) Number() protoreflect.EnumNumber {
+func (x UnfitValues) Number() protoreflect.EnumNumber {
 	return protoreflect.EnumNumber(x)
 }
 
-// Deprecated: Use QuarantineScope.Descriptor instead.
-func (QuarantineScope) EnumDescriptor() ([]byte, []int) {
+// Deprecated: Use UnfitValues.Descriptor instead.
+func (UnfitValues) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{6}
 }
 
@@ -3320,10 +3326,9 @@ type PipelineStream struct {
 	// primary key. Unset: true for a superset stream whose require is above
 	// at least once, otherwise false.
 	Collapse *bool `protobuf:"varint,7,opt,name=collapse,proto3,oneof" json:"collapse,omitempty"`
-	// What a value that doesn't fit its type holds back: its row,
-	// the default, or only its cell, for a keyed stream into a destination
-	// that patches.
-	Quarantine QuarantineScope `protobuf:"varint,8,opt,name=quarantine,proto3,enum=openetl.api.v1.QuarantineScope" json:"quarantine,omitempty"`
+	// What a value that doesn't fit its type does: quarantines its row, the
+	// default, or holds its cell where the cell can be held.
+	UnfitValues UnfitValues `protobuf:"varint,8,opt,name=unfit_values,json=unfitValues,proto3,enum=openetl.api.v1.UnfitValues" json:"unfit_values,omitempty"`
 	// What a held cell shows, for columns the columns map doesn't say.
 	Held *Held `protobuf:"bytes,9,opt,name=held,proto3" json:"held,omitempty"`
 	// Columns held together, by source name: holding one holds the rest.
@@ -3419,11 +3424,11 @@ func (x *PipelineStream) GetCollapse() bool {
 	return false
 }
 
-func (x *PipelineStream) GetQuarantine() QuarantineScope {
+func (x *PipelineStream) GetUnfitValues() UnfitValues {
 	if x != nil {
-		return x.Quarantine
+		return x.UnfitValues
 	}
-	return QuarantineScope_QUARANTINE_SCOPE_UNSPECIFIED
+	return UnfitValues_UNFIT_VALUES_UNSPECIFIED
 }
 
 func (x *PipelineStream) GetHeld() *Held {
@@ -7628,7 +7633,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\atrigger\"\\\n" +
 	"\x0ePipelineSource\x12\x10\n" +
 	"\x03ref\x18\x01 \x01(\tR\x03ref\x128\n" +
-	"\astreams\x18\x02 \x03(\v2\x1e.openetl.api.v1.PipelineStreamR\astreams\"\xeb\x05\n" +
+	"\astreams\x18\x02 \x03(\v2\x1e.openetl.api.v1.PipelineStreamR\astreams\"\xea\x05\n" +
 	"\x0ePipelineStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\x04sync\x18\x02 \x01(\x0e2\x18.openetl.api.v1.SyncModeR\x04sync\x12\x16\n" +
@@ -7638,10 +7643,8 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"timestamps\x18\x05 \x01(\x0e2\x1d.openetl.api.v1.TimestampUnitR\n" +
 	"timestamps\x127\n" +
 	"\arequire\x18\x06 \x01(\x0e2\x1d.openetl.api.v1.DeliveryLevelR\arequire\x12\x1f\n" +
-	"\bcollapse\x18\a \x01(\bH\x00R\bcollapse\x88\x01\x01\x12?\n" +
-	"\n" +
-	"quarantine\x18\b \x01(\x0e2\x1f.openetl.api.v1.QuarantineScopeR\n" +
-	"quarantine\x12(\n" +
+	"\bcollapse\x18\a \x01(\bH\x00R\bcollapse\x88\x01\x01\x12>\n" +
+	"\funfit_values\x18\b \x01(\x0e2\x1b.openetl.api.v1.UnfitValuesR\vunfitValues\x12(\n" +
 	"\x04held\x18\t \x01(\v2\x14.openetl.api.v1.HeldR\x04held\x123\n" +
 	"\x06groups\x18\n" +
 	" \x03(\v2\x1b.openetl.api.v1.ColumnGroupR\x06groups\x12>\n" +
@@ -7975,11 +7978,11 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x17DBT_COMMAND_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11DBT_COMMAND_BUILD\x10\x01\x12\x13\n" +
 	"\x0fDBT_COMMAND_RUN\x10\x02\x12\x14\n" +
-	"\x10DBT_COMMAND_TEST\x10\x03*Q\n" +
+	"\x10DBT_COMMAND_TEST\x10\x03*L\n" +
 	"\bInfinity\x12\x18\n" +
 	"\x14INFINITY_UNSPECIFIED\x10\x00\x12\x12\n" +
-	"\x0eINFINITY_CLAMP\x10\x01\x12\x17\n" +
-	"\x13INFINITY_QUARANTINE\x10\x02*h\n" +
+	"\x0eINFINITY_CLAMP\x10\x01\x12\x12\n" +
+	"\x0eINFINITY_UNFIT\x10\x02*h\n" +
 	"\fPipelineMode\x12\x1d\n" +
 	"\x19PIPELINE_MODE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17PIPELINE_MODE_SCHEDULED\x10\x01\x12\x1c\n" +
@@ -7987,11 +7990,11 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\vTypeChanges\x12\x1c\n" +
 	"\x18TYPE_CHANGES_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13TYPE_CHANGES_REFUSE\x10\x01\x12\x16\n" +
-	"\x12TYPE_CHANGES_ALLOW\x10\x02*h\n" +
-	"\x0fQuarantineScope\x12 \n" +
-	"\x1cQUARANTINE_SCOPE_UNSPECIFIED\x10\x00\x12\x18\n" +
-	"\x14QUARANTINE_SCOPE_ROW\x10\x01\x12\x19\n" +
-	"\x15QUARANTINE_SCOPE_CELL\x10\x02*b\n" +
+	"\x12TYPE_CHANGES_ALLOW\x10\x02*_\n" +
+	"\vUnfitValues\x12\x1c\n" +
+	"\x18UNFIT_VALUES_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17UNFIT_VALUES_QUARANTINE\x10\x01\x12\x15\n" +
+	"\x11UNFIT_VALUES_HOLD\x10\x02*b\n" +
 	"\bHeldMode\x12\x19\n" +
 	"\x15HELD_MODE_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eHELD_MODE_NULL\x10\x01\x12\x13\n" +
@@ -8086,7 +8089,7 @@ var file_openetl_api_v1_pipeline_proto_goTypes = []any{
 	(Infinity)(0),                          // 3: openetl.api.v1.Infinity
 	(PipelineMode)(0),                      // 4: openetl.api.v1.PipelineMode
 	(TypeChanges)(0),                       // 5: openetl.api.v1.TypeChanges
-	(QuarantineScope)(0),                   // 6: openetl.api.v1.QuarantineScope
+	(UnfitValues)(0),                       // 6: openetl.api.v1.UnfitValues
 	(HeldMode)(0),                          // 7: openetl.api.v1.HeldMode
 	(TimestampUnit)(0),                     // 8: openetl.api.v1.TimestampUnit
 	(ColumnType)(0),                        // 9: openetl.api.v1.ColumnType
@@ -8277,7 +8280,7 @@ var file_openetl_api_v1_pipeline_proto_depIdxs = []int32{
 	115, // 66: openetl.api.v1.PipelineStream.columns:type_name -> openetl.api.v1.PipelineStream.ColumnsEntry
 	8,   // 67: openetl.api.v1.PipelineStream.timestamps:type_name -> openetl.api.v1.TimestampUnit
 	14,  // 68: openetl.api.v1.PipelineStream.require:type_name -> openetl.api.v1.DeliveryLevel
-	6,   // 69: openetl.api.v1.PipelineStream.quarantine:type_name -> openetl.api.v1.QuarantineScope
+	6,   // 69: openetl.api.v1.PipelineStream.unfit_values:type_name -> openetl.api.v1.UnfitValues
 	49,  // 70: openetl.api.v1.PipelineStream.held:type_name -> openetl.api.v1.Held
 	50,  // 71: openetl.api.v1.PipelineStream.groups:type_name -> openetl.api.v1.ColumnGroup
 	5,   // 72: openetl.api.v1.PipelineStream.type_changes:type_name -> openetl.api.v1.TypeChanges
