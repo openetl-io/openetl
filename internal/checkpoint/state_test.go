@@ -1,6 +1,7 @@
 package checkpoint_test
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -119,6 +120,28 @@ func TestPruneKeepsTheStateKeptRecordsName(t *testing.T) {
 		if slices.Contains(got, gone) {
 			t.Errorf("%s is left", gone)
 		}
+	}
+}
+
+// A record that won't read names nothing, so a Prune from it fails and
+// deletes no state: the record before it may still be restored.
+func TestPruneFromARecordThatWontReadKeepsState(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	a := claim(t, l, "a")
+	named := []string{run(t, store, lane("w", 1, 1))}
+	commitNaming(t, a, 1, named...)
+	named = append(named, run(t, store, lane("w", 1, 2)))
+	head := commitNaming(t, a, 2, named...)
+	b := claim(t, l, "b")
+	if err := store.Delete(t.Context(), fmt.Sprintf("org/pipe/_checkpoints/%020d-g%020d.json", head.Epoch, head.Generation)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Prune(t.Context(), head, 2); !errors.Is(err, checkpoint.ErrUnreadable) {
+		t.Fatalf("Prune: %v, want ErrUnreadable", err)
+	}
+	if got := runs(t, store); !slices.Equal(got, named) {
+		t.Errorf("state %v, want %v", got, named)
 	}
 }
 

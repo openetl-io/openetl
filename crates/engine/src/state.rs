@@ -128,6 +128,16 @@ pub fn named(operator: &str, s: &Snapshot) -> Result<StateSnapshot, JobError> {
     })
 }
 
+/// The first key group of `range` that none of an operator's `snapshots`
+/// holds, where it has any: a record names an operator's state on every
+/// lane, which hold every key group between them, or on none.
+pub fn uncovered(snapshots: &[&Snapshot], range: KeyGroupRange) -> Option<u32> {
+    if snapshots.is_empty() {
+        return None;
+    }
+    (range.first..=range.last).find(|g| !snapshots.iter().any(|s| s.range.contains(*g)))
+}
+
 /// A snapshot the record names, and its operator.
 pub fn snapshot(s: &StateSnapshot) -> Result<(String, Snapshot), JobError> {
     let Some(r) = &s.key_groups else {

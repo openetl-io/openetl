@@ -5973,27 +5973,70 @@ pub(crate) mod tests {
         assert!(e.message.contains("no state URL"), "{}", e.message);
     }
 
-    /// A record whose snapshots don't hold every key group of a lane's
-    /// range fails the job as a corrupt checkpoint, and says how to start
-    /// the state again.
+    /// A record whose snapshots of an operator don't hold every key group
+    /// fails the job as a corrupt checkpoint, and says how to start the
+    /// state again: on a lane that a snapshot holds part of, and on one
+    /// that none does, which doesn't start empty.
     #[tokio::test]
     async fn state_the_record_names_in_part_fails_the_job() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         let (_, first) = first_spanning_job(&state, false).await;
-        let mut req = window_request(&state, MINUTES, 1, 2, 2);
-        req.restored_snapshots = first[0].snapshots[..1].to_vec();
+        assert_eq!(first[0].snapshots.len(), 2);
+        let mut failed = 0;
+        for lanes in [1, 2] {
+            let mut req = window_request(&state, MINUTES, lanes, 2, 2);
+            req.restored_snapshots = first[0].snapshots[..1].to_vec();
+            let mut h = start_lanes(req);
+            h.end_all(2).await;
+            let err = h.job.await.unwrap().unwrap_err();
+            assert_eq!(err.code, ErrorCode::CheckpointCorrupt, "on {lanes} lanes");
+            assert!(
+                err.message
+                    .contains("can't open the state the checkpoint names")
+                    && err
+                        .message
+                        .contains("none of its snapshots holds key group")
+                    && err.message.contains("openetl reset --stream a NAME"),
+                "on {lanes} lanes: {}",
+                err.message
+            );
+            failed += 1;
+        }
+        assert_eq!(failed, 2);
+    }
+
+    /// A run the record names that's gone fails the job as a corrupt
+    /// checkpoint, which no retry reads.
+    #[tokio::test]
+    async fn a_missing_run_fails_the_job_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (_, first) = first_spanning_job(&state, false).await;
+        let run = first[0]
+            .snapshots
+            .iter()
+            .flat_map(|s| &s.runs)
+            .next()
+            .unwrap();
+        std::fs::remove_file(state.join(run)).unwrap();
+        let mut req = window_request(&state, MINUTES, 2, 2, 2);
+        req.restored_snapshots = first[0].snapshots.clone();
+        // Restored at the record's watermark, the lanes read their timers.
+        event_time(&mut req).floor = Some(least_mark(&first[0]));
         let mut h = start_lanes(req);
         h.end_all(2).await;
         let err = h.job.await.unwrap().unwrap_err();
         assert_eq!(err.code, ErrorCode::CheckpointCorrupt);
-        assert!(
-            err.message
-                .contains("can't open the state the checkpoint names")
-                && err.message.contains("openetl reset --stream a NAME"),
-            "{}",
-            err.message
-        );
+        assert!(err.message.contains("is missing"), "{}", err.message);
+    }
+
+    fn least_mark(r: &EpochReady) -> i64 {
+        split_marks(r, "a")
+            .into_iter()
+            .map(|(_, m)| m)
+            .min()
+            .unwrap()
     }
 
     /// A cell the stream holds, in a column the window doesn't read, leaves

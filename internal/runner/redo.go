@@ -123,6 +123,16 @@ func (j *Job) applyRecorded(ctx context.Context, w destination.Writer, applied m
 	return a, err
 }
 
+// redoStart is the record rec's epoch started from: before, the record
+// before rec, as the attempt that wrote rec restored it, without what the
+// resets that attempt took dropped.
+func (j *Job) redoStart(rec, before *checkpoint.Record) *checkpoint.Record {
+	if before == nil || rec.Reset == before.Reset {
+		return before
+	}
+	return j.restart(before, rec.ResetStreams)
+}
+
 // redoRead is a covered split read again: from where its part of the epoch
 // began, to where the record has it, and the rows it emitted on the way; 0
 // if not known.
@@ -217,6 +227,7 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 			schemas[name] = st.Schema
 		}
 	}
+	before = j.redoStart(rec, before)
 	plan := rj.plan(gen, rec.Epoch, before, readStarts, schemas, outputSchemas(rec), nil)
 	plan.KeyGroupRanges, plan.FirstLane = ranges, i
 	plan.StateReadOnly = true

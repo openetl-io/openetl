@@ -231,12 +231,32 @@ pub(super) async fn run(
             t.sql.inputs[st.input].lateness,
             plan.key_groups,
         )?;
-        let restored: Vec<openetl_state::Snapshot> = plan
+        // A record names an operator's state on every lane, or on none
+        // where none has written any: then the lane starts empty.
+        let named: Vec<&openetl_state::Snapshot> = plan
             .state
             .restored
             .iter()
-            .filter(|(o, s)| o == id && s.range.overlaps(&range))
-            .map(|(_, s)| s.clone())
+            .filter(|(o, _)| o == id)
+            .map(|(_, s)| s)
+            .collect();
+        let cant_open = |why: String| {
+            let stream = &t.sql.inputs[st.input].name;
+            format!(
+                "transform.sql {}: the group window writing {} can't open the state the checkpoint names, {why}. Reset stream {stream} to build the state again from a new read of it: openetl reset --stream {stream} NAME",
+                st.at, st.output
+            )
+        };
+        if let Some(g) = crate::state::uncovered(&named, range) {
+            return Err(JobError::new(
+                ErrorCode::CheckpointCorrupt,
+                cant_open(format!("as none of its snapshots holds key group {g}")),
+            ));
+        }
+        let restored: Vec<openetl_state::Snapshot> = named
+            .into_iter()
+            .filter(|s| s.range.overlaps(&range))
+            .cloned()
             .collect();
         let Some(state) = &plan.state.job else {
             return Err(JobError::internal("a group window without the job's state"));
@@ -250,15 +270,8 @@ pub(super) async fn run(
         )
         .await
         .map_err(|e| {
-            let stream = &t.sql.inputs[st.input].name;
             let err = crate::state::state_error("its state", &e);
-            JobError::new(
-                err.code,
-                format!(
-                    "transform.sql {}: the group window writing {} can't open the state the checkpoint names, {}. Reset stream {stream} to build the state again from a new read of it: openetl reset --stream {stream} NAME",
-                    st.at, st.output, err.message
-                ),
-            )
+            JobError::new(err.code, cant_open(err.message))
         })?;
         let floor = t.inputs[st.input]
             .event_time

@@ -50,8 +50,10 @@ func (s *Session) pruneState(ctx context.Context, restored *Record, keep int) (d
 
 // namedState is the state objects that keep records along the chain from r
 // name, read from the log: r may be an attempt's copy that names less, as
-// one that takes a reset does. A record the chain can't read ends it, as
-// nothing restores from it or from those before it.
+// one that takes a reset does. r itself must read, or nothing is named and
+// what HEAD's fallback restores could go. A record further on that can't
+// read ends the chain, as nothing restores from it or from those before
+// it.
 func (l *Log) namedState(ctx context.Context, r *Record, keep int) (map[string]bool, error) {
 	named := map[string]bool{}
 	if r == nil {
@@ -61,7 +63,7 @@ func (l *Log) namedState(ctx context.Context, r *Record, keep int) (map[string]b
 	ref := &start
 	for i := 0; ref != nil && i < keep; i++ {
 		rec, err := l.Record(ctx, *ref)
-		if errors.Is(err, ErrUnreadable) {
+		if i > 0 && errors.Is(err, ErrUnreadable) {
 			break
 		}
 		if err != nil {

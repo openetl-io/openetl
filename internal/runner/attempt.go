@@ -599,7 +599,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 	span.End()
 
 	c := &coordinator{job: &job, sess: sess, w: w, ws: ws, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reset: reset,
-		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
+		resetStreams: resetStreams, reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
 		holds: holds, holdPlans: holdPlans}
 	for _, p := range holdPlans {
 		c.replaying = c.replaying || p.Replay != nil
@@ -770,10 +770,10 @@ func markForced(rec *checkpoint.Record, streams []Stream) {
 	}
 }
 
-// reset returns rec with the positions of the streams of resets newer than
-// its own dropped, as a copy, the newest reset it then carries, and those
-// streams. A stream keeps its schema and holds: the destination still has
-// them. A paused stream is reset too, so it carries no position and reads
+// reset returns rec with the positions and watermarks of the streams of
+// resets newer than its own dropped, as a copy, the newest reset it then
+// carries, and those streams. A stream keeps its schema and holds: the
+// destination still has them. A paused stream is reset too, so it carries no position and reads
 // from the start once it's resumed. The state of a statement that reads one
 // goes too, so the statement builds it again from the new read, and so does
 // state no statement of the job keeps, which the engine wouldn't restore.
@@ -806,6 +806,15 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 	if rec == nil {
 		return nil, newest, streams
 	}
+	cp := j.restart(rec, streams)
+	cp.Reset = newest
+	return cp, newest, streams
+}
+
+// restart is rec as an attempt that reads streams again from the start
+// restores it, a copy: without their positions, the state of the
+// statements that read them, or the state no statement keeps.
+func (j *Job) restart(rec *checkpoint.Record, streams []string) *checkpoint.Record {
 	cp := *rec
 	cp.Streams = maps.Clone(rec.Streams)
 	cp.Forced, cp.Reread = slices.Clone(rec.Forced), slices.Clone(rec.Reread)
@@ -814,7 +823,7 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 		if !ok {
 			continue
 		}
-		st.State, st.Splits, st.Complete, st.ReadStart = nil, nil, false, 0
+		st.State, st.Splits, st.Complete, st.ReadStart, st.Watermark = nil, nil, false, 0, nil
 		cp.Streams[name] = st
 		cp.Forced = slices.DeleteFunc(cp.Forced, func(s string) bool { return s == name })
 		cp.Reread = slices.DeleteFunc(cp.Reread, func(s string) bool { return s == name })
@@ -831,8 +840,7 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 		}
 	}
 	cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return !kept[s.Operator] })
-	cp.Reset = newest
-	return &cp, newest, streams
+	return &cp
 }
 
 // doneStreams are those a retry within the sync doesn't read again.
@@ -1303,6 +1311,9 @@ type coordinator struct {
 	res *Result
 	// The newest reset the attempt took, which its records carry.
 	reset string
+	// Owned by the committer: the streams the attempt reads again from the
+	// start by the resets it took, which its first record names.
+	resetStreams []string
 
 	events      chan event
 	commits     chan commitReq
@@ -1838,8 +1849,10 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		Sync:         c.job.Sync,
 		Flink:        st.flink,
 		Reset:        c.reset,
+		ResetStreams: c.resetStreams,
 		CreatedAt:    time.Now().UTC(),
 	}
+	c.resetStreams = nil
 	if c.syncRows != nil {
 		for name, rows := range st.rows {
 			c.syncRows[name] += rows

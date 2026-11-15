@@ -354,8 +354,13 @@ type Record struct {
 	Flink *FlinkCheckpoint `json:"flink,omitempty"`
 	// The newest reset the log has taken, carried from record to record: an
 	// attempt reads again the streams of resets newer than it.
-	Reset     string    `json:"reset,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	Reset string `json:"reset,omitempty"`
+	// The streams that this record's attempt read again from the start, by
+	// the resets it took, set only on its first record: its epoch started
+	// from the record before without their positions and the state of the
+	// statements that read them.
+	ResetStreams []string  `json:"reset_streams,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // FlinkCheckpoint is where a Flink pipeline's record stands in Flink's
