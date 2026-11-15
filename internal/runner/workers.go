@@ -64,7 +64,7 @@ func (j *Job) OnWorkers(workers int) error {
 		return errs.New(errs.ConfigInvalid, "runner: %d workers", workers)
 	}
 	_, engineSink := j.Destination.(EngineSink)
-	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode(), SQL: j.SQL != nil}
+	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode(), SQL: j.SQL != nil, Stateful: j.stateful()}
 	if why := plan.OnePod(facts); why != "" {
 		return errs.Wrap(errs.ConfigInvalid, &OnePodError{Why: why}, "")
 	}

@@ -32,6 +32,9 @@ type Stream struct {
 	// declared types over them. Nil without one.
 	DeclaredSchema []byte `json:"declared_schema,omitempty"`
 	RestoredSchema []byte `json:"restored_schema,omitempty"`
+	// The column of its rows' event time, which group windows go by; empty
+	// for none.
+	EventTime string `json:"event_time,omitempty"`
 }
 
 // Column is a stream's column. Its type is Arrow's, named as the catalog

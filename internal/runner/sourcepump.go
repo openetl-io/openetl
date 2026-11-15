@@ -198,6 +198,7 @@ type sourcePump struct {
 	bytes         int64
 	thresholdSent bool
 	done          bool
+	last          bool // the pending barrier was requested after the read ended
 	forceTimer    *time.Timer
 	forceC        <-chan time.Time
 	// Counts what the source emitted, for the coordinator to skip epochs
@@ -624,7 +625,7 @@ func (p *sourcePump) request(n uint64) error {
 	if p.pending != 0 {
 		return fmt.Errorf("runner: barrier %d requested while %d is being placed", n, p.pending)
 	}
-	p.requested, p.pending, p.unplaced = n, n, 0
+	p.requested, p.pending, p.unplaced, p.last = n, n, 0, p.done
 	p.splits = make(map[string][]checkpoint.SplitState, len(p.order))
 	p.rows = make(map[string]uint64, len(p.order))
 	p.bytes, p.thresholdSent = 0, false
@@ -813,11 +814,11 @@ func (p *sourcePump) placeLane(name string, lane int) error {
 	l.placed = true
 	if st.inTurn {
 		for each := range p.lanes {
-			if err := p.forward(Frame{Kind: FrameBarrier, Lane: each, Stream: name, Epoch: p.pending}); err != nil {
+			if err := p.forward(Frame{Kind: FrameBarrier, Lane: each, Stream: name, Epoch: p.pending, Last: p.last}); err != nil {
 				return err
 			}
 		}
-	} else if err := p.forward(Frame{Kind: FrameBarrier, Lane: lane, Stream: name, Epoch: p.pending}); err != nil {
+	} else if err := p.forward(Frame{Kind: FrameBarrier, Lane: lane, Stream: name, Epoch: p.pending, Last: p.last}); err != nil {
 		return err
 	}
 	held := l.held

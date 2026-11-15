@@ -55,6 +55,9 @@ type Frame struct {
 	// encoded it: an Arrow IPC stream holding one batch.
 	IPC   []byte
 	Epoch uint64
+	// A barrier placed after the stream's read ended: no row of the stream
+	// follows it, so its group windows close at it.
+	Last  bool
 	Ready *Ready
 	// An Arrow IPC stream holding only the schema.
 	Schema []byte

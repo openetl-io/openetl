@@ -62,7 +62,7 @@ func sqlRequest(sql string, streams []runner.Stream, restored map[string][]byte)
 		if !sqlplan.Mentions(sql, s.Name) {
 			continue
 		}
-		st := sqlplan.Stream{Name: s.Name, Changelog: s.Read == source.CDC, Nanoseconds: s.NanosecondTimestamps, RestoredSchema: restored[s.Name]}
+		st := sqlplan.Stream{Name: s.Name, Changelog: s.Read == source.CDC, Nanoseconds: s.NanosecondTimestamps, RestoredSchema: restored[s.Name], EventTime: s.EventTime}
 		if d := s.Declared(); d != nil {
 			if st.DeclaredSchema, err = arrowipc.EncodeSchema(d); err != nil {
 				return req, nil, fmt.Errorf("runner: stream %s's declared schema: %w", s.Name, err)
@@ -233,5 +233,11 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 	if len(outputs) == 0 {
 		return nil, nil, errs.New(errs.ConfigInvalid, "transform.sql: the statements write nothing")
 	}
-	return &runner.SQLTransform{SQL: t.GetSql(), Expected: expected}, outputs, nil
+	var operators []string
+	for _, st := range a.Statements {
+		if st.Operator != "" {
+			operators = append(operators, st.Operator)
+		}
+	}
+	return &runner.SQLTransform{SQL: t.GetSql(), Expected: expected, Operators: operators}, outputs, nil
 }

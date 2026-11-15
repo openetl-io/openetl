@@ -65,6 +65,9 @@ func TestParseSQLTransform(t *testing.T) {
 		"zero delay": {strings.Replace(continuous, "eventTime: at}", "eventTime: at, watermark: {delay: 0s}}", 1) + "  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
 			return p.GetSource().GetStreams()[0].GetWatermark().GetDelay().AsDuration() == 0
 		}},
+		"lateness": {strings.Replace(continuous, "eventTime: at}", "eventTime: at, watermark: {delay: 5s, lateness: 10m}}", 1) + "  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
+			return p.GetSource().GetStreams()[0].GetWatermark().GetLateness().AsDuration().Minutes() == 10
+		}},
 		// The stream as the destination gets it holds, collapses and
 		// changes types as these say; the plan checks where it can.
 		"holds, collapse and typeChanges": {strings.Replace(continuous, "eventTime: at}",
@@ -119,6 +122,7 @@ func TestParseSQLTransformErrors(t *testing.T) {
 		"no eventTime":          {sql("{name: a}, {name: b, watermark: {delay: 1s}}"), "source.streams[1].watermark needs source.streams[1].eventTime"},
 		"delay":                 {sql("{name: a, eventTime: at, watermark: {delay: soon}}"), "source.streams[0].watermark.delay"},
 		"negative delay":        {sql("{name: a, eventTime: at, watermark: {delay: -5s}}"), "source.streams[0].watermark.delay must be zero or more"},
+		"negative lateness":     {sql("{name: a, eventTime: at, watermark: {lateness: -1m}}"), "source.streams[0].watermark.lateness must be zero or more"},
 		"watermark field":       {sql("{name: a, eventTime: at, watermark: {lag: 5s}}"), "lag"},
 		"watermark text":        {sql("{name: a, eventTime: at, watermark: 5s}"), "watermark"},
 		"flinkAccess":           {sql("{name: a}") + "  flinkAccess: {emrRole: 'arn:aws:iam::123456789012:role/r'}\n", "flinkAccess"},

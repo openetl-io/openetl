@@ -1138,6 +1138,10 @@ func TestWhatRunsOnOnePod(t *testing.T) {
 			j.Outputs = j.Streams
 			j.Destination = txnDest{s: newTxnStore(t)}
 		}, true},
+		"a group window": {2, func(j *runner.Job) {
+			j.SQL = &runner.SQLTransform{Operators: []string{"window-1"}}
+			j.Outputs = j.Streams
+		}, true},
 		"holds": {2, func(j *runner.Job) {
 			j.Destination = holdingStagingDest{stagingDest{s: p.store, t: t}}
 			j.HeldURL = "file:///held"

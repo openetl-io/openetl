@@ -76,6 +76,11 @@ type Stream struct {
 	// One of a SQL transform's outputs: the stream its statement reads, or
 	// the stream itself where it passes through.
 	From string
+	// One a SQL transform reads: the column of its rows' event time, which
+	// group windows go by; empty for none.
+	EventTime string
+	// How long after a group window over it closes a row may still come.
+	Lateness time.Duration
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -1436,6 +1441,10 @@ func exchange(s Stream, writers int) []string {
 	return p.Steps[0].Need.Columns
 }
 
+// stateful says the job's SQL transform has a statement with state, as a
+// group window.
+func (j *Job) stateful() bool { return j.SQL != nil && len(j.SQL.Operators) > 0 }
+
 // keyGrouped says a stream's rows meet the writer through an exchange by key
 // group when there is more than one writer lane.
 func (j *Job) keyGrouped(s Stream) bool { return exchange(s, 2) != nil }
@@ -1663,7 +1672,10 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 			c.active = c.fleet.active()
 			return nil
 		}
-		c.readDone, c.active = true, ev.active && ev.epoch == c.next-1
+		// Group windows close at a barrier placed after the read ended, so a
+		// job with one asks for another when none was asked for since, even
+		// if the read emitted nothing after the last.
+		c.readDone, c.active = true, (ev.active || c.job.stateful()) && ev.epoch == c.next-1
 		return nil
 	case evEmitted:
 		c.fleet.emitted = c.fleet.emitted || ev.epoch == c.next-1

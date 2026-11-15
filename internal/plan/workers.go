@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"slices"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/sqlplan"
@@ -16,6 +17,8 @@ type WorkerJob struct {
 	Caps         destination.Capabilities
 	// The engine writes the destination's data.
 	EngineWritten bool
+	// A SQL statement keeps state, as a group window does.
+	Stateful bool
 }
 
 // OnePod says why a job that asks for workers runs on one pod; empty if it
@@ -34,6 +37,10 @@ func OnePod(j WorkerJob) string {
 		return fmt.Sprintf("the destination takes %d writer lanes, fewer than %d workers", caps.Lanes(), j.Workers)
 	case caps.Class == destination.TransactionalStream && !caps.LaneCommits:
 		return "a transactional destination runs on one pod unless its writer lanes commit on their own"
+	case j.Stateful:
+		// Its exchange runs inside one engine, and its state restores where
+		// the record's lanes were, until engines exchange rows between pods.
+		return "a SQL statement with state, as a group window, runs on one pod"
 	case j.SQL && caps.LaneCommits:
 		// A lane's part of an epoch, written again from the source, holds the
 		// rows of the input's splits that reached it, which an exchange of a
@@ -95,7 +102,8 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 	if asked <= 1 {
 		return 0, "", nil
 	}
-	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec), SQL: spec.GetTransform().GetSql() != nil}
+	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec), SQL: spec.GetTransform().GetSql() != nil,
+		Stateful: a != nil && slices.ContainsFunc(a.Statements, func(st sqlplan.Statement) bool { return st.Operator != "" })}
 	if why := OnePod(j); why != "" {
 		return 0, why, nil
 	}

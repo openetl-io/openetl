@@ -134,6 +134,10 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		if ps != nil {
 			s.Collapse = ps.Collapse
 		}
+		if transformed {
+			s.EventTime = ps.GetEventTime()
+			s.Lateness = ps.GetWatermark().GetLateness().AsDuration()
+		}
 		if !transformed && plan.Holds(caps, mode, keyed) {
 			s.Holds = streamHolds(ps)
 		}

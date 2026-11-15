@@ -49,7 +49,8 @@ func parseSQLTransform(n *yaml.Node, passthrough string) (*apiv1.SqlTransform, e
 }
 
 type watermarkYAML struct {
-	Delay string `yaml:"delay"`
+	Delay    string `yaml:"delay"`
+	Lateness string `yaml:"lateness"`
 }
 
 // parseEventTime reads a stream's eventTime and watermark, which only a SQL
@@ -79,6 +80,16 @@ func parseEventTime(at string, s streamYAML, sql bool, st *apiv1.PipelineStream)
 			return fmt.Errorf("%s.watermark.delay must be zero or more", at)
 		}
 		st.Watermark.Delay = d
+	}
+	if s.Watermark.Lateness != "" {
+		d, err := duration(at+".watermark.lateness", s.Watermark.Lateness)
+		if err != nil {
+			return err
+		}
+		if d.AsDuration() < 0 {
+			return fmt.Errorf("%s.watermark.lateness must be zero or more", at)
+		}
+		st.Watermark.Lateness = d
 	}
 	return nil
 }

@@ -414,6 +414,9 @@ func streamPlan(plan runner.Plan, s runner.Stream, restored []byte, sink bool) *
 		NanosecondTimestamps: s.NanosecondTimestamps,
 		Changelog:            s.Read == source.CDC,
 	}
+	if !sink && s.EventTime != "" {
+		sp.EventTime = &enginev1.EventTime{Column: s.EventTime, LatenessMicros: s.Lateness.Microseconds()}
+	}
 	if sink {
 		sp.SoftDeletes = s.Mode == destination.Merge && s.Deletes != destination.HardDelete
 		sp.Holds = holdPlan(plan.Holds[s.Name])
@@ -705,7 +708,7 @@ func encode(f runner.Frame, gen uint64, alloc memory.Allocator, buf *bytes.Buffe
 		}
 		return enginev1.FrameKind_FRAME_KIND_BATCH, buf.Bytes(), nil
 	case runner.FrameBarrier:
-		b, err := proto.Marshal(&enginev1.Barrier{Epoch: &protocolv1.Epoch{Generation: gen, N: f.Epoch}})
+		b, err := proto.Marshal(&enginev1.Barrier{Epoch: &protocolv1.Epoch{Generation: gen, N: f.Epoch}, Last: f.Last})
 		return enginev1.FrameKind_FRAME_KIND_BARRIER, b, err
 	default:
 		return 0, nil, fmt.Errorf("engineclient: unexpected frame kind %d", f.Kind)

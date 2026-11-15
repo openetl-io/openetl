@@ -524,7 +524,7 @@ func printTransform(out io.Writer, t *apiv1.TransformPlan) {
 			reads += "; replaces stream " + st.GetOutput()
 		}
 		if st.GetOperator() != "" {
-			reads += "; operator " + st.GetOperator()
+			reads += "; keeps state as operator " + st.GetOperator()
 		}
 		fmt.Fprintf(tw, "    %d:%d\tINSERT INTO %s\t%s\t%s\t%s\t%s\n", st.GetLine(), st.GetColumn(), st.GetOutput(), st.GetClass(), key, exchange, reads)
 	}

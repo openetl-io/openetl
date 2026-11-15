@@ -402,3 +402,62 @@ func TestSQLRunsOnSeveralLanes(t *testing.T) {
 		}
 	})
 }
+
+// seenFlow records what each input stream's frames are, in order, and runs
+// its own.
+type seenFlow struct {
+	inner runner.Dataflow
+	mu    sync.Mutex
+	seen  map[string][]runner.Frame
+}
+
+func (f *seenFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	through := make(chan runner.Frame)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		defer close(through)
+		for fr := range in {
+			f.mu.Lock()
+			f.seen[fr.Stream] = append(f.seen[fr.Stream], runner.Frame{Kind: fr.Kind, Epoch: fr.Epoch, Last: fr.Last})
+			f.mu.Unlock()
+			select {
+			case through <- fr:
+			case <-gctx.Done():
+				if fr.Batch != nil {
+					fr.Batch.Release()
+				}
+				return gctx.Err()
+			}
+		}
+		return nil
+	})
+	g.Go(func() error { return f.inner.Run(gctx, plan, through, out) })
+	return g.Wait()
+}
+
+// A job with a group window's state ends with a barrier placed after the
+// read ended, marked last, where its windows close; no barrier before it is.
+func TestAStatefulJobsLastBarrierFollowsItsRead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		flow := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}}
+		j := sqlJob(log, "a1", nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
+		j.Dataflow = flow
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []string{"a", "b"} {
+			frames := flow.seen[s]
+			if len(frames) == 0 || frames[len(frames)-1].Kind != runner.FrameBarrier || !frames[len(frames)-1].Last {
+				t.Errorf("stream %s ends %+v", s, frames)
+			}
+			for _, fr := range frames[:len(frames)-1] {
+				if fr.Last {
+					t.Errorf("stream %s has a last barrier before its end: %+v", s, frames)
+				}
+			}
+		}
+	})
+}

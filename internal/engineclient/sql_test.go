@@ -138,3 +138,55 @@ func TestEngineRefusesSQLItCantPlan(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A group window runs on its stream's rows by their event time, keeps its
+// state at each barrier, and closes its windows at the barrier placed after
+// the read ended, in that epoch.
+func TestEngineRunsAGroupWindow(t *testing.T) {
+	ctx := testContext(t)
+	df := &Dataflow{Options: options(t, nil)}
+	in := runner.Stream{
+		Name: "orders",
+		Schema: arrow.NewSchema([]arrow.Field{
+			{Name: "region", Type: arrow.BinaryTypes.String, Nullable: true},
+			{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
+		}, nil),
+		EventTime: "at",
+	}
+	declared, err := arrowipc.EncodeSchema(in.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sql = "INSERT INTO minutes SELECT window_start, region, count(*) AS n FROM orders GROUP BY tumble(at, INTERVAL '1 minute'), region"
+	a, err := Plan(ctx, planEngine(t), sqlplan.Request{SQL: sql, Streams: []sqlplan.Stream{{Name: "orders", DeclaredSchema: declared, EventTime: "at"}}})
+	if err != nil || len(a.Errors) != 0 {
+		t.Fatal(a.Errors, err)
+	}
+	p := plan()
+	p.Pipeline = "windowed"
+	p.Streams = []runner.Stream{in}
+	p.Outputs = []runner.Stream{{Name: "minutes", PrimaryKey: []string{"window_start", "region"}, Transformed: true}}
+	p.SQL = &runner.SQLTransform{SQL: sql, Expected: expected(t, a), Operators: []string{a.Statements[0].Operator}}
+	got, err := run(ctx, df, p,
+		runner.Frame{Kind: runner.FrameRows, Stream: "orders", Rows: rows(`{"region": "eu", "at": "2026-01-01T00:00:10Z"}`, `{"region": "eu", "at": "2026-01-01T00:00:20Z"}`)},
+		runner.Frame{Kind: runner.FrameBarrier, Stream: "orders", Epoch: 5},
+		runner.Frame{Kind: runner.FrameRows, Stream: "orders", Rows: rows(`{"region": "us", "at": "2026-01-01T00:01:10Z"}`)},
+		runner.Frame{Kind: runner.FrameBarrier, Stream: "orders", Epoch: 6, Last: true},
+	)
+	defer release(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := got["minutes"]
+	if len(m) != 3 || m[0].Kind != runner.FrameBarrier || m[0].Epoch != 5 || m[1].Kind != runner.FrameBatch || m[2].Kind != runner.FrameBarrier {
+		t.Fatalf("minutes: %+v", m)
+	}
+	b := m[1].Batch
+	if b.NumRows() != 2 {
+		t.Fatalf("minutes has %d rows, want 2", b.NumRows())
+	}
+	ready := got[""]
+	if len(ready) != 2 || len(ready[0].Ready.Snapshots) != 1 || ready[0].Ready.Snapshots[0].Operator != a.Statements[0].Operator {
+		t.Fatalf("ready: %+v", ready)
+	}
+}
