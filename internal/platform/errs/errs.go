@@ -107,6 +107,10 @@ func (e *Error) text() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
+// ErrorCode is e's code as the connector protocol has it, which check.Classify
+// reads.
+func (e *Error) ErrorCode() protocolv1.ErrorCode { return protocolv1.ErrorCode(e.Code) }
+
 func New(c Code, format string, args ...any) error {
 	return &Error{Code: c, Msg: fmt.Sprintf(format, args...)}
 }

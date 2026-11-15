@@ -64,35 +64,44 @@ func (c *instance) Close() error {
 	return nil
 }
 
-// checkReport runs the connector's check of its connection. The answer is
-// read as check.FromProto reads it, failing closed; a failure to start or to
-// call the connector is the report's error.
-func (c *instance) checkReport(ctx context.Context) check.Report {
+// checkReport runs the connector's check of its connection: its answer,
+// whatever it says, read as answer reads it; or an error, from a connector
+// that didn't start or didn't answer.
+func (c *instance) checkReport(ctx context.Context) (check.Report, error) {
 	p, err := c.proc(ctx)
 	if err != nil {
-		return check.FromError(err)
+		return check.Report{}, err
 	}
 	resp, err := protocolv1.NewConnectorServiceClient(p.conn).Check(ctx, &protocolv1.CheckRequest{Config: p.config})
 	if err != nil {
-		return check.FromError(p.failure(errs.FromStatus(err)))
+		return check.Report{}, p.unanswered(err)
 	}
-	return check.FromProto(resp)
+	return answer(p.secrets, resp), nil
 }
 
-// preflightReport is a preflight's answer as checkReport reads a check's. A
-// connector that answers Unimplemented has no preflight: its report is
-// empty, and passes.
+// reportErr is a report's error, or the error of a connector that didn't
+// answer.
+func reportErr(r check.Report, err error) error {
+	if err != nil {
+		return err
+	}
+	return r.Err()
+}
+
+// preflightReport is a preflight's answer, or error, as checkReport has a
+// check's. A connector that answers Unimplemented has no preflight: its
+// report is empty, and passes.
 func preflightReport(p *process, resp interface {
 	GetError() *protocolv1.Error
 	GetItems() []*protocolv1.CheckItem
-}, err error) check.Report {
+}, err error) (check.Report, error) {
 	if status.Code(err) == codes.Unimplemented {
-		return check.Report{}
+		return check.Report{}, nil
 	}
 	if err != nil {
-		return check.FromError(p.failure(errs.FromStatus(err)))
+		return check.Report{}, p.unanswered(err)
 	}
-	return check.FromProto(resp)
+	return answer(p.secrets, resp), nil
 }
 
 // Source is an external source. It acknowledges upstream only if its spec
@@ -113,19 +122,20 @@ func NewSource(exe string, config []byte, opts Options) *Source {
 	return &Source{instance{exe: exe, kind: protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE, config: config, opts: opts}}
 }
 
-// Check is CheckReport's error.
-func (s *Source) Check(ctx context.Context) error { return s.checkReport(ctx).Err() }
+// Check is CheckReport's error, or its report's.
+func (s *Source) Check(ctx context.Context) error { return reportErr(s.checkReport(ctx)) }
 
 // CheckReport runs the source's check of its connection: what it looked at,
-// item by item, or its error alone from a connector that gives no items.
-func (s *Source) CheckReport(ctx context.Context) check.Report { return s.checkReport(ctx) }
+// item by item, or its error alone from a connector that gives no items. The
+// error is a connector that didn't start or didn't answer.
+func (s *Source) CheckReport(ctx context.Context) (check.Report, error) { return s.checkReport(ctx) }
 
 // PreflightReport runs the source's preflight for what a pipeline would
 // read, as CheckReport runs its check.
-func (s *Source) PreflightReport(ctx context.Context, req source.PreflightRequest) check.Report {
+func (s *Source) PreflightReport(ctx context.Context, req source.PreflightRequest) (check.Report, error) {
 	p, err := s.proc(ctx)
 	if err != nil {
-		return check.FromError(err)
+		return check.Report{}, err
 	}
 	pr := &protocolv1.PreflightSourceRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous}
 	if req.Interval > 0 {

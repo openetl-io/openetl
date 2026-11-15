@@ -84,6 +84,15 @@ func (a AWS) env(dir string) []string {
 	return out
 }
 
+// secrets are the secret values env gives the process: a role's token, or
+// the runner's own secret key and session token.
+func (a AWS) secrets() []string {
+	if a.Inherit && a.URL == "" {
+		return []string{os.Getenv("AWS_SECRET_ACCESS_KEY"), os.Getenv("AWS_SESSION_TOKEN")}
+	}
+	return []string{a.Token}
+}
+
 // Options is what a connector's process gets from the runner.
 type Options struct {
 	// Which addresses host services may reach besides public ones.
@@ -112,6 +121,10 @@ type process struct {
 	spec  *protocolv1.SpecResponse
 	// The config, with secret names in place of the secrets.
 	config []byte
+	// The values of the secrets the connector may have: its config's, which
+	// it gets on the proxy and raw tiers, and its AWS credentials'. No answer
+	// to a check or a preflight shows them.
+	secrets []string
 	// Set once the spec is read; logs relayed before then aren't scrubbed.
 	hs    atomic.Pointer[hostservices.Services]
 	host  *grpc.Server
@@ -184,6 +197,10 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 		return nil, err
 	}
 	p.config = cfg
+	for _, s := range secrets {
+		p.secrets = append(p.secrets, s.Reveal())
+	}
+	p.secrets = append(p.secrets, opts.AWS.secrets()...)
 	tier := spec.GetEgress().GetTier()
 	hs := hostservices.New(hostservices.Options{
 		Policy:        opts.Egress,
