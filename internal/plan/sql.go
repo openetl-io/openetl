@@ -232,15 +232,23 @@ func landingSettings(ps *apiv1.PipelineStream) []string {
 	return set
 }
 
-// SQLPlan is what a pipeline version keeps of the answer.
-func SQLPlan(a *sqlplan.Answer) *apiv1.SqlPlan {
+// SQLPlan is what a pipeline version keeps of the answer. prev is what the
+// version before it keeps, nil for none: the operators it keeps, or dropped,
+// that the answer doesn't, the new version drops.
+func SQLPlan(a *sqlplan.Answer, prev *apiv1.SqlPlan) *apiv1.SqlPlan {
 	out := &apiv1.SqlPlan{}
 	for _, st := range a.Statements {
-		out.Outputs = append(out.Outputs, &apiv1.SqlOutput{Name: st.Output, Columns: schemaColumns(st.Columns), PrimaryKey: st.Key, ArrowSchema: st.ArrowSchema})
+		out.Outputs = append(out.Outputs, &apiv1.SqlOutput{Name: st.Output, Columns: schemaColumns(st.Columns), PrimaryKey: st.Key, ArrowSchema: st.ArrowSchema, Operator: st.Operator})
 		if st.Operator != "" {
 			out.Operators = append(out.Operators, st.Operator)
 		}
 	}
+	for _, id := range slices.Concat(prev.GetOperators(), prev.GetDropped()) {
+		if !slices.Contains(out.Operators, id) && !slices.Contains(out.Dropped, id) {
+			out.Dropped = append(out.Dropped, id)
+		}
+	}
+	slices.Sort(out.Dropped)
 	return out
 }
 

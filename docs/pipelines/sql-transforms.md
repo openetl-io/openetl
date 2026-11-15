@@ -268,6 +268,17 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 
 The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. With `incremental`, a window that is open at the end of a sync goes on in the next sync, from the state that the checkpoint keeps. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates, the reads they take and when rows are written.
 
+### Change a group window
+
+A group window keeps state between syncs, under an ID that the plan shows. Other names for the columns, a new column through a view and a `HAVING` over the aggregates that the statement computes keep the ID and the state. Another output name, window size, key or aggregate gives the window a new ID, and its state starts empty.
+
+1. Edit the statement.
+2. Run `openetl plan -f FILE`, and read the `state` section of `transform.sql`. Each window shows `kept`, `new`, `changed` or `dropped`.
+3. Run `openetl apply -f FILE`. The next sync drops the state of each changed or dropped window.
+4. If the stream is not read with `full_refresh`, and a changed or new window must include the rows that the pipeline read before, read the stream again. A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again ([Read streams again from the start](./positions.md#read-streams-again-from-the-start)). Run `openetl reset --stream STREAM NAME`.
+
+A stream read with `full_refresh` is read whole at each sync, so a changed or new window over it holds every row from the next sync on. Over another stream, without step 4, a changed or new window holds only the rows read after the change. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
+
 ## Changelog streams
 
 A stream read with `cdc` is a changelog: its rows are inserts, updates and deletes of the stream's primary key. This continuous pipeline keeps a table of open orders, in a destination that merges:

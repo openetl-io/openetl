@@ -3,7 +3,7 @@ import { useQuery } from "@connectrpc/connect-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Empty, ErrorNote } from "@/components/empty";
 import { Section } from "@/components/detail-header";
-import { SqlMessages, SqlStatement, SqlStreams, SqlView } from "@/components/sql-plan";
+import { SqlMessages, SqlOperators, SqlStatement, SqlStreams, SqlView } from "@/components/sql-plan";
 import type { Marks } from "@/components/code-view";
 import { Passthrough, PipelineService, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorMessage } from "@/lib/api";
@@ -65,6 +65,7 @@ export function SqlTab({ pipeline }: { pipeline: Pipeline }) {
                   <SqlView key={`v${p.at.line}:${p.at.column}`} view={p.at} messages={of(p.at)} />
                 ),
               )}
+              <SqlOperators operators={transform.operators} />
               <SqlStreams label="Passed through" streams={transform.passedThrough}>
                 No statement writes them, so they reach the destination as they would without a transform.
               </SqlStreams>

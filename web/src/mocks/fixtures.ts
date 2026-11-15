@@ -100,6 +100,11 @@ INSERT INTO public.customers
 SELECT id, lower(email) AS email, country, updated_at
 FROM public.customers
 WHERE country IS NOT NULL;
+
+INSERT INTO revenue_by_minute
+SELECT window_start, customer_id, sum(amount) AS revenue, count(*) AS orders
+FROM paid_orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), customer_id;
 `,
   revenue: `INSERT INTO invoices_clean
 SELECT id, customer_id, upper(currency) AS currency, total

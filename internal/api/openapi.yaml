@@ -4662,6 +4662,111 @@ components:
             description: |-
                 A line of a sync's log, from the runner, the engine, the connectors or
                  dbt.
+        OperatorPlan:
+            type: object
+            properties:
+                id:
+                    type: string
+                output:
+                    type: string
+                    description: The output its statement writes.
+                line:
+                    type: integer
+                    description: |-
+                        Where its statement's INSERT is in transform.sql, counting from 1; 0
+                         for a dropped one.
+                    format: uint32
+                column:
+                    type: integer
+                    format: uint32
+                class:
+                    type: string
+                    description: |-
+                        group_window. It and the fields up to retention, what the operator
+                         keeps, are unset for a dropped one.
+                input:
+                    type: string
+                    description: The stream it reads, and the stream's eventTime.
+                eventTime:
+                    type: string
+                window:
+                    type: string
+                    description: tumble, hop or session.
+                size:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: A tumble's or hop's size, or a session's gap.
+                slide:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: How often a hop's windows start; unset for the others.
+                keys:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The stream's columns it groups by, in the order its key groups take
+                         them.
+                aggregates:
+                    type: array
+                    items:
+                        type: string
+                    description: Its aggregates, over the stream's columns, such as sum(amount).
+                lateness:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: The input's watermark.lateness.
+                retention:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: |-
+                        How long, in event time, it keeps a window's state: from the window's
+                         start until lateness after its end, or for a session, until gap and
+                         lateness after its last row.
+                change:
+                    enum:
+                        - OPERATOR_CHANGE_UNSPECIFIED
+                        - OPERATOR_CHANGE_KEPT
+                        - OPERATOR_CHANGE_NEW
+                        - OPERATOR_CHANGE_CHANGED
+                        - OPERATOR_CHANGE_DROPPED
+                    type: string
+                    format: enum
+                replaces:
+                    type: string
+                    description: |-
+                        With OPERATOR_CHANGE_CHANGED, the operator of the current version it
+                         takes the place of.
+                backfill:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        With OPERATOR_CHANGE_NEW or OPERATOR_CHANGE_CHANGED, the streams the
+                         pipeline has read that a backfill reads again, to build its state from
+                         their start: openetl reset --stream. Empty: its state builds from what
+                         the next sync reads, as each sync reads the stream whole, or the
+                         pipeline hasn't read it.
+                earlier:
+                    type: boolean
+                    description: |-
+                        With OPERATOR_CHANGE_NEW or OPERATOR_CHANGE_CHANGED: an earlier version
+                         had it, the current version dropped it, and the pipeline's last
+                         checkpoint may still hold its state, as when no sync has run since. The
+                         next sync then restores that state, where it can be restored, rather
+                         than starting empty. Where held is set, it is set only if the last
+                         checkpoint holds the state.
+                held:
+                    type: boolean
+                    description: |-
+                        Whether the pipeline's last checkpoint names its state; unset where
+                         that isn't known.
+            description: |-
+                OperatorPlan is a stateful operator of a SQL transform, and what it does
+                 to state the pipeline keeps. Its ID is a hash of what it computes and
+                 keeps, so an edit that changes neither, such as a rename, a new column
+                 passed through or a filter after its aggregates, leaves it and its state
+                 as they were.
         Partitioning:
             type: object
             properties:
@@ -5815,6 +5920,9 @@ components:
                         An Arrow IPC stream holding only the schema: the statement's columns,
                          with logical types.
                     format: bytes
+                operator:
+                    type: string
+                    description: Its statement's stateful operator's ID; empty for none.
         SqlPlan:
             type: object
             properties:
@@ -5828,6 +5936,14 @@ components:
                     items:
                         type: string
                     description: The stateful operators' IDs, in the order of their statements.
+                dropped:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The stateful operators of earlier versions that this one doesn't keep,
+                         changed or dropped by the version that applied it. A sync drops their
+                         state from the checkpoint it starts from.
             description: |-
                 SqlPlan is what a pipeline version keeps of planning its transform.sql.
                  Every attempt plans the statements again, and checks what it gets against
@@ -6244,6 +6360,14 @@ components:
                         The source's streams that don't reach the destination themselves: each
                          one a statement replaces, and with passthrough none, each one no
                          statement writes.
+                operators:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/OperatorPlan'
+                    description: |-
+                        The stateful operators: each one a statement keeps, in the order of the
+                         statements, then each one the pipeline's current version keeps that no
+                         statement does now.
             description: |-
                 TransformPlan is a SQL transform's statements, as a runner of the
                  pipeline's data plane planned them, and which of the source's streams

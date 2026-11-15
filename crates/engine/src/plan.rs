@@ -345,8 +345,9 @@ impl Plan {
                 .is_some_and(|t| t.operators().any(|o| o == s.operator));
             if !known {
                 return Err(JobError::config(format!(
-                    "the checkpoint names state of operator {:?}, which no statement of transform.sql keeps: the group window that kept it changed or is gone. \
-                     Reset the streams it read to drop that state, and build the statements' again from a new read: openetl reset --stream STREAM NAME",
+                    "the checkpoint names state of operator {:?}, which no statement of transform.sql computes, and which the pipeline's version didn't drop: \
+                     what a group window keeps changed since the version was applied, as when the source changed the type of a column it groups by or aggregates. \
+                     Reset the streams the window reads to drop that state and build it again from a new read: openetl reset --stream STREAM NAME",
                     s.operator
                 )));
             }

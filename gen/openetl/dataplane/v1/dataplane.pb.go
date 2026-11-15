@@ -849,7 +849,9 @@ type ReportCheckpointRequest struct {
 	// A transform's outputs that hold columns or cells, or quarantined rows
 	// in the epoch. With a SQL transform the destination gets the outputs, so
 	// they hold, and the source's streams don't.
-	Outputs       []*CheckpointOutput `protobuf:"bytes,11,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	Outputs []*CheckpointOutput `protobuf:"bytes,11,rep,name=outputs,proto3" json:"outputs,omitempty"`
+	// The stateful operators whose state the checkpoint names, sorted.
+	Operators     []string `protobuf:"bytes,12,rep,name=operators,proto3" json:"operators,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -957,6 +959,13 @@ func (x *ReportCheckpointRequest) GetLastReset() string {
 func (x *ReportCheckpointRequest) GetOutputs() []*CheckpointOutput {
 	if x != nil {
 		return x.Outputs
+	}
+	return nil
+}
+
+func (x *ReportCheckpointRequest) GetOperators() []string {
+	if x != nil {
+		return x.Operators
 	}
 	return nil
 }
@@ -3796,7 +3805,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"R\n" +
 	"\x15ReportSchemasResponse\x12\x14\n" +
 	"\x05added\x18\x01 \x03(\tR\x05added\x12#\n" +
-	"\radded_outputs\x18\x02 \x03(\tR\faddedOutputs\"\x91\x04\n" +
+	"\radded_outputs\x18\x02 \x03(\tR\faddedOutputs\"\xaf\x04\n" +
 	"\x17ReportCheckpointRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x15\n" +
@@ -3814,7 +3823,8 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
 	"last_reset\x18\n" +
 	" \x01(\tR\tlastReset\x12@\n" +
-	"\aoutputs\x18\v \x03(\v2&.openetl.dataplane.v1.CheckpointOutputR\aoutputs\"\xdc\x01\n" +
+	"\aoutputs\x18\v \x03(\v2&.openetl.dataplane.v1.CheckpointOutputR\aoutputs\x12\x1c\n" +
+	"\toperators\x18\f \x03(\tR\toperators\"\xdc\x01\n" +
 	"\x10CheckpointOutput\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12:\n" +
 	"\x05holds\x18\x02 \x03(\v2$.openetl.dataplane.v1.CheckpointHoldR\x05holds\x12\x1d\n" +

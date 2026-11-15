@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
@@ -33,7 +34,7 @@ type SQLPlanner interface {
 // couldn't be planned, which a note says.
 func (s *Server) planSQL(ctx context.Context, q *db.Queries, p *planned, cat *apiv1.Catalog, out *apiv1.PipelinePlan) (*sqlplan.Answer, error) {
 	if p.v.spec.GetTransform().GetSql() == nil {
-		return nil, nil
+		return nil, s.withoutSQL(ctx, q, p, cat, out)
 	}
 	if cat == nil {
 		out.Notes = append(out.Notes, fmt.Sprintf("transform.sql wasn't planned: source %q hasn't been discovered, so its streams' schemas aren't known", p.v.spec.GetSource().GetRef()))
@@ -44,7 +45,34 @@ func (s *Server) planSQL(ctx context.Context, q *db.Queries, p *planned, cat *ap
 	if err != nil {
 		return nil, err
 	}
+	if p.applied, err = s.appliedSQLPlan(ctx, q, p); err != nil {
+		return nil, err
+	}
+	if p.read, p.held, err = s.lastCheckpoint(ctx, q, p); err != nil {
+		return nil, err
+	}
 	return s.planSQLWith(ctx, p, cat, history, out)
+}
+
+// withoutSQL is planSQL for a version without transform.sql: it keeps no
+// operator, so it drops every one the current version keeps or dropped, and
+// the plan notes each whose state the next sync drops.
+func (s *Server) withoutSQL(ctx context.Context, q *db.Queries, p *planned, cat *apiv1.Catalog, out *apiv1.PipelinePlan) error {
+	applied, err := s.appliedSQLPlan(ctx, q, p)
+	if err != nil {
+		return err
+	}
+	if len(applied.GetOperators()) == 0 && len(applied.GetDropped()) == 0 {
+		return nil
+	}
+	_, held, err := s.lastCheckpoint(ctx, q, p)
+	if err != nil {
+		return err
+	}
+	_, _, notes := plan.Operators(p.v.spec, cat, &sqlplan.Answer{}, applied, nil, held)
+	out.Notes = append(append(out.Notes, notes...), plan.CarriedNotes(applied, held)...)
+	p.sqlPlan = plan.SQLPlan(&sqlplan.Answer{}, applied)
+	return nil
 }
 
 // planSQLWith is planSQL given the streams' schemas from the pipeline's
@@ -90,8 +118,62 @@ func (s *Server) planSQLWith(ctx context.Context, p *planned, cat *apiv1.Catalog
 		return nil, nil
 	}
 	out.Transform = plan.Transform(spec, cat, &answer)
-	p.sqlPlan = plan.SQLPlan(&answer)
+	ops, warnings, notes := plan.Operators(spec, cat, &answer, p.applied, p.read, p.held)
+	out.Transform.Operators = ops
+	out.Warnings, out.Notes = append(out.Warnings, warnings...), append(out.Notes, notes...)
+	p.sqlPlan = plan.SQLPlan(&answer, p.applied)
 	return &answer, nil
+}
+
+// appliedSQLPlan is what planning transform.sql gave the pipeline's current
+// version, which a plan's stateful operators are compared with: the version
+// before the one planned, or for a pipeline's plan, its own. It's empty for
+// a new pipeline, and nil where the version has none.
+func (s *Server) appliedSQLPlan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.SqlPlan, error) {
+	version := p.prev
+	if version == "" {
+		if p.action == apiv1.ApplyAction_APPLY_ACTION_CREATED {
+			return &apiv1.SqlPlan{}, nil
+		}
+		version = p.version
+	}
+	row, err := q.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: s.Tenant.Org, PipelineID: p.id, Version: version})
+	if err != nil {
+		return nil, err
+	}
+	return sqlPlanOf(row.SqlPlan)
+}
+
+// lastCheckpoint is what the pipeline's newest mirrored checkpoint says:
+// the streams it has read, and the stateful operators whose state it names,
+// which is nil where the checkpoint was mirrored before they were. A
+// pipeline without one has read nothing and holds no state.
+func (s *Server) lastCheckpoint(ctx context.Context, q *db.Queries, p *planned) (read, held map[string]bool, err error) {
+	if p.action == apiv1.ApplyAction_APPLY_ACTION_CREATED {
+		return nil, map[string]bool{}, nil
+	}
+	row, err := q.LatestCheckpointState(ctx, db.LatestCheckpointStateParams{OrgID: s.Tenant.Org, PipelineID: p.id})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var streams []mirroredStream
+	if err := json.Unmarshal(row.Streams, &streams); err != nil {
+		return nil, nil, err
+	}
+	read = map[string]bool{}
+	for _, st := range streams {
+		read[st.Name] = true
+	}
+	if row.Operators != nil {
+		held = map[string]bool{}
+		for _, op := range row.Operators {
+			held[op] = true
+		}
+	}
+	return read, held, nil
 }
 
 // metadataColumns are the columns the engine adds to a stream. A source's

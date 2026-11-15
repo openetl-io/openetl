@@ -15,6 +15,15 @@ use crate::functions::FUNCTIONS;
 use crate::plan::{Operator, Plan, Statement, Step, View};
 use crate::{Catalog, Class, Error, ErrorKind, Errors, Note, Position, bind, lower};
 
+/// The most views a view reads through, one reading the next: planning
+/// recurses through each, so the chain is bounded.
+pub const VIEW_DEPTH: usize = 32;
+
+/// The stack planning runs with, on a thread of its own: enough for a
+/// chain of [`VIEW_DEPTH`] views in a debug build, several times over,
+/// whatever thread asks for the plan.
+const STACK: usize = 64 << 20;
+
 /// A transform's SQL, parsed.
 #[derive(Debug)]
 pub struct Sql {
@@ -84,7 +93,28 @@ impl Sql {
     /// Plans every statement and view against the streams' schemas. Each
     /// statement that can't be planned gives its errors, and a statement
     /// that reads a view that can't be planned gives none of its own for it.
+    /// It runs on a thread of its own, with a stack sized for the deepest
+    /// chain of views it takes.
     pub fn plan(&self, catalog: &Catalog) -> Result<Plan, Errors> {
+        std::thread::scope(|s| {
+            let planning = std::thread::Builder::new()
+                .name("openetl-sql-plan".into())
+                .stack_size(STACK)
+                .spawn_scoped(s, || self.plan_here(catalog))
+                .map_err(|e| {
+                    Errors::new(vec![Error::new(
+                        ErrorKind::Internal,
+                        None,
+                        format!("planning needs a thread: {e}"),
+                    )])
+                })?;
+            planning
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
+    }
+
+    fn plan_here(&self, catalog: &Catalog) -> Result<Plan, Errors> {
         let mut errors = Vec::new();
         let mut notes = Vec::new();
 
@@ -134,8 +164,24 @@ impl Sql {
                     let mut query = query.clone();
                     let lineage = check.query(&mut query, true).nondeterministic;
                     notes.append(&mut check.notes);
+                    let depth = 1 + check
+                        .views
+                        .iter()
+                        .map(|&v| views[v].depth)
+                        .max()
+                        .unwrap_or(0);
+                    if depth > VIEW_DEPTH {
+                        check.errors.push(Error::at(
+                            ErrorKind::Unsupported,
+                            at,
+                            format!(
+                                "view {name} is {depth} views deep, counting each view it reads through: views go at most {VIEW_DEPTH} deep; read a view nearer the stream, or merge views into one"
+                            ),
+                        ));
+                    }
                     let mut defined = Defined {
                         name: name.clone(),
+                        depth,
                         reads: check.views.clone(),
                         inputs: check.inputs.clone(),
                         nondeterministic: lineage,
@@ -205,6 +251,7 @@ impl Sql {
                                 }
                             }
                             Ok(Lowered::GroupWindow(g)) => {
+                                let g = *g;
                                 if let Some((output, replaces)) = output {
                                     statements.push(Statement {
                                         at: *at,
@@ -521,6 +568,8 @@ fn ambiguous(parts: &[ast::Ident], streams: &[&str]) -> String {
 #[derive(Debug)]
 struct Defined {
     name: String,
+    /// 1, and one more than the deepest view it reads.
+    depth: usize,
     /// The views it reads, directly or not, by index.
     reads: BTreeSet<usize>,
     inputs: Vec<String>,
@@ -646,7 +695,7 @@ struct Check<'a> {
 /// A statement's query, lowered.
 enum Lowered {
     RowWise(lower::Lowered),
-    GroupWindow(crate::window::Lowered),
+    GroupWindow(Box<crate::window::Lowered>),
 }
 
 struct Top {
@@ -1409,7 +1458,8 @@ impl<'a> Check<'a> {
             window,
             column: &column,
         };
-        crate::window::lower(&plan, self.catalog, &at, output).map(Lowered::GroupWindow)
+        crate::window::lower(&plan, self.catalog, &at, output)
+            .map(|g| Lowered::GroupWindow(Box::new(g)))
     }
 
     /// The query bound, with the views it reads inlined.

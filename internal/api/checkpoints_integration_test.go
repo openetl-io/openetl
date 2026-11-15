@@ -4,6 +4,7 @@ package api_test
 
 import (
 	"net/http"
+	"slices"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -85,5 +86,27 @@ func TestSyncRowsSurviveADroppedReport(t *testing.T) {
 	}
 	if got := rows(); got != 14 {
 		t.Errorf("rows without totals = %d, want the epochs' sum, 14", got)
+	}
+}
+
+// The mirror keeps the operators whose state a checkpoint names: none is
+// an empty list, and the plan reads the newest checkpoint's.
+func TestCheckpointKeepsItsOperators(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	for i, ops := range [][]string{{"window-a", "window-b"}, nil} {
+		if _, err := e.runner.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
+			PipelineId: e.pipeline.String(), RunId: "run1", Generation: 1, Epoch: uint64(i + 1), CreateTime: timestamppb.Now(),
+			Streams: []*dataplanev1.CheckpointStream{{Name: "orders", Rows: 1}}, Operators: ops,
+		})); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		if err := e.conn.QueryRow(ctx, "SELECT operators FROM checkpoint_mirror WHERE pipeline_id = $1 AND epoch = $2", e.pipeline, i+1).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || !slices.Equal(got, ops) {
+			t.Errorf("epoch %d keeps %#v, want %v", i+1, got, ops)
+		}
 	}
 }

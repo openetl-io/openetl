@@ -21,6 +21,7 @@ A transform is one or more statements, each ended by `;`. The last `;` is option
 - `INSERT INTO` takes no list of columns: the `SELECT` names the output's columns. It takes no `ON CONFLICT`.
 - `CREATE VIEW` takes a name and `AS SELECT`, and nothing else: not `OR REPLACE`, `TEMPORARY`, `MATERIALIZED` or a list of columns.
 - A view is defined before the statements and views that read it.
+- Views go at most 32 deep. A view that reads no view is 1 deep, and a view that reads views is one deeper than the deepest of them. A deeper view is a problem in the plan, at its name.
 - Statements read the source's streams, never an output. To read what a statement writes, define its `SELECT` as a view, and read the view.
 
 ## What FROM reads
@@ -201,7 +202,7 @@ A group window over a stream read another way is a problem in the plan:
 A group window keeps each window's aggregates as state, by key group, until its row is written and its lateness has passed. `openetl plan` shows the statement's operator, which keeps the state:
 
 ```text
-    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-1566d23a39b0adbe
+    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-29faae33810aefa5
 ```
 
 - The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.
@@ -212,8 +213,63 @@ A group window keeps each window's aggregates as state, by key group, until its 
 - A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names.
 - To build a window's state again from the stream, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)). A run deletes the files of the dropped state once none of the records it keeps names them.
 - After a reset, each window's row comes only from the rows that the new read returns. If the read starts partway through a window, `merge` replaces that window's row with a row of part of its rows. A window that the new read does not reach keeps its row in the destination. Start the read where it includes every row of the windows it changes, or correct those rows in the destination.
-- A changed group window statement is a new operator, which starts with no state. Once the old operator has written state, each checkpoint names it, even after every window has closed. The next attempt then fails with `CONFIG_INVALID` until a reset of the streams that the window reads drops that state.
 - A pipeline with a group window runs on one pod, whatever its `resources.workers`.
+
+### Changing a query
+
+The operator's ID is a hash of what the operator computes and keeps. The engine writes it over the stream's own columns, so the names of columns, aliases and views, and the shape of the SQL, do not change it. The output's name is part of the ID: an output of another name is another operator, which does not keep the state. Each checkpoint names the state by the ID.
+
+These edits keep the ID, and with it the state:
+
+- Formatting, comments and the case of keywords, and an equal interval, such as `INTERVAL '60 seconds'` for `INTERVAL '1 minute'`.
+- The `FROM` alias, other names for the output's columns, and views that rename columns or pass more columns.
+- The order of the `GROUP BY` keys, of the `SELECT` list and of the aggregates. The output's primary key follows the order of `GROUP BY`. Aggregates that call a function that gives another value each time, such as `random()`, keep the ID only in the same order.
+- `HAVING`, `window_end`, and expressions over the aggregates, when they use only aggregates that the statement already computes. An aggregate that only `HAVING` or an expression uses is still an aggregate that the operator keeps: adding one gives a new ID.
+- The same filters written in a view or in the statement, and `count(1)` for `count(*)`.
+- Other statements, and the order of the statements.
+
+These edits give the operator a new ID:
+
+- The output's name, or the stream that the statement reads.
+- The window's kind, size, or a hop's slide.
+- A key, an aggregate or an aggregate's argument, added, removed or changed, and an aggregate's `FILTER`.
+- A filter or an `UNNEST` before the window.
+- A change of type of the event-time column, a key or an aggregate's argument, also when the source changes the column's type.
+
+`watermark.lateness` is not part of the ID. A changed lateness keeps the state. A window that is open at the change keeps the time its state expires at, which it got when it opened: a higher lateness does not keep its state longer. A row for that window that comes after its state expired, and within the new lateness, starts a new aggregate without the window's earlier rows.
+
+`openetl plan` and `openetl apply` show each operator in a `state` section of `transform.sql`. Each line has the statement's place, the output, the ID, what the operator is against the pipeline's current version, and what it keeps. Where the pipeline's last checkpoint says which operators' state it names, the line ends with whether it holds the operator's state. In this example, the current version has the statement of [Group windows](#group-windows) and a second statement, `orders_by_hour`, with `tumble(created_at, INTERVAL '1 hour')`. The new version gives the first statement a `FROM` alias and other column names, and changes the second one's window to 30 minutes. The stream has `watermark.lateness: 1m`:
+
+```text
+  state:
+    1:1  revenue_by_minute  window-29faae33810aefa5  kept     tumble 1m0s by created_at on region: count(*), sum(amount); keeps a window's state 2m0s of event time (lateness 1m0s)
+    6:1  orders_by_hour     window-d110a4b5535848da  changed  tumble 30m0s by created_at: count(*); keeps a window's state 31m0s of event time (lateness 1m0s); starts empty, in place of window-c627132d9872ae49; a backfill reads again orders
+```
+
+The plan's warnings say the same for `orders_by_hour`, with the command for the backfill.
+
+| What | Means | Its state |
+|---|---|---|
+| `kept` | The current version has the operator. | The next sync restores it. |
+| `new` | The current version has no operator that writes the output. | Starts empty. If an earlier version had the operator, the current version dropped it, and the last checkpoint still holds its state, as when no sync has run since, the line says so, and the next sync restores that state. |
+| `changed` | The current version's operator for the output computes or keeps something else. | Starts empty, or, if an earlier version had the operator, as for `new`. The next sync drops the old operator's state. |
+| `dropped` | No statement keeps the current version's operator. | The next sync drops it. |
+| `unknown` | The current version's statements were not planned when it was applied. | As for `kept` if the ID is the same, otherwise the next sync fails as below. |
+
+A new or changed operator starts from now: its windows hold only the rows that the pipeline reads after the change. A window that is open at the change, or that a late row opens again, loses the rows read before. The plan has a warning for each changed operator, and for each new one over a stream that the pipeline has read, unless each sync reads the stream whole.
+
+To build the state from the stream's start, read the stream again after you apply the change (a backfill).
+
+> [!WARNING]
+> A reset reads the stream again for every statement that reads it, not only for the changed window. It drops the state of each of those statements, and each of their outputs gets the stream's rows again. [Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start) has what the destination gets.
+
+```sh
+openetl reset --stream orders NAME
+```
+
+A version without `transform.sql` drops every operator of the version before it. The next attempt drops the state of each operator that the version dropped or replaced, so the records after it stop naming that state, and retention deletes its files once no record it keeps names them. If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the version did not drop the old operator. The next attempt then fails with `CONFIG_INVALID`, and its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
+
+An operator has no name of its own in the SQL. Its ID is the only name.
 
 ## Expressions and operators
 
@@ -606,6 +662,7 @@ A view of one of these kinds is refused too, where the view is defined.
 | A `SELECT` on its own | `a SELECT on its own writes nothing: write INSERT INTO output SELECT …, or name it with CREATE VIEW` |
 | Other statements, such as `UPDATE`, `DELETE` or `CREATE TABLE` | `a transform's statements are INSERT INTO … SELECT and CREATE VIEW … AS SELECT, not DELETE FROM` |
 | No `INSERT INTO` | `a transform writes at least one output, with INSERT INTO … SELECT` |
+| A view more than 32 views deep | `view v32 is 33 views deep, counting each view it reads through: views go at most 32 deep; read a view nearer the stream, or merge views into one` |
 
 ### Names and columns
 

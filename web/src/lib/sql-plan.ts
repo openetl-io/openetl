@@ -1,4 +1,6 @@
-import type { StatementPlan, TransformPlan, ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
+import { OperatorChange, type OperatorPlan, type StatementPlan, type TransformPlan, type ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
+import type { Duration } from "@bufbuild/protobuf/wkt";
+import { goDuration } from "@/lib/spec-yaml";
 
 // A SQL transform's plan as the console shows it: the plan's problems and
 // notes about transform.sql, each at its place in the SQL when it has one.
@@ -56,6 +58,58 @@ export function partOf(all: Part[], m: SqlMessage): Part | undefined {
 export function notDelivered(t: TransformPlan) {
   const replaced = new Set(t.statements.filter((s) => s.replaces).map((s) => s.output));
   return t.withheld.filter((s) => !replaced.has(s));
+}
+
+/** A duration of a plan exactly, as the spec writes one: 1h1s, 90s as 1m30s. */
+export const span = (d?: Duration) => (d ? goDuration(`${Number(d.seconds) + d.nanos / 1e9}s`) : "0s");
+
+/**
+ * What a stateful operator computes, by the stream's names: "tumble 1m 00s by created_at on region: sum(amount), count(*)".
+ * Empty for a dropped one, whose statement is gone.
+ */
+export function operatorComputes(op: OperatorPlan) {
+  if (!op.window) return "";
+  let s = `${op.window} ${span(op.size)}`;
+  if (op.slide) s += ` every ${span(op.slide)}`;
+  s += ` by ${op.eventTime}`;
+  if (op.keys.length) s += ` on ${op.keys.join(", ")}`;
+  return `${s}: ${op.aggregates.join(", ")}`;
+}
+
+/** What applying does to an operator's state, against the pipeline's current version. */
+export const changeLabel: Record<OperatorChange, string> = {
+  [OperatorChange.UNSPECIFIED]: "Unknown",
+  [OperatorChange.KEPT]: "Kept",
+  [OperatorChange.NEW]: "New",
+  [OperatorChange.CHANGED]: "Changed",
+  [OperatorChange.DROPPED]: "Dropped",
+};
+
+/** For an operator an earlier version had: when its state comes back. Empty for another. */
+function earlierText(op: OperatorPlan) {
+  if (!op.earlier) return "";
+  return "An earlier version had it. If the last checkpoint still holds its state, as when no sync has run since the current version, the next sync restores that state; otherwise it starts empty.";
+}
+
+/** Whether the pipeline's last checkpoint holds an operator's state; empty where that isn't known. */
+export function heldText(op: OperatorPlan) {
+  if (op.held === undefined) return "";
+  return op.held ? "The last checkpoint holds its state." : "The last checkpoint holds none of its state.";
+}
+
+/** What happens to an operator's state, in a sentence. */
+export function changeText(op: OperatorPlan) {
+  switch (op.change) {
+    case OperatorChange.KEPT:
+      return "Keeps its state.";
+    case OperatorChange.NEW:
+      return earlierText(op) || "Its state starts empty.";
+    case OperatorChange.CHANGED:
+      return `${earlierText(op) || "Its state starts empty."} It takes the place of ${op.replaces}, whose state is dropped.`;
+    case OperatorChange.DROPPED:
+      return "No statement keeps it now, so the next sync drops its state.";
+  }
+  return "The current version wasn't planned when it was applied.";
 }
 
 /** row_wise → "Row-wise", and the classes of statements the engine refuses. */

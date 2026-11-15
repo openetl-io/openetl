@@ -159,8 +159,15 @@ pub struct GroupWindow {
     /// The column of `rows` with each row's event time: the stream's
     /// event-time column, passed through.
     pub time: usize,
+    /// The stream's event-time column.
+    pub event_time: String,
+    /// In the order of the stream's names for them, whatever GROUP BY's.
     pub keys: Vec<GroupKey>,
+    /// In the order of what they compute, whatever the statement's.
     pub aggregates: Vec<Aggregate>,
+    /// Each aggregate as the stream's columns compute it, such as
+    /// `sum(amount)`, in the order of `aggregates`.
+    pub computes: Vec<String>,
     /// What the steps after the window take: `window_start` and
     /// `window_end`, then each key's column, then each aggregate's value.
     pub grouped: SchemaRef,
@@ -172,8 +179,11 @@ pub struct GroupWindow {
     /// The stream's columns that reach the output unchanged, with their
     /// names there: its keys.
     pub passes: Vec<(String, String)>,
-    /// Stable while the state's meaning is: a hash of the output, the
-    /// window, the keys, the aggregates and the state's layout.
+    /// Stable while what it computes and keeps is: a hash of the output,
+    /// the stream, the window, the time and keys and their types, the
+    /// aggregates over the stream's columns, the filters before it and the
+    /// state's layout. Names, views, projections, the order of keys and
+    /// aggregates, and what follows the window don't change it.
     pub id: String,
 }
 

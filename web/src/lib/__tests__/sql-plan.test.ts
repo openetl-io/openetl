@@ -1,7 +1,8 @@
-import { create } from "@bufbuild/protobuf";
+import { create, type MessageInitShape } from "@bufbuild/protobuf";
+import { durationFromMs } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "vitest";
-import { TransformPlanSchema } from "@/gen/openetl/api/v1/pipeline_pb";
-import { aboutSql, notDelivered, partOf, parts, position, sqlMessages } from "../sql-plan";
+import { OperatorChange, OperatorPlanSchema, TransformPlanSchema } from "@/gen/openetl/api/v1/pipeline_pb";
+import { aboutSql, changeLabel, changeText, heldText, notDelivered, span, operatorComputes, partOf, parts, position, sqlMessages } from "../sql-plan";
 
 describe("sqlMessages", () => {
   it("keeps the plan's messages about transform.sql, with their places, problems first", () => {
@@ -60,5 +61,37 @@ describe("partOf", () => {
 
   it("leaves out of not delivered the streams a statement replaces", () => {
     expect(notDelivered(t)).toEqual(["events"]);
+  });
+});
+
+describe("operators", () => {
+  const op = (init: MessageInitShape<typeof OperatorPlanSchema>) => create(OperatorPlanSchema, init);
+
+  it("says what an operator computes, by the stream's names", () => {
+    const tumble = op({ window: "tumble", size: durationFromMs(60_000), eventTime: "at", keys: ["region"], aggregates: ["count(*)", "sum(amount)"] });
+    expect(operatorComputes(tumble)).toBe("tumble 1m by at on region: count(*), sum(amount)");
+    const hop = op({ window: "hop", size: durationFromMs(300_000), slide: durationFromMs(60_000), eventTime: "at", aggregates: ["max(qty)"] });
+    expect(operatorComputes(hop)).toBe("hop 5m every 1m by at: max(qty)");
+    expect(operatorComputes(op({ id: "window-1", change: OperatorChange.DROPPED }))).toBe("");
+    expect(operatorComputes(op({ window: "tumble", size: durationFromMs(3_600_000), eventTime: "at" }))).toBe("tumble 1h by at: ");
+    expect(operatorComputes(op({ window: "tumble", size: durationFromMs(3_601_000), eventTime: "at" }))).toBe("tumble 1h1s by at: ");
+    expect(span(durationFromMs(90_500))).toBe("1m30.5s");
+  });
+
+  it("says what applying does to its state", () => {
+    expect(changeLabel[OperatorChange.CHANGED]).toBe("Changed");
+    expect(changeText(op({ change: OperatorChange.CHANGED, replaces: "window-old" }))).toBe(
+      "Its state starts empty. It takes the place of window-old, whose state is dropped.",
+    );
+    expect(changeText(op({ change: OperatorChange.KEPT }))).toBe("Keeps its state.");
+    expect(heldText(op({}))).toBe("");
+    expect(heldText(op({ held: true }))).toBe("The last checkpoint holds its state.");
+    expect(heldText(op({ held: false }))).toBe("The last checkpoint holds none of its state.");
+    expect(changeText(op({ change: OperatorChange.NEW }))).toBe("Its state starts empty.");
+    expect(changeText(op({ change: OperatorChange.NEW, earlier: true }))).toContain("the next sync restores that state;");
+    expect(changeText(op({ change: OperatorChange.CHANGED, earlier: true, replaces: "window-b" }))).toMatch(
+      /^An earlier version had it\..* It takes the place of window-b, whose state is dropped\.$/,
+    );
+    expect(changeText(op({}))).toBe("The current version wasn't planned when it was applied.");
   });
 });

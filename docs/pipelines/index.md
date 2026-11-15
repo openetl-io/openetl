@@ -271,7 +271,7 @@ edab40da6d76c1aba235c7cd81c5618db8af2206c759539c5baea80a584560b3           2026-
 9e052e7e6881672dbdcfcc4356f04f592bdfbd9777622e2d2a877eb1530db134  *        2026-11-08 12:28:23  cli:examples/faker-to-postgres.yaml#3
 ```
 
-A version of a pipeline with `transform.sql` also keeps what planning its statements gave when the version was made: each output's columns and primary key. The API returns it as the version's `sql_plan`.
+A version of a pipeline with `transform.sql` also keeps what planning its statements gave when the version was made: each output's columns and primary key, the ID of each statement that keeps state, and the IDs of earlier versions' statements whose state the version drops. The API returns it as the version's `sql_plan`.
 
 Provenance identifies the origin of a version. Here, it is the third document in a file applied with the CLI. Versions are identified by content. To restore an earlier pipeline definition, revert its git commit and apply the file. This does not undo changes already written to the destination.
 

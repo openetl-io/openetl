@@ -222,7 +222,7 @@ func TestPipelineSQLUnplanned(t *testing.T) {
 }
 
 func TestSQLPlanKeepsOutputs(t *testing.T) {
-	p := SQLPlan(twoAnswers())
+	p := SQLPlan(twoAnswers(), nil)
 	if len(p.GetOutputs()) != 2 || p.GetOutputs()[0].GetName() != "customers" || string(p.GetOutputs()[0].GetArrowSchema()) != "schema" ||
 		!slices.Equal(p.GetOutputs()[0].GetPrimaryKey(), []string{"id"}) || p.GetOutputs()[1].GetColumns()[0].GetName() != "customer_id" || len(p.GetOperators()) != 0 {
 		t.Errorf("%v", p)
