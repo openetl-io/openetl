@@ -38,9 +38,10 @@ func (a *Quarantine) ReadQuarantine(ctx context.Context, in contract.ReadQuarant
 	if limit <= 0 || limit > maxQuarantineLines {
 		limit = maxQuarantineLines
 	}
-	// One byte past the most a read returns tells a file that ends there
-	// from one that goes on.
-	data, err := a.Store.GetPrefix(ctx, in.OrgID+"/"+in.PipelineID+"/"+checkpoint.QuarantineDir+"/"+in.Path, contract.MaxQuarantineRead+1)
+	// The lines a read returns, with their newlines, are shorter than window,
+	// so a file that fills the window goes on past them.
+	const window = contract.MaxQuarantineRead + maxQuarantineLines + 1
+	data, err := a.Store.GetPrefix(ctx, in.OrgID+"/"+in.PipelineID+"/"+checkpoint.QuarantineDir+"/"+in.Path, window)
 	if errors.Is(err, checkpoint.ErrNotFound) {
 		res.Missing = true
 		return res, nil
@@ -48,7 +49,7 @@ func (a *Quarantine) ReadQuarantine(ctx context.Context, in contract.ReadQuarant
 	if err != nil {
 		return res, errs.Wrap(errs.Transient, err, "read quarantine file "+in.Path)
 	}
-	whole := len(data) <= contract.MaxQuarantineRead
+	whole := len(data) < window
 	size := 0
 	for len(data) > 0 {
 		line, rest, ended := bytes.Cut(data, []byte("\n"))

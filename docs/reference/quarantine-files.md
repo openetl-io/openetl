@@ -162,7 +162,7 @@ The control plane does not know what a lifecycle rule deletes. It lists the file
 | Field | Where | Type | Required | Default | Meaning |
 |---|---|---|---|---|---|
 | `path` | Query | string | Yes | — | The file's path, as `ListQuarantine` gives it, such as `3/17/orders.jsonl`. The file must be one that the control plane lists. |
-| `limit` | Query | integer | No | `20` | At most this many lines, from the first. The most is `100`. |
+| `limit` | Query | int32 | No | `20` | At most this many lines, from the first. `0` means `20`. A value above `100` reads `100` lines. A negative value fails with `invalid_argument`. |
 | `lines` | Response | list of strings | — | — | The file's first lines, without their newlines. Each line is a JSON object, as [The lines](#the-lines) describes. The lines stop before `limit` if the next line would take them past 256 KiB. |
 | `more` | Response | boolean | — | — | `true` if the file has lines after these. |
 

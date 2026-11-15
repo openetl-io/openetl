@@ -51,8 +51,36 @@ func TestReadQuarantine(t *testing.T) {
 	counted := &prefixCounter{MemStore: store}
 	in = contract.ReadQuarantineInput{OrgID: org, PipelineID: pipeline, Path: "3/20/orders.jsonl", Lines: 100}
 	res, err = (&Quarantine{Store: counted}).ReadQuarantine(t.Context(), in)
-	if err != nil || len(res.Lines) != 63 || !res.More || counted.n != contract.MaxQuarantineRead+1 {
+	if err != nil || len(res.Lines) != 64 || !res.More || counted.n != contract.MaxQuarantineRead+maxQuarantineLines+1 {
 		t.Errorf("a long file: %d lines, more %v, read %d bytes, %v", len(res.Lines), res.More, counted.n, err)
+	}
+	// A first line of exactly the bound, then more: the newline after it
+	// isn't the end of the file.
+	edge := org + "/" + pipeline + "/_quarantine/3/21/orders.jsonl"
+	first := strings.Repeat("z", contract.MaxQuarantineRead)
+	if _, err := store.Create(t.Context(), edge, []byte(first+"\nnext\n")); err != nil {
+		t.Fatal(err)
+	}
+	in = contract.ReadQuarantineInput{OrgID: org, PipelineID: pipeline, Path: "3/21/orders.jsonl", Lines: 100}
+	if res, err = a.ReadQuarantine(t.Context(), in); err != nil || len(res.Lines) != 1 || !res.More {
+		t.Errorf("a first line of the bound, then more: %d lines, more %v, %v", len(res.Lines), res.More, err)
+	}
+	// The same line alone: nothing more.
+	if _, err := store.Create(t.Context(), org+"/"+pipeline+"/_quarantine/3/22/orders.jsonl", []byte(first+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	in.Path = "3/22/orders.jsonl"
+	if res, err = a.ReadQuarantine(t.Context(), in); err != nil || len(res.Lines) != 1 || res.More {
+		t.Errorf("a first line of the bound alone: %d lines, more %v, %v", len(res.Lines), res.More, err)
+	}
+	// Short lines that fill the window and go on: the limit stops the read.
+	short := org + "/" + pipeline + "/_quarantine/3/23/orders.jsonl"
+	if _, err := store.Create(t.Context(), short, []byte(strings.Repeat(strings.Repeat("s", 2620)+"\n", 120))); err != nil {
+		t.Fatal(err)
+	}
+	in.Path = "3/23/orders.jsonl"
+	if res, err = a.ReadQuarantine(t.Context(), in); err != nil || len(res.Lines) != 100 || !res.More {
+		t.Errorf("a full window of short lines: %d lines, more %v, %v", len(res.Lines), res.More, err)
 	}
 	for _, bad := range []contract.ReadQuarantineInput{
 		{OrgID: org, PipelineID: pipeline, Path: "../../other/_quarantine/1/1/x.jsonl"},
