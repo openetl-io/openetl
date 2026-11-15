@@ -72,7 +72,7 @@ func TestQuarantinePausesTheStream(t *testing.T) {
 	if as := actions(t, seen.Incident); len(as) != 1 || as[0].Kind != "pause_stream" || as[0].State != "applied" {
 		t.Errorf("actions %+v", as)
 	}
-	for _, want := range []string{"(1/4/items.jsonl)", "openetl quarantine p0 --stream items --since 1h", "Heal paused the stream", "openetl resume --stream items p0"} {
+	for _, want := range []string{"(1/4/items.jsonl)", "openetl quarantine --stream items p0", "Heal paused the stream", "openetl resume --stream items p0"} {
 		if !strings.Contains(seen.Incident.NextSteps, want) {
 			t.Errorf("next steps don't say %q: %s", want, seen.Incident.NextSteps)
 		}

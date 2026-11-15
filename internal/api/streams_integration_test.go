@@ -41,7 +41,7 @@ func TestStreamPauses(t *testing.T) {
 	_, err := e.runner.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
 		PipelineId: e.pipeline.String(), RunId: "run1", Generation: 1, Epoch: 1, CreateTime: timestamppb.Now(),
 		Streams: []*dataplanev1.CheckpointStream{
-			{Name: "orders", Rows: 1000, QuarantinedRows: 500, Read: incremental, QuarantineFiles: []*dataplanev1.QuarantineFile{
+			{Name: "orders", Rows: 1000, QuarantinedRows: 500, Read: incremental, QuarantineFiles: []*dataplanev1.CheckpointQuarantineFile{
 				{Path: "1/1/orders.jsonl", Url: "s3://lake/o/p/_quarantine/1/1/orders.jsonl", Rows: 500},
 			}},
 			{Name: "users", Rows: 10, Read: incremental},

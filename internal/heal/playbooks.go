@@ -92,7 +92,7 @@ func describe(o Observation, t target) (summary, next string) {
 			where += fmt.Sprintf(" (%s files in the last hour, the newest: %s)", n, strings.SplitN(o.Details["quarantine_paths"], ", ", 2)[0])
 		}
 		next := where + ", each row with why it was quarantined, such as a value its column's type can't hold. " +
-			fmt.Sprintf("List the files and their causes with openetl quarantine %s%s --stream %s --since 1h. ", ws, t.pipeline, o.Stream) +
+			fmt.Sprintf("List the files and their causes with openetl quarantine %s--stream %s %s. ", ws, o.Stream, t.pipeline) +
 			"Fix the source's data, or give the column a type that holds it."
 		resumeStream := fmt.Sprintf("openetl resume %s--stream %s %s", ws, o.Stream, t.pipeline)
 		switch s, why := quarantineStops(o, t); {

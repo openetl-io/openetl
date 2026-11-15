@@ -5248,6 +5248,12 @@ components:
         QuarantineFile:
             type: object
             properties:
+                stream:
+                    type: string
+                    description: The stream, or the transform's output, whose rows it holds.
+                output:
+                    type: boolean
+                    description: stream is one of a transform's outputs.
                 path:
                     type: string
                     description: |-
@@ -5263,9 +5269,23 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/QuarantineCause'
+                    description: Its rows by cause, the most first.
+                generation:
+                    type: string
+                    description: The checkpoint that committed it.
+                epoch:
+                    type: string
+                sync:
+                    type: string
+                    description: |-
+                        The sync that committed it; empty if the control plane has no record of
+                         the sync.
+                commitTime:
+                    type: string
+                    format: date-time
             description: |-
-                QuarantineFile is one of an epoch's quarantine files: where it is, and
-                 how many of its rows each cause quarantined. It never holds a value.
+                QuarantineFile is one stream's quarantined rows from one committed
+                 epoch: JSON lines, one per row, in the data plane's object storage.
         ReadProgress:
             type: object
             properties:

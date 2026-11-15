@@ -79,7 +79,9 @@ func runQuarantine(ctx context.Context, args []string, out io.Writer) error {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "%s\n", b)
+			if _, err := fmt.Fprintf(out, "%s\n", b); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -95,7 +97,7 @@ func runQuarantine(ctx context.Context, args []string, out io.Writer) error {
 func printQuarantine(out io.Writer, files []*apiv1.QuarantineFile, more bool) error {
 	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "COMMITTED\tSTREAM\tEPOCH\tROWS\tPATH")
-	type key struct{ stream, cause string }
+	type key struct{ stream, code, column, notHeld string }
 	rows := map[key]uint64{}
 	for _, f := range files {
 		name := f.GetStream()
@@ -105,7 +107,7 @@ func printQuarantine(out io.Writer, files []*apiv1.QuarantineFile, more bool) er
 		fmt.Fprintf(tw, "%s\t%s\t%d/%d\t%d\t%s\n", f.GetCommitTime().AsTime().Local().Format(time.DateTime), name,
 			f.GetGeneration(), f.GetEpoch(), f.GetRows(), f.GetPath())
 		for _, c := range f.GetCauses() {
-			rows[key{name, causeText(c)}] += c.GetRows()
+			rows[key{name, c.GetCode(), c.GetColumn(), c.GetNotHeld()}] += c.GetRows()
 		}
 	}
 	if err := tw.Flush(); err != nil {
@@ -119,7 +121,8 @@ func printQuarantine(out io.Writer, files []*apiv1.QuarantineFile, more bool) er
 	}
 	keys := slices.Collect(maps.Keys(rows))
 	slices.SortFunc(keys, func(a, b key) int {
-		return cmp.Or(strings.Compare(a.stream, b.stream), cmp.Compare(rows[b], rows[a]), strings.Compare(a.cause, b.cause))
+		return cmp.Or(strings.Compare(a.stream, b.stream), cmp.Compare(rows[b], rows[a]),
+			strings.Compare(a.code, b.code), strings.Compare(a.column, b.column), strings.Compare(a.notHeld, b.notHeld))
 	})
 	if len(keys) == 0 {
 		return nil
@@ -128,7 +131,7 @@ func printQuarantine(out io.Writer, files []*apiv1.QuarantineFile, more bool) er
 	tw = tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "STREAM\tROWS\tCAUSE")
 	for _, k := range keys {
-		fmt.Fprintf(tw, "%s\t%d\t%s\n", k.stream, rows[k], k.cause)
+		fmt.Fprintf(tw, "%s\t%d\t%s\n", k.stream, rows[k], causeText(&apiv1.QuarantineCause{Code: k.code, Column: k.column, NotHeld: k.notHeld}))
 	}
 	return tw.Flush()
 }

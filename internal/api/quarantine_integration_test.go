@@ -18,8 +18,8 @@ import (
 
 const quarantineBase = "s3://lake/org/pipe/_quarantine/"
 
-func quarantineFile(path string, rows uint64, causes ...*apiv1.QuarantineCause) *dataplanev1.QuarantineFile {
-	return &dataplanev1.QuarantineFile{Path: path, Url: quarantineBase + path, Rows: rows, Causes: causes}
+func quarantineFile(path string, rows uint64, causes ...*apiv1.QuarantineCause) *dataplanev1.CheckpointQuarantineFile {
+	return &dataplanev1.CheckpointQuarantineFile{Path: path, Url: quarantineBase + path, Rows: rows, Causes: causes}
 }
 
 func (e *holdsEnv) reportQuarantine(t *testing.T, epoch uint64, at time.Time, rows uint64, streams []*dataplanev1.CheckpointStream, outputs ...*dataplanev1.CheckpointOutput) {
@@ -71,18 +71,18 @@ func TestQuarantineIsIndexed(t *testing.T) {
 	e := newHoldsEnv(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	e.reportQuarantine(t, 4, now.Add(-time.Minute), 1000, []*dataplanev1.CheckpointStream{
-		{Name: "orders", QuarantineFiles: []*dataplanev1.QuarantineFile{quarantineFile("2/4/orders.jsonl", 2, &apiv1.QuarantineCause{Code: "type", Column: "amount", Rows: 2})}},
+		{Name: "orders", QuarantineFiles: []*dataplanev1.CheckpointQuarantineFile{quarantineFile("2/4/orders.jsonl", 2, &apiv1.QuarantineCause{Code: "type", Column: "amount", Rows: 2})}},
 	})
 	report := func() {
 		e.reportQuarantine(t, 5, now, 1000, []*dataplanev1.CheckpointStream{
-			{Name: "orders", QuarantineFiles: []*dataplanev1.QuarantineFile{
+			{Name: "orders", QuarantineFiles: []*dataplanev1.CheckpointQuarantineFile{
 				quarantineFile("2/5/orders.jsonl", 3,
 					&apiv1.QuarantineCause{Code: "type", Column: "id", NotHeld: "key", Rows: 1},
 					&apiv1.QuarantineCause{Code: "type", Column: "amount", Rows: 2}),
 				quarantineFile("2/5/orders.1.jsonl", 1, &apiv1.QuarantineCause{Code: "json", Rows: 1}),
 			}},
 			{Name: "users"},
-		}, &dataplanev1.CheckpointOutput{Name: "daily", QuarantineFiles: []*dataplanev1.QuarantineFile{
+		}, &dataplanev1.CheckpointOutput{Name: "daily", QuarantineFiles: []*dataplanev1.CheckpointQuarantineFile{
 			quarantineFile("_outputs/2/5/daily.jsonl", 4, &apiv1.QuarantineCause{Code: "statement", Rows: 4}),
 		}})
 	}
@@ -160,7 +160,7 @@ func TestQuarantineRetentionDropsOldFiles(t *testing.T) {
 	ctx := t.Context()
 	e := newHoldsEnv(t)
 	now := time.Now().UTC()
-	old := []*dataplanev1.CheckpointStream{{Name: "orders", QuarantineFiles: []*dataplanev1.QuarantineFile{quarantineFile("2/1/orders.jsonl", 1)}}}
+	old := []*dataplanev1.CheckpointStream{{Name: "orders", QuarantineFiles: []*dataplanev1.CheckpointQuarantineFile{quarantineFile("2/1/orders.jsonl", 1)}}}
 	e.reportQuarantine(t, 1, now.Add(-3*time.Hour), 1000, old)
 	e.reportQuarantine(t, 2, now, 1000, []*dataplanev1.CheckpointStream{{Name: "orders"}})
 	count := func() int {
@@ -190,7 +190,7 @@ func TestQuarantineIncidentNamesItsFiles(t *testing.T) {
 	now := time.Now().UTC()
 	for epoch := uint64(1); epoch <= 12; epoch++ {
 		e.reportQuarantine(t, epoch, now.Add(time.Duration(epoch)*time.Second), 1000, []*dataplanev1.CheckpointStream{
-			{Name: "orders", QuarantineFiles: []*dataplanev1.QuarantineFile{quarantineFile("2/"+strconv.FormatUint(epoch, 10)+"/orders.jsonl", 20)}},
+			{Name: "orders", QuarantineFiles: []*dataplanev1.CheckpointQuarantineFile{quarantineFile("2/"+strconv.FormatUint(epoch, 10)+"/orders.jsonl", 20)}},
 		})
 	}
 	var details map[string]string
@@ -203,7 +203,7 @@ func TestQuarantineIncidentNamesItsFiles(t *testing.T) {
 		strings.Count(details["quarantine_paths"], ", ") != 9 {
 		t.Errorf("details %v", details)
 	}
-	if !strings.Contains(next, "openetl quarantine orders --stream orders --since 1h") {
+	if !strings.Contains(next, "openetl quarantine --stream orders orders") {
 		t.Errorf("next steps %q", next)
 	}
 }

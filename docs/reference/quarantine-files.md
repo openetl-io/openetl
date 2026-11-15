@@ -54,7 +54,7 @@ With `unfitValues: hold`, OpenETL holds the value of `amount` and writes the fir
 | `code` | string | Always | What was wrong, from [the codes](#codes). |
 | `column` | string | Where one column caused it | The column. In a stream's file, it is the column as the source names it. In an output's file, it is the output's column for `type`, `range`, `precision` and `nan`. It is the input stream's column for `unsent` and for `notHeld: transform`. |
 | `notHeld` | string | Where the stream holds values that do not fit, and OpenETL quarantined the row instead | Why OpenETL did not hold the row's value, from [the values of notHeld](#why-a-value-was-not-held). |
-| `reason` | string | Always | Why, as a sentence for people. It names the column, and it never contains the value. Its words can change from one version to the next. Read `code`, `column` and `notHeld` in your tools instead. |
+| `reason` | string | Always | Why, as a sentence for people. Its words can change from one version to the next, so read `code`, `column` and `notHeld` in your tools instead. For the code `statement`, the reason is the SQL engine's message, which can quote values of the row, as `record` does. For every other code, the reason names the column and never contains a value. |
 | `record` | string | Always | The row, as text. [What record holds](#what-record-holds) describes it. |
 
 Only `record` holds values of the row. Ignore fields that this page does not list.
@@ -129,13 +129,16 @@ Your object store can delete the files itself. On S3, this lifecycle rule delete
       "ID": "openetl-quarantine-PIPELINE",
       "Status": "Enabled",
       "Filter": {"Prefix": "PREFIX/ORG/PIPELINE/_quarantine/"},
-      "Expiration": {"Days": 30}
+      "Expiration": {"Days": 30},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 1}
     }
   ]
 }
 ```
 
 `PREFIX/` is the path of the `--checkpoints` store, if it has one.
+
+If the bucket has versioning, `Expiration` does not remove a file's data. It makes the file a noncurrent version, which keeps the rows. `NoncurrentVersionExpiration` then deletes that version 1 day later. In a bucket without versioning, it does nothing.
 
 > [!WARNING]
 > The command in step 3 replaces every lifecycle rule of the bucket. The bucket loses each rule that is not in `lifecycle.json`.
