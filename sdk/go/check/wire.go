@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -122,6 +125,11 @@ func itemOf(p *protocolv1.CheckItem) Item {
 		f.Detail = "the connector gave the item the status " + p.GetStatus().String()
 	}
 	it.Failure = normal(f)
+	if it.Status == Warning && it.Failure.Reason == Unknown.Name && it.Failure.Message == Unknown.Message {
+		// Unknown's message says the check failed, which a warning didn't,
+		// as Run has it.
+		it.Failure.Message, it.Message = unknownWarning, unknownWarning
+	}
 	if it.Message == "" {
 		it.Message = it.Failure.Message
 	}
@@ -182,6 +190,53 @@ func (r Report) Proto() ([]*protocolv1.CheckItem, *protocolv1.Error) {
 	}
 	return items, errorProto(r.Err())
 }
+
+// Redact puts "[redacted]" in place of each of secrets in an answer: in its
+// items' titles, descriptions, messages, fixes, details and fields, their
+// params' names and values, and its errors' messages. It finds a secret as
+// written and as a URL's query, path and userinfo escape it, the longest form
+// first, and changes the answer in place. It's for the SDK's serving code and
+// hosts, with the values of the secrets they gave the connector, not for a
+// connector's checks.
+func Redact(secrets []string, items []*protocolv1.CheckItem, e *protocolv1.Error) {
+	var forms []string
+	for _, s := range secrets {
+		userinfo := strings.TrimPrefix(url.UserPassword("", s).String(), ":")
+		for _, v := range []string{s, url.QueryEscape(s), url.PathEscape(s), userinfo} {
+			if v != "" && !slices.Contains(forms, v) {
+				forms = append(forms, v)
+			}
+		}
+	}
+	if len(forms) == 0 {
+		return
+	}
+	slices.SortStableFunc(forms, func(a, b string) int { return len(b) - len(a) })
+	redact := func(s string) string {
+		for _, v := range forms {
+			s = strings.ReplaceAll(s, v, redacted)
+		}
+		return s
+	}
+	for _, it := range items {
+		it.Title, it.Description, it.Message, it.Fix, it.Detail, it.Field = redact(it.Title), redact(it.Description), redact(it.Message), redact(it.Fix), redact(it.Detail), redact(it.Field)
+		if len(it.Params) > 0 {
+			p := make(map[string]string, len(it.Params))
+			for k, v := range it.Params {
+				p[redact(k)] = redact(v)
+			}
+			it.Params = p
+		}
+		if it.Error != nil {
+			it.Error.Message = redact(it.Error.Message)
+		}
+	}
+	if e != nil {
+		e.Message = redact(e.Message)
+	}
+}
+
+const redacted = "[redacted]"
 
 func errorProto(err error) *protocolv1.Error {
 	if err == nil {

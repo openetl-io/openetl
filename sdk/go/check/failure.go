@@ -63,6 +63,9 @@ const (
 	configInvalid = protocolv1.ErrorCode_ERROR_CODE_CONFIG_INVALID
 )
 
+// unknownWarning is Unknown's message on a warning, which didn't fail.
+const unknownWarning = "The check raised a warning."
+
 // Fail takes params as name and value pairs; a name without a value gets
 // the value "!MISSING".
 func (r Reason) Fail(kv ...string) *Failure {
