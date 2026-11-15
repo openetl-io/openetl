@@ -731,7 +731,7 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 	refs := slices.SortedFunc(maps.Keys(e.splitLanes), func(a, b checkpoint.SplitRef) int {
 		return cmpRefs(a, b)
 	})
-	writers, local := len(p.ws), p.job.Destination.Capabilities().LaneCommits
+	writerOf, local := plan.writerOf(), p.job.Destination.Capabilities().LaneCommits
 	keys := map[string][]string{}
 	for _, st := range p.job.sinkStreams() {
 		keys[st.Name] = st.PrimaryKey
@@ -743,11 +743,11 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 			lane := read.lane
 			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from, Rows: read.rows}
 			switch {
-			case plan.KeyGrouped[ref.Stream]:
+			case plan.Exchanges[ref.Stream] != nil:
 				first, last := writerKeyGroups(plan, k)
 				r.KeyGroups, r.Key = attempt.KeyGroups(first, last), keys[ref.Stream]
 			case lane == laneAll:
-			case lane < 0 || lane%writers != k:
+			case lane < 0 || lane >= len(writerOf) || writerOf[lane] != k:
 				continue
 			}
 			c.Splits = append(c.Splits, r)

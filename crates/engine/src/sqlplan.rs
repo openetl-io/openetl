@@ -30,8 +30,10 @@
 //! `output`, whether it `replaces` the source stream of that name, its
 //! `class` and `tier`, the source streams it reads (`inputs`) and the views
 //! (`views`), the output's `columns`, its `arrow_schema` (an Arrow IPC stream
-//! holding only the schema, in base64), its `key`, the columns its rows are
-//! exchanged by (`exchange`, null for none) and its stateful operator's ID
+//! holding only the schema, in base64), its `key`, what its operator needs of
+//! its input (`need`: the columns whose equal values must be on one lane,
+//! null for nothing), the input's columns that reach the output unchanged,
+//! each with its name there (`passes`), and its stateful operator's ID
 //! (`operator`, null for none). Each error has a `kind`, a `class` and
 //! `tier` for a later tier's statement, an `at` unless it isn't about the
 //! text, and a `message`.
@@ -40,7 +42,7 @@
 //! answer lists; 2 when the call failed (usage, or a request that can't be
 //! read), with the reason on stderr.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
@@ -113,7 +115,8 @@ pub struct AnswerStatement {
     pub columns: Vec<AnswerColumn>,
     pub arrow_schema: String,
     pub key: Vec<String>,
-    pub exchange: Option<Vec<String>>,
+    pub need: Option<Vec<String>>,
+    pub passes: BTreeMap<String, String>,
     pub operator: Option<String>,
 }
 
@@ -276,7 +279,8 @@ fn statement(s: &Statement) -> Result<AnswerStatement, String> {
         columns: columns(&s.schema),
         arrow_schema: base64::engine::general_purpose::STANDARD.encode(schema),
         key: s.key.clone(),
-        exchange: s.exchange().map(<[String]>::to_vec),
+        need: s.need().map(<[String]>::to_vec),
+        passes: s.passes().into_iter().collect(),
         operator: operator_id(&s.operator),
     })
 }
@@ -567,7 +571,11 @@ mod tests {
         assert_eq!(s[0]["tier"], 1);
         assert_eq!(s[0]["inputs"], json!(["customers"]));
         assert_eq!(s[0]["key"], json!(["id"]));
-        assert_eq!(s[0]["exchange"], Value::Null);
+        assert_eq!(s[0]["need"], Value::Null);
+        assert_eq!(
+            s[0]["passes"],
+            json!({"id": "id", "created_at": "created_at"})
+        );
         assert_eq!(s[0]["operator"], Value::Null);
         assert_eq!(
             s[0]["columns"],
@@ -581,6 +589,10 @@ mod tests {
         assert_eq!(s[1]["output"], "contacts");
         assert_eq!(s[1]["replaces"], false);
         assert_eq!(s[1]["key"], json!(["customer_id"]));
+        assert_eq!(
+            s[1]["passes"],
+            json!({"id": "customer_id", "email": "contact_email"})
+        );
         assert_eq!(got["errors"], json!([]));
 
         let raw = base64::engine::general_purpose::STANDARD
