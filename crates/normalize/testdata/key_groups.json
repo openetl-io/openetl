@@ -1,0 +1,72 @@
+{
+  "about": "Keys and the group openetl.kg.v1 gives each, of 256 key groups. Each entry's spellings are one key. A json entry's spellings are JSON texts, each written as canonical. The Rust and Go tests both read this file.",
+  "groups": 256,
+  "keys": [
+    {
+      "type": "json",
+      "canonical": "{\"a\":1,\"b\":{\"x\":[3,{\"p\":5,\"q\":4}],\"y\":2}}",
+      "spellings": [
+        "{\"a\": 1, \"b\": {\"y\": 2, \"x\": [3, {\"q\": 4, \"p\": 5}]}}",
+        "{\"b\":{\"x\":[3,{\"p\":5,\"q\":4}],\"y\":2},\"a\":1}",
+        "{ \"b\" : { \"y\" : 2 , \"x\" : [ 3 , { \"q\" : 4 , \"p\" : 5 } ] } , \"a\" : 1 }"
+      ],
+      "group": 31
+    },
+    {
+      "type": "json",
+      "canonical": "{\"s\":\"é/\\\"\\n\"}",
+      "spellings": [
+        "{\"s\": \"\\u00e9\\/\\\"\\n\"}",
+        "{\"s\":\"é/\\\"\\u000a\"}"
+      ],
+      "group": 114
+    },
+    {
+      "type": "json",
+      "canonical": "1.0",
+      "spellings": [
+        "1.0",
+        " 1.0 "
+      ],
+      "group": 111
+    },
+    {
+      "type": "json",
+      "canonical": "1",
+      "spellings": [
+        "1"
+      ],
+      "group": 241
+    },
+    {
+      "type": "json",
+      "canonical": "[2,1]",
+      "spellings": [
+        "[2, 1]"
+      ],
+      "group": 207
+    },
+    {
+      "type": "json",
+      "canonical": "[1,2]",
+      "spellings": [
+        "[1,2]"
+      ],
+      "group": 189
+    },
+    {
+      "type": "utf8",
+      "spellings": [
+        "{\"b\":1,\"a\":2}"
+      ],
+      "group": 204
+    },
+    {
+      "type": "int64",
+      "spellings": [
+        "7"
+      ],
+      "group": 88
+    }
+  ]
+}

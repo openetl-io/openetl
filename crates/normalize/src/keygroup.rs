@@ -268,8 +268,12 @@ fn json(f: &Field) -> bool {
 }
 
 /// A JSON value's text as a key takes it: without spaces, and its objects'
-/// keys sorted, at any depth; None where `s` isn't JSON. Numbers keep their
-/// text.
+/// keys sorted by their bytes, at any depth; None where `s` isn't JSON.
+/// Numbers keep their text, so `1.0` and `1` are two keys. Strings are
+/// their characters, escapes read: `\u00e9` is `é`, and `\/` is `/`. They're
+/// written with `"`, `\` and control characters escaped, as `\n` or
+/// `\u001f`, and everything else as UTF-8. testdata/key_groups.json pins
+/// it, for the engine and the runner's tests alike.
 pub fn canonical_json(s: &[u8]) -> Option<String> {
     let v = serde_json::from_slice::<serde_json::Value>(s).ok()?;
     let mut out = String::with_capacity(s.len());
@@ -432,6 +436,59 @@ mod tests {
         .unwrap();
         let key: Vec<String> = cols.iter().map(|(n, _)| (*n).to_string()).collect();
         key_groups(&batch, &key, n).unwrap()
+    }
+
+    /// The vectors in testdata/key_groups.json, which internal/engineclient
+    /// asserts too, through the engine's key-group filter: each spelling of
+    /// a key gives its group, and a JSON spelling its canonical text.
+    #[test]
+    fn keys_give_the_shared_vectors_groups() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/key_groups.json")).unwrap();
+        let groups = u32::try_from(doc["groups"].as_u64().unwrap()).unwrap();
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for k in doc["keys"].as_array().unwrap() {
+            let spellings: Vec<&str> = k["spellings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap())
+                .collect();
+            let (a, f): (ArrayRef, Field) = match k["type"].as_str().unwrap() {
+                "json" => (
+                    Arc::new(StringArray::from(spellings.clone())),
+                    Field::new("k", DataType::Utf8, true).with_metadata(
+                        [(EXTENSION_NAME_KEY.to_owned(), JSON_EXTENSION.to_owned())].into(),
+                    ),
+                ),
+                "utf8" => (
+                    Arc::new(StringArray::from(spellings.clone())),
+                    Field::new("k", DataType::Utf8, true),
+                ),
+                "int64" => (
+                    Arc::new(Int64Array::from(
+                        spellings
+                            .iter()
+                            .map(|s| s.parse::<i64>().unwrap())
+                            .collect::<Vec<_>>(),
+                    )),
+                    Field::new("k", DataType::Int64, true),
+                ),
+                t => panic!("type {t}"),
+            };
+            if let Some(c) = k["canonical"].as_str() {
+                for s in &spellings {
+                    assert_eq!(canonical_json(s.as_bytes()).as_deref(), Some(c), "{s}");
+                }
+            }
+            let batch = RecordBatch::try_new(Arc::new(Schema::new(vec![f])), vec![a]).unwrap();
+            let g = key_groups(&batch, &["k".to_owned()], groups).unwrap();
+            assert!(g.iter().all(|x| *x == g[0]), "{spellings:?}: {g:?}");
+            got.push(i64::from(g[0]));
+            want.push(k["group"].as_i64().unwrap());
+        }
+        assert_eq!(got, want);
     }
 
     /// JSON keys that differ only in their object keys' order or their
