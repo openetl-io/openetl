@@ -53,8 +53,9 @@ pub(crate) const NAMED: &str =
 const START: &str = "__openetl_window_start";
 const END: &str = "__openetl_window_end";
 
-/// The layout of a group window's state, which its operator's ID covers.
-const STATE: u32 = 1;
+/// The layout of a group window's state, which its operator's ID covers,
+/// and which the engine writes it in.
+pub const WINDOW_STATE: u8 = 2;
 
 /// The most windows of a `hop` a row is in.
 const MAX_HOPS: i64 = 1000;
@@ -979,7 +980,7 @@ fn operator_id(k: &Kept) -> String {
         Window::Session { gap } => format!("session gap {gap}"),
     };
     let mut d = format!(
-        "group_window {STATE}\noutput {}\ninput {}\nwindow {window}\ntime {} {}\n",
+        "group_window {WINDOW_STATE}\noutput {}\ninput {}\nwindow {window}\ntime {} {}\n",
         crate::ident(k.output),
         crate::ident(k.input),
         crate::ident(k.time.0),

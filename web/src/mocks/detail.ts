@@ -56,11 +56,11 @@ function sqlPlan(p: Pipeline): MessageInitShape<typeof PipelinePlanSchema> {
         { line: 15, column: 1, output: "public.customers", replaces: true, class: "row_wise", inputs: ["public.customers"], primaryKey: ["id"],
           columns: cols(`id int64; email utf8; country utf8; updated_at ${ts}`) },
         { line: 20, column: 1, output: "revenue_by_minute", class: "group_window", inputs: ["public.orders"], views: ["paid_orders"],
-          primaryKey: ["window_start", "customer_id"], exchange: ["customer_id"], operator: "window-341f4361dc223bdd",
+          primaryKey: ["window_start", "customer_id"], exchange: ["customer_id"], operator: "window-29faae33810aefa5",
           columns: cols(`window_start ${ts}; customer_id int64; revenue decimal(22, 2); orders int64`) },
       ],
       operators: [
-        { id: "window-341f4361dc223bdd", output: "revenue_by_minute", line: 20, column: 1, class: "group_window", input: "public.orders", eventTime: "created_at",
+        { id: "window-29faae33810aefa5", output: "revenue_by_minute", line: 20, column: 1, class: "group_window", input: "public.orders", eventTime: "created_at",
           window: "tumble", size: durationFromMs(60_000), keys: ["customer_id"], aggregates: ["count(*)", "sum(amount)"],
           lateness: durationFromMs(30_000), retention: durationFromMs(90_000), change: OperatorChange.KEPT },
         { id: "window-b20660707787f280", output: "revenue_by_hour", change: OperatorChange.DROPPED },
