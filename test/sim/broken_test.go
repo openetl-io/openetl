@@ -14,13 +14,13 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"watermark-not-restored", "watermark", "a restore starts each split's watermark over, not from the record"},
 	{"engines-any-generation", "generation", "an engine takes an exchange connection of any attempt and generation"},
 	{"runners-any-attempt", "generation", "a runner hands a worker's message to the coordinator it runs now, which takes it whatever its attempt and generation"},
-	{"names-without-generation", "generation", "snapshot files are named by epoch, operator and key groups, without the generation"},
-	{"names-by-group", "restore", "snapshot files are named by operator and key groups only"},
+	{"names-without-generation", "generation", "runs are named by epoch, operator and key groups, without the generation"},
+	{"names-by-group", "restore", "runs are named by operator and key groups only"},
 	{"senders-by-connection", "restore", "a keyed lane aligns barriers and takes its watermark across the senders it has connections from, not every lane of the attempt"},
-	{"prune-by-epoch", "restore", "retention deletes snapshot files of epochs before the oldest record kept, though a kept record names them for key groups that didn't change"},
+	{"prune-by-epoch", "retention", "retention deletes runs of epochs before the oldest record kept, though a kept record names them for key groups that didn't change"},
 	{"ack-read-positions", "exactly-once", "workers acknowledge upstream where they've read to, not the committed record's positions"},
 	{"idle-excluded", "watermark", "an idle split is left out of its lane's watermark, and a lane whose splits are all idle out of its receivers', as Flink does; the record keeps each split's own"},
-	{"snapshot-unwaited", "restore", "a lane goes on, and its worker sends its share, before its snapshot file is written"},
+	{"snapshot-unwaited", "restore", "a lane goes on, and its worker sends its share, before its run is written"},
 	{"idle-advances-held", "watermark", "an idle split's watermark advances on a timer, also while it waits at a barrier it placed"},
 	// Commits and recovery (workers_commit_test.go, variantShapes).
 	{"ack-before-commits", "exactly-once", "the coordinator acknowledges an epoch once it has asked every worker to commit, before they answer"},
@@ -39,6 +39,20 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"replay-own-watermarks", "exactly-once", "a redo from the source closes the windows its own read's watermarks close, not the record's"},
 	{"prune-to-head", "restore", "recovery's retention keeps only the record HEAD names, before the epoch is settled"},
 	{"replay-not-exact", "exactly-once", "the source's replay of a range returns a row twice"},
+	// State's runs (workers_state_test.go, variantShapes).
+	{"state-before-record", "restore", "a lane's state commits when its run is written, in a manifest of its key groups that a restore reads instead of the record"},
+	{"restore-by-listing", "restore", "a restore takes every run in the store for its key groups, not the sections the record names"},
+	{"restore-whole-sections", "exactly-once", "a restore takes each section the record names that has any of the lane's key groups whole, and names it on whole"},
+	{"redo-from-own-record", "exactly-once", "a redo from the source starts from the state of the record it redoes, not the record before"},
+	{"prune-unnamed", "restore", "retention deletes every object no record it keeps names, the newest generation's too"},
+	{"merge-before-named", "retention", "a merge deletes its inputs once its output is written, before a record names the output"},
+	{"merge-drops-tombstones", "restore", "a merge of the newest values sections drops deletions, though older sections it didn't take hold what they delete"},
+	{"drop-by-first", "restore", "a set's or timers' section is dropped once the horizon has passed its earliest entry, not its latest"},
+	{"drop-tombstones", "restore", "a values section of deletions is dropped though an older section holds what they delete"},
+	{"pending-epoch-only", "restore", "the record carries the lane's changes of the epoch, not all of them since its last run"},
+	{"pending-to-memory-only", "restore", "a restore reads the record's pending set into memory, and not into its lane's pending set"},
+	{"lazy-stale-handles", "restore", "a lazy lane reads key groups from the sections it restored, not those it names now"},
+	{"late-before-dedupe", "exactly-once", "a keyed lane sends a row whose window closed to late before it looks for its dedupe ID"},
 }
 
 // TestBroken shows each invariant of the workers kind catches a protocol
