@@ -31,14 +31,15 @@ func settlesByLane(caps destination.Capabilities, rec *checkpoint.Record) bool {
 }
 
 // settleCommittables settles rec's committables which names, in turn, and
-// says how each was.
-func (j *Job) settleCommittables(ctx context.Context, gen uint64, rec *checkpoint.Record, which []int, forced map[string]bool, log *slog.Logger) ([]destination.Recovery, error) {
+// says how each was. before is the record before rec, whose state a redo
+// starts from; nil if rec is the log's first, or before can't be read.
+func (j *Job) settleCommittables(ctx context.Context, gen uint64, rec, before *checkpoint.Record, which []int, forced map[string]bool, log *slog.Logger) ([]destination.Recovery, error) {
 	out := make([]destination.Recovery, 0, len(which))
 	for _, i := range which {
 		if i < 0 || i >= len(rec.Committables) {
 			return nil, errs.New(errs.Internal, "runner: committable %d of epoch %d, which has %d", i, rec.Epoch, len(rec.Committables))
 		}
-		r, err := j.settleCommittable(ctx, gen, rec, i, forced, log)
+		r, err := j.settleCommittable(ctx, gen, rec, before, i, forced, log)
 		if err != nil {
 			return nil, err
 		}
@@ -66,7 +67,7 @@ func settledAs(rs []destination.Recovery) (destination.Recovery, error) {
 // settleCommittable settles committable i of rec, on a writer of generation
 // gen opened as the lane that staged it, and closed: from its marker, from
 // its staging, or by redoing its part of the epoch from the source.
-func (j *Job) settleCommittable(ctx context.Context, gen uint64, rec *checkpoint.Record, i int, forced map[string]bool, log *slog.Logger) (_ destination.Recovery, err error) {
+func (j *Job) settleCommittable(ctx context.Context, gen uint64, rec, before *checkpoint.Record, i int, forced map[string]bool, log *slog.Logger) (_ destination.Recovery, err error) {
 	w, err := j.Destination.Open(ctx, j.openConfig(gen, forced, i))
 	if err != nil {
 		return 0, fmt.Errorf("runner: open destination lane %d: %w", i, err)
@@ -90,7 +91,7 @@ func (j *Job) settleCommittable(ctx context.Context, gen uint64, rec *checkpoint
 	}
 	log.Info("redoing a writer lane's part of an epoch from the source", "lane", i, "epoch", e.N, "of_generation", e.Generation)
 	start := time.Now()
-	if err := j.redo(ctx, gen, w, rec, i); err != nil {
+	if err := j.redo(ctx, gen, w, rec, before, i); err != nil {
 		return 0, fmt.Errorf("runner: redo writer lane %d of epoch %d from the source: %w", i, e.N, err)
 	}
 	log.Info("redid a writer lane's part of an epoch", "lane", i, "epoch", e.N, "took", time.Since(start))
@@ -121,6 +122,35 @@ func (j *Job) applyRecorded(ctx context.Context, w destination.Writer, applied m
 		err = errs.Wrap(errs.SchemaDrift, &RefusedError{Columns: []RefusedColumn{{RefusedColumn: a.Refused[0]}}}, "runner: recovering a recorded epoch")
 	}
 	return a, err
+}
+
+// redoStart is the record rec's epoch started from: before, the record
+// before rec, as the attempt that wrote rec restored it, without what the
+// resets that attempt took dropped.
+func (j *Job) redoStart(rec, before *checkpoint.Record) *checkpoint.Record {
+	if before == nil || rec.Reset == before.Reset {
+		return before
+	}
+	return j.restart(before, rec.ResetStreams)
+}
+
+// redoFloors are the floors rec's epoch started at, as start is where it
+// started from (redoStart's): the attempt's, where the epoch was its first,
+// and otherwise those its splits had at the barrier before. A read that
+// started in the epoch's attempt had the splits rec has of it, with the
+// watermarks of the read before carried, as an attempt's start gives them.
+func (j *Job) redoFloors(rec, start *checkpoint.Record) map[string]int64 {
+	if start == nil {
+		return nil
+	}
+	splits, _ := j.startSplits(start, doneIn(start, rec.Sync), func(s Stream, _ []source.Split) ([]checkpoint.SplitState, error) {
+		var out []checkpoint.SplitState
+		for _, sp := range rec.Splits(s.Name) {
+			out = append(out, checkpoint.SplitState{ID: sp.ID})
+		}
+		return out, nil
+	})
+	return floors(j.Streams, splits)
 }
 
 // redoRead is a covered split read again: from where its part of the epoch
@@ -266,13 +296,22 @@ func keyName(key []string) string {
 // destination's streams that the splits reach the committable as, each
 // writing a writer lane of its own, whose rows of other streams it drops.
 // It shapes rows by rec's schemas, and runs as generation gen, which names
-// what it quarantines.
-func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec *checkpoint.Record, i int) error {
+// what it quarantines. Its stateful operators start from the state before,
+// the record before rec, as rec's attempt restored it, with its watermarks,
+// and write none.
+func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, before *checkpoint.Record, i int) error {
 	if j.ownCode() || j.staged() {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
 	}
 	if kg := rec.KeyGroupCount(); kg != j.keyGroups() {
 		return errs.New(errs.ConfigInvalid, "runner: the record has %d key groups, and the pipeline %d", kg, j.keyGroups())
+	}
+	if before != nil && (rec.Previous == nil || before.Ref() != *rec.Previous) {
+		return errs.New(errs.Internal, "runner: a redo of epoch %d from a record that isn't the one before it", rec.Epoch)
+	}
+	if before == nil && rec.Previous != nil && j.keepsState() {
+		return errs.New(errs.CheckpointCorrupt, "runner: writer lane %d's part of epoch %d is redone from the state its SQL had at the epoch's start, and the checkpoint before it, %d-g%d, can't be read",
+			i, rec.Epoch, rec.Previous.Epoch, rec.Previous.Generation)
 	}
 	part, err := j.redoReads(rec, i)
 	if err != nil {
@@ -288,9 +327,12 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec *c
 			schemas[name] = st.Schema
 		}
 	}
-	plan := rj.plan(gen, rec.Epoch, nil, readStarts, schemas, outputSchemas(rec), nil)
+	before = j.redoStart(rec, before)
+	plan := rj.plan(gen, rec.Epoch, before, readStarts, schemas, outputSchemas(rec), nil)
 	// Each lane writes its own writer lane.
 	plan.KeyGroupRanges, plan.FirstLane, plan.Exchanges = part.ranges, i, nil
+	plan.StateReadOnly = true
+	plan.Floors = j.redoFloors(rec, before)
 	if plan.Sink != (SinkPlan{}) {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
 	}

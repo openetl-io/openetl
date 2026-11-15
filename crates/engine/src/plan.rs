@@ -90,11 +90,11 @@ pub struct Plan {
     pub probe: Option<crate::stage::Probe>,
 }
 
-/// A job's state: the pipeline whose operators' stores it opens, and the
-/// snapshots of the restored record, by operator.
-#[derive(Debug)]
+/// A job's state: where its stateful operators keep it, if it has any,
+/// and the snapshots of the restored record, by operator.
+#[derive(Debug, Default)]
 pub struct StatePlan {
-    pub pipeline: String,
+    pub job: Option<std::sync::Arc<crate::state::JobState>>,
     pub restored: Vec<(String, openetl_state::Snapshot)>,
 }
 
@@ -329,8 +329,9 @@ impl Plan {
         let windowed = transform
             .as_ref()
             .is_some_and(|t| t.statements.iter().any(|s| s.window.is_some()));
+        // A redo runs one engine of one lane, whatever its first lane.
         let part = mesh.as_ref().is_some_and(|m| m.engines.len() > 1)
-            || req.first_lane != 0
+            || (req.first_lane != 0 && !req.state_read_only)
             || (req.attempt_writer_lanes as usize) > writer_lanes;
         if windowed && part {
             return Err(JobError::config(
@@ -349,8 +350,23 @@ impl Plan {
                     s.operator
                 )));
             }
-            restored_state.push(crate::state::snapshot(s, key_groups)?);
+            restored_state.push(crate::state::snapshot(s)?);
         }
+        let operators = transform.as_ref().map_or(0, |t| t.operators().count());
+        let state_job = match (operators, req.state_url.as_str()) {
+            (0, _) => None,
+            (_, "") => {
+                return Err(JobError::config(
+                    "transform.sql has a group window, which keeps state, and the job has no state URL to keep it at",
+                ));
+            }
+            (n, url) => Some(std::sync::Arc::new(crate::state::JobState::open(
+                url,
+                req.state_read_only,
+                n,
+                req.limits.as_ref().map_or(0, |l| l.memory_bytes),
+            )?)),
+        };
         let sinks = match transform {
             Some(_) => &req.outputs,
             None => &req.streams,
@@ -647,7 +663,7 @@ impl Plan {
 
         let plan = Plan {
             state: StatePlan {
-                pipeline: req.pipeline.clone(),
+                job: state_job,
                 restored: restored_state,
             },
             job: req.job.clone(),
@@ -1000,6 +1016,8 @@ pub(crate) mod tests {
             first_writer_lane: 0,
             attempt_writer_lanes: 0,
             mesh: None,
+            state_url: String::new(),
+            state_read_only: false,
         }
     }
 
@@ -1549,8 +1567,7 @@ pub(crate) mod tests {
                 Box::new(|r| {
                     r.restored_snapshots.push(StateSnapshot {
                         operator: "window".into(),
-                        url: "file:///x".into(),
-                        key_groups: None,
+                        ..Default::default()
                     })
                 }),
             ),

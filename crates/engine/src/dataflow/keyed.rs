@@ -235,16 +235,38 @@ pub(super) async fn run(
             t.sql.inputs[st.input].lateness,
             plan.key_groups,
         )?;
-        let restored: Vec<openetl_state::Snapshot> = plan
+        // A record names an operator's state on every lane, or on none
+        // where none has written any: then the lane starts empty.
+        let named: Vec<&openetl_state::Snapshot> = plan
             .state
             .restored
             .iter()
-            .filter(|(o, s)| o == id && s.range.overlaps(&range))
-            .map(|(_, s)| s.clone())
+            .filter(|(o, _)| o == id)
+            .map(|(_, s)| s)
             .collect();
-        let stores = crate::state::stores(&plan.state.pipeline, id);
+        let cant_open = |why: String| {
+            let stream = &t.sql.inputs[st.input].name;
+            format!(
+                "transform.sql {}: the group window writing {} can't open the state the checkpoint names, {why}. Reset stream {stream} to build the state again from a new read of it: openetl reset --stream {stream} NAME",
+                st.at, st.output
+            )
+        };
+        if let Some(g) = crate::state::uncovered(&named, range) {
+            return Err(JobError::new(
+                ErrorCode::CheckpointCorrupt,
+                cant_open(format!("as none of its snapshots holds key group {g}")),
+            ));
+        }
+        let restored: Vec<openetl_state::Snapshot> = named
+            .into_iter()
+            .filter(|s| s.range.overlaps(&range))
+            .cloned()
+            .collect();
+        let Some(state) = &plan.state.job else {
+            return Err(JobError::internal("a group window without the job's state"));
+        };
         let layer = Layer::open(
-            stores.as_ref(),
+            &state.stores(id),
             plan.generation,
             plan.first_epoch,
             range,
@@ -252,11 +274,8 @@ pub(super) async fn run(
         )
         .await
         .map_err(|e| {
-            let stream = &t.sql.inputs[st.input].name;
-            JobError::config(format!(
-                "transform.sql {}: the group window writing {} can't restore its state: the checkpoint names state that was in the memory of the engine that wrote it, which has stopped. Reset stream {stream} to build the state again from a new read of it: openetl reset --stream {stream} NAME ({e})",
-                st.at, st.output
-            ))
+            let err = crate::state::state_error("its state", &e);
+            JobError::new(err.code, cant_open(err.message))
         })?;
         let floor = t.inputs[st.input]
             .event_time
@@ -510,36 +529,34 @@ impl Keyed {
         }
     }
 
-    /// The epoch's state is the layer's barrier, which the record names
-    /// once every writer lane has passed the epoch; then the output's
-    /// barrier goes on.
+    /// The epoch's state is the layer's barrier: a run of what the epoch
+    /// changed, which counts once the record names the lane's snapshot, and
+    /// that once every writer lane has passed the epoch; then the output's
+    /// barrier goes on. A read-only job's epoch changes nothing.
     async fn barrier(&mut self, lane: &Lane, e: Epoch) -> Result<(), JobError> {
         let flow = lane.flow.clone();
         let plan = &flow.plan;
         let s = self.output;
-        let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
-            JobError::internal(format!("a group window's state at epoch {}: {err}", e.n))
-        })?;
-        // The store's versions live in this engine's memory, which no other
-        // engine restores from, so this one keeps only the newest two.
-        self.layer
-            .release(e.n.saturating_sub(1))
-            .await
-            .map_err(|err| JobError::internal(format!("a group window's state: {err}")))?;
         let id = plan
             .transform
             .as_ref()
             .and_then(|t| t.sql.statements[self.statement].window.as_ref())
             .map(|(_, id)| id.clone())
             .unwrap_or_default();
-        let empty = self.layer.memory().store == 0;
-        {
-            let mut a = flow.align.lock().await;
-            a.pieces(e.n).snapshots.extend(
-                snapshots
-                    .iter()
-                    .map(|sn| (crate::state::named(&id, sn), empty)),
-            );
+        if plan.state.job.as_ref().is_some_and(|j| j.read_only()) {
+            self.layer.discard();
+        } else {
+            let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
+                crate::state::state_error(
+                    &format!("operator {id}'s state at epoch {}'s barrier", e.n),
+                    &err,
+                )
+            })?;
+            let named = snapshots
+                .iter()
+                .map(|sn| crate::state::named(&id, sn))
+                .collect::<Result<Vec<_>, _>>()?;
+            flow.align.lock().await.pieces(e.n).snapshots.extend(named);
         }
         let outputs_q = plan
             .transform

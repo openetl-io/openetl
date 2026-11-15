@@ -39,18 +39,31 @@ func QuarantinePath(fileURL string) string {
 // epochs that never committed.
 const orphanGenerations = 16
 
+// StateDir holds a pipeline's state, next to its checkpoints: each stateful
+// operator's runs, {org}/{pipeline}/_state/{dir}/g{g}/e{N}/kg{first}-{last}.run,
+// in a directory of the operator's that the engine names. A record's
+// snapshots name them below it.
+const StateDir = "_state"
+
 // Prune deletes what no later attempt can need, once the session has
-// recovered to restored (nil if it restored nothing):
+// recovered to restored (nil if it restored nothing), or committed it:
 //   - records more than keep back along the chain from restored;
 //   - records and quarantined files that earlier generations wrote for
-//     epochs after restored. Those epochs never committed.
+//     epochs after restored. Those epochs never committed;
+//   - state that none of the records it keeps names: of earlier
+//     generations, and of the session's own of epochs up to restored's.
+//     The session's own of later epochs may be about to be named.
 //
 // Quarantined files of committed epochs are kept. keep must be at least 2,
-// because an attempt reads HEAD and the record before it. Prune stops at the
-// first error, and a later attempt prunes what it left.
+// because an attempt reads HEAD and the record before it, and restores
+// either's state. Prune stops at the first error, and a later attempt
+// prunes what it left.
 func (s *Session) Prune(ctx context.Context, restored *Record, keep int) (deleted int, err error) {
 	if keep < 2 {
 		return 0, fmt.Errorf("checkpoint: prune must keep at least 2 records, not %d", keep)
+	}
+	if deleted, err = s.pruneState(ctx, restored, keep); err != nil {
+		return deleted, err
 	}
 	gen := s.head.Generation
 	var after uint64

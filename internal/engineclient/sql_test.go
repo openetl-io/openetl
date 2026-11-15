@@ -1,6 +1,8 @@
 package engineclient
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -164,6 +166,8 @@ func TestEngineRunsAGroupWindow(t *testing.T) {
 	}
 	p := plan()
 	p.Pipeline = "windowed"
+	state := t.TempDir()
+	p.StateURL = "file://" + state
 	p.Streams = []runner.Stream{in}
 	p.Outputs = []runner.Stream{{Name: "minutes", PrimaryKey: []string{"window_start", "region"}, Transformed: true}}
 	p.SQL = &runner.SQLTransform{SQL: sql, Expected: expected(t, a), Operators: []string{a.Statements[0].Operator}}
@@ -188,7 +192,19 @@ func TestEngineRunsAGroupWindow(t *testing.T) {
 		t.Fatalf("minutes has %d rows, want 2", b.NumRows())
 	}
 	ready := got[""]
-	if len(ready) != 2 || len(ready[0].Ready.Snapshots) != 1 || ready[0].Ready.Snapshots[0].Operator != a.Statements[0].Operator || len(ready[1].Ready.Snapshots) != 0 {
+	if len(ready) != 2 {
 		t.Fatalf("ready: %+v", ready)
+	}
+	// Each epoch names the lane's runs: one more, of what the epoch changed.
+	for i, r := range ready {
+		s := r.Ready.Snapshots
+		if len(s) != 1 || s[0].Operator != a.Statements[0].Operator || len(s[0].Runs) != i+1 || len(s[0].Data) == 0 {
+			t.Fatalf("epoch %d's snapshots: %+v", r.Epoch, s)
+		}
+		for _, run := range s[0].Runs {
+			if _, err := os.Stat(filepath.Join(state, run)); err != nil {
+				t.Errorf("epoch %d names %s: %v", r.Epoch, run, err)
+			}
+		}
 	}
 }
