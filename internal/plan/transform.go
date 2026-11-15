@@ -16,6 +16,8 @@ type Input struct {
 	PrimaryKey []string
 	Read       apiv1.SyncMode
 	Replay     source.Replay
+	// What an incremental read goes by: the spec's cursor, or the source's.
+	Cursor string
 	// The spec's settings for it; nil if it doesn't name it.
 	Spec *apiv1.PipelineStream
 }

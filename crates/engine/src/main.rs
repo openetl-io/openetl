@@ -31,6 +31,7 @@ mod state;
 mod store;
 mod telemetry;
 mod transform;
+mod watermark;
 mod window;
 
 use std::io::{Read, Write};

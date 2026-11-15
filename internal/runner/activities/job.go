@@ -99,7 +99,7 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		// A transform's inputs aren't written; its outputs are.
 		mode := destination.Append
 		if transformed {
-			in := plan.Input{Name: cs.Name, PrimaryKey: cs.PrimaryKey, Read: read, Replay: replay, Spec: ps}
+			in := plan.Input{Name: cs.Name, PrimaryKey: cs.PrimaryKey, Read: read, Replay: replay, Cursor: cursor, Spec: ps}
 			if err := plan.InputProblem(p, in); err != nil {
 				return runner.Stream{}, errs.Wrap(errs.ConfigInvalid, err, "runner")
 			}
@@ -134,9 +134,9 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		if ps != nil {
 			s.Collapse = ps.Collapse
 		}
-		if transformed {
-			s.EventTime = ps.GetEventTime()
-			s.Lateness = ps.GetWatermark().GetLateness().AsDuration()
+		if col := ps.GetEventTime(); col != "" && p.GetTransform().GetSql() != nil {
+			s.EventTime = &runner.EventTime{Column: col, Delay: ps.GetWatermark().GetDelay().AsDuration(), Held: !plan.OrderedRead(read, cursor, col),
+				Lateness: ps.GetWatermark().GetLateness().AsDuration()}
 		}
 		if !transformed && plan.Holds(caps, mode, keyed) {
 			s.Holds = streamHolds(ps)

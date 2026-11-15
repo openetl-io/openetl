@@ -20,9 +20,11 @@ import (
 
 // splitSource splits its one stream into a and b. A split read from its
 // beginning emits a row and resumes at "<id>1", b adding c there, then
-// waits for gate; every split then completes at "<id>N".
+// closes parked and waits for gate; every split then completes at "<id>N".
 type splitSource struct {
-	gate chan struct{}
+	gate   chan struct{}
+	parked chan struct{}
+	park   sync.Once
 
 	mu    sync.Mutex
 	reads []source.ConfiguredStream
@@ -57,6 +59,7 @@ func (s *splitSource) Read(ctx context.Context, req source.ReadRequest, out sour
 			return err
 		}
 	}
+	s.park.Do(func() { close(s.parked) })
 	select {
 	case <-s.gate:
 	case <-ctx.Done():
@@ -78,7 +81,7 @@ func TestSplitsAreRecordedAndContinued(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
 		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
-		src := &splitSource{gate: make(chan struct{})}
+		src := &splitSource{gate: make(chan struct{}), parked: make(chan struct{})}
 		attempt := func(owner, syncID string, drain bool) error {
 			job := runner.Job{
 				Owner: owner, Sync: syncID, Pipeline: "p", Log: log, Source: src,
@@ -88,9 +91,9 @@ func TestSplitsAreRecordedAndContinued(t *testing.T) {
 				Settings:    delivery.Settings{Require: delivery.ExactlyOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
 			}
 			if drain {
-				ch := make(chan struct{})
-				var once sync.Once
-				job.Drain, job.OnCommit = ch, func(uint64) { once.Do(func() { close(ch) }) }
+				// Not before both resume points: a drain's checkpoint can
+				// come before b emits.
+				job.Drain = src.parked
 			}
 			_, err := runner.RunAttempt(ctx, job)
 			return err

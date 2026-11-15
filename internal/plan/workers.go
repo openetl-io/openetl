@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 
@@ -118,7 +119,8 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 		keyed := len(s.cs.GetPrimaryKey()) > 0
 		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
 		if sql {
-			inputs = append(inputs, Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps})
+			inputs = append(inputs, Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read),
+				Cursor: cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField()), Spec: s.ps})
 			if !Lands(spec, a, name) {
 				continue
 			}

@@ -28,6 +28,11 @@ enum FrameKind {
   // From the engine only: a BATCH of patches, as
   // openetl.connector.v1.WriteBatch.patch describes.
   FRAME_KIND_PATCH = 8;
+  // To the engine only, for a stream with event time (StreamPlan.event_time).
+  FRAME_KIND_SPLIT = 9;
+  // Between a lane and the lanes it sends to, in one engine or another's: a
+  // sender's watermark of the stream, in order with what it sends.
+  FRAME_KIND_WATERMARK = 10;
 }
 
 message Hello {
@@ -42,9 +47,6 @@ message Rows {
 // Barrier ends the epoch on one stream.
 message Barrier {
   openetl.connector.v1.Epoch epoch = 1;
-  // The stream's read ended before it: no row of the stream follows it on
-  // this edge. Its group windows close at it.
-  bool last = 2;
 }
 
 // SchemaChange comes before the first batch with the new schema.
@@ -54,3 +56,26 @@ message SchemaChange {
 }
 
 message EndOfStream {}
+
+// Split is about one of the stream's splits on the edge. The stream's ROWS
+// and BATCH frames after it on the edge are the split's, until the next
+// Split of the stream. The first Split of a split on the edge joins it to the
+// lane; the edge carries every split of the lane's from the start of the
+// read, and a split it adds after it joins the lane of the split it came
+// from.
+message Split {
+  string id = 1;
+  // The split's watermark from here is at least this, in microseconds since
+  // the Unix epoch: as the restored record has it, on its first Split, or
+  // an advance the runner makes, as when it's idle. The largest int64 is
+  // the end of its input. Unset: unchanged.
+  optional int64 watermark = 2;
+}
+
+// Watermark says no row of the stream the sender sends after it is earlier
+// than micros, but a late one. A sender's never goes back.
+message Watermark {
+  // Microseconds since the Unix epoch; the largest int64 is the end of its
+  // input.
+  int64 micros = 1;
+}

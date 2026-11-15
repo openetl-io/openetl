@@ -34,7 +34,23 @@ pub enum Stage {
     #[default]
     Identity,
     Statement(Box<Bound>),
+    /// Batches pass as they are, and what it's given is recorded.
+    #[cfg(test)]
+    Probe(Probe),
 }
+
+/// What a probe stage was given, in order.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seen {
+    /// A batch's rows.
+    Rows(usize),
+    Watermark(i64),
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+pub struct Probe(pub Arc<std::sync::Mutex<Vec<Seen>>>);
 
 /// What a stage gives for a batch.
 #[derive(Debug)]
@@ -73,6 +89,28 @@ impl Stage {
         match self {
             Stage::Identity => None,
             Stage::Statement(b) => Some(b.st()),
+            #[cfg(test)]
+            Stage::Probe(_) => None,
+        }
+    }
+
+    /// The stream's watermark on the lane advanced to `wm`, microseconds
+    /// since the Unix epoch: a row still to come that's earlier is late.
+    /// [`crate::watermark::END`] is the end of its input. It comes in order
+    /// with `apply`: after the batch that moved it, and before any later
+    /// one. After a restore, the first is the one the lane restored, before
+    /// any batch, unless one of the lane's splits has none. What it gives
+    /// goes to the output as `apply`'s does, its rows of no batch of the
+    /// stream; the output's watermark is then `wm` too.
+    pub fn watermark(&mut self, wm: i64) -> Result<Option<Applied>, JobError> {
+        let _ = wm;
+        match self {
+            Stage::Identity | Stage::Statement(_) => Ok(None),
+            #[cfg(test)]
+            Stage::Probe(p) => {
+                p.seen(Seen::Watermark(wm));
+                Ok(None)
+            }
         }
     }
 
@@ -98,6 +136,11 @@ impl Stage {
                 failed: Vec::new(),
             }),
             Stage::Statement(b) => b.apply(typed, pushed, cursor),
+            #[cfg(test)]
+            Stage::Probe(p) => {
+                p.seen(Seen::Rows(typed.batch.num_rows()));
+                Stage::Identity.apply(typed, pushed, cursor)
+            }
         }
     }
 
@@ -133,6 +176,17 @@ impl Stage {
             return Ok((rest, None));
         }
         Ok((rest, Some(b.key_only(out, &keys)?)))
+    }
+}
+
+#[cfg(test)]
+impl Probe {
+    fn seen(&self, s: Seen) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(s);
+    }
+
+    pub fn take(&self) -> Vec<Seen> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 

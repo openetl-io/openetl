@@ -418,7 +418,8 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 			problems = append(problems, err)
 		}
 		if ownCode(spec) || sql {
-			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps}
+			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read),
+				Cursor: cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField()), Spec: s.ps}
 			inputs = append(inputs, in)
 		}
 		if ownCode(spec) || sql && (answer == nil || !Lands(spec, answer, name)) {

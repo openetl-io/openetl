@@ -144,7 +144,7 @@ func Lands(spec *apiv1.PipelineSpec, a *sqlplan.Answer, stream string) bool {
 // statements' outputs, as SQLOutputs gives them. A stream passed through is
 // checked as one without a transform.
 func SQLSettingProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlplan.Answer, inputs []Input, outs []Output) []error {
-	out := latenessProblems(a, inputs, outs)
+	out := windowProblems(spec, a, inputs, outs)
 	for _, in := range inputs {
 		ps := in.Spec
 		set := landingSettings(ps)
@@ -170,12 +170,16 @@ func SQLSettingProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities,
 	return out
 }
 
-// latenessProblems fail a group window over a stream not read with
-// full_refresh, as windows close where a read ends; and a stream's
+// windowProblems fail a group window over a stream whose reads would cut
+// its windows short: one read in another order than its event time, other
+// than whole, as each read's windows would hold only that read's rows; and,
+// in a scheduled pipeline, one read in the order of its event time, whose
+// windows open at a sync's end would go on in the next sync, while their
+// state is in the memory of the engine that ran the sync. And a stream's
 // watermark.lateness where a group window over it writes an output that
 // isn't merged: a row that comes late gives the window's row again, which
 // only a merge takes as an update.
-func latenessProblems(a *sqlplan.Answer, inputs []Input, outs []Output) []error {
+func windowProblems(spec *apiv1.PipelineSpec, a *sqlplan.Answer, inputs []Input, outs []Output) []error {
 	var out []error
 	for i, st := range a.Statements {
 		if st.Operator == "" {
@@ -185,9 +189,16 @@ func latenessProblems(a *sqlplan.Answer, inputs []Input, outs []Output) []error 
 			if !slices.Contains(st.Inputs, in.Name) {
 				continue
 			}
-			if in.Read != apiv1.SyncMode_SYNC_MODE_FULL_REFRESH {
-				out = append(out, fmt.Errorf("the group window writing %q reads stream %q with %s, and windows close only where a read ends: read it with full_refresh",
-					st.Output, in.Name, syncName(in.Read)))
+			column := in.Spec.GetEventTime()
+			switch {
+			case in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, column == "":
+			case !OrderedRead(in.Read, in.Cursor, column):
+				out = append(out, fmt.Errorf("the group window writing %q reads stream %q with %s by cursor %q, not by its eventTime %q, "+
+					"so each sync's windows would hold only the rows that sync reads: read it with full_refresh", st.Output, in.Name, syncName(in.Read), in.Cursor, column))
+			case !Continuous(spec):
+				out = append(out, fmt.Errorf("the group window writing %q reads stream %q with %s in a scheduled pipeline, so a window open at the end of a sync "+
+					"would go on in the next one; each sync runs in an engine of its own, and a group window's state is in the engine's memory: "+
+					"read the stream with full_refresh, or run the pipeline with mode: continuous", st.Output, in.Name, syncName(in.Read)))
 			}
 			if i < len(outs) && outs[i].Mode != destination.Merge && in.Spec.GetWatermark().GetLateness().AsDuration() > 0 {
 				out = append(out, fmt.Errorf("stream %q sets watermark.lateness, so a row that comes late gives its window's row again, "+

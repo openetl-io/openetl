@@ -62,7 +62,10 @@ func sqlRequest(sql string, streams []runner.Stream, restored map[string][]byte)
 		if !sqlplan.Mentions(sql, s.Name) {
 			continue
 		}
-		st := sqlplan.Stream{Name: s.Name, Changelog: s.Read == source.CDC, Nanoseconds: s.NanosecondTimestamps, RestoredSchema: restored[s.Name], EventTime: s.EventTime}
+		st := sqlplan.Stream{Name: s.Name, Changelog: s.Read == source.CDC, Nanoseconds: s.NanosecondTimestamps, RestoredSchema: restored[s.Name]}
+		if s.EventTime != nil {
+			st.EventTime = s.EventTime.Column
+		}
 		if d := s.Declared(); d != nil {
 			if st.DeclaredSchema, err = arrowipc.EncodeSchema(d); err != nil {
 				return req, nil, fmt.Errorf("runner: stream %s's declared schema: %w", s.Name, err)
@@ -170,7 +173,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 		if err != nil {
 			return nil, nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("runner: output %s's schema", o.Name))
 		}
-		expected = append(expected, runner.ExpectedOutput{Name: o.Name, Schema: schema, PrimaryKey: o.PrimaryKey, Input: s.Name})
+		expected = append(expected, runner.ExpectedOutput{Name: o.Name, Schema: schema, PrimaryKey: o.PrimaryKey, Input: s.Name, Operator: st.Operator})
 		out := runner.Stream{
 			Name:                 o.Name,
 			Replay:               s.Replay,

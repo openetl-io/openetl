@@ -409,16 +409,22 @@ type seenFlow struct {
 	inner runner.Dataflow
 	mu    sync.Mutex
 	seen  map[string][]runner.Frame
+	plans []runner.Plan
+	// Each epoch's state, as the dataflow reports it.
+	snapshots []checkpoint.Snapshot
 }
 
 func (f *seenFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
-	through := make(chan runner.Frame)
+	f.mu.Lock()
+	f.plans = append(f.plans, plan)
+	f.mu.Unlock()
+	through, back := make(chan runner.Frame), make(chan runner.Frame)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		defer close(through)
 		for fr := range in {
 			f.mu.Lock()
-			f.seen[fr.Stream] = append(f.seen[fr.Stream], runner.Frame{Kind: fr.Kind, Epoch: fr.Epoch, Last: fr.Last})
+			f.seen[fr.Stream] = append(f.seen[fr.Stream], runner.Frame{Kind: fr.Kind, Epoch: fr.Epoch, Split: fr.Split, Watermark: fr.Watermark})
 			f.mu.Unlock()
 			select {
 			case through <- fr:
@@ -431,33 +437,84 @@ func (f *seenFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		}
 		return nil
 	})
-	g.Go(func() error { return f.inner.Run(gctx, plan, through, out) })
+	g.Go(func() error { return f.inner.Run(gctx, plan, through, back) })
+	g.Go(func() error {
+		defer close(out)
+		for fr := range back {
+			if fr.Kind == runner.FrameReady {
+				fr.Ready.Snapshots = slices.Clone(f.snapshots)
+			}
+			select {
+			case out <- fr:
+			case <-gctx.Done():
+				if fr.Batch != nil {
+					fr.Batch.Release()
+				}
+				return gctx.Err()
+			}
+		}
+		return nil
+	})
 	return g.Wait()
 }
 
-// A job with a group window's state ends with a barrier placed after the
-// read ended, marked last, where its windows close; no barrier before it is.
-func TestAStatefulJobsLastBarrierFollowsItsRead(t *testing.T) {
+// A split of a stream with event time that completes moves its watermark
+// on, and a barrier follows it, so what the watermark closes is in an
+// epoch the record keeps.
+func TestACompletedSplitsWatermarkIsInAnEpoch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
 		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
 		flow := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}}
 		j := sqlJob(log, "a1", nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
+		for i := range j.Streams {
+			j.Streams[i].EventTime = &runner.EventTime{Column: "at"}
+		}
 		j.Dataflow = flow
 		if _, err := runner.RunAttempt(ctx, j); err != nil {
 			t.Fatal(err)
 		}
 		for _, s := range []string{"a", "b"} {
 			frames := flow.seen[s]
-			if len(frames) == 0 || frames[len(frames)-1].Kind != runner.FrameBarrier || !frames[len(frames)-1].Last {
-				t.Errorf("stream %s ends %+v", s, frames)
+			marked := slices.IndexFunc(frames, func(fr runner.Frame) bool { return fr.Kind == runner.FrameSplit && fr.Watermark != nil })
+			if marked < 0 || !slices.ContainsFunc(frames[marked:], func(fr runner.Frame) bool { return fr.Kind == runner.FrameBarrier }) {
+				t.Errorf("stream %s: no barrier after its completed split's watermark: %+v", s, frames)
 			}
-			for _, fr := range frames[:len(frames)-1] {
-				if fr.Last {
-					t.Errorf("stream %s has a last barrier before its end: %+v", s, frames)
-				}
-			}
+		}
+	})
+}
+
+// A reset of a stream drops the state of the statements that read it, which
+// build it again from the new read, and keeps the rest.
+func TestAResetDropsTheStateOfWhatReadsItsStream(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		defer cancel()
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		windows := func(j *runner.Job) {
+			j.SQL.Expected[0].Input, j.SQL.Expected[0].Operator = "a", "window-a"
+			j.SQL.Expected[1].Input, j.SQL.Expected[1].Operator = "b", "window-b"
+			j.SQL.Operators = []string{"window-a", "window-b"}
+		}
+		state := []checkpoint.Snapshot{{Operator: "window-a", URL: "memory:1/a"}, {Operator: "window-b", URL: "memory:1/b"}}
+		first := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}, snapshots: state}
+		j := sqlJob(log, "a1", nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
+		windows(&j)
+		j.Dataflow = first
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		second := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}}
+		j = sqlJob(log, "a2", nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
+		windows(&j)
+		j.Dataflow = second
+		j.Resets = []runner.Reset{{ID: "0001", Streams: []string{"a"}}}
+		if _, err := runner.RunAttempt(ctx, j); err != nil {
+			t.Fatal(err)
+		}
+		if len(second.plans) != 1 || !slices.Equal(second.plans[0].Snapshots, state[1:]) {
+			t.Fatalf("after a reset of a, the attempt restores %+v, want window-b's alone", second.plans[0].Snapshots)
 		}
 	})
 }

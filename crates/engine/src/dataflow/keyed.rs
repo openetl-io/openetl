@@ -8,10 +8,12 @@
 //! sends it to its own writer lane: its range is inside that writer lane's,
 //! so an output keyed by the window's keys needs no second exchange.
 //!
-//! The watermark of a window is the least of its senders'. Until
-//! watermarks come in band, a lane's watermark is at the end of input,
-//! `i64::MAX`, at a barrier the runner marks as its stream's last, and
-//! nowhere before: windows close there, in the epoch that barrier ends.
+//! The watermark of a window is the least of its senders', each the
+//! stream's on that lane, which comes after the rows that moved it, from
+//! the stream's floor: where the record's splits were, so a window that
+//! closed before a restore or a new read stays closed. Windows close as it
+//! passes them, in the epoch it does, and the keyed lane passes it on to
+//! its writer lane as the output's.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -25,6 +27,7 @@ use tokio::sync::mpsc;
 
 use super::{Flow, Lane, LaneStream, copy, hold, quarantine_file, shape_error, shaped};
 use crate::error::JobError;
+use crate::watermark::{self, Senders};
 use crate::window::{Operator, Out};
 
 /// What a lane sends a keyed lane, for a window's statement by its index.
@@ -33,7 +36,7 @@ pub(super) enum In {
     /// statement can't read, as a cell the stream holds, has why.
     Rows(usize, RecordBatch, Vec<Option<String>>),
     /// The sender's watermark of the statement's stream, in microseconds:
-    /// every row before it has come.
+    /// every row before it has come, but late ones. It never goes back.
     Watermark(usize, i64),
     Barrier(usize, Epoch),
     End(usize),
@@ -180,7 +183,7 @@ struct Keyed {
     standing: Vec<Standing>,
     /// What each sender sent past its barrier, until every sender is there.
     waiting: Vec<VecDeque<In>>,
-    watermarks: Vec<i64>,
+    watermarks: Senders,
     ended: bool,
 }
 
@@ -232,22 +235,28 @@ pub(super) async fn run(
         )
         .await
         .map_err(|e| {
+            let stream = &t.sql.inputs[st.input].name;
             JobError::config(format!(
-                "transform.sql: {}: the restored checkpoint names state of the group window writing {} that this engine doesn't have: the engine keeps it in its memory, which an engine that stopped took with it ({e})",
+                "transform.sql {}: the group window writing {} can't restore its state: the checkpoint names state that was in the memory of the engine that wrote it, which has stopped. Reset stream {stream} to build the state again from a new read of it: openetl reset --stream {stream} NAME ({e})",
                 st.at, st.output
             ))
         })?;
-        let o = flow.owners[output].lock();
-        let ls = LaneStream {
-            stream: output,
-            shaper: o.shaper.fork(),
-            version: o.version,
-            quarantined: (Vec::new(), 0),
-            cells: Default::default(),
-            replay: None,
+        let floor = t.inputs[st.input]
+            .event_time
+            .as_ref()
+            .map_or(watermark::NONE, |e| e.floor);
+        let ls = {
+            let o = flow.owners[output].lock();
+            LaneStream {
+                stream: output,
+                shaper: o.shaper.fork(),
+                version: o.version,
+                quarantined: (Vec::new(), 0),
+                cells: Default::default(),
+                replay: None,
+            }
         };
-        drop(o);
-        windows.push(Keyed {
+        let mut w = Keyed {
             statement: i,
             output,
             op,
@@ -255,9 +264,14 @@ pub(super) async fn run(
             ls,
             standing: vec![Standing::Open; senders],
             waiting: (0..senders).map(|_| VecDeque::new()).collect(),
-            watermarks: vec![i64::MIN; senders],
+            watermarks: Senders::new(senders, floor),
             ended: false,
-        });
+        };
+        // Windows the record's watermark passed closed before it.
+        if floor != watermark::NONE {
+            w.advance(&lane, floor).await?;
+        }
+        windows.push(w);
     }
     loop {
         if windows.iter().all(|w| w.ended) {
@@ -322,10 +336,14 @@ impl Keyed {
                 self.give(lane, out).await
             }
             In::Watermark(_, t) => {
-                self.watermarks[sender] = self.watermarks[sender].max(t);
-                let least = self.watermarks.iter().copied().min().unwrap_or(i64::MIN);
-                let out = self.op.advance(&mut self.layer, least).await?;
-                self.give(lane, out).await
+                let advanced = self
+                    .watermarks
+                    .take(sender, t)
+                    .map_err(|e| JobError::internal(format!("a keyed lane's group window: {e}")))?;
+                match advanced {
+                    Some(wm) => self.advance(lane, wm).await,
+                    None => Ok(()),
+                }
             }
             In::Barrier(_, e) => {
                 self.standing[sender] = Standing::AtBarrier(e);
@@ -336,6 +354,15 @@ impl Keyed {
                 Ok(())
             }
         }
+    }
+
+    /// Closes the windows the watermark `wm` passes, and passes it on to the
+    /// output's writer lane after their rows.
+    async fn advance(&mut self, lane: &Lane, wm: i64) -> Result<(), JobError> {
+        let out = self.op.advance(&mut self.layer, wm).await?;
+        self.give(lane, out).await?;
+        let s = self.output;
+        lane.all(s, || super::Out::Watermark(s, wm)).await
     }
 
     /// Quarantines rows of a batch of the input as the output's.

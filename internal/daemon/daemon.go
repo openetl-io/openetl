@@ -688,6 +688,11 @@ func podLauncher(ctx context.Context, cfg config.Config) (pods.Launcher, dpworke
 		k.DataPlane, k.Pool, k.Reserve, k.StreamsAvoidSpot = cfg.DataPlane, cfg.Pool, reserve, cfg.PodStreamSpot == "avoid"
 		return k, limits, nil
 	case "process":
+		// Its processes get its flags, so a fixed port would be every
+		// coordinator's.
+		if _, port, err := net.SplitHostPort(cfg.AttemptListen); err == nil && port != "0" {
+			return nil, limits, fmt.Errorf("daemon: --attempt-listen %s would be every coordinator's on --launcher process; leave it unset or give port 0", cfg.AttemptListen)
+		}
 		exe, err := os.Executable()
 		if err != nil {
 			return nil, limits, err

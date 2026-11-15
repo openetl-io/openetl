@@ -124,7 +124,7 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 
 - The stream has an event time: its `eventTime` in the [Pipeline](./specs/pipeline.md#source-and-streams). The window's first argument is that column, as the statement reads it.
 - `GROUP BY` has one window, and any number of the stream's columns, renamed or not. A computed key, such as `lower(region)`, is refused.
-- The stream is read with `full_refresh`. A group window over a stream read another way is a problem in the plan.
+- The stream is read whole, with `full_refresh`. In a continuous pipeline, it is read with `stream`. A group window over a stream read another way is a problem in the plan: [Reads](#reads) says why.
 - A group window is in the statement's own `SELECT`. It reads the stream or a view of it, and the view is row-wise.
 
 ### Windows
@@ -169,17 +169,35 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 
 ### When a window's row is written
 
-A window's row is written when the stream's read ends. At the last checkpoint of a sync, every window closes, and the engine writes each window's row in that checkpoint's epoch. A window that fails `HAVING` writes no row.
+A window closes when the stream's watermark reaches the window's end: the engine expects no more rows before that time, except late ones. A session closes when the watermark passes its end. The engine then writes the window's row, in the epoch of the next checkpoint. A window that fails `HAVING` writes no row. [Event time and watermarks](./specs/pipeline.md#event-time-and-watermarks) says how the watermark moves.
 
+- The watermark of a group window is the least watermark of the lanes that read the stream. Each lane's watermark is the least of its splits' watermarks.
+- A split that reads no rows holds windows open. In a continuous pipeline, a split that reads no rows for 1 minute is idle, and its watermark moves on with the clock.
+- A row is late if it comes after the watermark has passed its time. A late row of a window that has not closed yet goes into the window.
 - `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
 - A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start.
 - A row that comes later than its window's end and the lateness is quarantined with the reason `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
 - `watermark.lateness` needs `destination.write: merge` for the output.
-- A sync reads its stream whole, with `full_refresh`, and closes its windows at its end. The next sync starts its windows again.
+- After a restore, the watermark starts where the checkpoint's watermarks are. A window that closed before the checkpoint stays closed, and a row of it is late.
+
+### Reads
+
+How the stream is read decides when windows close:
+
+| Read | Pipeline | When windows close |
+|---|---|---|
+| `full_refresh` | Scheduled | The watermark holds until the sync's read ends. Every window closes at the end of the read. The next sync starts its windows again, from the whole stream. |
+| `stream` | Continuous | The watermark follows the rows as they come. Each window closes while the pipeline runs. |
+
+A group window over a stream read another way is a problem in the plan:
+
+- With `cdc`, the stream is a changelog, and a group window groups appended rows.
+- With `incremental` and a cursor other than the stream's `eventTime`, each sync's windows would hold only the rows that the sync reads.
+- In a scheduled pipeline, a stream read with `incremental` by its `eventTime`, or with `stream`, leaves windows open at the end of each sync. The next sync runs in another engine, which does not have their state.
 
 ### State
 
-A group window keeps each window's aggregates as state, by key group, until its row is written. `openetl plan` shows the statement's operator, which keeps the state:
+A group window keeps each window's aggregates as state, by key group, until its row is written and its lateness has passed. `openetl plan` shows the statement's operator, which keeps the state:
 
 ```text
     1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-b20660707787f280
@@ -187,7 +205,8 @@ A group window keeps each window's aggregates as state, by key group, until its 
 
 - The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.
 - A window over no group keys runs on one lane.
-- Each checkpoint names the state. The engine keeps the state in its memory. If an attempt fails while windows are open, the attempts after it fail with `CONFIG_INVALID`, as the state is gone.
+- Each checkpoint names the state. The engine keeps the state in its memory, and each attempt runs in an engine of its own. If an attempt ends while windows are open, the next attempt cannot restore their state, and fails with `CONFIG_INVALID`. For example, a continuous pipeline's attempt that restarts, or a sync's attempt that fails, ends this way.
+- To recover, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)).
 - A pipeline with a group window runs on one pod, whatever its `resources.workers`.
 
 ## Expressions and operators
@@ -622,7 +641,7 @@ A view of one of these kinds is refused too, where the view is defined.
 | A group window in a subquery | `a group window is in the statement's own SELECT, not in a subquery's` |
 | A group window over a changelog stream | `changes is a changelog, and a group window groups appended rows: transforms don't run updating statements yet (tier 5)` |
 
-The plan also has a problem where a group window reads a stream with another mode than `full_refresh`, and where a stream sets `watermark.lateness` and the window's output is not merged.
+The plan also has a problem where a group window's stream is read in a way that the window cannot take ([Reads](#reads)), and where a stream sets `watermark.lateness` and the window's output is not merged.
 
 ### Changelog streams
 

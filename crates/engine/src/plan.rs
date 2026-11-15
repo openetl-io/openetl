@@ -14,6 +14,7 @@ use crate::layout::Layout;
 use crate::quarantine::Quarantine;
 use crate::remote::Remote;
 use crate::transform::{Input, Route, Transform};
+use crate::watermark::EventTime;
 
 /// A validated StartJobRequest. Its streams are the destination's: with a
 /// transform, its outputs, and `transform` has the streams it reads.
@@ -77,6 +78,10 @@ pub struct Plan {
     /// Where stateful operators keep state, and what the restored record
     /// names of it.
     pub state: StatePlan,
+    /// Where set, a transform's streams pass through to their outputs by a
+    /// probe of it, not as they are.
+    #[cfg(test)]
+    pub probe: Option<crate::stage::Probe>,
 }
 
 /// A job's state: the pipeline whose operators' stores it opens, and the
@@ -98,6 +103,10 @@ pub struct TransformJob {
     pub routes: Vec<Vec<(usize, Route)>>,
     /// Where the outputs' records go that the engine can't take.
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
+    /// By output: where a lane that takes it from others starts its
+    /// watermark, the least of the streams it's written from; None where
+    /// one of them has no event time, so it has no watermark.
+    pub floors: Vec<Option<i64>>,
 }
 
 /// A stream a transform reads: what its rows are typed by.
@@ -112,6 +121,7 @@ pub struct InputPlan {
     pub restored: Option<SchemaRef>,
     pub types: TypeOptions,
     pub changelog: bool,
+    pub event_time: Option<EventTime>,
 }
 
 /// Held values to patch in, a chunk after each of the stream's barriers.
@@ -320,6 +330,12 @@ impl Plan {
             Some(_) => &req.outputs,
             None => &req.streams,
         };
+        if let Some(s) = sinks.iter().find(|s| s.event_time.is_some()) {
+            return Err(JobError::config(format!(
+                "stream {} has event time, which only a stream a transform reads has",
+                s.name
+            )));
+        }
         let mut index = HashMap::new();
         let mut restored = Vec::with_capacity(sinks.len());
         let mut declared = Vec::with_capacity(sinks.len());
@@ -642,21 +658,28 @@ impl Plan {
             replays,
             held_url,
             transform: match (transform, routes) {
-                (Some(sql), Some(routes)) => Some(TransformJob {
-                    sql: std::sync::Arc::new(sql),
-                    inputs: req
+                (Some(sql), Some(routes)) => {
+                    let inputs: Vec<InputPlan> = req
                         .streams
                         .iter()
                         .map(|s| input_plan(s, infinity))
-                        .collect::<Result<_, _>>()?,
-                    routes,
-                    quarantine: quarantine
-                        .as_ref()
-                        .map(|q| std::sync::Arc::new(q.below(OUTPUTS_DIR))),
-                }),
+                        .collect::<Result<_, _>>()?;
+                    let floors = floors(&inputs, &routes, sinks.len());
+                    Some(TransformJob {
+                        sql: std::sync::Arc::new(sql),
+                        inputs,
+                        routes,
+                        quarantine: quarantine
+                            .as_ref()
+                            .map(|q| std::sync::Arc::new(q.below(OUTPUTS_DIR))),
+                        floors,
+                    })
+                }
                 _ => None,
             },
             quarantine,
+            #[cfg(test)]
+            probe: None,
         };
         // Version 0 of every stream is its restored schema.
         if let Some(r) = &plan.remote {
@@ -678,6 +701,28 @@ impl Plan {
 
 /// Below the quarantine URL, where a transform's outputs' records go.
 const OUTPUTS_DIR: &str = "_outputs";
+
+/// Each of `outputs` outputs' floor: the least of the floors of the inputs
+/// that feed it; None where one of them has no event time, or none does.
+fn floors(
+    inputs: &[InputPlan],
+    routes: &[Vec<(usize, Route)>],
+    outputs: usize,
+) -> Vec<Option<i64>> {
+    (0..outputs)
+        .map(|o| {
+            let mut floor = None;
+            for (input, routes) in inputs.iter().zip(routes) {
+                if !routes.iter().any(|&(to, _)| to == o) {
+                    continue;
+                }
+                let f = input.event_time.as_ref()?.floor;
+                floor = Some(floor.map_or(f, |g: i64| g.min(f)));
+            }
+            floor
+        })
+        .collect()
+}
 
 fn identity(s: &StreamPlan) -> Identity {
     Identity {
@@ -719,6 +764,12 @@ fn input_plan(s: &StreamPlan, infinity: Infinity) -> Result<InputPlan, JobError>
             nanoseconds: s.nanosecond_timestamps,
         },
         changelog: s.changelog,
+        event_time: s
+            .event_time
+            .as_ref()
+            .map(EventTime::of)
+            .transpose()
+            .map_err(|e| bad("event time", e))?,
     })
 }
 

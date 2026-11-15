@@ -76,11 +76,9 @@ type Stream struct {
 	// One of a SQL transform's outputs: the stream its statement reads, or
 	// the stream itself where it passes through.
 	From string
-	// One a SQL transform reads: the column of its rows' event time, which
-	// group windows go by; empty for none.
-	EventTime string
-	// How long after a group window over it closes a row may still come.
-	Lateness time.Duration
+	// A stream a SQL transform reads whose rows' time is a column's; nil
+	// for none.
+	EventTime *EventTime
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -275,10 +273,11 @@ type Rewound struct {
 // to keep together, and its destination puts rows in tables, whose order
 // doesn't follow what a stream emits. A log keeps a split's order, as a
 // partition's or a shard's matters there. A destination whose lanes commit
-// on their own has each split's rows on one, so a redo can find them.
+// on their own has each split's rows on one, so a redo can find them, and
+// a stream with event time, so each split's watermark is one lane's.
 func (j *Job) inTurn(s Stream) bool {
 	caps := j.Destination.Capabilities()
-	return j.lanes() > 1 && len(s.PrimaryKey) == 0 && caps.Class == destination.StageAndApply && !caps.LaneCommits
+	return j.lanes() > 1 && len(s.PrimaryKey) == 0 && caps.Class == destination.StageAndApply && !caps.LaneCommits && s.EventTime == nil
 }
 
 // canResplit says the source splits a running split's remainder. Not where
@@ -769,7 +768,8 @@ func markForced(rec *checkpoint.Record, streams []Stream) {
 // its own dropped, as a copy, the newest reset it then carries, and those
 // streams. A stream keeps its schema and holds: the destination still has
 // them. A paused stream is reset too, so it carries no position and reads
-// from the start once it's resumed.
+// from the start once it's resumed. The state of a statement that reads one
+// goes too, so the statement builds it again from the new read.
 func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []string) {
 	var taken string
 	if rec != nil {
@@ -811,6 +811,15 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 		cp.Streams[name] = st
 		cp.Forced = slices.DeleteFunc(cp.Forced, func(s string) bool { return s == name })
 		cp.Reread = slices.DeleteFunc(cp.Reread, func(s string) bool { return s == name })
+	}
+	if j.SQL != nil {
+		reread := map[string]bool{}
+		for _, e := range j.SQL.Expected {
+			if e.Operator != "" && slices.Contains(streams, e.Input) {
+				reread[e.Operator] = true
+			}
+		}
+		cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return reread[s.Operator] })
 	}
 	cp.Reset = newest
 	return &cp, newest, streams
@@ -998,6 +1007,7 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		for _, sp := range splits {
 			out[s.Name] = append(out[s.Name], checkpoint.SplitState{ID: sp.ID, State: sp.State})
 		}
+		out[s.Name] = carryMarks(s.EventTime, prev, out[s.Name])
 	}
 	return out, nil
 }
@@ -1345,6 +1355,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	ends := newReadEnds()
 	c.pump = newSourcePump(gctx, c.job, c.committed, splits, canForce, done, ends, toFlow, c.events)
 	plan := c.job.plan(c.sess.Generation(), c.next, restored, c.readStarts, schemas, c.outputSchemas, c.holdPlans)
+	plan.Floors = floors(c.job.Streams, splits)
 	var staging Staging
 	if c.job.staged() {
 		staging = c.job.Staging
@@ -1672,10 +1683,7 @@ func (c *coordinator) handle(ctx context.Context, ev event) error {
 			c.active = c.fleet.active()
 			return nil
 		}
-		// Group windows close at a barrier placed after the read ended, so a
-		// job with one asks for another when none was asked for since, even
-		// if the read emitted nothing after the last.
-		c.readDone, c.active = true, (ev.active || c.job.stateful()) && ev.epoch == c.next-1
+		c.readDone, c.active = true, ev.active && ev.epoch == c.next-1
 		return nil
 	case evEmitted:
 		c.fleet.emitted = c.fleet.emitted || ev.epoch == c.next-1
@@ -1827,6 +1835,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	// The destination's streams' holds: a transform's outputs', or else the
 	// streams'.
 	sinks := !c.job.transformed()
+	markSplits(st.splits, st.flow.Watermarks)
 	for _, name := range slices.Sorted(maps.Keys(st.splits)) {
 		s := checkpoint.StreamState{
 			Schema:    st.flow.Schemas[name],
