@@ -176,7 +176,7 @@ With a SQL transform, do not change `transform.sql` while an epoch waits to be f
 - An output that the epoch wrote is no longer written, or is written from another stream.
 - An output that the epoch sent to the lanes by its key now has another key.
 
-Apply the pipeline with the statements that wrote the epoch, and change them once the pipeline has committed again.
+An output's key comes from the primary key of the stream it is written from (see [Primary keys](../reference/sql.md#primary-keys)), so a changed key of that stream can change the output's key too. Apply the pipeline with the statements that wrote the epoch, and with the primary key that each stream they read had then. Change the statements and the keys once the pipeline has committed again.
 
 ## Logs and usage
 
