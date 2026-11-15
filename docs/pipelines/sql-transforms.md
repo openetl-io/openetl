@@ -268,6 +268,17 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 
 The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates, the reads they take and when rows are written.
 
+### Change a group window
+
+A group window keeps state between syncs, under an ID that the plan shows. Renames, a new column through a view and `HAVING` keep the ID and the state. A new window size, key or aggregate gives the window a new ID, and its state starts empty.
+
+1. Edit the statement.
+2. Run `openetl plan -f FILE`, and read the `state` section of `transform.sql`. Each window shows `kept`, `new`, `changed` or `dropped`.
+3. Run `openetl apply -f FILE`. The next sync drops the state of each changed or dropped window.
+4. If a changed window must include the rows that the pipeline read before, read its stream again: `openetl reset --stream STREAM NAME`.
+
+Without step 4, the changed window holds only the rows read after the change. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
+
 ## Changelog streams
 
 A stream read with `cdc` is a changelog: its rows are inserts, updates and deletes of the stream's primary key. This continuous pipeline keeps a table of open orders, in a destination that merges:

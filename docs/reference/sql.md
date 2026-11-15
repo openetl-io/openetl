@@ -200,7 +200,7 @@ A group window over a stream read another way is a problem in the plan:
 A group window keeps each window's aggregates as state, by key group, until its row is written and its lateness has passed. `openetl plan` shows the statement's operator, which keeps the state:
 
 ```text
-    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-b20660707787f280
+    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-341f4361dc223bdd
 ```
 
 - The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.
@@ -208,8 +208,62 @@ A group window keeps each window's aggregates as state, by key group, until its 
 - Each checkpoint names the state. The engine keeps the state in its memory, and each attempt runs in an engine of its own. If an attempt ends while windows are open, the next attempt cannot restore their state, and fails with `CONFIG_INVALID`. For example, a continuous pipeline's attempt that restarts, or a sync's attempt that fails, ends this way.
 - To recover, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)).
 - After a reset, each window's row comes only from the rows that the new read returns. If the read starts partway through a window, `merge` replaces that window's row with a row of part of its rows. A window that the new read does not reach keeps its row in the destination. Start the read where it includes every row of the windows it changes, or correct those rows in the destination.
-- A changed group window statement is a new operator, which starts with no state. If the checkpoint still names the old operator's state, the next attempt fails with `CONFIG_INVALID` until a reset of the streams that the window reads drops that state.
 - A pipeline with a group window runs on one pod, whatever its `resources.workers`.
+
+### Changing a query
+
+The operator's ID is a hash of what the operator computes and keeps. The engine writes it over the stream's own columns, so names and the shape of the SQL do not change it. Each checkpoint names the state by the ID.
+
+These edits keep the ID, and with it the state:
+
+- Formatting, comments and the case of keywords, and an equal interval, such as `INTERVAL '60 seconds'` for `INTERVAL '1 minute'`.
+- The `FROM` alias, other names for the output's columns, and views that rename columns or pass more columns.
+- The order of the `GROUP BY` keys, of the `SELECT` list and of the aggregates. The output's primary key follows the order of `GROUP BY`.
+- `HAVING`, `window_end`, and expressions over the aggregates.
+- The same filters written in a view or in the statement, and `count(1)` for `count(*)`.
+- Other statements, and the order of the statements.
+
+These edits give the operator a new ID:
+
+- The output's name, or the stream that the statement reads.
+- The window's kind or size.
+- A key, an aggregate or an aggregate's argument, added, removed or changed, and an aggregate's `FILTER`.
+- A filter or an `UNNEST` before the window.
+- A change of type of the event-time column, a key or an aggregate's argument, also when the source changes the column's type.
+
+`watermark.lateness` is not part of the ID. A changed lateness keeps the state, and applies to the windows that are open.
+
+`openetl plan` and `openetl apply` show each operator in a `state` section of `transform.sql`. Each line has the statement's place, the output, the ID, what the operator is against the pipeline's current version, and what it keeps. In this example, the current version has the statement of [Group windows](#group-windows) and a second statement, `orders_by_hour`, with `tumble(created_at, INTERVAL '1 hour')`. The new version gives the first statement a `FROM` alias and other column names, and changes the second one's window to 30 minutes. The stream has `watermark.lateness: 1m`:
+
+```text
+  state:
+    1:1  revenue_by_minute  window-341f4361dc223bdd  kept     tumble 1m0s by created_at on region: count(*), sum(amount); keeps a window's state 2m0s of event time (lateness 1m0s)
+    6:1  orders_by_hour     window-3061211b1910b6ed  changed  tumble 30m0s by created_at: count(*); keeps a window's state 31m0s of event time (lateness 1m0s); starts empty, in place of window-027fe4874a76d580; a backfill reads again orders
+```
+
+The plan's warnings say the same for `orders_by_hour`, with the command for the backfill.
+
+| What | Means | Its state |
+|---|---|---|
+| `kept` | The current version has the operator. | The next sync restores it. |
+| `new` | The current version has no operator that writes the output. | Starts empty. |
+| `changed` | The current version's operator for the output computes or keeps something else. | Starts empty. The next sync drops the old operator's state. |
+| `dropped` | No statement keeps the current version's operator. | The next sync drops it. |
+| `unknown` | The current version's statements were not planned when it was applied. | As for `kept` if the ID is the same, otherwise the next sync fails as below. |
+
+A new or changed operator starts from now: its windows hold only the rows that the pipeline reads after the change. A window that is open at the change, or that a late row opens again, loses the rows read before. The plan has a warning for each changed operator, and for each new one over a stream that the pipeline has read, unless each sync reads the stream whole.
+
+To build the state from the stream's start, read the stream again after you apply the change (a backfill):
+
+```sh
+openetl reset --stream orders NAME
+```
+
+The reset reads the stream again for every statement that reads it, and drops their state. [Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start) has what the destination gets.
+
+If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the next attempt fails with `CONFIG_INVALID`. Its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
+
+An operator has no name of its own in the SQL. Its ID is the only name.
 
 ## Expressions and operators
 
