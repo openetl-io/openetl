@@ -110,9 +110,7 @@ func TestIncidentSchemaBlocked(t *testing.T) {
 			if got := p.Msg.GetPipeline().GetPaused(); got != wantPaused {
 				t.Errorf("paused %v, want %v", got, wantPaused)
 			}
-			if got := schedulePaused(t, name); got != wantPaused {
-				t.Errorf("schedule paused %v, want %v", got, wantPaused)
-			}
+			waitSchedulePaused(t, name, wantPaused)
 			want := []string{events.IncidentOpened}
 			if wantPaused {
 				want = append(want, events.PipelinePaused)
