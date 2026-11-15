@@ -543,8 +543,11 @@ impl InputOwner {
         let c = st.crossings.entry(n).or_default();
         c.lanes += 1;
         c.quarantine.extend(q);
+        // A split without a watermark is missing.
         for (id, wm) in marks.into_iter().flat_map(Splits::marks) {
-            c.marks.insert(id.to_owned(), wm);
+            if wm != watermark::NONE {
+                c.marks.insert(id.to_owned(), wm);
+            }
         }
         if c.lanes == lanes {
             c.at = Some(schema);
@@ -1581,11 +1584,13 @@ fn latest(plan: &Plan, t: &Transformed, typed: &Typed) -> Result<Option<i64>, Jo
         return Ok(None);
     };
     let input = &job.inputs[t.input];
-    match &input.event_time {
-        Some(et) if !et.held => watermark::latest(&typed.batch, &et.column)
-            .map_err(|e| JobError::config(format!("stream {}: {e}", input.name))),
-        _ => Ok(None),
-    }
+    let Some(et) = &input.event_time else {
+        return Ok(None);
+    };
+    // A held stream's column is a time too, though its rows move nothing.
+    let latest = watermark::latest(&typed.batch, &et.column)
+        .map_err(|e| JobError::config(format!("stream {}: {e}", input.name)))?;
+    Ok(latest.filter(|_| !et.held))
 }
 
 /// The lane read a batch of the stream whose latest event time is `latest`.
@@ -5457,16 +5462,36 @@ mod tests {
         assert!(err.message.contains("no event time"), "{err:?}");
     }
 
+    /// Held or not.
     #[tokio::test]
     async fn an_event_time_that_isnt_a_time_fails_the_job() {
-        let mut req = timed_request(1, 1, false, None);
-        req.streams[0].event_time.as_mut().unwrap().column = "id".into();
-        let (mut h, _) = start_probed(req);
-        put(&mut h.ins[0], FrameKind::Split, 0, split("a", None)).await;
-        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[&timed(1, 5)])).await;
-        let err = h.job.await.unwrap().unwrap_err();
-        assert_eq!(err.code, ErrorCode::ConfigInvalid, "{err:?}");
-        assert!(err.message.contains("not a timestamp"), "{err:?}");
+        for held in [false, true] {
+            let mut req = timed_request(1, 1, held, None);
+            req.streams[0].event_time.as_mut().unwrap().column = "id".into();
+            let (mut h, _) = start_probed(req);
+            put(&mut h.ins[0], FrameKind::Split, 0, split("a", None)).await;
+            put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[&timed(1, 5)])).await;
+            let err = h.job.await.unwrap().unwrap_err();
+            assert_eq!(err.code, ErrorCode::ConfigInvalid, "held {held}: {err:?}");
+            assert!(
+                err.message.contains("not a timestamp"),
+                "held {held}: {err:?}"
+            );
+        }
+    }
+
+    /// A split without a watermark is missing from the epoch's report.
+    #[tokio::test]
+    async fn a_split_without_a_watermark_isnt_reported() {
+        let (mut h, _) = start_probed(timed_request(1, 1, false, None));
+        let w = &mut h.ins[0];
+        put(w, FrameKind::Split, 0, split("a", None)).await;
+        put(w, FrameKind::Split, 0, split("b", Some(50))).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        h.end_all(1).await;
+        let (_, mut events) = h.finish_events().await;
+        let (ready, _) = last_metrics(&mut events);
+        assert_eq!(split_marks(&ready[0], "e"), [("b".to_string(), 50)]);
     }
 
     fn feed_items(feed: &mut Feed) -> Vec<String> {

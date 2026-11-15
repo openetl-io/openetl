@@ -313,3 +313,42 @@ func TestAnIdleSplitsMovesWaitBehindItsBarrier(t *testing.T) {
 		}
 	})
 }
+
+// handOver reads split a of s, which completes adding b, which reads a row
+// and completes.
+type handOver struct{}
+
+func (handOver) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
+	return []source.Split{{ID: "a"}}, nil
+}
+
+func (handOver) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	return source.ReadSplits(ctx, req, out, func(_ context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		if err := e.Rows([]json.RawMessage{json.RawMessage(`{"id": 1}`)}); err != nil {
+			return err
+		}
+		if sp.ID == "a" {
+			return e.Complete([]byte("a1"), source.Split{ID: "b"})
+		}
+		return e.Complete([]byte("b1"))
+	})
+}
+
+// A split that completes adding others has them join its lane before it
+// moves on, so the lane waits for them.
+func TestASplitsSuccessorsJoinBeforeItMovesOn(t *testing.T) {
+	flow := &markFlow{}
+	j := timedJob(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1", "s1", flow, false)
+	j.Source = handOver{}
+	if _, err := runner.RunAttempt(t.Context(), j); err != nil {
+		t.Fatal(err)
+	}
+	frames := flow.seen()
+	joined := slices.IndexFunc(frames, func(f seen) bool { return f.kind == runner.FrameSplit && f.split == "b" })
+	moved := slices.IndexFunc(frames, func(f seen) bool {
+		return f.kind == runner.FrameSplit && f.split == "a" && f.watermark != nil
+	})
+	if joined < 0 || moved < 0 || joined > moved || frames[joined].lane != frames[moved].lane {
+		t.Fatalf("b joined at %d, a moved on at %d: %+v", joined, moved, frames)
+	}
+}

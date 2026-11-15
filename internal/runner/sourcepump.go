@@ -605,13 +605,6 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 		}
 		return nil
 	case emitComplete:
-		// A split that completes moves on as an idle one does: its read
-		// in this sync is over.
-		if st.timed != nil {
-			if err := p.mark(name, st, sp, st.timed.idleAt(time.Now())); err != nil {
-				return err
-			}
-		}
 		sp.complete = true
 		if sp.lane >= 0 && !st.inTurn {
 			p.load[sp.lane]--
@@ -623,6 +616,13 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 	added, err := p.add(name, st, sp, e.added, p.pending != 0 && before)
 	if err != nil {
 		return err
+	}
+	// A split that completes moves on as an idle one does, its read in
+	// this sync over, once the splits it adds have joined its lane.
+	if e.kind == emitComplete && st.timed != nil {
+		if err := p.mark(name, st, sp, st.timed.idleAt(time.Now())); err != nil {
+			return err
+		}
 	}
 	if p.pending == 0 {
 		return nil
@@ -921,7 +921,7 @@ func (p *sourcePump) join() error {
 
 // idleEvery is how often a continuous read's splits are checked for being
 // idle: a quarter of the least idle time of its streams read in the order
-// of their time; 0 for never.
+// of their time; 0 for never, as without such streams.
 func (p *sourcePump) idleEvery() time.Duration {
 	if !p.continuous {
 		return 0
@@ -934,6 +934,9 @@ func (p *sourcePump) idleEvery() time.Duration {
 		if d := st.timed.idle() / 4; every == 0 || d < every {
 			every = d
 		}
+	}
+	if every == 0 {
+		return 0
 	}
 	return max(every, time.Millisecond)
 }
