@@ -110,6 +110,11 @@ func TestWatermarksOnWorkersThroughTheEngine(t *testing.T) {
 	const splits, chunks, perChunk = 4, 8, 10
 	src := func(upTo int) *splitSource {
 		return &splitSource{splits: splits, chunks: chunks, rows: perChunk, upTo: upTo, row: func(split, chunk int, id int64) string {
+			// Split 2 starts late, so early records have it without a
+			// watermark.
+			if split == 2 && chunk == 0 && id%100 == 0 {
+				time.Sleep(200 * time.Millisecond)
+			}
 			return fmt.Sprintf(`{"id": %d, "at": %q}`, id, at(base+int64(split*7+chunk*1000)+id%100))
 		}}
 	}
@@ -177,13 +182,19 @@ func TestWatermarksOnWorkersThroughTheEngine(t *testing.T) {
 	if len(records) < 3 {
 		t.Fatalf("%d records", len(records))
 	}
+	// A split without a watermark is one that hasn't read a time yet; once
+	// it has one, every later record keeps it.
 	last := map[string]int64{}
 	for _, rec := range records {
 		for _, sp := range rec.Splits("s") {
+			prev, had := last[sp.ID]
 			if sp.Watermark == nil {
-				t.Fatalf("record %d has no watermark for split %s: %+v", rec.Epoch, sp.ID, sp)
+				if had {
+					t.Fatalf("record %d lost split %s's watermark %d: %+v", rec.Epoch, sp.ID, prev, sp)
+				}
+				continue
 			}
-			if prev, ok := last[sp.ID]; ok && *sp.Watermark < prev {
+			if had && *sp.Watermark < prev {
 				t.Fatalf("split %s's watermark went back from %d to %d in record %d", sp.ID, prev, *sp.Watermark, rec.Epoch)
 			}
 			last[sp.ID] = *sp.Watermark
@@ -193,8 +204,8 @@ func TestWatermarksOnWorkersThroughTheEngine(t *testing.T) {
 	floor := started.Add(-50 * time.Microsecond).UnixMicro()
 	for _, sp := range final.Splits("s") {
 		n, _ := strconv.Atoi(sp.ID)
-		if !sp.Complete || *sp.Watermark < floor {
-			t.Errorf("split %d at the end: complete %v, watermark %d, below the run's start %d", n, sp.Complete, *sp.Watermark, floor)
+		if !sp.Complete || sp.Watermark == nil || *sp.Watermark < floor {
+			t.Errorf("split %d at the end: complete %v, watermark %v, below the run's start %d", n, sp.Complete, sp.Watermark, floor)
 		}
 	}
 }
