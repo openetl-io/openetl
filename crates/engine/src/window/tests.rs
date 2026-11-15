@@ -465,6 +465,44 @@ async fn a_reopened_session_merged_away_deletes_the_row_it_gave() {
     );
 }
 
+/// A session that grew after its row was given, and then fails HAVING,
+/// deletes the row the output has: with that row's end and values.
+#[tokio::test]
+async fn a_delete_gives_the_end_of_the_row_the_output_has() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, window_end, region, sum(amount) AS total FROM orders \
+               GROUP BY session(at, INTERVAL '30 seconds'), region HAVING sum(amount) > 0";
+    let mut run = Run::new(sql, 2 * MIN, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 0)]).await;
+    run.advance(40 * SEC).await;
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        ["window_start=1970-01-01T00:00:00Z window_end=1970-01-01T00:00:30Z region=eu total=5"]
+    );
+    // A late row grows the session to 50 seconds, and its sum below 0.
+    run.rows(&[("eu", -9, 20 * SEC)]).await;
+    let out = run.ops[0]
+        .advance(&mut run.layers[0], 60 * SEC)
+        .await
+        .unwrap();
+    let t = out.rows.unwrap();
+    let cell = |name: &str| {
+        let c = t.batch.column(t.batch.schema().index_of(name).unwrap());
+        arrow_cast::display::array_value_to_string(c, 0).unwrap()
+    };
+    let ops: Vec<Option<&str>> = t
+        .control
+        .op
+        .as_ref()
+        .unwrap()
+        .as_string::<i32>()
+        .iter()
+        .collect();
+    assert_eq!(ops, [Some("delete")]);
+    assert_eq!(cell("window_end"), "1970-01-01T00:00:30Z");
+    assert_eq!(cell("total"), "5");
+}
+
 fn next(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *seed;

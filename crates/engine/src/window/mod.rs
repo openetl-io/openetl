@@ -67,6 +67,9 @@ struct State {
     /// While it's visible, the aggregates' values of the row the output
     /// has, which a delete of it gives again; empty otherwise.
     shown: Vec<Option<Value>>,
+    /// While it's visible, the end that row has: a session's moves as it
+    /// grows.
+    shown_end: i64,
     accs: Vec<Acc>,
 }
 
@@ -79,6 +82,7 @@ impl State {
             emitted: 0,
             visible: false,
             shown: Vec::new(),
+            shown_end: 0,
             accs: specs.iter().map(Acc::new).collect(),
         }
     }
@@ -90,6 +94,7 @@ impl State {
             for v in &self.shown {
                 codec::encode(v.as_ref(), out);
             }
+            out.extend_from_slice(&self.shown_end.to_be_bytes());
         }
         for a in &self.accs {
             a.encode(out);
@@ -100,10 +105,12 @@ impl State {
         let emitted = u32::from_be_bytes(take(buf)?);
         let [visible] = take::<1>(buf)?;
         let mut shown = Vec::new();
+        let mut shown_end = 0;
         if visible == 1 {
             for _ in specs {
                 shown.push(codec::decode(buf)?);
             }
+            shown_end = i64::from_be_bytes(take(buf)?);
         }
         let mut accs = Vec::with_capacity(specs.len());
         for _ in specs {
@@ -113,6 +120,7 @@ impl State {
             emitted,
             visible: visible == 1,
             shown,
+            shown_end,
             accs,
         })
     }
@@ -357,6 +365,7 @@ impl Operator {
                         s.state.emitted = e.state.emitted;
                         s.state.visible = e.state.visible;
                         s.state.shown = e.state.shown;
+                        s.state.shown_end = e.state.shown_end;
                     }
                 }
                 for (g, k, list) in &lists {
@@ -664,6 +673,7 @@ impl Operator {
                             merged.emitted = s.state.emitted;
                             merged.visible = s.state.visible;
                             merged.shown = s.state.shown.clone();
+                            merged.shown_end = s.state.shown_end;
                             merged.merge(s.state);
                         }
                         true => merged.merge(s.state),
@@ -709,11 +719,15 @@ impl Operator {
                         group: g,
                         key: k.clone(),
                         start: old.start,
-                        end: old.end,
+                        end: match old.state.shown.is_empty() {
+                            true => old.end,
+                            false => old.state.shown_end,
+                        },
                         state: State {
                             emitted: old.state.emitted,
                             visible: true,
                             shown: old.state.deleted(&self.specs),
+                            shown_end: old.state.shown_end,
                             accs: Vec::new(),
                         },
                         merged: true,
@@ -909,6 +923,7 @@ impl Operator {
                 s.state.emitted = e.state.emitted;
                 s.state.visible = e.state.visible;
                 s.state.shown = e.state.shown;
+                s.state.shown_end = e.state.shown_end;
             }
         }
         for (g, k, list) in &lists {
@@ -985,7 +1000,25 @@ impl Operator {
             .filter(|r| !passing.contains(r) && !failing.contains(r) && ok[*r].state.visible)
             .collect();
         if !deleted.is_empty() {
-            let refs: Vec<&Emit> = deleted.iter().map(|&r| &ok[r]).collect();
+            // The row the output has: its values and its end.
+            let rows: Vec<Emit> = deleted
+                .iter()
+                .map(|&r| {
+                    let e = &ok[r];
+                    Emit {
+                        group: e.group,
+                        key: e.key.clone(),
+                        start: e.start,
+                        end: match e.state.shown.is_empty() {
+                            true => e.end,
+                            false => e.state.shown_end,
+                        },
+                        state: e.state.clone(),
+                        merged: false,
+                    }
+                })
+                .collect();
+            let refs: Vec<&Emit> = rows.iter().collect();
             let shown: Vec<Vec<Option<Value>>> =
                 refs.iter().map(|e| e.state.deleted(&self.specs)).collect();
             let rows = self.grouped(&refs, &shown)?;
@@ -1020,6 +1053,7 @@ impl Operator {
         for (r, vs) in values.into_iter().enumerate() {
             if counts.get(&r).is_some_and(|(_, visible)| *visible) {
                 ok[r].state.shown = vs;
+                ok[r].state.shown_end = ok[r].end;
             }
         }
         for ran in gone_parts {
