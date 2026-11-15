@@ -74,14 +74,13 @@ The pipeline still applies, and its jobs run on one pod. These are the reasons, 
 
 | Reason | What to do |
 |---|---|
-| `a SQL transform runs on one pod` | Nothing today: a pipeline with a [SQL transform](./sql-transforms.md) runs on one pod. |
 | `a Spark or Flink transform runs on one pod` | Nothing today: a pipeline with a Spark or Flink transform runs on one pod. |
 | `the destination declares one writer lane` | Nothing: the destination takes one writer lane, so its jobs run on one pod. |
 | `the destination takes N writer lanes, fewer than M workers` | Set `resources.workers` to `N` or fewer. |
 | `a transactional destination runs on one pod unless its writer lanes commit on their own` | Nothing today: a transactional destination runs on workers only if its connector declares lane commits. Its documentation says whether it does. |
+| `a SQL transform into a destination whose writer lanes commit on their own runs on one pod` | Nothing today: a pipeline with a [SQL transform](./sql-transforms.md) runs on one pod when its destination declares lane commits. |
 | `a destination that loads staged epochs runs on one pod` | Nothing today: a destination that loads files that OpenETL stages runs on one pod. |
 | `a destination the engine writes runs on one pod` | Nothing today: the built-in `parquet` destination runs on one pod. |
-| `stream "NAME" holds columns, which runs on one pod` | Nothing today: a keyed stream in a destination that takes [holds](../get-started/concepts.md#schema-changes-and-holds) runs on one pod. |
 | `no pod launcher of data plane "PLANE" and pool "POOL" has reported in the last ten minutes, and an attempt runs on workers only in pods` | Run the pipeline in a pool that has a pod launcher, or ask your operator to add one. |
 
 A plan **problem**, not a warning, says when no pod launcher of the pool can ever take the job's pods. `apply` refuses the pipeline. Lower `resources.workers` or `resources.size`, or ask your operator to raise the launcher's limits.
@@ -89,7 +88,7 @@ A plan **problem**, not a warning, says when no pod launcher of the pool can eve
 The plan cannot always check everything. Then a note says so:
 
 - If the control plane does not know the destination's capabilities, each attempt's coordinator checks them before it starts the workers.
-- If the source has not been discovered, the plan cannot say which streams hold columns or which streams one worker reads. Run `openetl discover SOURCE`, then plan again.
+- If the source has not been discovered, the plan cannot say which streams one worker reads. Run `openetl discover SOURCE`, then plan again.
 
 When the coordinator finds that a job cannot run on workers, OpenETL places the same attempt again on one pod. The sync's attempt records why.
 
@@ -98,10 +97,12 @@ When the coordinator finds that a job cannot run on workers, OpenETL places the 
 The workers read the source's splits between them. Each attempt reads all the splits of these streams on one worker:
 
 - a keyed stream that the source does not split by key;
-- a keyed stream read with `cdc`;
+- a stream read with `cdc`;
 - a stream written with `overwrite`.
 
-The first two are the streams with an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). A destination with one writer lane needs no exchange, but its jobs run on one pod, so a job on workers always has an exchange for such a stream. An exchange moves rows between the lanes of one worker only.
+A keyed stream of the first two kinds has an exchange in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). A destination with one writer lane needs no exchange, but its jobs run on one pod, so a job on workers always has an exchange for such a stream. An exchange moves rows between the lanes of one worker only.
+
+The source reads the changes of every stream read with `cdc` from one log, such as a replication slot, and only one reader can hold the log. So one worker reads all of a job's `cdc` streams together.
 
 The plan warns about each one, in this form:
 
@@ -109,7 +110,19 @@ The plan warns about each one, in this form:
 STREAM: each attempt reads it on one of its 4 workers: REASON
 ```
 
-Each such stream is no faster than on one pod, but different such streams can go to different workers, which read them at the same time. A worker with no stream or split to read has no work. For example, a job with only two such streams leaves two of four workers with nothing to read.
+Each such stream is no faster than on one pod. Different such streams can go to different workers, which read them at the same time, except that every `cdc` stream goes to one worker. A worker with no stream or split to read has no work. For example, a job with only two such streams leaves two of four workers with nothing to read. If both streams are read with `cdc`, the job leaves three of four workers with nothing to read.
+
+With a [SQL transform](./sql-transforms.md), these rules apply to each statement's output, and to each stream that passes through. One worker reads all the splits of a stream when an output written from it has an exchange in the `partitioning` section, or is written with `overwrite`. For example, a statement that passes the key through keeps the stream's split by key, and an output without a key needs no exchange. The plan's warning names the stream that the statement reads.
+
+## Schema changes and holds
+
+Each worker reads different rows, so one worker can see a schema change before the others. The coordinator decides each stream's schema for all the workers:
+
+- A worker that sees a new column or a wider type sends the change to the coordinator. The coordinator takes the first change for each version of the schema, and sends it to every worker.
+- A worker whose change came second writes its rows again by the schema that the coordinator took.
+- With a SQL transform, the coordinator decides the schema of each stream that a statement reads, and of each statement's output.
+
+[Holds](../get-started/concepts.md#schema-changes-and-holds) work the same way. When a worker starts to hold a column, the coordinator sends the hold to every worker, and every worker then holds that column. Each checkpoint records the hold once. If the destination refuses a column, the coordinator starts the attempt again at once, and the same worker pods join it and hold the column. When you release a hold, only the first worker writes the held values to the destination.
 
 ## When a pod fails
 

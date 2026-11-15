@@ -202,10 +202,11 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	if c.lanes() && rng.IntN(3) == 0 {
 		c.rescales = 1 + rng.IntN(2)
 	}
-	// Half the runs without a transform are large enough for pods. A pod takes
-	// its launcher's flags, so a Flink bridge's port would clash, and Spark's
-	// runners keep their checkpoints in a directory of their own.
-	if c.transform == "" && rng.IntN(2) == 0 {
+	// Half the runs without a transform or with SQL are large enough for
+	// pods. A pod takes its launcher's flags, so a Flink bridge's port would
+	// clash, and Spark's runners keep their checkpoints in a directory of
+	// their own.
+	if (c.transform == "" || c.transform == "sql") && rng.IntN(2) == 0 {
 		c.pods = true
 		if c.size == "" {
 			c.size = pick("m", "l")
@@ -214,18 +215,13 @@ func drawConfig(seed uint64, i int) chaosConfig {
 			c.faults = append(c.faults, faultLauncher)
 		}
 	}
-	// Half the runs in pods run each attempt on workers. A keyed stream into
-	// a destination that holds columns runs on one pod, as do Kafka's
-	// transactions, so most of them read Kafka into Postgres or Iceberg,
-	// whose streams have no key; the rest show the one pod they fall back
-	// to.
+	// Half the runs in pods run each attempt on workers, holds and SQL among
+	// them. Kafka's transactions run on one pod, so most of them write into
+	// Postgres or Iceberg; the rest show the one pod they fall back to.
 	if c.pods && rng.IntN(2) == 0 {
 		c.workers = 2 + rng.IntN(2)
-		if rng.IntN(4) != 0 {
-			c.source, c.write, c.holds = "kafka", "append", false
-			if c.dest == "kafka" {
-				c.dest = pick("postgres", "iceberg")
-			}
+		if c.dest == "kafka" && rng.IntN(4) != 0 {
+			c.dest = pick("postgres", "iceberg")
 		}
 		for range 1 + rng.IntN(2) {
 			c.faults = append(c.faults, pick(faultWorker, faultWorker, "crash "+crashWorkerHead, "crash "+crashWorkerCommit))
@@ -236,7 +232,7 @@ func drawConfig(seed uint64, i int) chaosConfig {
 
 // onWorkers reports whether the run's job can run on workers.
 func (c chaosConfig) onWorkers() bool {
-	return c.workers > 0 && c.source == "kafka" && c.dest != "kafka"
+	return c.workers > 0 && c.dest != "kafka"
 }
 
 // lanes reports whether the run's job runs as many lanes as its size: a

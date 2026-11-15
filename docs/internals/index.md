@@ -127,10 +127,16 @@ An attempt can run on several runners: one runner coordinates it, and the others
 - All the splits of these streams go to one worker:
   - a stream written with overwrite;
   - a stream that the attempt does not read;
-  - a keyed stream whose splits do not keep a key's rows together: one whose path has an exchange, which runs inside one engine.
+  - a keyed stream whose splits do not keep a key's rows together: one whose path has an exchange, which runs inside one engine;
+  - a stream read with `cdc`, and every such stream goes to the same worker: a source reads their changes from one log, such as a Postgres replication slot, which only one read can hold.
+
+  With a SQL transform, a stream that a statement reads goes to one worker if an output written from it, or the stream passed through, is written with overwrite or has an exchange on its path. An output's partitioning is its stream's past the statement, so a key that the statement passes through, renamed or not, keeps its split, and an output without a key needs no exchange.
 - A worker sends its share of each epoch when its part is durable. The share holds its splits' positions, its rows, its committables and what its engine reported. The coordinator merges the shares into one record. The record also has each committable's coverage: the splits whose rows it holds, where each split's part of the epoch began, how many rows the split had, and the key groups of those rows with the key that grouped them.
 - After the record, the first worker applies schemas and commits at the coordinator's request. A destination with lane commits (`DestinationCapabilities.lane_commits`) is different: each worker commits its own writer lanes, each with its own committable. The coordinator then sends the record's positions to the workers. Each worker acknowledges only the positions of its own splits, one checkpoint behind.
-- Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Integers past ±2^53 in a column are such a change too, because a later float then makes the column text. Every engine shapes by the versions that the coordinator accepts.
+- Each stream's schema has one owner, the coordinator. An engine whose lane changes a schema proposes the change from the version that it has. Integers past ±2^53 in a column are such a change too, because a later float then makes the column text. Every engine shapes by the versions that the coordinator accepts. Lanes of one engine share these changes through the engine's own owner of the stream, which follows the coordinator's versions.
+- A version of one of the destination's streams also holds the columns that the stream holds whole, and the schema that the destination gets (`SchemasResponse.holding` and `delivered`). An engine that starts a column hold proposes it as a change, so the first decision is every worker's. The coordinator records the owner's columns and delivered schema, and adds up the workers' held cells and files. Each engine names its held files by the attempt's index of its writer lanes, so the workers' files do not collide.
+- With a SQL transform, the streams that the statements read have versions of their own (`SchemasRequest.input`). An engine proposes what its lanes typed that the owner's version lacks: new columns, and types that hold the owner's. The record keeps the owner's schema of each input and of each output.
+- The coordinator starts the holds as a single runner does: from the restored record, with the job's releases, and with the columns that the destination refused. It sends them in the assignment (`Assignment.holds`), and the first worker's `Recover` answer gives it the destination's table limits. Only the engine with the attempt's lane 0 patches in released holds. A refusal ends the attempt, and the coordinator claims the pipeline again at once with the refused columns held. The same worker pods join the newer generation.
 - A lost worker or a lost coordinator fails the attempt. The next attempt restores every worker from the record, in a new layout.
 
 With lane commits, an epoch can be committed in part, so the next attempt settles the restored record committable by committable ([`internal/runner/redo.go`](../../internal/runner/redo.go)). The coordinator sends each worker a `Settle` call before it assigns any work. Committables whose coverage shares a split go to the same worker. While the coordinator waits for any call's answer, its heartbeats say so (`Heartbeat.calling`), and a worker without its assignment goes on waiting for it. For each committable, the worker opens a writer as the lane that staged it, and its `Recover` fences that lane. The committable then ends one of three ways:
@@ -143,10 +149,10 @@ A single runner settles such a record the same way. On one runner, a destination
 
 These jobs run on one pod:
 
-- a job with a transform;
-- a job whose streams hold columns;
+- a job with a Spark or Flink transform;
 - a job whose destination loads staged epochs or is written by the engine;
 - a job whose destination is transactional and does not have lane commits;
+- a job with a SQL transform whose destination has lane commits: a committable's coverage names the input splits on its own lanes, and a redo filters key groups by the destination's stream, so a lane's part of an exchanged output can't be written again from the source yet;
 - a job whose destination takes fewer writer lanes than there are workers.
 
 `plan.OnePod` ([`internal/plan`](../../internal/plan)) is the one check behind these cases, for the plan, for `EnqueueWork` and for `Job.OnWorkers`. `EnqueueWork` works out an attempt's workers when it sizes the attempt, so the workflows and their histories do not change. The placer sends an attempt on workers only to a pod launcher of its pool, all of its pods or none, and the launcher's `--max-pods` and `--max-pod-cpu` count every pod. The launcher ([`internal/runner/pods`](../../internal/runner/pods)) makes the workers' pods, then the coordinator's.

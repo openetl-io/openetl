@@ -81,16 +81,25 @@ message StartJobRequest {
   // Unset: none, and outputs is empty.
   Transform transform = 20;
   // Several engines run the attempt, and each stream's schema has one owner
-  // outside them, reached through Schemas. A lane that changes a stream's
-  // schema proposes it from the owner's version it had, and goes on with
-  // it once the owner takes it; otherwise it shapes its batch again by the
-  // owner's. Every stream starts at the owner's version 0, its restored
-  // schema. Not with a transform or holds.
+  // outside them, reached through Schemas: each of the destination's
+  // streams', with the columns it holds whole, and each stream a transform
+  // reads. A lane that changes a stream's schema, or what it holds, proposes
+  // it from the owner's version it had, and goes on with it once the owner
+  // takes it; otherwise it shapes its batch again by the owner's. Every
+  // stream starts at the owner's version 0: its restored schema, and the
+  // holds its HoldPlan starts with. Only the engine whose first_lane is 0
+  // patches in released holds.
   bool remote_schemas = 21;
   // The attempt's index of the engine's first lane, where several engines
   // run the attempt: a lane's quarantine files are named by its index in
   // the attempt.
   uint32 first_lane = 22;
+  // Where several engines run the attempt, the attempt's index of the
+  // engine's first writer lane, and the attempt's writer lanes, 0 being
+  // writer_lanes: held files are named by a writer lane's index in the
+  // attempt.
+  uint32 first_writer_lane = 23;
+  uint32 attempt_writer_lanes = 24;
 }
 
 // Transform is SQL between the normalizer's two halves. Its statements read
@@ -531,19 +540,31 @@ message StopResponse {}
 // change. Versions of a stream come in order, and the engine shapes by the
 // newest.
 message SchemasRequest {
-  // An index into StartJobRequest.streams.
+  // An index into the destination's streams: StartJobRequest.outputs with
+  // a transform, and its streams without; with input, into its streams, a
+  // transform's inputs, whose versions are apart.
   uint32 stream = 1;
   uint64 version = 2;
-  // An Arrow IPC stream holding only the schema, as EpochReady.schemas.
+  // An Arrow IPC stream holding only the schema, as EpochReady.schemas, or
+  // a transform's input's as it reads it.
   bytes arrow_schema = 3;
+  bool input = 4;
+  // One of the destination's streams that holds: the columns it holds
+  // whole, as StreamHolds.holding.
+  repeated ColumnHold holding = 5;
 }
 
-// SchemasResponse proposes a lane's change to a stream's schema, made from
-// the owner's version base. The engine sends one proposal of a stream at a
-// time, and waits for a newer version.
+// SchemasResponse proposes a lane's change to a stream's schema, or to what
+// it holds, made from the owner's version base. The engine sends one
+// proposal of a stream at a time, and waits for a newer version.
 message SchemasResponse {
+  // As SchemasRequest's.
   uint32 stream = 1;
   uint64 base = 2;
-  // As SchemasRequest's.
   bytes arrow_schema = 3;
+  bool input = 4;
+  repeated ColumnHold holding = 5;
+  // Where columns are held whole, the schema the destination gets, as
+  // EpochReady.delivered; empty where it's arrow_schema.
+  bytes delivered = 6;
 }

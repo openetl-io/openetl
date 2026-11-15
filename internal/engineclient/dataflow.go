@@ -24,6 +24,7 @@ import (
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -187,9 +188,13 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	// what the engine says of that end isn't why.
 	var relayErr error
 	if schemas != nil {
+		var inputs []string
+		if plan.SQL != nil {
+			inputs = names
+		}
 		g.Go(func() error {
 			defer schemasCancel()
-			relayErr = relaySchemas(gctx, schemas, plan.SchemaOwner, names, evDone)
+			relayErr = relaySchemas(gctx, schemas, plan.SchemaOwner, sinkNames, inputs, evDone)
 			return relayErr
 		})
 	}
@@ -222,19 +227,28 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 }
 
 // relaySchemas relays the engine's proposals on st to owner, and owner's
-// versions to the engine, by the job's stream index. It returns nil once
-// ctx ends or the engine's job does (done), whatever the call does then,
-// and otherwise why the relay failed, which fails the job. The caller ends
-// st once it returns.
-func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, owner runner.SchemaOwner, names []string, done <-chan struct{}) error {
-	index := make(map[string]uint32, len(names))
-	for i, n := range names {
-		index[n] = ints.Uint32(i)
+// versions to the engine, by the job's stream index: of the destination's
+// streams, names, and of the streams a SQL transform reads, inputs. It
+// returns nil once ctx ends or the engine's job does (done), whatever the
+// call does then, and otherwise why the relay failed, which fails the job.
+// The caller ends st once it returns.
+func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, owner runner.SchemaOwner, names, inputs []string, done <-chan struct{}) error {
+	index := func(names []string) map[string]uint32 {
+		m := make(map[string]uint32, len(names))
+		for i, n := range names {
+			m[n] = ints.Uint32(i)
+		}
+		return m
 	}
+	outIndex, inIndex := index(names), index(inputs)
 	failed := make(chan error, 2)
 	go func() {
 		for {
 			p, err := st.Recv()
+			of := names
+			if p.GetInput() {
+				of = inputs
+			}
 			switch {
 			case errors.Is(err, io.EOF):
 				// The engine's job ended, and with it its proposals.
@@ -242,12 +256,18 @@ func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, 
 			case err != nil:
 				failed <- errs.Wrap(errs.Internal, err, "engineclient: the engine's schemas call broke")
 				return
-			case int(p.GetStream()) >= len(names):
-				failed <- errs.New(errs.Internal, "engineclient: the engine proposed a schema of stream %d, of %d", p.GetStream(), len(names))
+			case int(p.GetStream()) >= len(of):
+				failed <- errs.New(errs.Internal, "engineclient: the engine proposed a schema of stream %d, of %d", p.GetStream(), len(of))
 				return
 			}
-			if err := owner.Propose(names[p.GetStream()], p.GetBase(), p.GetArrowSchema()); err != nil {
-				failed <- fmt.Errorf("engineclient: proposing a schema of %s: %w", names[p.GetStream()], err)
+			name := of[p.GetStream()]
+			var holding []checkpoint.ColumnHold
+			for _, c := range p.GetHolding() {
+				holding = append(holding, attempt.ColumnHoldOf(c))
+			}
+			prop := runner.SchemaProposal{Stream: name, Input: p.GetInput(), Base: p.GetBase(), Schema: p.GetArrowSchema(), Holding: holding, Delivered: p.GetDelivered()}
+			if err := owner.Propose(prop); err != nil {
+				failed <- fmt.Errorf("engineclient: proposing a schema of %s: %w", name, err)
 				return
 			}
 		}
@@ -256,11 +276,19 @@ func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, 
 		for {
 			select {
 			case u := <-owner.Updates():
+				index := outIndex
+				if u.Input {
+					index = inIndex
+				}
 				i, ok := index[u.Stream]
 				if !ok {
 					continue
 				}
-				if err := st.Send(&enginev1.SchemasRequest{Stream: i, Version: u.Version, ArrowSchema: u.Schema}); err != nil {
+				req := &enginev1.SchemasRequest{Stream: i, Input: u.Input, Version: u.Version, ArrowSchema: u.Schema}
+				for _, c := range u.Holding {
+					req.Holding = append(req.Holding, attempt.ColumnHold(c))
+				}
+				if err := st.Send(req); err != nil {
 					failed <- errs.Wrap(errs.Internal, err, "engineclient: the engine's schemas call broke")
 					return
 				}
@@ -325,6 +353,8 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		KeyGroups:          ints.Uint32(plan.KeyGroups),
 		RemoteSchemas:      plan.SchemaOwner != nil,
 		FirstLane:          ints.Uint32(plan.FirstLane),
+		FirstWriterLane:    ints.Uint32(plan.FirstWriterLane),
+		AttemptWriterLanes: ints.Uint32(plan.AttemptWriterLanes),
 	}
 	sql := plan.SQL != nil
 	for i, s := range plan.Streams {
@@ -448,7 +478,7 @@ func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
 		ready.OutputSchemas = s
 	}
 	ready.Delivered = r.GetDelivered()
-	ready.Holds = readyHolds(r.GetHolds())
+	ready.Holds = attempt.HoldsOf(r.GetHolds())
 	return ready, nil
 }
 
@@ -482,7 +512,7 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 		p.Groups = append(p.Groups, &enginev1.ColumnGroup{Columns: g})
 	}
 	for _, c := range h.Holding {
-		p.Holding = append(p.Holding, columnHold(c))
+		p.Holding = append(p.Holding, attempt.ColumnHold(c))
 		if c.Discarded {
 			p.Discarded = append(p.Discarded, c.Column)
 		}
@@ -494,69 +524,10 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 			Columns: r.Columns,
 		}
 		for _, c := range r.Versioned {
-			p.Replay.Versioned = append(p.Replay.Versioned, columnHold(c))
+			p.Replay.Versioned = append(p.Replay.Versioned, attempt.ColumnHold(c))
 		}
 	}
 	return p
-}
-
-var holdKinds = map[checkpoint.HoldKind]enginev1.HoldCause_Kind{
-	checkpoint.HoldPolicy:      enginev1.HoldCause_KIND_POLICY,
-	checkpoint.HoldRefused:     enginev1.HoldCause_KIND_REFUSED,
-	checkpoint.HoldFixed:       enginev1.HoldCause_KIND_FIXED,
-	checkpoint.HoldColumnLimit: enginev1.HoldCause_KIND_COLUMN_LIMIT,
-	checkpoint.HoldGroup:       enginev1.HoldCause_KIND_GROUP,
-}
-
-func columnHold(c checkpoint.ColumnHold) *enginev1.ColumnHold {
-	h := &enginev1.ColumnHold{Column: c.Column, Delivered: c.Delivered, Reason: c.Reason}
-	if c.Cause != nil {
-		h.Cause = &enginev1.HoldCause{Kind: holdKinds[c.Cause.Kind], Policy: c.Cause.Policy, With: c.Cause.With}
-	}
-	return h
-}
-
-// holdCause is the engine's cause; the destination's refusal isn't in it.
-func holdCause(c *enginev1.HoldCause) *checkpoint.HoldCause {
-	if c == nil {
-		return nil
-	}
-	out := &checkpoint.HoldCause{Policy: c.GetPolicy(), With: c.GetWith(), Source: c.GetSource(), From: c.GetFrom(), To: c.GetTo()}
-	for k, v := range holdKinds {
-		if v == c.GetKind() {
-			out.Kind = k
-		}
-	}
-	return out
-}
-
-func readyHolds(m map[string]*enginev1.StreamHolds) map[string]*runner.ReadyHolds {
-	if len(m) == 0 {
-		return nil
-	}
-	out := make(map[string]*runner.ReadyHolds, len(m))
-	for name, h := range m {
-		rh := &runner.ReadyHolds{}
-		for _, c := range h.GetHolding() {
-			rh.Holding = append(rh.Holding, checkpoint.ColumnHold{
-				Column: c.GetColumn(), Delivered: c.GetDelivered(), Reason: c.GetReason(), Cause: holdCause(c.GetCause()),
-			})
-		}
-		for col, c := range h.GetCells() {
-			if rh.Cells == nil {
-				rh.Cells = map[string]checkpoint.CellHold{}
-			}
-			rh.Cells[col] = checkpoint.CellHold{Cells: c.GetCells(), Reason: c.GetReason()}
-		}
-		for _, f := range h.GetFiles() {
-			rh.Files = append(rh.Files, destination.StagedFile{Path: f.GetPath(), Rows: f.GetRows(), Bytes: f.GetBytes()})
-		}
-		if p := h.GetReplayed(); p != nil {
-			rh.Replayed = &runner.ReplayProgress{File: int(p.GetFile()), Row: p.GetRow(), StillHeld: p.GetStillHeld(), Done: p.GetDone()}
-		}
-		out[name] = rh
-	}
-	return out
 }
 
 var schemaPolicies = map[runner.SchemaPolicy]enginev1.SchemaPolicy{

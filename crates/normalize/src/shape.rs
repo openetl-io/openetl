@@ -97,7 +97,9 @@ pub struct Shaper {
     /// `_openetl_unchanged`.
     changelog: bool,
     holds: Option<Holds>,
-    /// What lanes share has changed since [`Shaper::take_changed`].
+    /// What lanes share has changed since [`Shaper::take_changed`]: the
+    /// schema, what its metadata knows of the values, such as the columns
+    /// that held integers past ±2^53, and the holds.
     changed: bool,
 }
 
@@ -1064,7 +1066,7 @@ impl Shaper {
         }
         let schema = Arc::new(Schema::new_with_metadata(fields, md));
         if data {
-            self.changed |= !same_but_big_ints(self.current.as_deref(), &schema);
+            self.changed |= self.current.as_deref() != Some(&*schema);
             self.current = Some(schema.clone());
             self.fresh = true;
         }
@@ -1161,18 +1163,6 @@ impl Shaper {
         let opts = RecordBatchOptions::new().with_row_count(Some(n));
         Ok(RecordBatch::try_new_with_options(schema, columns, &opts)?)
     }
-}
-
-/// Whether two schemas differ at most in which columns have held big
-/// integers, which matters only when restoring.
-fn same_but_big_ints(a: Option<&Schema>, b: &Schema) -> bool {
-    let Some(a) = a else { return false };
-    let without = |s: &Schema| {
-        let mut md = s.metadata().clone();
-        md.remove(BIG_INTS_KEY);
-        md
-    };
-    a.fields() == b.fields() && without(a) == without(b)
 }
 
 fn now_micros() -> i64 {

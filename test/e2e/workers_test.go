@@ -189,11 +189,11 @@ func checkS3Times(t *testing.T, b *blob.Bucket, table string, rows, times int) {
 // every row lands once a sync, as the job is rescaled from one pod to three
 // workers and back, each sync restoring from the record the one before
 // wrote. A Postgres snapshot into Iceberg runs on workers too, each table
-// read on one of them, as the plan says once the source is discovered. A
-// job that can't run on workers runs on one pod, and the attempt says why:
-// before the source is discovered, its coordinator finds out, and the same
-// attempt is placed again; after, the plan says why too, and the control
-// plane places the attempt on one pod at once.
+// read on one of them, as the plan says once the source is discovered, and
+// so does a keyed table appended into Postgres or merged into Iceberg, read
+// in key ranges across the workers, which hold columns, and a SQL
+// transform. A job that can't run on workers runs on one pod, and the plan
+// and the attempt say why.
 func TestWorkersInPods(t *testing.T) {
 	plane, token := placementPlane(t)
 	launcher := startPodLauncher(t, plane, token)
@@ -285,45 +285,115 @@ func TestWorkersInPods(t *testing.T) {
 		}
 	})
 
-	t.Run("one pod", func(t *testing.T) {
-		name := unique("workers-one-pod")
-		workerTables(t, name, 5000, "items")
-		dst := `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`
-		destination := fmt.Sprintf(`, "namespace": %q, "write": "append"`, schema(name)+"_out")
-		apply(t, workersDocs(name, plane, dst, destination, 3)...)
+	// A keyed table, read in key ranges, appended into Postgres and merged
+	// into Iceberg, both of which hold columns: each attempt runs on
+	// workers, which read its key ranges apart, and every row lands once.
+	for _, k := range []struct{ dest, write string }{{"postgres", "append"}, {"iceberg", "merge"}} {
+		t.Run("keyed "+k.write+" into "+k.dest, func(t *testing.T) {
+			name := unique("workers-" + k.dest)
+			out := schema(name) + "_out"
+			dst := `{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`
+			destination := fmt.Sprintf(`, "namespace": %q, "write": %q`, out, k.write)
+			if k.dest == "iceberg" {
+				dst, destination = icebergDest(t, out), fmt.Sprintf(`, "write": %q`, k.write)
+			}
+			const rows = 20_000
+			workerTables(t, name, rows, "items")
+			d := workersDocs(name, plane, dst, destination, 3)
+			if k.write == "merge" {
+				d[2] = strings.Replace(d[2], `"delivery": {`, `"delivery": {"require": "effectively_once", `, 1)
+			}
+			apply(t, d[0])
+			discover(t, name, plane)
+			plan := applyAll(t, false, d...).GetPlans()[0]
+			if plan.GetJob().GetWorkers() != 3 || slices.ContainsFunc(plan.GetWarnings(), func(w *apiv1.PlanWarning) bool {
+				return strings.Contains(w.GetMessage(), "one of its 3 workers") || strings.Contains(w.GetMessage(), "one pod")
+			}) {
+				t.Errorf("the plan runs the job on %d workers, and warns %v; want 3, reading items on all", plan.GetJob().GetWorkers(), plan.GetWarnings())
+			}
+			status, stats := waitSync(t, name, 3*time.Minute)
+			if status != "succeeded" {
+				t.Fatalf("sync %s: %s", status, stats)
+			}
+			if k.dest == "iceberg" {
+				checkIceberg(t, out, rows, "items")
+			} else {
+				checkRows(t, out, rows, "items")
+			}
+			a := lastAttempt(t, name)
+			if a.GetWorkers() != 3 || a.GetOnePod() != "" {
+				t.Errorf("the sync ran on %d workers (%q), want 3", a.GetWorkers(), a.GetOnePod())
+			}
+			if committables, splits := coverage(t, name, statsOf(t, stats).Generation, "items"); committables < 2 || splits < 2 {
+				t.Errorf("the workers' records cover %d splits in %d committables, want them spread", splits, committables)
+			}
+		})
+	}
+
+	// A SQL transform runs on workers: the statement's output, and the
+	// stream it reads, which passes through, land every row once.
+	t.Run("sql", func(t *testing.T) {
+		name := unique("workers-sql")
+		dst, b := s3Dest(t)
+		const rows = 20_000
+		workerTables(t, name, rows, "items")
+		sql, err := json.Marshal("INSERT INTO evens SELECT id, upper(name) AS label FROM items WHERE id % 2 = 0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := workersDocs(name, plane, dst, "", 3)
+		d[2] = strings.Replace(d[2], `"delivery":`, fmt.Sprintf(`"transform": {"sql": %s}, "delivery":`, sql), 1)
+		apply(t, d...)
 		status, stats := waitSync(t, name, 3*time.Minute)
 		if status != "succeeded" {
 			t.Fatalf("sync %s: %s", status, stats)
 		}
-		checkRows(t, schema(name)+"_out", 5000, "items")
-		const why = `stream "items" holds columns, which runs on one pod`
-		// Undiscovered, the source's streams are the coordinator's to check:
-		// it finds the job can't run on workers, and the same attempt is
-		// placed again on one pod.
-		if a := lastAttempt(t, name); a.GetWorkers() != 0 || !strings.Contains(a.GetOnePod(), why) {
-			t.Errorf("the attempt ran on %d workers, and says %q; want one pod, because %s", a.GetWorkers(), a.GetOnePod(), why)
+		checkS3Times(t, b, "items", rows, 1)
+		ids, err := s3IDs(t, b, "evens")
+		if err != nil {
+			t.Fatal(err)
 		}
-		if n := lastPlacements(t, name); n != 2 {
-			t.Errorf("the attempt was placed %d times, want on workers, then on one pod", n)
+		seen := map[int64]bool{}
+		for _, id := range ids {
+			if seen[id] || id%2 != 0 || id < 1 || id > rows {
+				t.Fatalf("evens has id %d, again or that the statement leaves out", id)
+			}
+			seen[id] = true
 		}
+		if len(seen) != rows/2 {
+			t.Errorf("evens has %d ids, want %d", len(seen), rows/2)
+		}
+		if a := lastAttempt(t, name); a.GetWorkers() != 3 || a.GetOnePod() != "" {
+			t.Errorf("the sync ran on %d workers (%q), want 3", a.GetWorkers(), a.GetOnePod())
+		}
+	})
 
-		// Discovered, the plan says why, and the control plane places the
-		// next sync's attempt on one pod at once.
-		discover(t, name, plane)
-		plan := planOf(t, workersDocs(name, plane, dst, destination, 3)...)
+	// A job that can't run on workers runs on one pod, and the plan and the
+	// attempt say why: the control plane knows ahead, and places the attempt
+	// on one pod at once.
+	t.Run("one pod", func(t *testing.T) {
+		name := unique("workers-one-pod")
+		workerTables(t, name, 5000, "items")
+		dir := t.TempDir()
+		d := workersDocs(name, plane, parquetDest(dir), "", 3)
+		const why = "a destination the engine writes runs on one pod"
+		plan := planOf(t, d...)
 		if plan.GetJob().GetWorkers() != 0 || !slices.ContainsFunc(plan.GetWarnings(), func(w *apiv1.PlanWarning) bool {
 			return strings.Contains(w.GetMessage(), "resources.workers asks for 3 workers, and the job runs on one pod: "+why)
 		}) {
 			t.Errorf("the plan runs the job on %d workers, and warns %v; want one pod, because %s", plan.GetJob().GetWorkers(), plan.GetWarnings(), why)
 		}
-		if status, stats := syncNow(t, name); status != "succeeded" {
-			t.Fatalf("second sync %s: %s", status, stats)
+		apply(t, d...)
+		status, stats := waitSync(t, name, 3*time.Minute)
+		if status != "succeeded" {
+			t.Fatalf("sync %s: %s", status, stats)
 		}
+		checkParquet(t, dir, 5000, "items")
 		if a := lastAttempt(t, name); a.GetWorkers() != 0 || !strings.Contains(a.GetOnePod(), why) {
-			t.Errorf("the second sync's attempt ran on %d workers, and says %q; want one pod, because %s", a.GetWorkers(), a.GetOnePod(), why)
+			t.Errorf("the attempt ran on %d workers, and says %q; want one pod, because %s", a.GetWorkers(), a.GetOnePod(), why)
 		}
 		if n := lastPlacements(t, name); n != 1 {
-			t.Errorf("the second sync's attempt was placed %d times, want once, on one pod", n)
+			t.Errorf("the attempt was placed %d times, want once, on one pod", n)
 		}
 	})
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
@@ -39,14 +40,22 @@ func TestWorkers(t *testing.T) {
 		workers   int
 		onePod    string
 		oneWorker []string
+		sql       *sqlplan.Answer
 	}{
 		{name: "one asked", spec: spec(1, nil), cat: cat, caps: lanes},
 		{name: "spread", spec: spec(4, nil), cat: cat, caps: lanes, workers: 4, oneWorker: []string{
 			`hashed: each attempt reads it on one of its 4 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
-			`changes: each attempt reads it on one of its 4 workers: the changes to each key must reach one writer lane in order`,
+			`changes: each attempt reads it on one of its 4 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			`snapshot: each attempt reads it on one of its 4 workers: an overwrite's read ends on one worker`,
 		}},
 		{name: "no catalog", spec: spec(4, nil), caps: lanes, workers: 4},
+		// Without a key too: a source reads every stream's changes from one
+		// log.
+		{name: "keyless changes", spec: spec(2, nil), cat: &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
+			{Name: "feed", SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_CDC}},
+		}}, caps: lanes, workers: 2, oneWorker: []string{
+			`feed: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
+		}},
 		{name: "one writer lane", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.StageAndApply},
 			onePod: "the destination declares one writer lane"},
 		{name: "fewer writer lanes", spec: spec(16, nil), cat: cat, caps: lanes, onePod: "the destination takes 8 writer lanes, fewer than 16 workers"},
@@ -55,23 +64,49 @@ func TestWorkers(t *testing.T) {
 		{name: "lane commits", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.TransactionalStream, WriterLanes: 4, LaneCommits: true},
 			workers: 2, oneWorker: []string{
 				`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
-				`changes: each attempt reads it on one of its 2 workers: the changes to each key must reach one writer lane in order`,
+				`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			}},
 		{name: "staged", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.StageAndApply, WriterLanes: 4, Delivery: destination.DeliveryStaged},
 			onePod: "a destination that loads staged epochs runs on one pod"},
 		{name: "engine written", spec: spec(2, nil), cat: cat, caps: lanes, engine: true, onePod: "a destination the engine writes runs on one pod"},
-		{name: "holds", spec: spec(2, nil), cat: cat, caps: held, onePod: `stream "changes" holds columns, which runs on one pod`},
-		{name: "sql", spec: spec(2, func(p *apiv1.PipelineSpec) {
+		{name: "holds", spec: spec(2, nil), cat: cat, caps: held, workers: 2, oneWorker: []string{
+			`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
+			`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
+			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
+		}},
+		{name: "sql passing streams through", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
-		}), cat: cat, caps: lanes,
-			onePod: "a SQL transform runs on one pod"},
+		}), cat: cat, caps: held, sql: &sqlplan.Answer{}, workers: 2, oneWorker: []string{
+			`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
+			`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
+			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
+		}},
+		{name: "sql into lane commits", spec: spec(2, func(p *apiv1.PipelineSpec) {
+			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
+		}), cat: cat, caps: destination.Capabilities{Class: destination.TransactionalStream, WriterLanes: 4, LaneCommits: true}, sql: &sqlplan.Answer{},
+			onePod: "a SQL transform into a destination whose writer lanes commit on their own runs on one pod"},
+		{name: "sql not planned", spec: spec(2, func(p *apiv1.PipelineSpec) {
+			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
+		}), cat: cat, caps: held, workers: 2},
+		// An output whose path has an exchange is read on one worker: a key
+		// renamed through a statement keeps its split, and an output without
+		// a key needs none.
+		{name: "sql statements", spec: spec(2, func(p *apiv1.PipelineSpec) {
+			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "…", Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}}
+		}), cat: cat, caps: held, workers: 2, sql: &sqlplan.Answer{Statements: []sqlplan.Statement{
+			{At: sqlplan.Position{Line: 1, Column: 1}, Output: "r", Class: "row_wise", Inputs: []string{"ranged"}, Key: []string{"rid"}, Passes: map[string]string{"id": "rid"}},
+			{At: sqlplan.Position{Line: 2, Column: 1}, Output: "h", Class: "row_wise", Inputs: []string{"hashed"}},
+			{At: sqlplan.Position{Line: 3, Column: 1}, Output: "c", Class: "row_wise", Inputs: []string{"changes"}, Key: []string{"id"}, Passes: map[string]string{"id": "id"}},
+		}}, oneWorker: []string{
+			`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
+		}},
 		{name: "spark", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Spark{Spark: &apiv1.SparkTransform{}}}
 		}), cat: cat, caps: lanes,
 			onePod: "a Spark or Flink transform runs on one pod"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workers, onePod, oneWorker := Workers(tc.spec, tc.cat, tc.caps, tc.engine)
+			workers, onePod, oneWorker := Workers(tc.spec, tc.cat, tc.caps, tc.engine, tc.sql)
 			var got []string
 			for _, w := range oneWorker {
 				got = append(got, w.GetStream()+": "+w.GetMessage())

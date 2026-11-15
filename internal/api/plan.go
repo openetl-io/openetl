@@ -17,6 +17,7 @@ import (
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/plan"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/internal/store/db"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -188,7 +189,7 @@ func (s *Server) planVersion(ctx context.Context, q *db.Queries, p *planned) (*a
 	if err != nil {
 		return nil, err
 	}
-	workers := planWorkers(p.v.spec, cat, caps, known, engine, out)
+	workers := planWorkers(p.v.spec, cat, answer, caps, known, engine, out)
 	if err := s.planJob(ctx, q, p, workers, out); err != nil {
 		return nil, err
 	}
@@ -272,7 +273,7 @@ func refuse(ch *changes, plans []*apiv1.PipelinePlan) error {
 // that asks for workers runs on one pod, and for each stream an attempt
 // reads on one worker. What the plan can't check, the attempt's coordinator
 // does, which places the attempt again on one pod if it must.
-func planWorkers(sp *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, known, engine bool, out *apiv1.PipelinePlan) int {
+func planWorkers(sp *apiv1.PipelineSpec, cat *apiv1.Catalog, answer *sqlplan.Answer, caps destination.Capabilities, known, engine bool, out *apiv1.PipelinePlan) int {
 	asked := int(sp.GetResources().GetWorkers())
 	if asked <= 1 {
 		return 0
@@ -281,13 +282,13 @@ func planWorkers(sp *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Ca
 		out.Notes = append(out.Notes, fmt.Sprintf("resources.workers asks for %d workers, and the control plane doesn't know the destination's capabilities, so each attempt's coordinator checks that it can run on them, and runs it on one pod if not", asked))
 		return asked
 	}
-	workers, why, oneWorker := plan.Workers(sp, cat, caps, engine)
+	workers, why, oneWorker := plan.Workers(sp, cat, caps, engine, answer)
 	if why != "" {
 		out.Warnings = append(out.Warnings, &apiv1.PlanWarning{Message: onePodWarning(asked, why)})
 		return 0
 	}
 	if cat == nil {
-		out.Notes = append(out.Notes, "the source hasn't been discovered, so the plan can't say which streams hold columns, which would run the job on one pod, or which an attempt reads on one worker")
+		out.Notes = append(out.Notes, "the source hasn't been discovered, so the plan can't say which streams an attempt reads on one worker")
 	}
 	out.Warnings = append(out.Warnings, oneWorker...)
 	return workers

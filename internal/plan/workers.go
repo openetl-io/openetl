@@ -4,102 +4,139 @@ import (
 	"fmt"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/sdk/go/destination"
-)
-
-// Transform kinds, as WorkerJob names them.
-const (
-	TransformOwnCode = "own code"
-	TransformSQL     = "sql"
 )
 
 // WorkerJob is what decides whether a job runs on workers.
 type WorkerJob struct {
 	Workers int
-	// TransformOwnCode for a Spark or Flink transform, TransformSQL, or
-	// empty for none.
-	Transform string
-	Caps      destination.Capabilities
+	// A Spark or Flink transform; a SQL transform.
+	OwnCode, SQL bool
+	Caps         destination.Capabilities
 	// The engine writes the destination's data.
 	EngineWritten bool
-	// One of the destination's streams that holds columns or cells; empty if
-	// none does.
-	Holding string
 }
 
 // OnePod says why a job that asks for workers runs on one pod; empty if it
-// can run on them. What needs rows of one key to meet across workers, or one
-// writer, stays on one pod.
+// can run on them. What needs one writer, or what only one pod runs, stays
+// on one pod. A SQL transform runs on workers, but into a destination whose
+// lanes commit on their own, and so do holds: the attempt's coordinator owns
+// each stream's schema and what it holds.
 func OnePod(j WorkerJob) string {
 	caps := j.Caps
 	switch {
-	case j.Transform == TransformOwnCode:
+	case j.OwnCode:
 		return "a Spark or Flink transform runs on one pod"
-	case j.Transform == TransformSQL:
-		return "a SQL transform runs on one pod"
 	case caps.Lanes() == 1 && j.Workers > 1:
 		return "the destination declares one writer lane"
 	case caps.Lanes() < j.Workers:
 		return fmt.Sprintf("the destination takes %d writer lanes, fewer than %d workers", caps.Lanes(), j.Workers)
 	case caps.Class == destination.TransactionalStream && !caps.LaneCommits:
 		return "a transactional destination runs on one pod unless its writer lanes commit on their own"
+	case j.SQL && caps.LaneCommits:
+		// A lane's part of an epoch, written again from the source, holds the
+		// rows of the input's splits that reached it, which an exchange of a
+		// statement's output sends to any lane.
+		return "a SQL transform into a destination whose writer lanes commit on their own runs on one pod"
 	case caps.Delivery == destination.DeliveryStaged:
 		return "a destination that loads staged epochs runs on one pod"
 	case j.EngineWritten:
 		return "a destination the engine writes runs on one pod"
-	case j.Holding != "":
-		return fmt.Sprintf("stream %q holds columns, which runs on one pod", j.Holding)
 	}
 	return ""
 }
+
+// Why an attempt on workers reads all of a stream's splits on one worker.
+const (
+	whyOverwrite = "an overwrite's read ends on one worker"
+	whyChanges   = "the source reads its changes from one log, with those of every stream read with cdc, which one worker reads"
+	whySplits    = "the source's splits don't partition it by key, and the rows of each key must meet on one writer lane"
+)
 
 // OneWorker says why an attempt on workers reads all of a stream's splits on
 // one worker; empty if it spreads them.
 func OneWorker(mode destination.WriteMode, keyed, splitsByKey bool, read apiv1.SyncMode) string {
 	switch {
 	case mode == destination.Overwrite:
-		return "an overwrite's read ends on one worker"
-	case keyed && read == apiv1.SyncMode_SYNC_MODE_CDC:
-		return "the changes to each key must reach one writer lane in order"
+		return whyOverwrite
+	case read == apiv1.SyncMode_SYNC_MODE_CDC:
+		return whyChanges
 	case keyed && !splitsByKey:
-		return "the source's splits don't partition it by key, and the rows of each key must meet on one writer lane"
+		return whySplits
 	}
 	return ""
 }
 
+// oneWorkerOn says why an attempt on workers reads all of a stream's splits
+// on one worker, where a statement writes path's output from it in mode:
+// the output is an overwrite, the stream is read with cdc, or the output's
+// path has an exchange, which runs inside one engine. Empty if it spreads
+// them.
+func oneWorkerOn(mode destination.WriteMode, path Path, read apiv1.SyncMode) string {
+	switch {
+	case mode == destination.Overwrite:
+		return whyOverwrite
+	case read == apiv1.SyncMode_SYNC_MODE_CDC:
+		return whyChanges
+	case len(path.Exchanges()) == 0:
+		return ""
+	}
+	return whySplits
+}
+
 // Workers plans a job's workers: how many each attempt runs on (0: one pod),
 // why it runs on one pod although its spec asks for more, and a warning for
-// each of the destination's streams an attempt reads on one worker. Without
-// a catalog, it can't tell which streams hold columns or stay on one worker.
-func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, engineWritten bool) (int, string, []*apiv1.PlanWarning) {
+// each stream an attempt reads on one worker. Without a catalog it can't
+// tell which streams one worker reads, nor with a SQL transform without
+// the statements' plan, a.
+func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, engineWritten bool, a *sqlplan.Answer) (int, string, []*apiv1.PlanWarning) {
 	asked := int(spec.GetResources().GetWorkers())
 	if asked <= 1 {
 		return 0, "", nil
 	}
-	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten}
-	switch {
-	case ownCode(spec):
-		j.Transform = TransformOwnCode
-	case spec.GetTransform().GetSql() != nil:
-		j.Transform = TransformSQL
+	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec), SQL: spec.GetTransform().GetSql() != nil}
+	if why := OnePod(j); why != "" {
+		return 0, why, nil
 	}
-	var oneWorker []*apiv1.PlanWarning
-	if j.Transform == "" {
-		for _, s := range selected(spec, cat) {
-			keyed := len(s.cs.GetPrimaryKey()) > 0
-			read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
-			mode := StreamMode(spec, caps, read, keyed)
-			if j.Holding == "" && Holds(caps, mode, keyed) {
-				j.Holding = s.cs.GetName()
+	sql := spec.GetTransform().GetSql() != nil
+	if sql && a == nil {
+		return asked, "", nil
+	}
+	whys := map[string]string{}
+	var inputs []Input
+	for _, s := range selected(spec, cat) {
+		name := s.cs.GetName()
+		keyed := len(s.cs.GetPrimaryKey()) > 0
+		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
+		if sql {
+			inputs = append(inputs, Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps})
+			if !Lands(spec, a, name) {
+				continue
 			}
-			if why := OneWorker(mode, keyed, s.cs.GetSplitsByKey(), read); why != "" {
-				oneWorker = append(oneWorker, &apiv1.PlanWarning{Stream: s.cs.GetName(), Message: fmt.Sprintf(
-					"each attempt reads it on one of its %d workers: %s", asked, why)})
+		}
+		whys[name] = OneWorker(StreamMode(spec, caps, read, keyed), keyed, s.cs.GetSplitsByKey(), read)
+	}
+	if sql {
+		outs, _ := SQLOutputs(spec, caps, a, inputs)
+		for i, st := range a.Statements {
+			if len(st.Inputs) != 1 || whys[st.Inputs[0]] != "" {
+				continue
+			}
+			for _, in := range inputs {
+				if in.Name == st.Inputs[0] {
+					path := StatementPath(statementSource(spec, cat, st), st, outs[i].PrimaryKey, false)
+					whys[in.Name] = oneWorkerOn(outs[i].Mode, path, in.Read)
+				}
 			}
 		}
 	}
-	if why := OnePod(j); why != "" {
-		return 0, why, nil
+	var oneWorker []*apiv1.PlanWarning
+	for _, s := range selected(spec, cat) {
+		if why := whys[s.cs.GetName()]; why != "" {
+			oneWorker = append(oneWorker, &apiv1.PlanWarning{Stream: s.cs.GetName(), Message: fmt.Sprintf(
+				"each attempt reads it on one of its %d workers: %s", asked, why)})
+		}
 	}
 	return asked, "", oneWorker
 }

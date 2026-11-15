@@ -895,24 +895,26 @@ func TestLauncherMakesWorkersPods(t *testing.T) {
 // it again on one pod.
 func TestOnePod(t *testing.T) {
 	api, _, _ := start(t, map[string]Kind{"run": {Handler: func(context.Context, []byte) (any, error) {
-		return nil, fmt.Errorf("activities: %w", &OnePod{Why: "a SQL transform runs on one pod"})
+		return nil, fmt.Errorf("activities: %w", &OnePod{Why: "a Spark or Flink transform runs on one pod"})
 	}}}, resources.XL)
 	w := work("sync/1/1", "run", small, nil)
 	w.Workers = 2
 	api.give(w)
 	eventually(t, "the result", func() bool { return api.result("sync/1/1") != nil })
-	if r := api.result("sync/1/1"); r.GetOnePod() != "a SQL transform runs on one pod" || r.GetCode() != "" || r.GetCancelled() {
+	if r := api.result("sync/1/1"); r.GetOnePod() != "a Spark or Flink transform runs on one pod" || r.GetCode() != "" || r.GetCancelled() {
 		t.Errorf("result %v", r)
 	}
 }
 
 // workerAPI answers a worker pod's polls: its attempt without where to join
-// for the first few, then with it.
+// for the first few, then with where to join in each generation of joins in
+// turn, then without the attempt, which has moved on.
 type workerAPI struct {
 	dataplanev1connect.UnimplementedDataPlaneServiceHandler
 	mu    sync.Mutex
 	polls []*dataplanev1.PollWorkRequest
 	wait  int
+	joins []uint64
 }
 
 func (f *workerAPI) PollWork(_ context.Context, req *connect.Request[dataplanev1.PollWorkRequest]) (*connect.Response[dataplanev1.PollWorkResponse], error) {
@@ -923,26 +925,30 @@ func (f *workerAPI) PollWork(_ context.Context, req *connect.Request[dataplanev1
 		return connect.NewResponse(&dataplanev1.PollWorkResponse{}), nil
 	}
 	w := work("sync/1/1", contract.RunSyncAttempt, small, nil)
-	if len(f.polls) > f.wait {
-		w.Join = &dataplanev1.WorkerTarget{Address: "10.0.0.7:7720", Token: "t", Generation: 4, Worker: req.Msg.GetWorker(), Owner: "r1/abc"}
+	if n := len(f.polls) - f.wait - 1; n >= 0 {
+		if n >= len(f.joins) {
+			return connect.NewResponse(&dataplanev1.PollWorkResponse{}), nil
+		}
+		w.Join = &dataplanev1.WorkerTarget{Address: "10.0.0.7:7720", Token: "t", Generation: f.joins[n], Worker: req.Msg.GetWorker(), Owner: "r1/abc"}
 	}
 	return connect.NewResponse(&dataplanev1.PollWorkResponse{Work: []*dataplanev1.Work{w}}), nil
 }
 
 // A worker's pod waits for its coordinator to say where it joins, runs its
-// part, and stops; or stops at once if the attempt has moved on.
+// part, runs another for each newer generation it's told to join, and stops
+// once the attempt has moved on; or stops at once if it has already.
 func TestPod(t *testing.T) {
-	api := &workerAPI{wait: 3}
+	api := &workerAPI{wait: 3, joins: []uint64{4, 4, 6}}
 	mux := http.NewServeMux()
 	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	var ran *dataplanev1.Work
+	var ran []*dataplanev1.Work
 	pod := &Pod{
 		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), ID: "w1", Attempt: Attempt{ID: "sync/1/1", Placement: 2}, Worker: 1,
 		Every: 5 * time.Millisecond,
 		Run: func(_ context.Context, w *dataplanev1.Work) error {
-			ran = w
+			ran = append(ran, w)
 			return errors.New("the coordinator went away")
 		},
 	}
@@ -951,12 +957,14 @@ func TestPod(t *testing.T) {
 	}
 	p := api.polls[0]
 	switch {
-	case len(api.polls) != 4:
-		t.Errorf("%d polls, want 4", len(api.polls))
+	case len(api.polls) != 7:
+		t.Errorf("%d polls, want 7", len(api.polls))
 	case p.GetAttempt().GetAttempt() != "sync/1/1" || p.GetAttempt().GetPlacement() != 2 || p.Worker == nil || p.GetWorker() != 1:
 		t.Errorf("poll %v", p)
-	case ran.GetJoin().GetOwner() != "r1/abc" || ran.GetJoin().GetWorker() != 1:
+	case len(ran) != 2 || ran[0].GetJoin().GetGeneration() != 4 || ran[1].GetJoin().GetGeneration() != 6:
 		t.Errorf("ran %v", ran)
+	case ran[0].GetJoin().GetOwner() != "r1/abc" || ran[0].GetJoin().GetWorker() != 1:
+		t.Errorf("ran %v", ran[0])
 	}
 
 	gone := &Pod{API: pod.API, ID: "w2", Attempt: Attempt{ID: "gone", Placement: 1}, Every: 5 * time.Millisecond,

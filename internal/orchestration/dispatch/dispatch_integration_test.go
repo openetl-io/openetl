@@ -1294,7 +1294,7 @@ func TestAttemptOnWorkers(t *testing.T) {
 		t.Fatal("a worker of another placement got the attempt")
 	}
 
-	if ok, err := f.d.OnePod(ctx, f.org, "default", "coordinator", "first", "a SQL transform runs on one pod"); err != nil || !ok {
+	if ok, err := f.d.OnePod(ctx, f.org, "default", "coordinator", "first", "a Spark or Flink transform runs on one pod"); err != nil || !ok {
 		t.Fatalf("one pod: %v (%v)", ok, err)
 	}
 	if w, _, _ := f.d.WorkerAttempt(ctx, f.org, "default", "first", 1, 0); w != nil {

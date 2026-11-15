@@ -11,7 +11,7 @@
 //! Parquet or staged sink, which stages each epoch and reports it in
 //! EpochReady.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -44,6 +44,7 @@ use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
 use crate::plan::{Exchange, InputPlan, Plan, Sink};
+use crate::remote::{Holding, RemoteStream};
 use crate::replay::Replayer;
 use crate::stage::{Applied, Stage, pushed_rows};
 use crate::staging::Staging;
@@ -213,21 +214,116 @@ fn shaper(plan: &Plan, s: usize, restored: Option<SchemaRef>) -> Result<Shaper, 
     .with_changelog(plan.changelog[s]))
 }
 
+/// Stream s's shaper as its owner has it, from `schema`, holding whole the
+/// plan's columns, or where the remote owner says, its `holding`.
+fn owned_shaper(
+    plan: &Plan,
+    s: usize,
+    schema: Option<SchemaRef>,
+    holding: Option<&[ColumnHold]>,
+) -> Result<Shaper, JobError> {
+    let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
+    // The columns the stream added since it was restored that the
+    // destination takes: not those held whole that it has no field of, as a
+    // column added while held isn't counted where it's added.
+    let restored = plan.restored[s].as_ref();
+    let added = schema.as_ref().map_or(0, |sch| {
+        sch.fields()
+            .iter()
+            .filter(|f| {
+                !f.name().starts_with("_openetl_")
+                    && restored.is_none_or(|r| r.field_with_name(f.name()).is_err())
+                    && !holding.is_some_and(|h| {
+                        h.iter()
+                            .any(|c| &c.column == f.name() && c.delivered.is_empty())
+                    })
+            })
+            .count()
+    });
+    let has = |column: &str| {
+        schema
+            .as_ref()
+            .is_some_and(|sch| sch.field_with_name(column).is_ok())
+    };
+    let config = match (&plan.holds[s], holding) {
+        (Some(h), Some(holding)) => {
+            let mut config = h.clone();
+            let owned = crate::plan::column_holds(&plan.streams[s], holding)?;
+            // A column the plan holds that the owner's version hasn't got
+            // is one no batch has carried yet, so its hold goes on; the
+            // owner's version names only the holds it has seen. Of a column
+            // it has, its word wins: unheld there, it was let go.
+            let pending: Vec<_> = h
+                .holding
+                .iter()
+                .filter(|c| !owned.iter().any(|o| o.column == c.column) && !has(&c.column))
+                .cloned()
+                .collect();
+            config.holding = owned;
+            config.holding.extend(pending);
+            // Columns the stream added since it was restored count toward
+            // what the destination's table takes.
+            config.limits.columns += added;
+            Some(config)
+        }
+        (h, _) => h.clone(),
+    };
+    let mut shaper = shaper(plan, s, schema)?;
+    if let Some(config) = config {
+        shaper = shaper.with_holds(config).map_err(bad)?;
+    }
+    if let (Some(r), Some(_)) = (&plan.replays[s], &plan.held_url) {
+        // Patches go out at the types the destination will have. Once a
+        // released column has its version, this only finds it again.
+        shaper
+            .version(&r.versioned)
+            .and_then(|_| shaper.declare())
+            .map_err(|e| shape_error(&plan.streams[s], e))?;
+    }
+    shaper.take_changed();
+    Ok(shaper)
+}
+
+/// What a change to stream s holds beside its schema, for its remote
+/// owner: the columns held whole and the schema the destination gets.
+fn holding_of(plan: &Plan, s: usize, shaper: &Shaper) -> Result<Holding, JobError> {
+    if plan.holds[s].is_none() {
+        return Ok(Holding::default());
+    }
+    let delivered = match shaper.delivered() {
+        Some(d) => ipc::encode_schema(&d).map_err(|e| JobError::internal(e.to_string()))?,
+        None => Vec::new(),
+    };
+    Ok(Holding {
+        columns: column_holds(shaper)?,
+        delivered,
+    })
+}
+
+/// The columns a shaper holds whole, as the protocol carries them.
+fn column_holds(shaper: &Shaper) -> Result<Vec<ColumnHold>, JobError> {
+    let schema = shaper.schema();
+    let mut holding = Vec::new();
+    for h in shaper.holding() {
+        let delivered = match &h.delivered {
+            Some(f) => ipc::encode_schema(&Arc::new(arrow_schema::Schema::new(vec![f.clone()])))
+                .map_err(|e| JobError::internal(e.to_string()))?,
+            None => Vec::new(),
+        };
+        let cause = cause(&h, schema.as_ref());
+        holding.push(ColumnHold {
+            column: h.column,
+            delivered,
+            reason: h.reason,
+            cause: Some(cause),
+        });
+    }
+    Ok(holding)
+}
+
 impl Owner {
     fn new(plan: &Plan, s: usize) -> Result<Self, JobError> {
-        let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
-        let mut shaper = shaper(plan, s, plan.restored[s].clone())?;
-        if let Some(h) = &plan.holds[s] {
-            shaper = shaper.with_holds(h.clone()).map_err(bad)?;
-        }
-        if let (Some(r), Some(_)) = (&plan.replays[s], &plan.held_url) {
-            // Patches go out at the types the destination will have.
-            shaper
-                .version(&r.versioned)
-                .and_then(|_| shaper.declare())
-                .map_err(|e| shape_error(&plan.streams[s], e))?;
-        }
-        shaper.take_changed();
+        let shaper = owned_shaper(plan, s, plan.restored[s].clone(), None)?;
         Ok(Self {
             version: AtomicU64::new(0),
             remote_version: AtomicU64::new(0),
@@ -246,9 +342,9 @@ impl Owner {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Takes the remote owner's newest schema of stream s, if the plan's
-    /// schemas are remote and it's newer than the shaper's: lanes then shape
-    /// by it. The schema policy applies as it did.
+    /// Takes the remote owner's newest schema of stream s, and what it holds,
+    /// if the plan's schemas are remote and it's newer than the shaper's:
+    /// lanes then shape by it. The schema policy applies as it did.
     fn follow(&self, plan: &Plan, s: usize) -> Result<(), JobError> {
         let Some(r) = plan.remote.as_ref().and_then(|r| r.stream(s)) else {
             return Ok(());
@@ -258,11 +354,12 @@ impl Owner {
             return Ok(());
         }
         let mut o = self.lock();
-        let (v, schema) = r.latest();
+        let owned = r.latest();
+        let v = owned.version;
         if v <= o.remote_version {
             return Ok(());
         }
-        let mut sh = shaper(plan, s, schema)?;
+        let mut sh = owned_shaper(plan, s, owned.schema, Some(&owned.holding))?;
         if !o.shaper.sealed() {
             sh.unseal();
         }
@@ -397,32 +494,40 @@ impl InputOwner {
     }
 
     /// A lane typed a batch at `schema`: columns it adds join the stream's,
-    /// and a type that holds the stream's replaces it.
-    fn observe(&self, schema: &SchemaRef) {
-        let mut st = self.lock();
-        let Some(old) = &st.schema else {
-            st.schema = Some(schema.clone());
-            return;
-        };
-        let mut fields: Vec<arrow_schema::Field> = Vec::with_capacity(old.fields().len());
-        let mut changed = false;
-        for f in old.fields() {
-            match schema.field_with_name(f.name()) {
-                Ok(g) if g.data_type() != f.data_type() && !widens(g, f) => {
-                    fields.push(g.clone());
-                    changed = true;
-                }
-                _ => fields.push(f.as_ref().clone()),
+    /// and a type that holds the stream's replaces it. Where the stream's
+    /// schema is remote, it's proposed to the remote owner until the owner's
+    /// holds what the engine saw.
+    async fn observe(
+        &self,
+        remote: Option<&RemoteStream>,
+        schema: &SchemaRef,
+    ) -> Result<(), JobError> {
+        loop {
+            let (base, wanted) = {
+                let mut st = self.lock();
+                let seen = match &st.schema {
+                    Some(old) => joined(old, schema).unwrap_or_else(|| old.clone()),
+                    None => schema.clone(),
+                };
+                st.schema = Some(seen.clone());
+                let Some(r) = remote else { return Ok(()) };
+                r.check()?;
+                let owned = r.latest();
+                let wanted = match &owned.schema {
+                    Some(theirs) => match joined(theirs, &seen) {
+                        Some(w) => w,
+                        None => {
+                            st.schema = Some(theirs.clone());
+                            return Ok(());
+                        }
+                    },
+                    None => seen,
+                };
+                (owned.version, wanted)
+            };
+            if let Some(r) = remote {
+                r.propose(base, &wanted, Holding::default()).await?;
             }
-        }
-        for g in schema.fields() {
-            if old.field_with_name(g.name()).is_err() {
-                fields.push(g.as_ref().clone());
-                changed = true;
-            }
-        }
-        if changed {
-            st.schema = Some(Arc::new(arrow_schema::Schema::new(fields)));
         }
     }
 
@@ -458,6 +563,57 @@ impl InputOwner {
             _ => (st.at_end.clone().or(st.schema.clone()), Vec::new()),
         }
     }
+}
+
+/// `old` with what `new` adds to it: its new columns, its types that hold
+/// `old`'s, and its schema metadata, the columns that held integers past
+/// ±2^53 as the union of both's; None if it adds nothing.
+fn joined(old: &SchemaRef, new: &SchemaRef) -> Option<SchemaRef> {
+    let mut fields: Vec<arrow_schema::Field> = Vec::with_capacity(old.fields().len());
+    let mut changed = false;
+    for f in old.fields() {
+        match new.field_with_name(f.name()) {
+            Ok(g) if g.data_type() != f.data_type() && !widens(g, f) => {
+                fields.push(g.clone());
+                changed = true;
+            }
+            _ => fields.push(f.as_ref().clone()),
+        }
+    }
+    for g in new.fields() {
+        if old.field_with_name(g.name()).is_err() {
+            fields.push(g.as_ref().clone());
+            changed = true;
+        }
+    }
+    let mut metadata = old.metadata().clone();
+    for (k, v) in new.metadata() {
+        match metadata.get(k) {
+            None => {
+                metadata.insert(k.clone(), v.clone());
+                changed = true;
+            }
+            Some(was) if k == openetl_normalize::BIG_INTS_KEY && was != v => {
+                let names =
+                    |s: &str| serde_json::from_str::<BTreeSet<String>>(s).unwrap_or_default();
+                let (was, both) = (
+                    names(was),
+                    names(was)
+                        .union(&names(v))
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                );
+                if both != was
+                    && let Ok(v) = serde_json::to_string(&both)
+                {
+                    metadata.insert(k.clone(), v);
+                    changed = true;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    changed.then(|| Arc::new(arrow_schema::Schema::new_with_metadata(fields, metadata)))
 }
 
 /// What every lane and writer lane of a job share.
@@ -710,26 +866,26 @@ impl LaneStream {
     }
 
     /// As shape, where the plan's schemas may be remote: a change to the
-    /// schema is proposed to the remote owner from the version the owner
-    /// follows, and once a newer version comes, the batch is shaped again by
-    /// it. So is a change to what the schema's metadata knows of the
-    /// values, such as a column that held integers past ±2^53, which a later
-    /// float in it, here or in another engine, turns to text. A change that
-    /// leaves the schema as it is is published here.
+    /// schema, to what its metadata knows of the values, such as a column
+    /// that held integers past ±2^53, which a later float in it, here or in
+    /// another engine, turns to text, or to the columns held whole, is
+    /// proposed to the remote owner from the version the owner follows, and
+    /// once a newer version comes, the batch is shaped again by it. A change
+    /// that leaves those as they are is published here. `fail` says why a
+    /// batch couldn't be shaped.
     async fn shape_own(
         &mut self,
         plan: &Plan,
         owner: &Owner,
         f: impl Fn(&mut Shaper) -> Result<Typed, NormalizeError>,
+        fail: impl Fn(&Shaper, NormalizeError) -> JobError,
     ) -> Result<Shaped, JobError> {
-        let name = &plan.streams[self.stream];
         let Some(remote) = plan.remote.as_ref().and_then(|r| r.stream(self.stream)) else {
-            return self.shape(owner, f).map_err(|e| shape_error(name, e));
+            return self.shape(owner, f).map_err(|e| fail(&self.shaper, e));
         };
         loop {
             owner.follow(plan, self.stream)?;
             self.catch_up(owner);
-            let before = self.shaper.schema();
             let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(t));
             let changed = self.shaper.take_changed();
             if out.is_err() {
@@ -737,38 +893,32 @@ impl LaneStream {
                 // batch fits: it's shaped again by that.
                 let behind = remote.newest() > owner.remote_version.load(Ordering::Acquire);
                 if owner.version.load(Ordering::Acquire) == self.version && !behind {
-                    return out.map_err(|e| shape_error(name, e));
+                    return out.map_err(|e| fail(&self.shaper, e));
                 }
                 continue;
             }
-            let schema = self.shaper.schema();
-            // The shaper gives a new schema only when something in it changed.
-            let renewed = match (&before, &schema) {
-                (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
-                (a, b) => a.is_some() != b.is_some(),
-            };
-            if !changed && !renewed {
-                return out.map_err(|e| shape_error(name, e));
+            if !changed {
+                return out.map_err(|e| fail(&self.shaper, e));
             }
+            let schema = self.shaper.schema();
             let base = {
                 let mut o = owner.lock();
                 if o.version != self.version {
                     continue;
                 }
-                if o.shaper.schema() == schema {
-                    if changed {
-                        o.version += 1;
-                        self.version = o.version;
-                        o.shaper = self.shaper.fork();
-                        owner.version.store(o.version, Ordering::Release);
-                    }
-                    return out.map_err(|e| shape_error(name, e));
+                if o.shaper.schema() == schema && o.shaper.holding() == self.shaper.holding() {
+                    o.version += 1;
+                    self.version = o.version;
+                    o.shaper = self.shaper.fork();
+                    owner.version.store(o.version, Ordering::Release);
+                    return out.map_err(|e| fail(&self.shaper, e));
                 }
                 o.remote_version
             };
             drop(out);
             if let Some(schema) = schema {
-                remote.propose(base, &schema).await?;
+                let holding = holding_of(plan, self.stream, &self.shaper)?;
+                remote.propose(base, &schema, holding).await?;
             }
         }
     }
@@ -895,9 +1045,13 @@ where
     let flow = lane.flow.clone();
     let plan = &flow.plan;
     let id = &plan.inbound[lane.lane].id;
-    // Lane 0 replays a stream's released holds.
+    // The attempt's lane 0 replays a stream's released holds.
     let lane_stream = |s: usize| -> Result<LaneStream, JobError> {
-        let replay = match (lane.lane, &plan.replays[s], &plan.held_url) {
+        let replay = match (
+            plan.first_lane + lane.lane,
+            &plan.replays[s],
+            &plan.held_url,
+        ) {
             (0, Some(r), Some(url)) => Some(Replayer::open(url, r.clone())?),
             _ => None,
         };
@@ -995,9 +1149,12 @@ where
                     Kind::Own(ls) => {
                         let owner = &flow.owners[input];
                         let n = ls
-                            .shape_own(plan, owner, |sh| {
-                                sh.type_rows(rows.rows.iter().map(Vec::as_slice))
-                            })
+                            .shape_own(
+                                plan,
+                                owner,
+                                |sh| sh.type_rows(rows.rows.iter().map(Vec::as_slice)),
+                                |_, e| shape_error(name, e),
+                            )
                             .instrument(span)
                             .await?;
                         hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
@@ -1030,7 +1187,12 @@ where
                     Kind::Own(ls) => {
                         let owner = &flow.owners[input];
                         let n = ls
-                            .shape_own(plan, owner, |sh| sh.type_batch(&batch))
+                            .shape_own(
+                                plan,
+                                owner,
+                                |sh| sh.type_batch(&batch),
+                                |_, e| shape_error(name, e),
+                            )
                             .instrument(span)
                             .await?;
                         hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
@@ -1243,7 +1405,8 @@ async fn transform(
         .as_ref()
         .is_none_or(|s| !Arc::ptr_eq(s, &schema) && **s != *schema)
     {
-        flow.inputs[t.input].observe(&schema);
+        let remote = plan.remote.as_ref().and_then(|r| r.input(t.input));
+        flow.inputs[t.input].observe(remote, &schema).await?;
         t.seen = Some(schema);
     }
     let pushed = pushed_rows(&typed);
@@ -1258,25 +1421,40 @@ async fn transform(
             .map(|(row, reason)| Rejected { row, reason })
             .collect();
         hold(plan, name, &failed, record, &mut ls.quarantined, oc)?;
-        let mut n = ls.shape(&flow.owners[s], |_| Ok(copy(&out))).map_err(|e| {
-            let drift = matches!(e, NormalizeError::Drift(_));
-            let err = shape_error(name, e);
-            match stage.planned() {
-                Some(st) if drift => {
-                    statement_drift(st, &ls.shaper.live(), &out.batch.schema(), err)
-                }
-                _ => err,
-            }
-        })?;
+        let planned = stage.planned();
+        let mut n = ls
+            .shape_own(
+                plan,
+                &flow.owners[s],
+                |_| Ok(copy(&out)),
+                |shaper, e| {
+                    let drift = matches!(e, NormalizeError::Drift(_));
+                    let err = shape_error(name, e);
+                    match planned {
+                        Some(st) if drift => {
+                            statement_drift(st, &shaper.live(), &out.batch.schema(), err)
+                        }
+                        _ => err,
+                    }
+                },
+            )
+            .await?;
         // A delete whose values don't fit the output goes again with its
         // key alone, after the batch: its seq orders it among its key's.
+        // Where the schema is remote, the owner may have a newer version by
+        // then, which shapes it.
         let (rejected, keys) = stage.deletes_by_key(&out, std::mem::take(&mut n.rejected))?;
         hold(plan, name, &rejected, record, &mut ls.quarantined, oc)?;
         shaped(lane, ls, n, oc).await?;
         if let Some(keys) = keys {
             let n = ls
-                .shape(&flow.owners[s], |_| Ok(copy(&keys)))
-                .map_err(|e| shape_error(name, e))?;
+                .shape_own(
+                    plan,
+                    &flow.owners[s],
+                    |_| Ok(copy(&keys)),
+                    |_, e| shape_error(name, e),
+                )
+                .await?;
             hold(plan, name, &n.rejected, record, &mut ls.quarantined, oc)?;
             shaped(lane, ls, n, oc).await?;
         }
@@ -1407,25 +1585,8 @@ fn at(plan: &Plan, stream: usize, shaper: &Shaper) -> Result<At, JobError> {
         holds: None,
     };
     if plan.holds[stream].is_some() {
-        let mut holding = Vec::new();
-        for h in shaper.holding() {
-            let delivered = match &h.delivered {
-                Some(f) => {
-                    ipc::encode_schema(&Arc::new(arrow_schema::Schema::new(vec![f.clone()])))
-                        .map_err(|e| JobError::internal(e.to_string()))?
-                }
-                None => Vec::new(),
-            };
-            let cause = cause(&h, at.schema.as_ref());
-            holding.push(ColumnHold {
-                column: h.column,
-                delivered,
-                reason: h.reason,
-                cause: Some(cause),
-            });
-        }
         at.holds = Some(StreamHolds {
-            holding,
+            holding: column_holds(shaper)?,
             cells: HashMap::new(),
             files: Vec::new(),
             replayed: None,
@@ -1862,8 +2023,8 @@ where
             plan.generation,
             plan.first_epoch,
             &plan.streams,
-            writer,
-            plan.writer_lanes,
+            plan.first_writer_lane + writer,
+            plan.attempt_writer_lanes,
         )?),
         None => None,
     };
@@ -2183,6 +2344,50 @@ mod tests {
 
     fn start_with(req: openetl_proto::engine::v1::StartJobRequest) -> Harness {
         let plan = Arc::new(Plan::from_request(req).unwrap());
+        let (to_engine, engine_in) = duplex(1 << 16);
+        let (engine_out, from_engine) = duplex(1 << 16);
+        let (tx, events) = mpsc::channel(64);
+        let job = tokio::spawn(run(
+            plan,
+            vec![BufReader::new(engine_in)],
+            vec![engine_out],
+            tx,
+        ));
+        Harness {
+            to_engine,
+            from_engine: BufReader::new(from_engine),
+            events,
+            job,
+        }
+    }
+
+    /// As start_with; where the request's schemas are remote, with an owner
+    /// outside the engine that takes each proposal made from the version it
+    /// holds, and answers one from an older version with that version.
+    fn start_owned(req: openetl_proto::engine::v1::StartJobRequest) -> Harness {
+        let remote = req.remote_schemas;
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        if remote {
+            let owner = plan.remote.clone().unwrap();
+            let mut proposals = owner.take_proposals().unwrap();
+            tokio::spawn(async move {
+                let mut held: HashMap<(bool, u32), openetl_proto::engine::v1::SchemasRequest> =
+                    HashMap::new();
+                while let Some(Ok(p)) = proposals.recv().await {
+                    let v = held.entry((p.input, p.stream)).or_default();
+                    if p.base == v.version {
+                        *v = openetl_proto::engine::v1::SchemasRequest {
+                            stream: p.stream,
+                            input: p.input,
+                            version: p.base + 1,
+                            arrow_schema: p.arrow_schema,
+                            holding: p.holding,
+                        };
+                    }
+                    owner.update(v).unwrap();
+                }
+            });
+        }
         let (to_engine, engine_in) = duplex(1 << 16);
         let (engine_out, from_engine) = duplex(1 << 16);
         let (tx, events) = mpsc::channel(64);
@@ -2533,6 +2738,41 @@ mod tests {
         assert_eq!(shapes, [full.clone(), full]);
     }
 
+    // A column that held integers past ±2^53 on one lane changes no type,
+    // but the stream's owner learns of it, so a float in it on another lane
+    // makes it text, as on one lane.
+    #[tokio::test]
+    async fn lanes_share_what_they_saw_of_big_integers() {
+        let mut h = start_lanes(crate::plan::tests::lanes_request(&["a"], 2, 2));
+        let column = |f: &frame::Frame| {
+            let b = ipc::decode_batch(f.payload.clone()).unwrap();
+            b.schema().field_with_name("x").unwrap().data_type().clone()
+        };
+        let next = async |r: &mut BufReader<DuplexStream>| loop {
+            let f = frame::read(r).await.unwrap().unwrap();
+            if f.kind == FrameKind::Batch {
+                break column(&f);
+            }
+        };
+        for (lane, row) in [
+            (0, r#"{"x": 1}"#),
+            (0, r#"{"x": 9007199254740993}"#),
+            (1, r#"{"x": 1.5}"#),
+        ] {
+            put(&mut h.ins[lane], FrameKind::Rows, 0, rows(&[row])).await;
+            let t = next(&mut h.outs[lane]).await;
+            if lane == 1 {
+                assert_eq!(t, DataType::Utf8, "a float after big integers");
+            }
+        }
+        for w in &mut h.ins {
+            put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        }
+        h.end_all(1).await;
+        let (_, ready) = h.finish().await;
+        assert_eq!(schema_types(&ready[0])[0].1[0], DataType::Utf8);
+    }
+
     #[tokio::test]
     async fn the_schema_policy_starts_once_every_lane_has_passed_the_barrier() {
         let mut req = crate::plan::tests::lanes_request(&["a"], 2, 2);
@@ -2611,6 +2851,170 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A request for stream a, keyed by id, whose plan holds x, a column
+    /// the destination refused, which no batch has carried yet.
+    fn pending_hold_request(dir: &std::path::Path) -> openetl_proto::engine::v1::StartJobRequest {
+        use openetl_proto::engine::v1::{ColumnHold as Hold, HoldCause, HoldPlan, hold_cause};
+        let mut req = request(&["a"]);
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].holds = Some(HoldPlan {
+            holding: vec![Hold {
+                column: "x".into(),
+                reason: "the destination refused it".into(),
+                cause: Some(HoldCause {
+                    kind: hold_cause::Kind::Refused as i32,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        req.held_url = format!("file://{}", dir.display());
+        req
+    }
+
+    // Where the schema is remote, a hold the plan gives a column no batch
+    // has carried yet outlives the owner's versions that don't name it: the
+    // engine follows its own change, then holds x as it first comes.
+    #[tokio::test]
+    async fn a_pending_hold_outlives_the_owners_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = pending_hold_request(dir.path());
+        req.remote_schemas = true;
+        let mut h = start_owned(req);
+        let w = &mut h.to_engine;
+        put(w, FrameKind::Rows, 0, rows(&[r#"{"id": 1, "a": 1}"#])).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 2, "a": 2, "x": 5}"#]),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        let b = batches(&frames, 0);
+        let last = b.last().unwrap();
+        assert!(
+            last.schema().field_with_name("x").is_err(),
+            "x was delivered: {:?}",
+            last.schema()
+        );
+        let held = last
+            .column_by_name(openetl_normalize::hold::HELD_COLUMN)
+            .unwrap();
+        assert!(
+            openetl_normalize::render_row(last, 0).contains("x"),
+            "{held:?}"
+        );
+    }
+
+    // A rebuild from the owner's version keeps a planned hold of a column
+    // the version hasn't got, and drops one of a column it has, unheld: the
+    // owner's word for a column it knows wins over the plan's.
+    #[test]
+    fn a_rebuild_keeps_planned_holds_only_of_columns_the_owner_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = Plan::from_request(pending_hold_request(dir.path())).unwrap();
+        let held = |sh: &Shaper, c: &str| sh.holding().iter().any(|h| h.column == c);
+        let mut first = owned_shaper(&plan, 0, None, None).unwrap();
+        first.rows([br#"{"id": 1, "a": 1}"#.as_slice()]).unwrap();
+        let lacking = owned_shaper(&plan, 0, first.schema(), Some(&[])).unwrap();
+        let mut lacking = lacking;
+        lacking
+            .rows([br#"{"id": 2, "a": 2, "x": 5}"#.as_slice()])
+            .unwrap();
+        assert!(held(&lacking, "x"), "{:?}", lacking.holding());
+        // An owner whose version has x, unheld, as after a release.
+        let mut known = owned_shaper(&plan, 0, None, None).unwrap();
+        known.rows([br#"{"id": 1, "a": 1}"#.as_slice()]).unwrap();
+        let unheld = {
+            let mut free = shaper(&plan, 0, known.schema()).unwrap();
+            free.rows([br#"{"id": 3, "a": 3, "x": 1}"#.as_slice()])
+                .unwrap();
+            free.schema()
+        };
+        let mut rebuilt = owned_shaper(&plan, 0, unheld, Some(&[])).unwrap();
+        rebuilt
+            .rows([br#"{"id": 4, "a": 4, "x": 6}"#.as_slice()])
+            .unwrap();
+        assert!(!held(&rebuilt, "x"), "{:?}", rebuilt.holding());
+    }
+
+    // A shaper rebuilt from the remote owner's version counts against the
+    // destination's room only the columns it takes, as the shaper that
+    // added them did: not a new column held whole.
+    #[test]
+    fn a_followed_shaper_counts_only_the_columns_the_destination_takes() {
+        use openetl_proto::engine::v1::{ColumnHold as Hold, HoldCause, HoldPlan, hold_cause};
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = request(&["a"]);
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].holds = Some(HoldPlan {
+            holding: vec![Hold {
+                column: "x".into(),
+                reason: "the destination refused it".into(),
+                cause: Some(HoldCause {
+                    kind: hold_cause::Kind::Refused as i32,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            limits: Some(openetl_proto::connector::v1::TableLimits {
+                max_columns: 3,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        req.held_url = format!("file://{}", dir.path().display());
+        let plan = Plan::from_request(req).unwrap();
+        let held = |sh: &Shaper, c: &str| sh.holding().iter().any(|h| h.column == c);
+        // Here x is held as it arrives, and takes none of the table's room.
+        let mut here = owned_shaper(&plan, 0, None, None).unwrap();
+        here.rows([br#"{"id": 1, "a": 1, "x": 1}"#.as_slice()])
+            .unwrap();
+        assert!(held(&here, "x"));
+        // An engine following it has room for y too.
+        let holding = column_holds(&here).unwrap();
+        let mut there = owned_shaper(&plan, 0, here.schema(), Some(&holding)).unwrap();
+        there
+            .rows([br#"{"id": 2, "a": 2, "x": 2, "y": 2}"#.as_slice()])
+            .unwrap();
+        assert!(!held(&there, "y"), "{:?}", there.holding());
+    }
+
+    // A join of a transform's input schemas keeps what either knew of the
+    // columns that held integers past ±2^53, which alone is a change.
+    #[test]
+    fn a_join_keeps_what_both_knew_of_big_integers() {
+        let schema = |big: &[&str]| -> SchemaRef {
+            let mut md = HashMap::new();
+            if !big.is_empty() {
+                md.insert(
+                    openetl_normalize::BIG_INTS_KEY.to_owned(),
+                    serde_json::to_string(big).unwrap(),
+                );
+            }
+            let fields = vec![
+                arrow_schema::Field::new("x", DataType::Int64, true),
+                arrow_schema::Field::new("y", DataType::Int64, true),
+            ];
+            Arc::new(arrow_schema::Schema::new_with_metadata(fields, md))
+        };
+        let big = |s: &SchemaRef| s.metadata().get(openetl_normalize::BIG_INTS_KEY).cloned();
+        assert!(joined(&schema(&[]), &schema(&[])).is_none());
+        assert!(joined(&schema(&["x"]), &schema(&[])).is_none());
+        assert!(joined(&schema(&["x"]), &schema(&["x"])).is_none());
+        let got = joined(&schema(&[]), &schema(&["x"])).unwrap();
+        assert_eq!(big(&got).as_deref(), Some(r#"["x"]"#));
+        let got = joined(&schema(&["y"]), &schema(&["x"])).unwrap();
+        assert_eq!(big(&got).as_deref(), Some(r#"["x","y"]"#));
     }
 
     #[test]
@@ -2708,6 +3112,7 @@ mod tests {
             stream: 0,
             version,
             arrow_schema: schema,
+            ..Default::default()
         }
     }
 
@@ -2791,6 +3196,68 @@ mod tests {
         job.await.unwrap().unwrap();
     }
 
+    // With a transform, a stream a statement reads has versions apart from
+    // the destination's streams: a column a lane types first is proposed as
+    // the input's, the statement's output as the output's, and the batch
+    // goes out once the owner has taken both.
+    #[tokio::test]
+    async fn a_transform_proposes_its_inputs_apart_from_its_outputs() {
+        let mut req = crate::plan::tests::transform_request();
+        req.remote_schemas = true;
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let remote = plan.remote.clone().unwrap();
+        let mut proposals = remote.take_proposals().unwrap();
+        let (mut w, engine_in) = duplex(1 << 16);
+        let (engine_out, from_engine) = duplex(1 << 16);
+        let (tx, _events) = mpsc::channel(64);
+        let job = tokio::spawn(run(
+            plan,
+            vec![BufReader::new(engine_in)],
+            vec![engine_out],
+            tx,
+        ));
+        let mut out = BufReader::new(from_engine);
+        put(
+            &mut w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 1, "email": "A", "extra": 2}"#]),
+        )
+        .await;
+        let taken = |p: &openetl_proto::engine::v1::SchemasResponse| {
+            openetl_proto::engine::v1::SchemasRequest {
+                stream: p.stream,
+                input: p.input,
+                version: p.base + 1,
+                arrow_schema: p.arrow_schema.clone(),
+                holding: p.holding.clone(),
+            }
+        };
+        let input = proposals.recv().await.unwrap().unwrap();
+        assert_eq!((input.stream, input.input, input.base), (0, true, 0));
+        assert_eq!(field_names(&input.arrow_schema), ["id", "email", "extra"]);
+        remote.update(&taken(&input)).unwrap();
+        let output = proposals.recv().await.unwrap().unwrap();
+        assert_eq!((output.stream, output.input, output.base), (0, false, 0));
+        let names = field_names(&output.arrow_schema);
+        assert!(names.contains(&"email".to_string()) && !names.contains(&"extra".to_string()));
+        remote.update(&taken(&output)).unwrap();
+        // The outbound edge carries c, b and a.
+        loop {
+            let f = frame::read(&mut out).await.unwrap().unwrap();
+            if f.kind == FrameKind::Batch && f.stream == 2 {
+                break;
+            }
+        }
+        assert!(proposals.try_recv().is_err());
+        for s in 0..2 {
+            put(&mut w, FrameKind::EndOfStream, s, vec![]).await;
+        }
+        w.shutdown().await.unwrap();
+        drain(&mut out).await;
+        job.await.unwrap().unwrap();
+    }
+
     // A schemas call that fails releases the lane waiting for its proposal's
     // answer, which fails the job with why.
     #[tokio::test]
@@ -2863,12 +3330,17 @@ mod tests {
         // batch.
         let landed = AtomicBool::new(false);
         let shaped = ls
-            .shape_own(&plan, &owner, |sh| {
-                if !landed.swap(true, Ordering::SeqCst) {
-                    remote.update(&take(1, v1.clone())).unwrap();
-                }
-                sh.type_rows(rows)
-            })
+            .shape_own(
+                &plan,
+                &owner,
+                |sh| {
+                    if !landed.swap(true, Ordering::SeqCst) {
+                        remote.update(&take(1, v1.clone())).unwrap();
+                    }
+                    sh.type_rows(rows)
+                },
+                |_, e| shape_error("a", e),
+            )
             .await
             .unwrap();
         assert!(shaped.batch.schema().field_with_name("y").is_ok());
@@ -3888,6 +4360,7 @@ mod tests {
     /// the output.
     async fn a_delete_whose_n_doesnt_fit(
         holds: bool,
+        remote: bool,
         dir: &std::path::Path,
     ) -> (Vec<frame::Frame>, Vec<EpochReady>) {
         use arrow_array::{Float64Array, Int64Array};
@@ -3903,7 +4376,8 @@ mod tests {
                 ..Default::default()
             });
         }
-        let mut h = start_with(req);
+        req.remote_schemas = remote;
+        let mut h = start_owned(req);
         let w = &mut h.to_engine;
         let ints = Arc::new(Int64Array::from(vec![1]));
         put(
@@ -3938,7 +4412,7 @@ mod tests {
     #[tokio::test]
     async fn a_delete_whose_values_dont_fit_the_output_passes_with_them_held() {
         let dir = tempfile::tempdir().unwrap();
-        let (frames, ready) = a_delete_whose_n_doesnt_fit(true, dir.path()).await;
+        let (frames, ready) = a_delete_whose_n_doesnt_fit(true, false, dir.path()).await;
         let a = batches(&frames, 0);
         let ops: Vec<Option<String>> = a
             .iter()
@@ -3958,23 +4432,30 @@ mod tests {
 
     /// Without holds, a delete whose projected values don't fit the
     /// output's established types passes as a delete of its key, where an
-    /// update is quarantined.
+    /// update is quarantined; where the output's schema has an owner outside
+    /// the engine too.
     #[tokio::test]
     async fn a_delete_whose_values_dont_fit_the_output_passes_with_its_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let (frames, ready) = a_delete_whose_n_doesnt_fit(false, dir.path()).await;
-        let a = batches(&frames, 0);
-        let ops: Vec<Option<String>> = a
-            .iter()
-            .flat_map(|b| column_strings(b, "_openetl_op"))
-            .collect();
-        assert_eq!(ops, [Some("insert".into()), Some("delete".into())]);
-        let last = a.last().unwrap();
-        assert_eq!(column_ints(last, "id"), [Some(1)]);
-        assert_eq!(column_ints(last, "n"), [None]);
-        assert_eq!(column_ints(last, "_openetl_seq"), [Some(2)]);
-        let q = &ready[1].quarantine;
-        assert_eq!((q.len(), q[0].rows), (1, 1), "{q:?}");
+        for remote in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (frames, ready) = a_delete_whose_n_doesnt_fit(false, remote, dir.path()).await;
+            let a = batches(&frames, 0);
+            let ops: Vec<Option<String>> = a
+                .iter()
+                .flat_map(|b| column_strings(b, "_openetl_op"))
+                .collect();
+            assert_eq!(
+                ops,
+                [Some("insert".into()), Some("delete".into())],
+                "remote {remote}"
+            );
+            let last = a.last().unwrap();
+            assert_eq!(column_ints(last, "id"), [Some(1)]);
+            assert_eq!(column_ints(last, "n"), [None]);
+            assert_eq!(column_ints(last, "_openetl_seq"), [Some(2)]);
+            let q = &ready[1].quarantine;
+            assert_eq!((q.len(), q[0].rows), (1, 1), "remote {remote}: {q:?}");
+        }
     }
 
     /// Across writer lanes, a delete that goes again with its key alone

@@ -17,6 +17,7 @@ import (
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/ints"
+	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
@@ -103,23 +104,11 @@ func (r *Ready) Files() map[string][]destination.StagedFile {
 	return out
 }
 
-// ReadyHolds are a stream's holds at its barrier.
-type ReadyHolds struct {
-	// Every column held whole, without Since.
-	Holding []checkpoint.ColumnHold
-	// The epoch's held cells by column, without Since.
-	Cells map[string]checkpoint.CellHold
-	// Below Plan.HeldURL.
-	Files []destination.StagedFile
-	// Nil without a replay.
-	Replayed *ReplayProgress
-}
+// ReadyHolds are a stream's holds at its barrier, as a worker's share of
+// an epoch carries them too.
+type ReadyHolds = attempt.Holds
 
-type ReplayProgress struct {
-	File           int
-	Row, StillHeld uint64
-	Done           bool
-}
+type ReplayProgress = attempt.ReplayProgress
 
 // Plan is what a dataflow needs to know about one attempt.
 type Plan struct {
@@ -175,27 +164,52 @@ type Plan struct {
 	// that runs the attempt with others'; nil: the dataflow decides.
 	SchemaOwner SchemaOwner
 	// A worker's: the attempt's index of its first lane, which names its
-	// lanes' quarantine files.
+	// lanes' quarantine files; the worker whose first lane is the attempt's
+	// first patches in released holds.
 	FirstLane int
+	// A worker's: the attempt's index of its first writer lane, and the
+	// attempt's writer lanes, which name held files; 0: WriterLanes.
+	FirstWriterLane, AttemptWriterLanes int
 }
 
-// SchemaOwner decides the schemas of the destination's streams for the
-// dataflows of the workers of one attempt. A dataflow that changes a
-// stream's schema proposes it from the version it had, the restored schema
-// being version 0, and goes on with it once an update gives it the next
-// version with that schema; otherwise it shapes by the newer one.
+// SchemaOwner decides the schemas of the destination's streams, with the
+// columns they hold whole, and of the streams a SQL transform reads, for
+// the dataflows of the workers of one attempt. A dataflow that changes a
+// stream's schema, or what it holds, proposes it from the version it had,
+// the restored schema being version 0, and goes on with it once an update
+// gives it the next version with that schema; otherwise it shapes by the
+// newer one.
 type SchemaOwner interface {
-	Propose(stream string, base uint64, schema []byte) error
+	Propose(p SchemaProposal) error
 	// Each stream's versions, in order: answers to proposals, and changes
 	// other workers made.
 	Updates() <-chan SchemaUpdate
 }
 
-type SchemaUpdate struct {
-	Stream  string
-	Version uint64
+// SchemaProposal is a change a dataflow made to a stream, from version
+// Base of it.
+type SchemaProposal struct {
+	Stream string
+	// A stream a SQL transform reads, whose versions are apart from those
+	// of the destination's stream of the same name.
+	Input bool
+	Base  uint64
 	// An Arrow IPC stream holding only the schema.
 	Schema []byte
+	// One of the destination's streams that holds: the columns it holds
+	// whole, and the schema the destination gets, as Schema; nil where
+	// that's Schema.
+	Holding   []checkpoint.ColumnHold
+	Delivered []byte
+}
+
+type SchemaUpdate struct {
+	Stream  string
+	Input   bool
+	Version uint64
+	// An Arrow IPC stream holding only the schema.
+	Schema  []byte
+	Holding []checkpoint.ColumnHold
 }
 
 func (p Plan) lanes() int       { return max(p.Lanes, 1) }
@@ -213,14 +227,14 @@ func (p Plan) layout() (plan.Layout, error) {
 	return plan.NewLayout(p.keyGroups(), p.lanes(), p.writerLanes())
 }
 
-// writerOf is each lane's writer lane; nil for a plan no layout fits, which
-// a dataflow refuses.
-func (p Plan) writerOf() []int {
+// laidOut is the plan's layout; empty for a plan no layout fits, which a
+// dataflow refuses.
+func (p Plan) laidOut() plan.Layout {
 	l, err := p.layout()
 	if err != nil {
-		return nil
+		return plan.Layout{}
 	}
-	return l.WriterOf
+	return l
 }
 
 // SchemaPolicy is how the dataflow takes changes to a stream's established

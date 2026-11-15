@@ -182,8 +182,11 @@ func (p *workerPart) call(ctx context.Context, c *attemptv1.Call) error {
 	switch x := c.GetCall().(type) {
 	case *attemptv1.Call_Recover:
 		var r destination.Recovery
-		r, err = p.recover(ctx, x.Recover)
-		ans.Answer = &attemptv1.Answer_Recovered{Recovered: &protocolv1.WriteRecovered{Recovery: ints.Enum[protocolv1.Recovery](r)}}
+		var limits map[string]destination.TableLimits
+		r, limits, err = p.recover(ctx, x.Recover)
+		ans.Answer = &attemptv1.Answer_Recovered{Recovered: &attemptv1.Recovered{
+			Recovery: ints.Enum[protocolv1.Recovery](r), Limits: schemaAppliedToProto(destination.SchemaApplied{Limits: limits}).GetLimits(),
+		}}
 	case *attemptv1.Call_SplitRead:
 		var s *attemptv1.ReadSplits
 		s, err = p.splitRead(ctx, x.SplitRead)
@@ -208,10 +211,12 @@ func (p *workerPart) call(ctx context.Context, c *attemptv1.Call) error {
 // recover opens the writer of the attempt's first writer lane, raises the
 // destination's fence and settles the epoch of the record HEAD points to,
 // as a single runner's lane 0 does; or, where Settle calls settled its
-// committables, only applies its schemas and raises the fence.
-func (p *workerPart) recover(ctx context.Context, r *attemptv1.Recover) (destination.Recovery, error) {
+// committables, only applies its schemas and raises the fence. It returns
+// what the destination's tables can't take, as it said when the record's
+// schemas were applied.
+func (p *workerPart) recover(ctx context.Context, r *attemptv1.Recover) (destination.Recovery, map[string]destination.TableLimits, error) {
 	if p.first != nil {
-		return 0, errs.New(errs.Internal, "runner: asked to recover again")
+		return 0, nil, errs.New(errs.Internal, "runner: asked to recover again")
 	}
 	forced := map[string]bool{}
 	for _, s := range r.GetForced() {
@@ -219,28 +224,31 @@ func (p *workerPart) recover(ctx context.Context, r *attemptv1.Recover) (destina
 	}
 	w, err := p.job.Destination.Open(ctx, p.job.openConfig(p.t.Generation, forced, 0))
 	if err != nil {
-		return 0, fmt.Errorf("runner: open destination: %w", err)
+		return 0, nil, fmt.Errorf("runner: open destination: %w", err)
 	}
 	p.first = w
 	var e destination.Epoch
 	var staged []destination.Staged
+	var limits map[string]destination.TableLimits
 	if len(r.GetRecord()) > 0 {
 		var rec checkpoint.Record
 		if err := json.Unmarshal(r.GetRecord(), &rec); err != nil {
-			return 0, errs.Wrap(errs.Internal, err, "runner: the record to recover")
+			return 0, nil, errs.Wrap(errs.Internal, err, "runner: the record to recover")
 		}
 		if !settlesByLane(p.job.Destination.Capabilities(), &rec) {
 			e, staged = destination.Epoch{Generation: rec.Generation, N: rec.Epoch}, committables(&rec)
 		}
-		if _, err := p.job.applyRecorded(ctx, w, map[string]*arrow.Schema{}, &rec); err != nil {
-			return 0, err
+		a, err := p.job.applyRecorded(ctx, w, map[string]*arrow.Schema{}, &rec)
+		if err != nil {
+			return 0, nil, err
 		}
+		limits = a.Limits
 	}
 	rec, err := w.Recover(ctx, p.t.Generation, e, staged)
 	if err != nil {
-		return 0, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
+		return 0, nil, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
 	}
-	return rec, nil
+	return rec, limits, nil
 }
 
 // settle settles some of the restored record's committables, in turn, each
@@ -451,10 +459,23 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 		}
 	}
 	// A stream read by several workers ends its read on none of them, as
-	// one worker can't know that the others' splits have.
+	// one worker can't know that the others' splits have, nor do the
+	// outputs a SQL transform writes from it.
 	spread := map[string]bool{}
 	for name, ws := range readers {
 		spread[name] = len(ws) > 1
+	}
+	if job.SQL != nil {
+		spread = map[string]bool{}
+		for _, o := range job.Outputs {
+			spread[o.Name] = len(readers[o.From]) > 1
+		}
+	}
+	var holdPlans map[string]*HoldPlan
+	if len(a.GetHolds()) > 0 {
+		if err := json.Unmarshal(a.GetHolds(), &holdPlans); err != nil {
+			return errs.Wrap(errs.Internal, err, "runner: the assignment's holds")
+		}
 	}
 	done, forced := map[string]bool{}, map[string]bool{}
 	for _, s := range a.GetDone() {
@@ -492,8 +513,13 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 			}
 		}
 	}
-	plan := job.plan(gen, a.GetFirstEpoch(), restored, readStarts, schemas, nil, nil)
+	var outputs map[string][]byte
+	if job.SQL != nil {
+		outputs = outputSchemas(restored)
+	}
+	plan := job.plan(gen, a.GetFirstEpoch(), restored, readStarts, schemas, outputs, holdPlans)
 	plan.SchemaOwner, plan.FirstLane = p.schemas, firstLane
+	plan.FirstWriterLane, plan.AttemptWriterLanes = p.global[0], len(a.GetWriterLanes())
 
 	g, gctx := errgroup.WithContext(ctx)
 	events := make(chan event, 64)
@@ -722,7 +748,11 @@ func (p *workerPart) loop(ctx context.Context, a *attemptv1.Assignment, plan Pla
 // share is the worker's share of epoch n.
 func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.Share {
 	epoch := &protocolv1.Epoch{Generation: gen, N: n}
-	s := &attemptv1.Share{Epoch: epoch, Rows: e.rows, Ready: attempt.Ready{Schemas: e.ready.Schemas, Snapshots: e.ready.Snapshots, Quarantine: e.ready.Quarantine}.EpochReady(epoch)}
+	r := e.ready
+	s := &attemptv1.Share{Epoch: epoch, Rows: e.rows, Ready: attempt.Ready{
+		Schemas: r.Schemas, Snapshots: r.Snapshots, Quarantine: r.Quarantine,
+		OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: r.Holds,
+	}.EpochReady(epoch)}
 	for _, name := range slices.Sorted(maps.Keys(e.splits)) {
 		for _, sp := range e.splits[name] {
 			s.Positions = append(s.Positions, positionOf(name, sp))
@@ -731,7 +761,7 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 	refs := slices.SortedFunc(maps.Keys(e.splitLanes), func(a, b checkpoint.SplitRef) int {
 		return cmpRefs(a, b)
 	})
-	writerOf, local := plan.writerOf(), p.job.Destination.Capabilities().LaneCommits
+	layout, local := plan.laidOut(), p.job.Destination.Capabilities().LaneCommits
 	keys := map[string][]string{}
 	for _, st := range p.job.sinkStreams() {
 		keys[st.Name] = st.PrimaryKey
@@ -743,11 +773,11 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 			lane := read.lane
 			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from, Rows: read.rows}
 			switch {
-			case plan.Exchanges[ref.Stream] != nil:
-				first, last := writerKeyGroups(plan, k)
-				r.KeyGroups, r.Key = attempt.KeyGroups(first, last), keys[ref.Stream]
+			case plan.Exchanges[ref.Stream] != nil && k < len(layout.Writers):
+				kg := layout.Writers[k]
+				r.KeyGroups, r.Key = attempt.KeyGroups(kg.First, kg.Last), keys[ref.Stream]
 			case lane == laneAll:
-			case lane < 0 || lane >= len(writerOf) || writerOf[lane] != k:
+			case lane < 0 || lane >= len(layout.WriterOf) || layout.WriterOf[lane] != k:
 				continue
 			}
 			c.Splits = append(c.Splits, r)
@@ -762,15 +792,6 @@ func cmpRefs(a, b checkpoint.SplitRef) int {
 		return c
 	}
 	return strings.Compare(a.ID, b.ID)
-}
-
-// writerKeyGroups are the key groups writer lane w of plan owns.
-func writerKeyGroups(plan Plan, w int) (first, last int) {
-	groups, writers := max(plan.KeyGroups, 1), plan.writerLanes()
-	if plan.KeyGroups == 0 {
-		groups = checkpoint.KeyGroups
-	}
-	return (w*groups + writers - 1) / writers, ((w+1)*groups+writers-1)/writers - 1
 }
 
 // schemaRelay is a worker's way to its streams' schema owner, the
@@ -789,8 +810,10 @@ func newSchemaRelay(w attempt.Worker) *schemaRelay {
 	return &schemaRelay{w: w, updates: newFifo[SchemaUpdate](), out: make(chan SchemaUpdate), stop: stop, stopped: ctx}
 }
 
-func (r *schemaRelay) Propose(stream string, base uint64, schema []byte) error {
-	return r.w.Propose(&attemptv1.SchemaProposal{Stream: stream, Base: base, ArrowSchema: schema})
+func (r *schemaRelay) Propose(p SchemaProposal) error {
+	return r.w.Propose(&attemptv1.SchemaProposal{
+		Stream: p.Stream, Input: p.Input, Base: p.Base, ArrowSchema: p.Schema, Holding: attempt.ColumnHolds(p.Holding), Delivered: p.Delivered,
+	})
 }
 
 func (r *schemaRelay) Updates() <-chan SchemaUpdate {
@@ -813,7 +836,7 @@ func (r *schemaRelay) Updates() <-chan SchemaUpdate {
 }
 
 func (r *schemaRelay) update(s *attemptv1.StreamSchema) {
-	r.updates.push(SchemaUpdate{Stream: s.GetStream(), Version: s.GetVersion(), Schema: s.GetArrowSchema()})
+	r.updates.push(SchemaUpdate{Stream: s.GetStream(), Input: s.GetInput(), Version: s.GetVersion(), Schema: s.GetArrowSchema(), Holding: attempt.ColumnHoldsOf(s.GetHolding())})
 }
 
 func (r *schemaRelay) close() { r.stop() }

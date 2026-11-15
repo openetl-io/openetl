@@ -58,26 +58,13 @@ type Workers struct {
 const endTimeout = 30 * time.Second
 
 // OnWorkers says why the job can't run on workers; nil if it can. What
-// needs rows of one key to meet across workers, or one writer, stays on one
-// pod.
+// needs one writer, or what the platform doesn't run, stays on one pod.
 func (j *Job) OnWorkers(workers int) error {
 	if workers < 1 {
 		return errs.New(errs.ConfigInvalid, "runner: %d workers", workers)
 	}
 	_, engineSink := j.Destination.(EngineSink)
-	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink}
-	switch {
-	case j.ownCode():
-		facts.Transform = plan.TransformOwnCode
-	case j.SQL != nil:
-		facts.Transform = plan.TransformSQL
-	}
-	for _, s := range j.sinkStreams() {
-		if j.holdsOn(s) {
-			facts.Holding = s.Name
-			break
-		}
-	}
+	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode(), SQL: j.SQL != nil}
 	if why := plan.OnePod(facts); why != "" {
 		return errs.Wrap(errs.ConfigInvalid, &OnePodError{Why: why}, "")
 	}
@@ -282,7 +269,8 @@ type shared struct {
 }
 
 // merge is the epoch shares, one per worker, give. Each stream's schema is
-// its owner's newest, which holds every worker's.
+// its owner's newest, which holds every worker's, and so are the columns
+// each of the destination's streams holds whole.
 func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 	sh := &shared{
 		splits: map[string][]checkpoint.SplitState{}, rows: map[string]uint64{},
@@ -314,7 +302,7 @@ func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 			return f.place(name, a.ID) - f.place(name, b.ID)
 		})
 	}
-	maps.Copy(sh.flow.Schemas, f.schemas.taken())
+	f.schemas.own(sh.flow, f.job.SQL != nil)
 	return sh, nil
 }
 
@@ -325,7 +313,11 @@ func (f *fleet) place(stream, id string) int {
 	return len(f.order)
 }
 
-// mergeReady adds a worker's share of its dataflow's Ready to r.
+// mergeReady adds a worker's share of its dataflow's Ready to r: its
+// snapshots, quarantine, held cells and files, the replay's progress, which
+// only worker 0 makes, and the columns held whole and schemas that r doesn't
+// have yet. Every worker shapes by the same schemas, and the owner's
+// newest are set once every share is in.
 func mergeReady(r *Ready, s *attemptv1.Share) error {
 	got, err := attempt.ReadyOf(s.GetReady())
 	if err != nil {
@@ -336,9 +328,44 @@ func mergeReady(r *Ready, s *attemptv1.Share) error {
 	}
 	r.Snapshots = append(r.Snapshots, got.Snapshots...)
 	r.Quarantine = append(r.Quarantine, got.Quarantine...)
-	for name, s := range got.Schemas {
-		if _, ok := r.Schemas[name]; !ok {
-			r.Schemas[name] = s
+	first := func(to *map[string][]byte, from map[string][]byte) {
+		for name, s := range from {
+			if _, ok := (*to)[name]; !ok {
+				*to = setIn(*to, name, s)
+			}
+		}
+	}
+	first(&r.Schemas, got.Schemas)
+	first(&r.OutputSchemas, got.OutputSchemas)
+	first(&r.Delivered, got.Delivered)
+	for name, h := range got.Holds {
+		if r.Holds == nil {
+			r.Holds = map[string]*ReadyHolds{}
+		}
+		to := r.Holds[name]
+		if to == nil {
+			r.Holds[name] = h
+			continue
+		}
+		for _, c := range h.Holding {
+			if !slices.ContainsFunc(to.Holding, func(p checkpoint.ColumnHold) bool { return p.Column == c.Column }) {
+				to.Holding = append(to.Holding, c)
+			}
+		}
+		for col, c := range h.Cells {
+			if to.Cells == nil {
+				to.Cells = map[string]checkpoint.CellHold{}
+			}
+			e := to.Cells[col]
+			if e.Cells == 0 {
+				e.Reason = c.Reason
+			}
+			e.Cells += c.Cells
+			to.Cells[col] = e
+		}
+		to.Files = append(to.Files, h.Files...)
+		if to.Replayed == nil {
+			to.Replayed = h.Replayed
 		}
 	}
 	return nil
@@ -388,25 +415,37 @@ func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
 	return c
 }
 
-// schemaOwner is each stream's one schema across the workers: it takes a
-// change proposed from the version it holds, and sends every worker the
-// new one; a proposal from an older version gets the proposer the one it
-// holds.
+// schemaOwner is each stream's one schema across the workers, with the
+// columns it holds whole, so every worker holds what one decided: it takes a
+// change proposed from the version it holds, and sends every worker the new
+// one; a proposal from an older version gets the proposer the one it holds.
+// The destination's streams and the streams a SQL transform reads have
+// versions apart.
 type schemaOwner struct {
 	co      attempt.Coordinator
 	mu      sync.Mutex
-	streams map[string]*ownedSchema
+	streams map[ownedKey]*ownedSchema
+}
+
+type ownedKey struct {
+	name  string
+	input bool
 }
 
 type ownedSchema struct {
 	version uint64
 	schema  []byte
+	// One of the destination's streams that holds: the schema the
+	// destination gets, nil where it's schema, and the columns held whole.
+	delivered []byte
+	holding   []checkpoint.ColumnHold
 }
 
-func newSchemaOwner(co attempt.Coordinator, restored map[string][]byte) *schemaOwner {
-	o := &schemaOwner{co: co, streams: map[string]*ownedSchema{}}
-	for name, s := range restored {
-		o.streams[name] = &ownedSchema{schema: s}
+// newSchemaOwner starts each stream at version 0, which restored holds.
+func newSchemaOwner(co attempt.Coordinator, restored map[ownedKey][]byte) *schemaOwner {
+	o := &schemaOwner{co: co, streams: map[ownedKey]*ownedSchema{}}
+	for k, s := range restored {
+		o.streams[k] = &ownedSchema{schema: s}
 	}
 	return o
 }
@@ -414,31 +453,58 @@ func newSchemaOwner(co attempt.Coordinator, restored map[string][]byte) *schemaO
 func (o *schemaOwner) propose(worker int, p *attemptv1.SchemaProposal) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	s := o.streams[p.GetStream()]
+	k := ownedKey{p.GetStream(), p.GetInput()}
+	s := o.streams[k]
 	if s == nil {
 		s = &ownedSchema{}
-		o.streams[p.GetStream()] = s
+		o.streams[k] = s
 	}
 	to := worker
 	if p.GetBase() == s.version {
 		s.version++
-		s.schema = p.GetArrowSchema()
+		s.schema, s.delivered, s.holding = p.GetArrowSchema(), p.GetDelivered(), attempt.ColumnHoldsOf(p.GetHolding())
 		to = -1
 	}
-	return o.co.Schema(to, &attemptv1.StreamSchema{Stream: p.GetStream(), Version: s.version, ArrowSchema: s.schema})
+	return o.co.Schema(to, &attemptv1.StreamSchema{Stream: p.GetStream(), Input: p.GetInput(), Version: s.version, ArrowSchema: s.schema, Holding: attempt.ColumnHolds(s.holding)})
 }
 
-// taken are the schemas of the streams that changed in the attempt.
-func (o *schemaOwner) taken() map[string][]byte {
+// own sets in r what changed in the attempt as the owner has it: each
+// stream's newest schema, and of each of the destination's streams, what
+// it holds whole and the schema the destination gets. With a SQL transform,
+// r's Schemas are its inputs', and its OutputSchemas the destination's
+// streams'.
+func (o *schemaOwner) own(r *Ready, sql bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	out := map[string][]byte{}
-	for name, s := range o.streams {
-		if s.version > 0 {
-			out[name] = s.schema
+	for k, s := range o.streams {
+		if s.version == 0 {
+			continue
+		}
+		if sql && !k.input {
+			r.OutputSchemas = setIn(r.OutputSchemas, k.name, s.schema)
+		} else {
+			r.Schemas = setIn(r.Schemas, k.name, s.schema)
+		}
+		if k.input {
+			continue
+		}
+		if h := r.Holds[k.name]; h != nil {
+			h.Holding = s.holding
+		}
+		if s.delivered != nil {
+			r.Delivered = setIn(r.Delivered, k.name, s.delivered)
+		} else {
+			delete(r.Delivered, k.name)
 		}
 	}
-	return out
+}
+
+func setIn(m map[string][]byte, k string, v []byte) map[string][]byte {
+	if m == nil {
+		m = map[string][]byte{}
+	}
+	m[k] = v
+	return m
 }
 
 // remoteWriter is the attempt's first writer lane, on worker 0, as the
@@ -647,6 +713,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	if byLane {
 		res.Recovery = settled
 	}
+	limits := schemaAppliedOf(&protocolv1.WriteSchemaApplied{Limits: ans.GetRecovered().GetLimits()}).Limits
 	if recovering != nil {
 		// The worker applied them.
 		if _, err := changedRaw(applied, restoredSchemas(recovering)); err != nil {
@@ -696,23 +763,49 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 			return res, err
 		}
 	}
-	// Version 0 is what the workers' engines start from.
-	var start map[string][]byte
-	if restored != nil {
-		start = map[string][]byte{}
-		for name, st := range restored.Streams {
-			start[name] = st.Schema
+	prune(rctx, sess, restored, j.keep(), j.Staging, j.HeldURL != "", log)
+	holds, holdPlans, err := j.startHolds(rctx, restored, limits)
+	if err != nil {
+		return res, err
+	}
+	if len(holdPlans) > 0 {
+		if a.Holds, err = json.Marshal(holdPlans); err != nil {
+			return res, err
 		}
 	}
-	f.schemas = newSchemaOwner(co, start)
-	prune(rctx, sess, restored, j.keep(), j.Staging, false, log)
+	f.schemas = newSchemaOwner(co, j.startSchemas(restored))
 	span.SetAttributes(attribute.Int64("openetl.generation", ints.Int64Clamped(res.Generation)), attribute.String("openetl.recovery", res.Recovery.String()), attribute.Int64("openetl.epoch", ints.Int64Clamped(res.Restored)), attribute.Int("openetl.workers", n))
 	span.End()
 
 	c := &coordinator{job: j, sess: sess, w: remoteWriter{f}, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reset: reset,
-		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}, fleet: f}
+		reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}, fleet: f,
+		holds: holds, holdPlans: holdPlans}
+	for _, p := range holdPlans {
+		c.replaying = c.replaying || p.Replay != nil
+	}
 	err = c.runFleet(ctx, restored, a)
 	return res, err
+}
+
+// startSchemas are what each stream's schema owner holds as version 0: the
+// restored record's schemas, which the workers' engines start from. With a
+// SQL transform, the destination's streams are its outputs, and the
+// streams it reads have versions apart.
+func (j *Job) startSchemas(restored *checkpoint.Record) map[ownedKey][]byte {
+	start := map[ownedKey][]byte{}
+	if restored == nil {
+		return start
+	}
+	sql := j.SQL != nil
+	for name, st := range restored.Streams {
+		start[ownedKey{name: name, input: sql}] = st.Schema
+	}
+	if sql {
+		for name, s := range outputSchemas(restored) {
+			start[ownedKey{name: name}] = s
+		}
+	}
+	return start
 }
 
 // settleOnWorkers has the workers settle rec's committables, raw as the
@@ -823,10 +916,13 @@ func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, don
 // layout spreads the attempt over n workers. A stream's splits go to the
 // workers emitting least, but those of a stream whose key's rows meet on a
 // writer lane, of an overwrite, whose read one pump ends, and of a stream
-// the attempt doesn't read stay on one worker. Each worker runs as many
-// lanes as the job, no more than its splits unless the source splits
-// running ones, and at least one of the destination's writer lanes. Worker
-// 0 has the first writer lane, which applies schemas and commits.
+// the attempt doesn't read stay on one worker. Every stream read with CDC
+// goes to one worker, the same for all of them: a source reads their
+// changes from one log, such as a replication slot, which one read holds.
+// Each worker runs as many lanes as the job, no more than its splits unless
+// the source splits running ones, and at least one of the destination's
+// writer lanes. Worker 0 has the first writer lane, which applies schemas
+// and commits.
 func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[string]bool, resplits bool) (*attemptv1.Assignment, error) {
 	load := make([]int, n)
 	inParts := make([]bool, n)
@@ -837,10 +933,17 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 		worker int
 	}
 	var all []placed
+	changes := -1
 	for _, s := range j.Streams {
 		ss := splits[s.Name]
-		together := done[s.Name] || len(ss) <= 1 || s.Mode == destination.Overwrite || j.keyGrouped(s)
+		together := done[s.Name] || len(ss) <= 1 || j.oneWorker(s)
 		w := least()
+		if s.Read == source.CDC && !done[s.Name] {
+			if changes < 0 {
+				changes = w
+			}
+			w, together = changes, true
+		}
 		for _, sp := range ss {
 			if !together && !sp.Complete {
 				w = least()
@@ -899,6 +1002,23 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 		a.Splits = append(a.Splits, &attemptv1.SplitAssignment{Split: positionOf(p.stream, p.split), Lane: ints.Uint32(lane)})
 	}
 	return a, nil
+}
+
+// oneWorker says one worker reads all of s's splits: a destination's stream
+// it becomes, itself or a SQL transform's output from it, is an overwrite,
+// whose read one pump ends, or has an exchange before its writer, which
+// runs inside one engine. An output's partitioning is its stream's past
+// the statement.
+func (j *Job) oneWorker(s Stream) bool {
+	if j.SQL == nil {
+		return s.Mode == destination.Overwrite || j.keyGrouped(s)
+	}
+	for _, o := range j.Outputs {
+		if o.From == s.Name && (o.Mode == destination.Overwrite || j.keyGrouped(o)) {
+			return true
+		}
+	}
+	return false
 }
 
 // runFleet runs the attempt's epochs on its workers.

@@ -25,8 +25,9 @@ option go_package = "github.com/openetl-io/openetl/gen/openetl/attempt/v1;attemp
 // worker signals what its read does and sends its share of each epoch, and
 // the coordinator asks workers to commit what a written record names and
 // sends them the committed record's positions. The coordinator owns each
-// stream's schema: a worker's engine proposes a change, and every worker
-// gets the schema the coordinator takes. Each end sends a Heartbeat every few
+// stream's schema, with the columns it holds whole, and each schema a SQL
+// transform reads: a worker's engine proposes a change, and every worker
+// gets the one the coordinator takes. Each end sends a Heartbeat every few
 // seconds, and takes the other as lost once it hears nothing for longer than
 // a timeout.
 //
@@ -135,6 +136,12 @@ message Assignment {
   // The bytes a worker's sources emit in an epoch before it signals it's
   // full; 0: no threshold.
   uint64 max_bytes = 11;
+  // How each of the destination's streams that holds starts the attempt:
+  // the restored record's holds, with the job's releases applied and the
+  // columns the destination refused held, as JSON of the runner's hold
+  // plans, which a coordinator and its workers share since they run one
+  // image; empty: none holds. Only worker 0 patches in what's released.
+  bytes holds = 12;
 }
 
 message Lane {
@@ -286,7 +293,7 @@ message Answer {
   // Set if the call failed.
   openetl.connector.v1.Error error = 2;
   oneof answer {
-    openetl.connector.v1.WriteRecovered recovered = 3;
+    Recovered recovered = 3;
     ReadSplits read_splits = 4;
     openetl.connector.v1.WriteSchemaApplied schema_applied = 5;
     Settled settled = 6;
@@ -307,6 +314,14 @@ message Recover {
   bytes record = 1;
   // As Assignment.forced.
   repeated string forced = 2;
+}
+
+// Recovered answers Recover.
+message Recovered {
+  openetl.connector.v1.Recovery recovery = 1;
+  // What each of the destination's tables can't take, by stream, as it
+  // said when the record's schemas were applied; empty without a record.
+  map<string, openetl.connector.v1.TableLimits> limits = 2;
 }
 
 // Settle settles some of the restored record's committables, of a
@@ -378,14 +393,25 @@ message ReadDone {
 }
 
 // SchemaProposal is a change one of the worker's engine's lanes made to one
-// of the destination's streams' schema, from version `base` of it. The
-// coordinator takes it if it holds version base, and sends every worker the
-// stream's new schema; otherwise it sends the proposer the one it holds.
+// of the destination's streams' schema, or to the columns it holds whole,
+// or to the schema of a stream a SQL transform reads, from version `base`
+// of it. The coordinator takes it if it holds version base, and sends every
+// worker the stream's new schema; otherwise it sends the proposer the one
+// it holds. So every worker holds what one decided.
 message SchemaProposal {
   string stream = 1;
   uint64 base = 2;
   // An Arrow IPC stream holding only the schema.
   bytes arrow_schema = 3;
+  // A stream a SQL transform reads, whose versions are apart from those of
+  // the destination's stream of the same name.
+  bool input = 4;
+  // One of the destination's streams that holds: the columns it holds
+  // whole.
+  repeated openetl.engine.v1.ColumnHold holding = 5;
+  // Where columns are held whole, the schema the destination gets, as
+  // arrow_schema; empty where it's arrow_schema.
+  bytes delivered = 6;
 }
 
 // Usage is what a worker's part of the attempt has used and moved so far,
@@ -419,4 +445,6 @@ message StreamSchema {
   uint64 version = 2;
   // As SchemaProposal's.
   bytes arrow_schema = 3;
+  bool input = 4;
+  repeated openetl.engine.v1.ColumnHold holding = 5;
 }

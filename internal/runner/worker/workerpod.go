@@ -28,8 +28,9 @@ type Pod struct {
 	// where to join.
 	Run    func(ctx context.Context, w *dataplanev1.Work) error
 	Logger *slog.Logger
-	// How long it waits for its coordinator to say where it joins. Zero: 10
-	// minutes, a pod's start timeout and the time workers have to join.
+	// How long it waits for its coordinator to say where it joins, and
+	// after each part for a newer generation to join. Zero: 10 minutes, a
+	// pod's start timeout and the time workers have to join.
 	Wait time.Duration
 	// How often it asks. Zero: a second.
 	Every time.Duration
@@ -43,9 +44,12 @@ func (p *Pod) log() *slog.Logger {
 }
 
 // Serve waits for the coordinator to say where the worker joins, and runs
-// the worker's part. It returns nil if the attempt's placement moved on
-// before then, or once the part has run, however it ended: the coordinator
-// reports the attempt's outcome.
+// the worker's part, however it ends: the coordinator reports the attempt's
+// outcome. It runs a part again for each newer generation the coordinator
+// says to join, as it does when the destination refused a column and the
+// coordinator claims the pipeline again to hold it. It returns nil once the
+// attempt's placement has moved on, or Wait after the last part without a
+// newer one.
 func (p *Pod) Serve(ctx context.Context) error {
 	req := &dataplanev1.PollWorkRequest{
 		Runner: p.ID, Attempt: &dataplanev1.Launch{Attempt: p.Attempt.ID, Placement: uint32(max(0, p.Attempt.Placement))},
@@ -61,6 +65,8 @@ func (p *Pod) Serve(ctx context.Context) error {
 	}
 	deadline := time.Now().Add(wait)
 	var failing error
+	// The generation of the part run last; 0: none yet.
+	var ran uint64
 	for {
 		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		res, err := p.API.PollWork(pctx, connect.NewRequest(req))
@@ -71,21 +77,26 @@ func (p *Pod) Serve(ctx context.Context) error {
 		case err != nil:
 			failing = err
 		case len(res.Msg.GetWork()) == 0:
-			p.log().Info("the attempt isn't this worker's to run any more", "attempt", p.Attempt.ID, "placement", p.Attempt.Placement, "worker", p.Worker)
+			if ran == 0 {
+				p.log().Info("the attempt isn't this worker's to run any more", "attempt", p.Attempt.ID, "placement", p.Attempt.Placement, "worker", p.Worker)
+			}
 			return nil
-		case res.Msg.GetWork()[0].GetJoin() != nil:
+		case res.Msg.GetWork()[0].GetJoin().GetGeneration() > ran:
 			w := res.Msg.GetWork()[0]
-			p.log().Info("worker joining its coordinator", "attempt", w.GetId(), "worker", p.Worker, "coordinator", w.GetJoin().GetAddress())
+			p.log().Info("worker joining its coordinator", "attempt", w.GetId(), "worker", p.Worker, "coordinator", w.GetJoin().GetAddress(), "generation", w.GetJoin().GetGeneration())
 			if err := p.Run(ctx, w); err != nil {
 				p.log().Warn("the worker's part of the attempt failed", "attempt", w.GetId(), "worker", p.Worker, "err", err)
 			}
-			return nil
+			ran, failing, deadline = w.GetJoin().GetGeneration(), nil, time.Now().Add(wait)
+			continue
 		}
 		if time.Now().After(deadline) {
-			if failing != nil {
+			switch {
+			case failing != nil:
 				return fmt.Errorf("worker: taking attempt %s's worker %d from the API: %w", p.Attempt.ID, p.Worker, failing)
+			case ran == 0:
+				p.log().Warn("the attempt's coordinator didn't say where to join in time", "attempt", p.Attempt.ID, "worker", p.Worker, "waited", wait)
 			}
-			p.log().Warn("the attempt's coordinator didn't say where to join in time", "attempt", p.Attempt.ID, "worker", p.Worker, "waited", wait)
 			return nil
 		}
 		select {

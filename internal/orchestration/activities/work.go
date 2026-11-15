@@ -133,7 +133,7 @@ func (a *Activities) workers(ctx context.Context, org uuid.UUID, v db.GetSyncSpe
 				return 0, "", err
 			}
 		}
-		workers, why, _ = plan.Workers(p, cat, caps, engine)
+		workers, why, _ = plan.Workers(p, cat, caps, engine, nil)
 	}
 	if why != "" {
 		return 0, why, nil
