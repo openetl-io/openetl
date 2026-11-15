@@ -89,7 +89,7 @@ func describe(o Observation, t target) (summary, next string) {
 		case n == "1":
 			where += " (" + o.Details["quarantine_paths"] + ")"
 		case n != "":
-			where += fmt.Sprintf(" (%s files in the last hour, the newest: %s)", n, strings.SplitN(o.Details["quarantine_paths"], ", ", 2)[0])
+			where += fmt.Sprintf(" (%s files in the hour before the incident opened, the newest: %s)", n, strings.SplitN(o.Details["quarantine_paths"], ", ", 2)[0])
 		}
 		next := where + ", each row with why it was quarantined, such as a value its column's type can't hold. " +
 			fmt.Sprintf("List the files and their causes with openetl quarantine %s--stream %s %s. ", ws, o.Stream, t.pipeline) +
@@ -108,7 +108,7 @@ func describe(o Observation, t target) (summary, next string) {
 		default:
 			next += " Heal can't pause the stream on its own: " + why + "."
 		}
-		return fmt.Sprintf("Stream %s of %s quarantined %s of its rows in the last hour", o.Stream, name, o.Details["share"]),
+		return fmt.Sprintf("Stream %s of %s quarantined %s of its rows in the hour before it was last seen", o.Stream, name, o.Details["share"]),
 			next + " The incident resolves once the stream's share falls under half the threshold."
 	case Held:
 		next := fmt.Sprintf("The rest of each row is delivered, and the held values are kept (openetl holds %s%s).", ws, t.pipeline)

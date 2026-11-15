@@ -213,7 +213,7 @@ An incident page has four sections:
 
 Some incidents pause the pipeline because another sync would repeat the failure. Others change how it runs:
 
-- **Quarantine** pauses the stream, so it quarantines no more rows while the other streams continue. A stream that cannot stop on its own, such as one read with CDC, is not paused, and **Next steps** says why. If the stream is the pipeline's only stream, heal pauses the pipeline. **Next steps** names the newest file of quarantined rows, and gives the command that lists the stream's files. **Details** gives how many files the stream has in the last hour, under `quarantine_files`, and the newest of them, under `quarantine_paths`. Each row in a file has the reason it was quarantined.
+- **Quarantine** pauses the stream, so it quarantines no more rows while the other streams continue. A stream that cannot stop on its own, such as one read with CDC, is not paused, and **Next steps** says why. If the stream is the pipeline's only stream, heal pauses the pipeline. **Next steps** names the newest file of quarantined rows, and gives the command that lists the stream's files. **Details** gives how many files the stream had in the hour before the incident was last seen, under `quarantine_files`, and the newest of them, under `quarantine_paths`. Each row in a file has the reason it was quarantined.
 - **Rate limited** reduces request rate where supported, or increases the sync interval, after 3 consecutive rate-limit failures. It repeats the adjustment after every 3 further failures.
 
 What they changed shows under **Not as the spec says** on the pipeline's **Overview**, where you can undo it. A pipeline's definition decides how far heal goes: it can propose these actions without taking them, or take none.
