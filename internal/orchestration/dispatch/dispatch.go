@@ -299,6 +299,17 @@ func (d *Dispatcher) Cancel(ctx context.Context, ref contract.WorkRef) error {
 
 func cancelled() []byte { return marshalOutcome(contract.WorkOutcome{Cancelled: true}) }
 
+// Forget deletes work, finished or not, with its outcome. A runner still
+// running it is told to stop on its next report, as for cancelled work, and
+// its result is refused.
+func (d *Dispatcher) Forget(ctx context.Context, ref contract.WorkRef) error {
+	org, err := uuid.Parse(ref.OrgID)
+	if err != nil {
+		return err
+	}
+	return d.Store.DeleteDispatch(ctx, db.DeleteDispatchParams{OrgID: org, ID: ref.ID})
+}
+
 // Report is a runner's report.
 type Report struct {
 	Org       uuid.UUID
@@ -657,12 +668,16 @@ func (d *Dispatcher) Result(ctx context.Context, org uuid.UUID, dataPlane, runne
 	return true, nil
 }
 
+// wake tells the workflow that sent the work. Work the API sent without a
+// workflow has nothing to wake: its sender looks at the work itself.
 func (d *Dispatcher) wake(ctx context.Context, org uuid.UUID, id, workflow string) error {
 	if d.Waker == nil {
 		return nil
 	}
-	if err := d.Waker.Wake(ctx, workflow, id); err != nil {
-		return err
+	if workflow != "" {
+		if err := d.Waker.Wake(ctx, workflow, id); err != nil {
+			return err
+		}
 	}
 	return d.Store.MarkWoken(ctx, db.MarkWokenParams{OrgID: org, ID: id})
 }

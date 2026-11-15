@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -84,6 +85,22 @@ func (s *FSStore) Get(_ context.Context, key string) ([]byte, Version, error) {
 		return nil, "", err
 	}
 	return data, contentVersion(data), nil
+}
+
+func (s *FSStore) GetPrefix(_ context.Context, key string, n int) ([]byte, error) {
+	p, err := s.path(key)
+	if err != nil {
+		return nil, err
+	}
+	f, err := s.root.Open(p)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(io.LimitReader(f, int64(n)))
 }
 
 func (s *FSStore) Create(_ context.Context, key string, data []byte) (Version, error) {

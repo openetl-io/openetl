@@ -90,6 +90,9 @@ const (
 	// PipelineServiceListQuarantineProcedure is the fully-qualified name of the PipelineService's
 	// ListQuarantine RPC.
 	PipelineServiceListQuarantineProcedure = "/openetl.api.v1.PipelineService/ListQuarantine"
+	// PipelineServiceReadQuarantineFileProcedure is the fully-qualified name of the PipelineService's
+	// ReadQuarantineFile RPC.
+	PipelineServiceReadQuarantineFileProcedure = "/openetl.api.v1.PipelineService/ReadQuarantineFile"
 )
 
 // PipelineServiceClient is a client for the openetl.api.v1.PipelineService service.
@@ -156,6 +159,13 @@ type PipelineServiceClient interface {
 	// records stay in the data plane's object storage. A file is listed until
 	// quarantine.retention deletes it, or the pipeline is deleted.
 	ListQuarantine(context.Context, *connect.Request[v1.ListQuarantineRequest]) (*connect.Response[v1.ListQuarantineResponse], error)
+	// The first lines of one of the files ListQuarantine lists, which a
+	// runner of the pipeline's data plane reads from its object storage. The
+	// records are the pipeline's data: the control plane hands them to the
+	// caller, and doesn't keep them. Each read is in the audit log. Fails
+	// with NOT_FOUND for a path ListQuarantine doesn't list, and UNAVAILABLE
+	// when no runner of the data plane takes the read within a minute.
+	ReadQuarantineFile(context.Context, *connect.Request[v1.ReadQuarantineFileRequest]) (*connect.Response[v1.ReadQuarantineFileResponse], error)
 }
 
 // NewPipelineServiceClient constructs a client for the openetl.api.v1.PipelineService service. By
@@ -283,6 +293,12 @@ func NewPipelineServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(pipelineServiceMethods.ByName("ListQuarantine")),
 			connect.WithClientOptions(opts...),
 		),
+		readQuarantineFile: connect.NewClient[v1.ReadQuarantineFileRequest, v1.ReadQuarantineFileResponse](
+			httpClient,
+			baseURL+PipelineServiceReadQuarantineFileProcedure,
+			connect.WithSchema(pipelineServiceMethods.ByName("ReadQuarantineFile")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -307,6 +323,7 @@ type pipelineServiceClient struct {
 	releaseHold            *connect.Client[v1.ReleaseHoldRequest, v1.ReleaseHoldResponse]
 	discardHold            *connect.Client[v1.DiscardHoldRequest, v1.DiscardHoldResponse]
 	listQuarantine         *connect.Client[v1.ListQuarantineRequest, v1.ListQuarantineResponse]
+	readQuarantineFile     *connect.Client[v1.ReadQuarantineFileRequest, v1.ReadQuarantineFileResponse]
 }
 
 // GetPipeline calls openetl.api.v1.PipelineService.GetPipeline.
@@ -404,6 +421,11 @@ func (c *pipelineServiceClient) ListQuarantine(ctx context.Context, req *connect
 	return c.listQuarantine.CallUnary(ctx, req)
 }
 
+// ReadQuarantineFile calls openetl.api.v1.PipelineService.ReadQuarantineFile.
+func (c *pipelineServiceClient) ReadQuarantineFile(ctx context.Context, req *connect.Request[v1.ReadQuarantineFileRequest]) (*connect.Response[v1.ReadQuarantineFileResponse], error) {
+	return c.readQuarantineFile.CallUnary(ctx, req)
+}
+
 // PipelineServiceHandler is an implementation of the openetl.api.v1.PipelineService service.
 type PipelineServiceHandler interface {
 	GetPipeline(context.Context, *connect.Request[v1.GetPipelineRequest]) (*connect.Response[v1.GetPipelineResponse], error)
@@ -468,6 +490,13 @@ type PipelineServiceHandler interface {
 	// records stay in the data plane's object storage. A file is listed until
 	// quarantine.retention deletes it, or the pipeline is deleted.
 	ListQuarantine(context.Context, *connect.Request[v1.ListQuarantineRequest]) (*connect.Response[v1.ListQuarantineResponse], error)
+	// The first lines of one of the files ListQuarantine lists, which a
+	// runner of the pipeline's data plane reads from its object storage. The
+	// records are the pipeline's data: the control plane hands them to the
+	// caller, and doesn't keep them. Each read is in the audit log. Fails
+	// with NOT_FOUND for a path ListQuarantine doesn't list, and UNAVAILABLE
+	// when no runner of the data plane takes the read within a minute.
+	ReadQuarantineFile(context.Context, *connect.Request[v1.ReadQuarantineFileRequest]) (*connect.Response[v1.ReadQuarantineFileResponse], error)
 }
 
 // NewPipelineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -591,6 +620,12 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 		connect.WithSchema(pipelineServiceMethods.ByName("ListQuarantine")),
 		connect.WithHandlerOptions(opts...),
 	)
+	pipelineServiceReadQuarantineFileHandler := connect.NewUnaryHandler(
+		PipelineServiceReadQuarantineFileProcedure,
+		svc.ReadQuarantineFile,
+		connect.WithSchema(pipelineServiceMethods.ByName("ReadQuarantineFile")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/openetl.api.v1.PipelineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case PipelineServiceGetPipelineProcedure:
@@ -631,6 +666,8 @@ func NewPipelineServiceHandler(svc PipelineServiceHandler, opts ...connect.Handl
 			pipelineServiceDiscardHoldHandler.ServeHTTP(w, r)
 		case PipelineServiceListQuarantineProcedure:
 			pipelineServiceListQuarantineHandler.ServeHTTP(w, r)
+		case PipelineServiceReadQuarantineFileProcedure:
+			pipelineServiceReadQuarantineFileHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -714,4 +751,8 @@ func (UnimplementedPipelineServiceHandler) DiscardHold(context.Context, *connect
 
 func (UnimplementedPipelineServiceHandler) ListQuarantine(context.Context, *connect.Request[v1.ListQuarantineRequest]) (*connect.Response[v1.ListQuarantineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ListQuarantine is not implemented"))
+}
+
+func (UnimplementedPipelineServiceHandler) ReadQuarantineFile(context.Context, *connect.Request[v1.ReadQuarantineFileRequest]) (*connect.Response[v1.ReadQuarantineFileResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("openetl.api.v1.PipelineService.ReadQuarantineFile is not implemented"))
 }

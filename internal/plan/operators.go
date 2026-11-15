@@ -159,6 +159,20 @@ func changeWarning(op *apiv1.OperatorPlan) string {
 	return ""
 }
 
+// CarriedNotes say which operators that earlier versions dropped, and
+// applied carries as dropped, the pipeline's last checkpoint still holds
+// state of, as when a version replaced them and no sync ran: the next sync
+// drops it.
+func CarriedNotes(applied *apiv1.SqlPlan, held map[string]bool) []string {
+	var out []string
+	for _, id := range applied.GetDropped() {
+		if held[id] && !slices.Contains(applied.GetOperators(), id) {
+			out = append(out, droppedNote(&apiv1.OperatorPlan{Id: id}))
+		}
+	}
+	return out
+}
+
 func droppedNote(op *apiv1.OperatorPlan) string {
 	if op.GetOutput() == "" {
 		return fmt.Sprintf("transform.sql: no statement keeps operator %s now, so the next sync drops its state", op.GetId())

@@ -533,7 +533,7 @@ func (w *Worker) start(base, results context.Context, m *dataplanev1.Work) {
 	}
 	w.running[wk.ID] = wk
 	w.reserved = w.reserved.Add(wk.Size)
-	logRead := wk.Kind == contract.ReadLogs
+	logRead := wk.Kind == contract.ReadLogs || wk.Kind == contract.ReadQuarantine
 	switch {
 	case !light:
 	case logRead:

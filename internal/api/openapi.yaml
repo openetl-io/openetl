@@ -1572,6 +1572,55 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}/quarantine:read:
+        get:
+            tags:
+                - PipelineService
+            description: |-
+                The first lines of one of the files ListQuarantine lists, which a
+                 runner of the pipeline's data plane reads from its object storage. The
+                 records are the pipeline's data: the control plane hands them to the
+                 caller, and doesn't keep them. Each read is in the audit log. Fails
+                 with NOT_FOUND for a path ListQuarantine doesn't list, and UNAVAILABLE
+                 when no runner of the data plane takes the read within a minute.
+            operationId: PipelineService_ReadQuarantineFile
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+                - name: path
+                  in: query
+                  description: The file's path, as ListQuarantine gives it.
+                  schema:
+                    type: string
+                - name: limit
+                  in: query
+                  description: 'At most this many lines, from the first. 0: 20; at most 100.'
+                  schema:
+                    type: integer
+                    format: int32
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ReadQuarantineFileResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}/streamSchemas:
         get:
             tags:
@@ -5421,6 +5470,20 @@ components:
             description: |-
                 ReadProgress is what a source reported of how far behind it a read is.
                  Unset fields are unknown.
+        ReadQuarantineFileResponse:
+            type: object
+            properties:
+                lines:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        The file's first lines, each a JSON object with the quarantined
+                         record and why, without their newlines. They stop before the limit
+                         where the next would take them past 256 KiB.
+                more:
+                    type: boolean
+                    description: The file has lines after these.
         ReadSyncLogResponse:
             type: object
             properties:

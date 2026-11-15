@@ -379,3 +379,8 @@ LIMIT 1;
 -- What the syncs have running or waiting, their post-sync steps included.
 SELECT id FROM dispatches
 WHERE org_id = @org_id AND state <> 'finished' AND input->>'SyncID' = ANY(@sync_ids::text[]);
+
+-- name: DeleteDispatch :exec
+-- Work whose sender took its outcome, and keeps none of it: a read of a
+-- quarantine file, whose result is the pipeline's data.
+DELETE FROM dispatches WHERE org_id = @org_id AND id = @id;

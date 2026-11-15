@@ -70,7 +70,7 @@ func (s *Server) withoutSQL(ctx context.Context, q *db.Queries, p *planned, cat 
 		return err
 	}
 	_, _, notes := plan.Operators(p.v.spec, cat, &sqlplan.Answer{}, applied, nil, held)
-	out.Notes = append(out.Notes, notes...)
+	out.Notes = append(append(out.Notes, notes...), plan.CarriedNotes(applied, held)...)
 	p.sqlPlan = plan.SQLPlan(&sqlplan.Answer{}, applied)
 	return nil
 }

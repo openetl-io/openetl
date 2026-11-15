@@ -48,6 +48,16 @@ func (s *MemStore) Get(_ context.Context, key string) ([]byte, Version, error) {
 	return bytes.Clone(data), contentVersion(data), nil
 }
 
+func (s *MemStore) GetPrefix(_ context.Context, key string, n int) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, ok := s.objects[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return bytes.Clone(data[:min(n, len(data))]), nil
+}
+
 func (s *MemStore) Create(_ context.Context, key string, data []byte) (Version, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

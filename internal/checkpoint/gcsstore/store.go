@@ -45,6 +45,22 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, checkpoint.Version
 	return data, version(r.Attrs.Generation), nil
 }
 
+func (s *Store) GetPrefix(ctx context.Context, key string, n int) ([]byte, error) {
+	r, err := s.bucket.Object(key).NewRangeReader(ctx, 0, int64(n))
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return nil, checkpoint.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: gcs get %s: %w", key, err)
+	}
+	defer func() { _ = r.Close() }()
+	data, err := io.ReadAll(io.LimitReader(r, int64(n)))
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: gcs get %s: %w", key, err)
+	}
+	return data, nil
+}
+
 func (s *Store) Create(ctx context.Context, key string, data []byte) (checkpoint.Version, error) {
 	return s.put(ctx, key, data, storage.Conditions{DoesNotExist: true})
 }

@@ -192,3 +192,18 @@ func TestAnEarlierOperatorsBackfill(t *testing.T) {
 		t.Errorf("unknown: %v %v", ops, warnings)
 	}
 }
+
+// Removing transform.sql after a version that replaced an operator without
+// a sync: the last checkpoint still holds the replaced operator's state,
+// which the next sync drops, so the plan says so; one it doesn't hold, or
+// doesn't say it holds, gets no note.
+func TestCarriedNotes(t *testing.T) {
+	applied := &apiv1.SqlPlan{Operators: []string{"window-b"}, Dropped: []string{"window-a", "window-c"}}
+	got := CarriedNotes(applied, map[string]bool{"window-a": true, "window-b": true})
+	if len(got) != 1 || got[0] != "transform.sql: no statement keeps operator window-a now, so the next sync drops its state" {
+		t.Errorf("%q", got)
+	}
+	if got := CarriedNotes(applied, nil); len(got) != 0 {
+		t.Errorf("unknown: %q", got)
+	}
+}

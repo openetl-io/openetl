@@ -90,6 +90,8 @@ Commands:
                   --new-version patches them into COLUMN__v2
   quarantine NAME list the files of rows a pipeline quarantined, newest
                   first, and their rows by cause
+  quarantine show NAME PATH
+                  print a quarantine file's first lines, which a runner reads
   version         print the CLI's version
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file

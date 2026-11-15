@@ -75,6 +75,10 @@ func (p prefixed) Get(ctx context.Context, key string) ([]byte, checkpoint.Versi
 	return p.s.Get(ctx, p.prefix+key)
 }
 
+func (p prefixed) GetPrefix(ctx context.Context, key string, n int) ([]byte, error) {
+	return p.s.GetPrefix(ctx, p.prefix+key, n)
+}
+
 func (p prefixed) Create(ctx context.Context, key string, data []byte) (checkpoint.Version, error) {
 	return p.s.Create(ctx, p.prefix+key, data)
 }

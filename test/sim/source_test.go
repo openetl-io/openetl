@@ -427,6 +427,13 @@ func (s *simStore) Get(ctx context.Context, key string) (data []byte, v checkpoi
 	return data, v, nil
 }
 
+func (s *simStore) GetPrefix(ctx context.Context, key string, n int) (data []byte, err error) {
+	if err := s.call(ctx, "store.get", func() error { data, err = s.w.store.GetPrefix(ctx, key, n); return err }); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
 func (s *simStore) Create(ctx context.Context, key string, data []byte) (v checkpoint.Version, err error) {
 	if err := s.call(ctx, "store.create", func() error {
 		if v, err = s.w.store.Create(ctx, key, data); err == nil && strings.HasSuffix(key, ".json") {

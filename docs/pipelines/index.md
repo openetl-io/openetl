@@ -459,6 +459,7 @@ order by id, _openetl_seq desc;
 | `openetl holds release NAME STREAM COLUMN` | Patch a hold's values in on the pipeline's next run; `--new-version`, before the names, sends a column held whole to a new column, `COLUMN__v2`, instead |
 | `openetl holds discard NAME STREAM COLUMN` | Drop a hold's values; the column stays as the destination has it |
 | `openetl quarantine NAME` | List the files of rows it quarantined, newest first, and their rows by stream and cause; `--stream` and `--since` narrow it ([Quarantine files](../reference/quarantine-files.md)) |
+| `openetl quarantine show NAME PATH` | Print a quarantine file's first lines, at most 100, which a runner reads from the data plane's storage; editors and above |
 
 Flags go before the names, and every command takes `--workspace`. `openetl COMMAND -h` lists a command's flags.
 

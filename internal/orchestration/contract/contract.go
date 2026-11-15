@@ -43,8 +43,12 @@ const (
 	TeardownDestination = "TeardownDestination"
 	TeardownFlink       = "TeardownFlink"
 	ReadLogs            = "ReadLogs"
-	ProbeRetention      = "ProbeRetention"
-	PlanSQL             = "PlanSQL"
+	// Reads the first lines of a quarantine file. The API sends it without
+	// a workflow, since its result is the pipeline's data, which no
+	// workflow's history may keep.
+	ReadQuarantine = "ReadQuarantine"
+	ProbeRetention = "ProbeRetention"
+	PlanSQL        = "PlanSQL"
 )
 
 // Kinds of light operation, which runners take a fixed number of at a time,
@@ -245,6 +249,13 @@ const OpTimeout = 15 * time.Minute
 
 // LogsPickup is how long a log read waits for a runner of its data plane.
 const LogsPickup = 15 * time.Second
+
+// QuarantinePickup is how long a read of a quarantine file waits for a
+// runner of its data plane, and QuarantineTimeout how long it may run.
+const (
+	QuarantinePickup  = 30 * time.Second
+	QuarantineTimeout = time.Minute
+)
 
 // PlanPickup is how long planning a SQL transform waits for a runner of its
 // data plane, and PlanTimeout how long it may take in all. A plan or an
@@ -591,6 +602,31 @@ type LogLine struct {
 	Task string
 	// A JSON object.
 	Text string
+}
+
+// ReadQuarantineInput is a read of the first lines of one of a pipeline's
+// quarantine files.
+type ReadQuarantineInput struct {
+	OrgID      string
+	PipelineID string
+	// Below the pipeline's _quarantine directory, as its index has it.
+	Path string
+	// At most this many lines, and at most MaxQuarantineRead bytes of them.
+	Lines int
+}
+
+// MaxQuarantineRead is the most a read of a quarantine file returns, in
+// bytes of lines.
+const MaxQuarantineRead = 256 << 10
+
+// ReadQuarantineResult is the file's first lines, without their newlines.
+type ReadQuarantineResult struct {
+	Lines []string
+	// The file has lines after them.
+	More bool
+	// The data plane's storage doesn't have the file: a retention or a
+	// lifecycle rule deleted it.
+	Missing bool `json:",omitempty"`
 }
 
 // PlanSQLInput is a SQL transform to plan on a runner of the data plane,
