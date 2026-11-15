@@ -352,3 +352,92 @@ func TestASplitsSuccessorsJoinBeforeItMovesOn(t *testing.T) {
 		t.Fatalf("b joined at %d, a moved on at %d: %+v", joined, moved, frames)
 	}
 }
+
+// lateRowSource is quietSource whose a reads another row at 2.9s, while it
+// waits at the first barrier for b.
+type lateRowSource struct{ gate chan struct{} }
+
+func (lateRowSource) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
+	return []source.Split{{ID: "a"}, {ID: "b"}}, nil
+}
+
+func (q lateRowSource) Read(ctx context.Context, _ source.ReadRequest, out source.Emitter) error {
+	a, b := out.Split("s", "a"), out.Split("s", "b")
+	row := []json.RawMessage{json.RawMessage(`{"id": 1}`)}
+	if err := a.Rows(row); err != nil {
+		return err
+	}
+	if err := a.ResumePoint([]byte("a1")); err != nil {
+		return err
+	}
+	if err := b.Rows(row); err != nil {
+		return err
+	}
+	time.Sleep(2900 * time.Millisecond)
+	if err := a.Rows(row); err != nil {
+		return err
+	}
+	if err := a.ResumePoint([]byte("a2")); err != nil {
+		return err
+	}
+	select {
+	case <-q.gate:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := b.ResumePoint([]byte("b1")); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A row a split reads while it waits at a barrier keeps it from being idle,
+// though the row waits behind the barrier too: no idle move of the split
+// comes after it before the idle time has passed since it was read.
+func TestARowHeldBehindABarrierKeepsItsSplitBusy(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		start := time.Now()
+		gate, drain := make(chan struct{}), make(chan struct{})
+		flow := &markFlow{}
+		j := runner.Job{
+			Owner: "a1", Pipeline: "p", Continuous: true, Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"),
+			Source:      lateRowSource{gate: gate},
+			Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Read: source.Stream, Mode: destination.Append, Schema: idSchema, EventTime: &runner.EventTime{Column: "at", Idle: time.Second}}},
+			Destination: &countingDest{},
+			Dataflow:    flow,
+			Drain:       drain,
+			Settings:    delivery.Settings{Require: delivery.AtLeastOnce, CommitInterval: 2 * time.Second, Scope: destination.ScopePipeline, ResumePointTimeout: time.Hour},
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := runner.RunAttempt(ctx, j)
+			done <- err
+		}()
+		time.Sleep(3500 * time.Millisecond)
+		close(gate)
+		time.Sleep(time.Second)
+		close(drain)
+		if err := <-done; err != nil && !errors.Is(err, runner.ErrDrained) {
+			t.Fatal(err)
+		}
+
+		frames := flow.seen()
+		barrier := slices.IndexFunc(frames, func(f seen) bool { return f.kind == runner.FrameBarrier })
+		if barrier < 0 {
+			t.Fatal("no barrier")
+		}
+		row := slices.IndexFunc(frames[barrier:], func(f seen) bool { return f.kind == runner.FrameRows && f.split == "a" })
+		if row < 0 {
+			t.Fatal("a's row didn't follow the barrier")
+		}
+		read := start.Add(2900 * time.Millisecond)
+		for _, f := range frames[barrier+row:] {
+			if f.kind == runner.FrameSplit && f.split == "a" && f.watermark != nil && *f.watermark < read.Add(time.Second).UnixMicro() {
+				t.Fatalf("a moved to %v after its row read at %v: %+v", time.UnixMicro(*f.watermark), read, frames)
+			}
+		}
+	})
+}

@@ -455,6 +455,12 @@ func (p *sourcePump) handle(e emit) error {
 			return err
 		}
 	}
+	// A split reads when its rows come, though they may wait at a barrier.
+	if st := p.streams[e.stream]; st != nil && st.timed != nil && (e.kind == emitRows || e.kind == emitBatch) {
+		if sp := st.byID[e.split]; sp != nil {
+			sp.lastRead = time.Now()
+		}
+	}
 	return p.route(e)
 }
 
@@ -556,7 +562,9 @@ func (p *sourcePump) route(e emit) error {
 
 func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) error {
 	if e.kind == emitIdle {
-		if sp.complete {
+		// A row the split read since it was found idle, which waited at a
+		// barrier with it, ends its idle time.
+		if sp.complete || e.at.Sub(sp.lastRead) < st.timed.idle() {
 			return nil
 		}
 		return p.mark(name, st, sp, st.timed.idleAt(e.at))
@@ -574,7 +582,6 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 		var split string
 		if st.timed != nil {
 			split = sp.id
-			sp.lastRead = time.Now()
 		}
 		f := Frame{Kind: FrameRows, Lane: lane, Stream: name, Split: split, Rows: e.rows}
 		rows, bytes := int64(len(e.rows)), int64(0)
