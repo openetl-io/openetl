@@ -22,6 +22,7 @@ import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 import { shortDigest } from "@/lib/names";
 import { connectorName } from "@/lib/connectors";
+import { useCan } from "@/lib/caller";
 import type { Kind } from "./connections";
 
 const routes = {
@@ -70,6 +71,7 @@ function ConnectionPage({ kind }: { kind: Kind }) {
   const q = kind === "source" ? source : destination;
   const x = kind === "source" ? source.data?.source : destination.data?.destination;
   const check = useCheck(kind, name);
+  const can = useCan(workspace);
 
   if (q.error) {
     return errorCode(q.error) === Code.NotFound ? (
@@ -86,7 +88,8 @@ function ConnectionPage({ kind }: { kind: Kind }) {
       <DetailHeader
         title={id}
         actions={
-          x && (
+          x &&
+          can(`${kind}s.check`) && (
             <Button variant="outline" size="sm" onClick={check.run} disabled={check.pending}>
               {check.pending ? <LoaderCircle className="animate-spin" aria-hidden /> : <ListChecks aria-hidden />}
               {check.pending ? "Checking…" : "Check"}

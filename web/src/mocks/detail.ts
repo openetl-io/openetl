@@ -22,6 +22,7 @@ import {
   type StreamSchema,
 } from "@/gen/openetl/api/v1/pipeline_pb";
 import { CheckItemSchema, CheckResultSchema, type CheckResult } from "@/gen/openetl/api/v1/connection_pb";
+import { PreflightPartSchema, PreflightResultSchema, type PreflightResult } from "@/gen/openetl/api/v1/pipeline_pb";
 import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, syncs } from "./fixtures";
 import { flinkClusters, sparkClusters } from "./workspace";
@@ -354,4 +355,47 @@ export function checkResult(connector: string): CheckResult {
       item("consumer", "Enhanced fan-out consumer", "skipped", { message: "consumer.type is polling." }),
     ],
   });
+}
+
+/** A pipeline's preflight: the Kinesis source's streams fail to read and its schedule outlasts retention; other pipelines pass. */
+export function preflightResult(pipeline: Pipeline): PreflightResult {
+  const item = (name: string, title: string, status: string, o: { message?: string; code?: string; fix?: string; field?: string } = {}) =>
+    create(CheckItemSchema, { name, title, status, ...o });
+  const ws = pipeline.name.slice(0, pipeline.name.indexOf("/pipelines/"));
+  const src = `${ws}/sources/${pipeline.spec?.source?.ref ?? ""}`;
+  const dst = `${ws}/destinations/${pipeline.spec?.destination?.ref ?? ""}`;
+  const part = (role: string, stage: string, o: Partial<{ ok: boolean; code: string; message: string; skipped: string; items: ReturnType<typeof item>[] }> = {}) =>
+    create(PreflightPartSchema, { role, stage, resource: role === "source" ? src : role === "destination" ? dst : "", ok: true, ...o });
+  const kinesis = pipeline.spec?.source?.ref === "clickstream";
+  const parts = [
+    part("source", "check", { items: kinesis ? [item("connect", "Reach Kinesis in eu-west-1", "passed", { message: "Listed 14 streams." })] : [] }),
+    part("destination", "check"),
+    kinesis
+      ? part("source", "preflight", {
+          ok: false,
+          code: "PERMISSION_DENIED",
+          message: "kinesis: clickstream-prod: GetRecords: AccessDeniedException",
+          items: [
+            item("stream.clickstream-prod.describe", "Describe clickstream-prod", "passed", { message: "Active, 4 open shards, 24 hours' retention, KMS encrypted." }),
+            item("stream.clickstream-prod.read", "Read clickstream-prod", "failed", {
+              code: "PERMISSION_DENIED",
+              message: "GetRecords: AccessDeniedException",
+              fix: "Allow kinesis:GetShardIterator and kinesis:GetRecords on arn:aws:kinesis:eu-west-1:*:stream/clickstream-prod.",
+              field: "streams",
+            }),
+            item("stream.clickstream-prod.start", "Where clickstream-prod's first read starts", "warning", {
+              message: "startTimestamp is 3 days ago, older than the stream's 24 hours' retention: the first read starts at the oldest record still held.",
+              fix: "Set startTimestamp within the last 24 hours, or startPosition to earliest.",
+              field: "startTimestamp",
+            }),
+            item("stream.clickstream-prod.consumer", "Enhanced fan-out consumer", "skipped", { message: "consumer.type is polling." }),
+          ],
+        })
+      : part("source", "preflight"),
+    part("destination", "preflight"),
+    part("sync", "plan", {
+      items: [item("plan.warning.1", "Stream clickstream-prod", "warning", { message: "Rows with the same content become one row within each epoch." })],
+    }),
+  ];
+  return create(PreflightResultSchema, { ok: parts.every((p) => p.ok || p.skipped), version: pipeline.version, parts });
 }

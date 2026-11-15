@@ -23,6 +23,17 @@ export function checkCounts(items: CheckItem[]): string {
     .join(", ");
 }
 
+/** Items of a check or a preflight, one a row. */
+export function CheckItemList({ items }: { items: CheckItem[] }) {
+  return (
+    <ul className="divide-y rounded-lg border px-4">
+      {items.map((it) => (
+        <CheckItemRow key={it.name} item={it} />
+      ))}
+    </ul>
+  );
+}
+
 function CheckItemRow({ item }: { item: CheckItem }) {
   const mark = marks[item.status] ?? skipped;
   const Icon = mark.icon;
@@ -74,11 +85,7 @@ export function CheckResultView({ result }: { result: CheckResult }) {
       <p className="text-sm text-muted-foreground">
         {result.ok ? "The check passed" : "The check failed"}: {checkCounts(result.items)}.
       </p>
-      <ul className="divide-y rounded-lg border px-4">
-        {result.items.map((it) => (
-          <CheckItemRow key={it.name} item={it} />
-        ))}
-      </ul>
+      <CheckItemList items={result.items} />
     </div>
   );
 }
