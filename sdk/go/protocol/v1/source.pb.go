@@ -550,7 +550,10 @@ type ConfiguredStream struct {
 	// the platform to parse fails the read, retryably, instead of sending
 	// one; the next attempt discovers and declares it. Empty: the request
 	// doesn't say.
-	Columns       []string `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`
+	Columns []string `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`
+	// Where the whole stream's read ends, without splits, as a split's
+	// until says.
+	Until         []byte `protobuf:"bytes,7,opt,name=until,proto3,oneof" json:"until,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -627,6 +630,13 @@ func (x *ConfiguredStream) GetColumns() []string {
 	return nil
 }
 
+func (x *ConfiguredStream) GetUntil() []byte {
+	if x != nil {
+		return x.Until
+	}
+	return nil
+}
+
 // Split is one of a stream's splits. The whole stream has the empty ID. IDs
 // are the source's, and must stay unique within the stream for as long as
 // its read lasts.
@@ -634,7 +644,15 @@ type Split struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Unset: from its beginning.
-	State         []byte `protobuf:"bytes,2,opt,name=state,proto3,oneof" json:"state,omitempty"`
+	State []byte `protobuf:"bytes,2,opt,name=state,proto3,oneof" json:"state,omitempty"`
+	// In a read that isn't continuous, where the split's read ends: the state
+	// of a resume point the source sent for it before, never of a
+	// completion. A source that can stop there sends nothing past that
+	// position, then a resume point with this state, and completes the split
+	// with it. The platform sets it to read part of an epoch again. A source
+	// that ignores it must send the same resume points as before for that
+	// read to be exact. Unset: where the read would end.
+	Until         []byte `protobuf:"bytes,3,opt,name=until,proto3,oneof" json:"until,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -679,6 +697,13 @@ func (x *Split) GetId() string {
 func (x *Split) GetState() []byte {
 	if x != nil {
 		return x.State
+	}
+	return nil
+}
+
+func (x *Split) GetUntil() []byte {
+	if x != nil {
+		return x.Until
 	}
 	return nil
 }
@@ -1706,19 +1731,23 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\n" +
 	"continuous\x18\x04 \x01(\bR\n" +
 	"continuous\x12\x14\n" +
-	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\xef\x01\n" +
+	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\x94\x02\n" +
 	"\x10ConfiguredStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
 	"\tsync_mode\x18\x02 \x01(\x0e2\x1e.openetl.connector.v1.SyncModeR\bsyncMode\x12\x16\n" +
 	"\x06cursor\x18\x03 \x01(\tR\x06cursor\x12\x19\n" +
 	"\x05state\x18\x04 \x01(\fH\x00R\x05state\x88\x01\x01\x123\n" +
 	"\x06splits\x18\x05 \x03(\v2\x1b.openetl.connector.v1.SplitR\x06splits\x12\x18\n" +
-	"\acolumns\x18\x06 \x03(\tR\acolumnsB\b\n" +
-	"\x06_state\"<\n" +
+	"\acolumns\x18\x06 \x03(\tR\acolumns\x12\x19\n" +
+	"\x05until\x18\a \x01(\fH\x01R\x05until\x88\x01\x01B\b\n" +
+	"\x06_stateB\b\n" +
+	"\x06_until\"a\n" +
 	"\x05Split\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
-	"\x05state\x18\x02 \x01(\fH\x00R\x05state\x88\x01\x01B\b\n" +
-	"\x06_state\"\x9a\x02\n" +
+	"\x05state\x18\x02 \x01(\fH\x00R\x05state\x88\x01\x01\x12\x19\n" +
+	"\x05until\x18\x03 \x01(\fH\x01R\x05until\x88\x01\x01B\b\n" +
+	"\x06_stateB\b\n" +
+	"\x06_until\"\x9a\x02\n" +
 	"\fReadResponse\x129\n" +
 	"\x05batch\x18\x01 \x01(\v2!.openetl.connector.v1.RecordBatchH\x00R\x05batch\x12F\n" +
 	"\fresume_point\x18\x02 \x01(\v2!.openetl.connector.v1.ResumePointH\x00R\vresumePoint\x12B\n" +
