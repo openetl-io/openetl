@@ -58,7 +58,7 @@ Read the complete error in the failing sync's log rather than only the shortened
 | Source rate limits | Check the source's limits and heal's overrides. Increase the interval or reduce request rate where supported. |
 | Out of memory | Inspect job peaks and `resources.max`. Increase the size or maximum where the data plane has room; a larger request still needs capacity. |
 | `POSITION_LOST` | Follow [Reading from the start again](./positions.md#after-a-lost-position). A reset can replay data and cannot recover history the source has discarded. |
-| `CHECKPOINT_CORRUPT` | Follow [checkpoint recovery](./positions.md#when-the-latest-checkpoint-cant-be-read). Read the delivery implications before allowing a rewind. |
+| `CHECKPOINT_CORRUPT` | If the error names a held file below `_held`, restore the file and resume the pipeline, as [a release that cannot read a held file](./schema-changes.md#repair-the-destination-and-release) explains. Otherwise, follow [checkpoint recovery](./positions.md#when-the-latest-checkpoint-cant-be-read). Read the delivery implications before allowing a rewind. |
 | Schema errors, held columns or quarantined values | Read [Holds and quarantine](./holds-and-quarantine.md) to tell them apart. For a hold, follow [Handle schema changes and holds](./schema-changes.md). |
 | A dbt or Spark post-sync step fails | Fix that step. The sync can fail after its copied data has committed; inspect the step's log and [integration setup](../integrate/index.md). |
 

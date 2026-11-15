@@ -119,6 +119,8 @@ After the sync succeeds, query the destination again. `amount` is now `214748364
 
 If the release is refused, inspect its reason. Complete the remaining repair. Request release again. A refused release does not retry automatically.
 
+If a sync fails with `CHECKPOINT_CORRUPT` while it applies a release, a held file that the release reads is missing or damaged. The error names the file, below `_held` in the data plane's storage, and the incident pauses the pipeline. Restore the file, then resume the pipeline.
+
 ## Choose another way out
 
 The hold lists only the actions it can offer. Instead of changing the existing destination column, a column held whole can be released into a new version:
