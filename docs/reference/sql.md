@@ -223,7 +223,7 @@ These edits keep the ID, and with it the state:
 
 - Formatting, comments and the case of keywords, and an equal interval, such as `INTERVAL '60 seconds'` for `INTERVAL '1 minute'`.
 - The `FROM` alias, other names for the output's columns, and views that rename columns or pass more columns.
-- The order of the `GROUP BY` keys, of the `SELECT` list and of the aggregates. The output's primary key follows the order of `GROUP BY`.
+- The order of the `GROUP BY` keys, of the `SELECT` list and of the aggregates. The output's primary key follows the order of `GROUP BY`. Aggregates that call a function that gives another value each time, such as `random()`, keep the ID only in the same order.
 - `HAVING`, `window_end`, and expressions over the aggregates, when they use only aggregates that the statement already computes. An aggregate that only `HAVING` or an expression uses is still an aggregate that the operator keeps: adding one gives a new ID.
 - The same filters written in a view or in the statement, and `count(1)` for `count(*)`.
 - Other statements, and the order of the statements.
@@ -267,7 +267,7 @@ To build the state from the stream's start, read the stream again after you appl
 openetl reset --stream orders NAME
 ```
 
-The next attempt drops the state of each operator that the version dropped or replaced, so the records after it stop naming that state, and retention deletes its files once no record it keeps names them. If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the version did not drop the old operator. The next attempt then fails with `CONFIG_INVALID`, and its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
+A version without `transform.sql` drops every operator of the version before it. The next attempt drops the state of each operator that the version dropped or replaced, so the records after it stop naming that state, and retention deletes its files once no record it keeps names them. If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the version did not drop the old operator. The next attempt then fails with `CONFIG_INVALID`, and its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
 
 An operator has no name of its own in the SQL. Its ID is the only name.
 

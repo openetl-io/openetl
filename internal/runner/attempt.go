@@ -160,6 +160,10 @@ type Job struct {
 	// Where the dataflow's stateful operators keep their state, as Plan
 	// says.
 	StateURL string
+	// The stateful operators of earlier versions that the pipeline's
+	// version changed or dropped, as removing transform.sql drops them all:
+	// an attempt drops their state from the record it restores.
+	DroppedOperators []string
 	// Infinite dates and timestamps are quarantined instead of clamped.
 	UnfitInfinity bool
 	Dataflow      Dataflow

@@ -32,12 +32,16 @@ func (j *Job) restoring(rec *checkpoint.Record, log *slog.Logger) (restored *che
 // what that operator keeps changed under the version, as when a column it
 // groups by changes type, and only a reset of its streams drops it.
 func (j *Job) withoutDropped(rec *checkpoint.Record) (*checkpoint.Record, []string) {
-	if rec == nil || j.SQL == nil || len(j.SQL.Dropped) == 0 {
+	if rec == nil || len(j.DroppedOperators) == 0 {
 		return rec, nil
+	}
+	var operators []string
+	if j.SQL != nil {
+		operators = j.SQL.Operators
 	}
 	var dropped []string
 	kept := slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool {
-		drop := slices.Contains(j.SQL.Dropped, s.Operator) && !slices.Contains(j.SQL.Operators, s.Operator)
+		drop := slices.Contains(j.DroppedOperators, s.Operator) && !slices.Contains(operators, s.Operator)
 		if drop && !slices.Contains(dropped, s.Operator) {
 			dropped = append(dropped, s.Operator)
 		}

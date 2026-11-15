@@ -34,7 +34,7 @@ type SQLPlanner interface {
 // couldn't be planned, which a note says.
 func (s *Server) planSQL(ctx context.Context, q *db.Queries, p *planned, cat *apiv1.Catalog, out *apiv1.PipelinePlan) (*sqlplan.Answer, error) {
 	if p.v.spec.GetTransform().GetSql() == nil {
-		return nil, nil
+		return nil, s.withoutSQL(ctx, q, p, cat, out)
 	}
 	if cat == nil {
 		out.Notes = append(out.Notes, fmt.Sprintf("transform.sql wasn't planned: source %q hasn't been discovered, so its streams' schemas aren't known", p.v.spec.GetSource().GetRef()))
@@ -52,6 +52,27 @@ func (s *Server) planSQL(ctx context.Context, q *db.Queries, p *planned, cat *ap
 		return nil, err
 	}
 	return s.planSQLWith(ctx, p, cat, history, out)
+}
+
+// withoutSQL is planSQL for a version without transform.sql: it keeps no
+// operator, so it drops every one the current version keeps or dropped, and
+// the plan notes each whose state the next sync drops.
+func (s *Server) withoutSQL(ctx context.Context, q *db.Queries, p *planned, cat *apiv1.Catalog, out *apiv1.PipelinePlan) error {
+	applied, err := s.appliedSQLPlan(ctx, q, p)
+	if err != nil {
+		return err
+	}
+	if len(applied.GetOperators()) == 0 && len(applied.GetDropped()) == 0 {
+		return nil
+	}
+	_, held, err := s.lastCheckpoint(ctx, q, p)
+	if err != nil {
+		return err
+	}
+	_, _, notes := plan.Operators(p.v.spec, cat, &sqlplan.Answer{}, applied, nil, held)
+	out.Notes = append(out.Notes, notes...)
+	p.sqlPlan = plan.SQLPlan(&sqlplan.Answer{}, applied)
+	return nil
 }
 
 // planSQLWith is planSQL given the streams' schemas from the pipeline's

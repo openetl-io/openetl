@@ -18,7 +18,7 @@ func TestWithoutDropped(t *testing.T) {
 		{Operator: "window-old", Runs: []string{"r3"}},
 		{Operator: "window-drifted", Runs: []string{"r4"}},
 	}}
-	j := &Job{SQL: &SQLTransform{Operators: []string{"window-kept", "window-new"}, Dropped: []string{"window-old", "window-gone"}}}
+	j := &Job{DroppedOperators: []string{"window-old", "window-gone"}, SQL: &SQLTransform{Operators: []string{"window-kept", "window-new"}}}
 	got, dropped := j.withoutDropped(rec)
 	var left []string
 	for _, s := range got.Snapshots {
@@ -36,13 +36,19 @@ func TestWithoutDropped(t *testing.T) {
 	if got, _ := j.withoutDropped(nil); got != nil {
 		t.Errorf("without a record: %v", got)
 	}
+	// A version without transform.sql drops every operator the one before
+	// it kept.
+	noSQL := &Job{DroppedOperators: []string{"window-kept", "window-old", "window-drifted"}}
+	if got, dropped := noSQL.withoutDropped(rec); len(got.Snapshots) != 0 || len(dropped) != 3 {
+		t.Errorf("without SQL: keeps %v, drops %v", got.Snapshots, dropped)
+	}
 }
 
 // A redo starts without the state of the version's dropped operators, as
 // the attempt that wrote the epoch did, whether or not that attempt took a
 // reset.
 func TestARedoStartsWithoutTheDroppedOperators(t *testing.T) {
-	j := &Job{Streams: []Stream{{Name: "a"}}, SQL: &SQLTransform{Operators: []string{"window-new"}, Dropped: []string{"window-old"},
+	j := &Job{Streams: []Stream{{Name: "a"}}, DroppedOperators: []string{"window-old"}, SQL: &SQLTransform{Operators: []string{"window-new"},
 		Expected: []ExpectedOutput{{Name: "x", Input: "a", Operator: "window-new"}}}}
 	before := &checkpoint.Record{Epoch: 4, Generation: 1, Reset: "0001", Streams: map[string]checkpoint.StreamState{"a": {State: []byte("4")}},
 		Snapshots: []checkpoint.Snapshot{{Operator: "window-old", Runs: []string{"window-old/g1/e4/kg0-255.run"}}}}
@@ -66,7 +72,7 @@ func TestRestoring(t *testing.T) {
 	rec := &checkpoint.Record{Epoch: 4, Reset: "r1", Streams: map[string]checkpoint.StreamState{"orders": {State: []byte("pos")}, "users": {State: []byte("pos")}},
 		Snapshots: []checkpoint.Snapshot{{Operator: "window-kept"}, {Operator: "window-old"}}}
 	j := &Job{Streams: []Stream{{Name: "orders"}, {Name: "users"}}, Resets: []Reset{{ID: "r2", Streams: []string{"users"}}},
-		SQL: &SQLTransform{Operators: []string{"window-kept"}, Dropped: []string{"window-old"},
+		DroppedOperators: []string{"window-old"}, SQL: &SQLTransform{Operators: []string{"window-kept"},
 			Expected: []ExpectedOutput{{Name: "minutes", Input: "orders", Operator: "window-kept"}}}}
 	got, reset, streams := j.restoring(rec, slog.New(slog.DiscardHandler))
 	var left []string

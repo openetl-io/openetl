@@ -458,6 +458,28 @@ fn each_call_of_random_is_its_own() {
     );
 }
 
+/// A call before an unnest gives one value for every element of a row's
+/// list, and one after it a value for each element: two computations.
+#[test]
+fn a_call_before_an_unnest_is_not_one_after_it() {
+    let c = lists();
+    let count = |views: &str| {
+        id_in(
+            &c,
+            &format!(
+                "{views}INSERT INTO n SELECT window_start, region, count(*) AS n \
+                 FROM b WHERE r < 0.5 GROUP BY tumble(at, INTERVAL '1 minute'), region"
+            ),
+            "n",
+        )
+    };
+    let before = "CREATE VIEW a AS SELECT random() AS r, xs, region, at FROM events;\n\
+                  CREATE VIEW b AS SELECT r, unnest(xs) AS x, region, at FROM a;\n";
+    let after = "CREATE VIEW a AS SELECT unnest(xs) AS x, region, at FROM events;\n\
+                 CREATE VIEW b AS SELECT random() AS r, x, region, at FROM a;\n";
+    assert_ne!(count(before), count(after));
+}
+
 /// A small generator: xorshift64*.
 struct Gen(u64);
 

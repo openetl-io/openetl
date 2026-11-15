@@ -117,12 +117,20 @@ impl Canon {
                 type_text(c.field.data_type())
             ),
             // Each call of a function that gives another value each time is
-            // another value: numbered, so two never read as one. A column
-            // that one computes is written once, so it's one value.
+            // another value: numbered, so two never read as one, and with
+            // the unnest steps below it, as a call before an unnest gives a
+            // value for each row and one after it for each element. A column
+            // that one computes is written once, so it's one value. The
+            // numbers follow the order calls are written in.
             E::ScalarFunction(f) if f.func.signature().volatility != Volatility::Immutable => {
                 self.draws += 1;
                 let n = self.draws;
-                format!("{}#{n}({})", f.func.name(), self.list(&f.args, node)?)
+                format!(
+                    "{}#{n}@{}({})",
+                    f.func.name(),
+                    step(node),
+                    self.list(&f.args, node)?
+                )
             }
             E::ScalarFunction(f) => format!("{}({})", f.func.name(), self.list(&f.args, node)?),
             E::InList(l) => format!(

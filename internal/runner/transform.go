@@ -63,9 +63,6 @@ type SQLTransform struct {
 	// The stateful operators' IDs, as planning gave them for the pipeline's
 	// version, and as checkpoint.Snapshot.Operator names them.
 	Operators []string
-	// Operators of earlier versions that the pipeline's version changed or
-	// dropped, whose state an attempt drops from the record it restores.
-	Dropped []string
 }
 
 // digest names t's statements, as checkpoint.Record.SQLDigest does; empty

@@ -186,7 +186,6 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		if sqlT, outputs, err = sqlOutputs(ctx, p, caps, deletes, planner, streams, inputs); err != nil {
 			return job, err
 		}
-		sqlT.Dropped = spec.GetSqlPlan().GetDropped()
 	case transformed:
 		changelog := slices.ContainsFunc(inputs, func(in plan.Input) bool { return in.Read == apiv1.SyncMode_SYNC_MODE_CDC })
 		for _, o := range plan.Outputs(p, caps, inputs) {
@@ -212,19 +211,20 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		policy = runner.IgnoreNew
 	}
 	return runner.Job{
-		Pipeline:        spec.GetPipelineId(),
-		Continuous:      plan.Continuous(p),
-		Source:          src,
-		Streams:         streams,
-		Paused:          pausedStreams,
-		Outputs:         outputs,
-		SQL:             sqlT,
-		Destination:     dst,
-		Namespace:       p.GetDestination().GetNamespace(),
-		Settings:        plan.Settings(p, dst.Capabilities()),
-		KeepSourceNames: p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
-		SchemaPolicy:    policy,
-		UnfitInfinity:   p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_UNFIT,
+		Pipeline:         spec.GetPipelineId(),
+		Continuous:       plan.Continuous(p),
+		Source:           src,
+		Streams:          streams,
+		Paused:           pausedStreams,
+		Outputs:          outputs,
+		SQL:              sqlT,
+		DroppedOperators: spec.GetSqlPlan().GetDropped(),
+		Destination:      dst,
+		Namespace:        p.GetDestination().GetNamespace(),
+		Settings:         plan.Settings(p, dst.Capabilities()),
+		KeepSourceNames:  p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
+		SchemaPolicy:     policy,
+		UnfitInfinity:    p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_UNFIT,
 		// Unset: zero, and the files are kept.
 		QuarantineRetention: p.GetQuarantine().GetRetention().AsDuration(),
 		Releases:            releases(spec.GetReleases()),

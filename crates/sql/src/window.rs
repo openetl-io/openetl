@@ -437,7 +437,9 @@ pub(crate) fn lower(
     }
     // The output's key follows GROUP BY. The operator takes its keys by the
     // stream's names, and its aggregates by what they compute, so writing
-    // either in another order keeps its key groups, its state and its ID.
+    // either in another order keeps its key groups, its state and its ID;
+    // but for aggregates that call a function giving another value each
+    // time, whose calls are numbered in the order they're written.
     let written: Vec<(usize, String)> = keys.iter().map(|(i, k)| (*i, k.stream.clone())).collect();
     keys.sort_by(|(i, a), (j, b)| a.stream.cmp(&b.stream).then(i.cmp(j)));
 
