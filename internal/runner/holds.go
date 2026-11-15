@@ -227,11 +227,28 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		}
 		if len(released) > 0 {
 			slices.Sort(released)
-			files, err := j.Log.HeldFiles(ctx, s.Name, h.Epochs)
+			released = slices.Compact(released)
+			// The replay reads the epochs from the oldest start of the holds
+			// it ends: each released column's hold held whole, and its cell
+			// hold, released or not, which the replay clears once every cell
+			// fits. A discarded cell hold is gone by now, and isn't read.
+			var from checkpoint.RecordRef
+			for i, col := range released {
+				at := h.Cells[col].Since
+				if k := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == col }); k >= 0 {
+					if _, ok := h.Cells[col]; !ok || before(taken[k].Since, at) {
+						at = taken[k].Since
+					}
+				}
+				if i == 0 || before(at, from) {
+					from = at
+				}
+			}
+			files, err := j.Log.HeldFiles(ctx, s.Name, heldFrom(h.Epochs, from))
 			if err != nil {
 				return nil, nil, err
 			}
-			h.Replay = &checkpoint.Replay{Columns: slices.Compact(released), Files: files, Versioned: versioned}
+			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
 			if len(cells) > 0 {
 				h.Replay.CellReleases = cells
 			}
@@ -240,6 +257,25 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		plans[s.Name] = &HoldPlan{StreamHolds: *s.Holds, Holding: h.Columns, Limits: limits[s.Name], Replay: h.Replay}
 	}
 	return holds, plans, nil
+}
+
+// heldFrom are the epochs of es from at on.
+func heldFrom(es []checkpoint.HeldEpochs, at checkpoint.RecordRef) []checkpoint.HeldEpochs {
+	var out []checkpoint.HeldEpochs
+	for _, e := range es {
+		switch {
+		case e.Generation < at.Generation, e.Generation == at.Generation && e.To < at.Epoch:
+			continue
+		case e.Generation == at.Generation && e.From < at.Epoch:
+			e.From = at.Epoch
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func before(a, b checkpoint.RecordRef) bool {
+	return a.Generation < b.Generation || a.Generation == b.Generation && a.Epoch < b.Epoch
 }
 
 // mergeHolds is a stream's holds once epoch at is recorded: base's, with
