@@ -301,16 +301,59 @@ INSERT INTO x SELECT id, unnest(tags) AS tag FROM log
 ----
 error changelog_key 1:26 log is a changelog, so what reads it gives one row for each of its rows; this multiplies the rows of it
 
+# A changelog without a key has no key to delete a row that fails a WHERE
+# by, so WHERE is refused where it's written.
 plan
 INSERT INTO x SELECT id, tags FROM log WHERE id > 0
+----
+error changelog_key 1:46 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+plan
+INSERT INTO x SELECT id FROM log WHERE log.id > 0
+----
+error changelog_key 1:40 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+plan
+INSERT INTO x SELECT l.id FROM log AS l WHERE l.id > 0
+----
+error changelog_key 1:47 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+plan
+INSERT INTO x SELECT * FROM (SELECT id FROM log WHERE id > 0) AS s
+----
+error changelog_key 1:55 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+plan
+CREATE VIEW v AS SELECT id FROM log WHERE id IS NOT NULL;
+INSERT INTO x SELECT id FROM v
+----
+error changelog_key 1:43 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+plan
+CREATE VIEW v AS SELECT id, tags FROM log;
+INSERT INTO x SELECT id FROM v WHERE id > 0
+----
+error changelog_key 2:38 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+# Without a WHERE, it plans: each row passes with its op.
+plan
+INSERT INTO x SELECT id, tags FROM log
 ----
 statement 1:1 x row_wise
   inputs log
   key 
   schema id Int64, tags List(Utf8)
   reads log changelog: id, tags
-  filter log.id > Int64(0)
-note 1:1 log is a changelog: a row that an update brings into the WHERE without sending a column an output column needs, as Postgres leaves out a large value that didn't change, lands without that column's current value
+
+# So does a WHERE that simplifies to true, which leaves no filter.
+plan
+INSERT INTO x SELECT id, tags FROM log WHERE TRUE
+----
+statement 1:1 x row_wise
+  inputs log
+  key 
+  schema id Int64, tags List(Utf8)
+  reads log changelog: id, tags
 
 plan
 INSERT INTO x SELECT tenant, name FROM cdc2
@@ -354,3 +397,17 @@ plan
 INSERT INTO x SELECT id FROM cdc WHERE id IN (SELECT id FROM cdc2)
 ----
 error later_tier join 1:40 a subquery: transforms don't run joins yet (tier 4)
+
+# The guide's example.
+reset
+
+stream log changelog
+  id int64
+  kind utf8
+
+plan
+INSERT INTO clicks
+SELECT id, kind FROM log
+WHERE kind = 'click';
+----
+error changelog_key 3:7 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline

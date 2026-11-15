@@ -4,10 +4,12 @@
 //! destination naming, metadata columns and holds apply to.
 //!
 //! A statement keeps each row's `_openetl_id`, op and seq. On a changelog
-//! stream a delete passes as a delete of its key, and an insert or update
-//! that a filter drops becomes one. A row `UNNEST` gives gets an ID of its
-//! own, derived from its source row's. A row the statement can't evaluate
-//! is the caller's to quarantine.
+//! stream a delete passes without the filters, with what the projections
+//! give of the values it came with, or as a delete of its key alone where
+//! they fail on it; an insert or update that a filter drops becomes a
+//! delete of its key alone. A row `UNNEST` gives gets an ID of its own,
+//! derived from its source row's. A row the statement can't evaluate is
+//! the caller's to quarantine.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -19,7 +21,7 @@ use arrow_array::{
     new_null_array,
 };
 use arrow_schema::{Field, Schema, SchemaRef};
-use openetl_normalize::{Control, Typed, element_ids};
+use openetl_normalize::{Control, Rejected, Typed, element_ids};
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_sql::{RowWise, Step};
 
@@ -97,6 +99,40 @@ impl Stage {
             }),
             Stage::Statement(b) => b.apply(typed, pushed, cursor),
         }
+    }
+
+    /// Of `rejected`, the rows of `out`, as `apply` gave it, that the
+    /// output's conformance left out: the rest, and the deletes among them
+    /// as deletes of their key alone, to conform again. A statement's delete
+    /// isn't quarantined for its values.
+    pub fn deletes_by_key(
+        &self,
+        out: &Typed,
+        rejected: Vec<Rejected>,
+    ) -> Result<(Vec<Rejected>, Option<Typed>), JobError> {
+        let (Stage::Statement(b), Some(ops), Some(rows)) = (self, &out.control.op, &out.rows)
+        else {
+            return Ok((rejected, None));
+        };
+        let deletes: BTreeMap<usize, usize> = rows
+            .iter()
+            .zip(ops.as_string::<i32>().iter())
+            .enumerate()
+            .filter(|(_, (_, op))| *op == Some("delete"))
+            .map(|(i, (&r, _))| (r, i))
+            .collect();
+        let mut rest = Vec::with_capacity(rejected.len());
+        let mut keys = Vec::new();
+        for r in rejected {
+            match deletes.get(&r.row) {
+                Some(&i) => keys.push(i),
+                None => rest.push(r),
+            }
+        }
+        if keys.is_empty() {
+            return Ok((rest, None));
+        }
+        Ok((rest, Some(b.key_only(out, &keys)?)))
     }
 }
 
@@ -307,7 +343,7 @@ impl Bound {
         let all: Vec<usize> = (0..input.num_rows())
             .filter(|r| !held.contains_key(r))
             .collect();
-        let (ran, mut failed) = self.run_rows(&input, &typed.ids, &all, &BTreeSet::new())?;
+        let (ran, mut failed) = self.run_rows(&input, &typed.ids, &all, &BTreeSet::new(), true)?;
         failed.extend(held);
         failed.sort_by_key(|(r, _)| *r);
         let seq = match (
@@ -340,7 +376,9 @@ impl Bound {
 
     /// A changelog's batch: every row the statement can evaluate gives one,
     /// in order. Inserts and updates that pass its filters are the
-    /// statement's rows; deletes, and the rest, deletes of their key.
+    /// statement's rows, and the rest deletes of their key. Deletes pass
+    /// without the filters, projected, or as deletes of their key where the
+    /// projections fail on them.
     fn changelog(
         &self,
         typed: &Typed,
@@ -364,8 +402,14 @@ impl Bound {
         // update didn't send.
         let mut runs: BTreeMap<BTreeSet<usize>, Vec<usize>> = BTreeMap::new();
         let mut dead = vec![false; n];
+        let mut deletes = Vec::new();
         for (r, u) in unchanged.iter_mut().enumerate() {
+            // A delete with a held cell has no value there to project, so it
+            // passes as a delete of its key.
             if op(r) == Some("delete") {
+                if !held.contains_key(&r) {
+                    deletes.push(r);
+                }
                 continue;
             }
             if let Some(why) = held.remove(&r) {
@@ -394,11 +438,20 @@ impl Bound {
         let mut passed = vec![None; n];
         let mut parts = Vec::with_capacity(runs.len());
         for (unsent, rows) in &runs {
-            let (ran, more) = self.run_rows(&input, &typed.ids, rows, unsent)?;
+            let (ran, more) = self.run_rows(&input, &typed.ids, rows, unsent, true)?;
             for (r, why) in more {
                 dead[r] = true;
                 failed.push((r, why));
             }
+            for (i, &r) in ran.rows.iter().enumerate() {
+                passed[r] = Some((parts.len(), i));
+            }
+            parts.push(self.output(&ran.batch)?);
+        }
+        // A delete whose projections fail is left to pass as a delete of
+        // its key.
+        if !deletes.is_empty() {
+            let (ran, _) = self.run_rows(&input, &typed.ids, &deletes, &BTreeSet::new(), false)?;
             for (i, &r) in ran.rows.iter().enumerate() {
                 passed[r] = Some((parts.len(), i));
             }
@@ -534,6 +587,40 @@ impl Bound {
         }))
     }
 
+    /// `rows` of `out`, an output this gave, with nulls but in the key's
+    /// columns.
+    fn key_only(&self, out: &Typed, rows: &[usize]) -> Result<Typed, JobError> {
+        let key = &self.st().key;
+        let batch = take_batch(&out.batch, rows)?;
+        let schema = batch.schema();
+        let columns = schema
+            .fields()
+            .iter()
+            .zip(batch.columns())
+            .map(|(f, c)| match key.contains(f.name()) {
+                true => c.clone(),
+                false => new_null_array(f.data_type(), rows.len()),
+            })
+            .collect();
+        let some = |a: &Option<ArrayRef>| a.as_ref().map(|a| take(a, rows)).transpose();
+        let ids = take(&(Arc::new(out.ids.clone()) as ArrayRef), rows)?;
+        Ok(Typed {
+            batch: batch_of(schema, columns, rows.len())?,
+            ids: ids.as_fixed_size_binary().clone(),
+            control: Control {
+                op: some(&out.control.op)?,
+                seq: some(&out.control.seq)?,
+                unchanged: some(&out.control.unchanged)?,
+            },
+            cells: Vec::new(),
+            rejected: Vec::new(),
+            rows: out
+                .rows
+                .as_ref()
+                .map(|r| rows.iter().map(|&i| r[i]).collect()),
+        })
+    }
+
     /// Each output column for deletes of `rows`' keys: the key's columns'
     /// values, and nulls.
     fn keys(&self, batch: &RecordBatch, rows: &[usize]) -> Result<Vec<ArrayRef>, JobError> {
@@ -569,15 +656,16 @@ impl Bound {
         Ok(out)
     }
 
-    /// Runs the steps on `rows` of `input`, which didn't send `unsent`. If
-    /// a batch fails, each row runs on its own, and those that fail are left
-    /// out, with why.
+    /// Runs the steps on `rows` of `input`, which didn't send `unsent`,
+    /// without the filters unless `filter`. If a batch fails, each row runs
+    /// on its own, and those that fail are left out, with why.
     fn run_rows(
         &self,
         input: &RecordBatch,
         ids: &FixedSizeBinaryArray,
         rows: &[usize],
         unsent: &BTreeSet<usize>,
+        filter: bool,
     ) -> Result<(Ran, Vec<(usize, String)>), JobError> {
         let (some, some_ids) = match rows.len() == input.num_rows() {
             true => (input.clone(), ids.clone()),
@@ -589,21 +677,21 @@ impl Bound {
             ),
         };
         let mut failed = Vec::new();
-        let ok: Vec<usize> = match self.run(some.clone(), some_ids.clone(), unsent) {
+        let ok: Vec<usize> = match self.run(some.clone(), some_ids.clone(), unsent, filter) {
             Ok(mut ran) => {
                 ran.rows = ran.rows.iter().map(|&r| rows[r]).collect();
                 return Ok((ran, failed));
             }
             Err(_) => (0..rows.len())
-                .filter(
-                    |&i| match self.run(some.slice(i, 1), some_ids.slice(i, 1), unsent) {
+                .filter(|&i| {
+                    match self.run(some.slice(i, 1), some_ids.slice(i, 1), unsent, filter) {
                         Ok(_) => true,
                         Err(e) => {
                             failed.push((rows[i], self.reason(&e.message)));
                             false
                         }
-                    },
-                )
+                    }
+                })
                 .collect(),
         };
         let kept = take_batch(&some, &ok)?;
@@ -611,7 +699,7 @@ impl Bound {
             .as_fixed_size_binary()
             .clone();
         // Without the evaluation's message, which can hold a row's values.
-        let mut ran = self.run(kept, kept_ids, unsent).map_err(|e| {
+        let mut ran = self.run(kept, kept_ids, unsent, filter).map_err(|e| {
             JobError::new(
                 ErrorCode::DataInvalid,
                 self.reason(&format!(
@@ -624,16 +712,17 @@ impl Bound {
         Ok((ran, failed))
     }
 
-    /// The steps, on every row of `batch`: filters drop rows, and `UNNEST`
-    /// gives several, with IDs of their own. `unsent` are the columns the
-    /// statement reads, by index, that the rows' update didn't send: a
-    /// column that depends only on them is null, not evaluated, since the
-    /// destination keeps its value.
+    /// The steps, on every row of `batch`: filters drop rows, unless not
+    /// `filter`, and `UNNEST` gives several, with IDs of their own. `unsent`
+    /// are the columns the statement reads, by index, that the rows' update
+    /// didn't send: a column that depends only on them is null, not
+    /// evaluated, since the destination keeps its value.
     fn run(
         &self,
         batch: RecordBatch,
         ids: FixedSizeBinaryArray,
         unsent: &BTreeSet<usize>,
+        filter: bool,
     ) -> Result<Ran, openetl_sql::Error> {
         let eval = |e: arrow_schema::ArrowError| openetl_sql::Error {
             kind: openetl_sql::ErrorKind::Eval,
@@ -645,6 +734,7 @@ impl Bound {
         let mut ids = ids;
         for (step, deps) in self.op.steps.iter().zip(&self.deps.steps) {
             match step {
+                Step::Filter(_) if !filter => {}
                 Step::Filter(p) => {
                     let keep = p.eval_predicate(&cur)?;
                     if keep.true_count() == keep.len() {
@@ -979,6 +1069,110 @@ mod tests {
         assert_eq!(out.typed.ids, t.ids);
         let seq = out.typed.control.seq.unwrap();
         assert_eq!(seq.as_primitive::<Int64Type>().values(), &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_delete_the_source_sent_with_values_keeps_them_through_the_projection() {
+        let mut st = stage(
+            "INSERT INTO a SELECT id AS key, upper(email) AS email, name FROM a WHERE email <> 'void'",
+            true,
+        );
+        let t = typed(
+            batch(&[
+                (1, Some("gone"), Some("ann")),
+                (2, Some("void"), Some("bo")),
+                (3, Some("void"), Some("cy")),
+            ]),
+            control(&["delete", "update", "delete"], &[None; 3]),
+        );
+        let out = st.apply(&t, &[0, 1, 2], None).unwrap();
+        assert!(out.failed.is_empty());
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "key"), [Some(1), Some(2), Some(3)]);
+        assert_eq!(
+            strs(b.column(1)),
+            [Some("GONE".into()), None, Some("VOID".into())]
+        );
+        assert_eq!(
+            strs(b.column(2)),
+            [Some("ann".into()), None, Some("cy".into())]
+        );
+        assert_eq!(
+            strs(out.typed.control.op.as_ref().unwrap()),
+            some(&["delete", "delete", "delete"])
+        );
+        assert_eq!(out.typed.ids, t.ids);
+    }
+
+    #[test]
+    fn a_delete_with_a_held_cell_passes_as_a_delete_of_its_key() {
+        let mut st = stage(
+            "INSERT INTO a SELECT id, upper(email) AS email FROM a",
+            true,
+        );
+        let mut t = typed(
+            batch(&[(1, Some("x"), None), (2, Some("y"), None)]),
+            control(&["delete", "delete"], &[None; 2]),
+        );
+        t.cells.push(openetl_normalize::hold::HeldCell {
+            row: 0,
+            column: "name".into(),
+            reason: "too long".into(),
+            raw: "?".into(),
+        });
+        let out = st.apply(&t, &[0, 1], None).unwrap();
+        assert!(out.failed.is_empty());
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "id"), [Some(1), Some(2)]);
+        assert_eq!(strs(b.column(1)), [None, Some("Y".into())]);
+    }
+
+    #[test]
+    fn a_keyless_changelogs_delete_keeps_its_values() {
+        let mut i = input(true);
+        i.key.clear();
+        let t = Arc::new(
+            Transform::plan(
+                "INSERT INTO b SELECT id, upper(email) AS email FROM a",
+                vec![i],
+            )
+            .unwrap(),
+        );
+        let mut st = Stage::statement(&t, 0);
+        let t = typed(
+            batch(&[(1, Some("x"), None), (1, Some("x"), None)]),
+            control(&["insert", "delete"], &[None; 2]),
+        );
+        let out = st.apply(&t, &[0, 1], None).unwrap();
+        assert!(out.failed.is_empty());
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "id"), [Some(1), Some(1)]);
+        assert_eq!(strs(b.column(1)), some(&["X", "X"]));
+        assert_eq!(
+            strs(out.typed.control.op.as_ref().unwrap()),
+            some(&["insert", "delete"])
+        );
+    }
+
+    #[test]
+    fn a_delete_the_projection_cant_evaluate_passes_as_a_delete_of_its_key() {
+        let mut st = stage(
+            "INSERT INTO a SELECT id, CAST(email AS BIGINT) AS n FROM a",
+            true,
+        );
+        let t = typed(
+            batch(&[(1, Some("ten"), None), (2, Some("12"), None)]),
+            control(&["delete", "delete"], &[None; 2]),
+        );
+        let out = st.apply(&t, &[0, 1], None).unwrap();
+        assert!(out.failed.is_empty());
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "id"), [Some(1), Some(2)]);
+        assert_eq!(ints(b, "n"), [None, Some(12)]);
+        assert_eq!(
+            strs(out.typed.control.op.as_ref().unwrap()),
+            some(&["delete", "delete"])
+        );
     }
 
     #[test]
