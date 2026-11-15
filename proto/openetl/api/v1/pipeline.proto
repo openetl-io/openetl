@@ -512,7 +512,9 @@ enum Infinity {
   INFINITY_UNSPECIFIED = 0;
   // To the type's largest or smallest value. The default.
   INFINITY_CLAMP = 1;
-  INFINITY_QUARANTINE = 2;
+  // A value that doesn't fit its type, which the stream's unfit_values
+  // decides.
+  INFINITY_UNFIT = 2;
 }
 
 enum PipelineMode {
@@ -560,10 +562,9 @@ message PipelineStream {
   // primary key. Unset: true for a superset stream whose require is above
   // at least once, otherwise false.
   optional bool collapse = 7;
-  // What a value that doesn't fit its type holds back: its row,
-  // the default, or only its cell, for a keyed stream into a destination
-  // that patches.
-  QuarantineScope quarantine = 8;
+  // What a value that doesn't fit its type does: quarantines its row, the
+  // default, or holds its cell where the cell can be held.
+  UnfitValues unfit_values = 8;
   // What a held cell shows, for columns the columns map doesn't say.
   Held held = 9;
   // Columns held together, by source name: holding one holds the rest.
@@ -602,12 +603,16 @@ enum TypeChanges {
   TYPE_CHANGES_ALLOW = 2;
 }
 
-enum QuarantineScope {
-  QUARANTINE_SCOPE_UNSPECIFIED = 0;
-  // The default.
-  QUARANTINE_SCOPE_ROW = 1;
-  // For a keyed stream into a destination that patches its write mode.
-  QUARANTINE_SCOPE_CELL = 2;
+// What a value that doesn't fit its column's type does.
+enum UnfitValues {
+  UNFIT_VALUES_UNSPECIFIED = 0;
+  // Its row isn't written, and is quarantined with the reason. The default.
+  UNFIT_VALUES_QUARANTINE = 1;
+  // The row is written with the cell held, to be patched in on release.
+  // For a keyed stream into a destination that patches its write mode. A
+  // value in a column that can't be held, such as a key, still quarantines
+  // its row.
+  UNFIT_VALUES_HOLD = 2;
 }
 
 message Held {

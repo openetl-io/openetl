@@ -33,7 +33,7 @@ spec:
       - name: orders
         sync: incremental
         cursor: updated_at
-        quarantine: cell
+        unfitValues: hold
   destination:
     ref: schema-demo
     write: merge

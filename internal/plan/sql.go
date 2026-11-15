@@ -210,8 +210,8 @@ func landingSettings(ps *apiv1.PipelineStream) []string {
 		return nil
 	}
 	var set []string
-	if ps.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL {
-		set = append(set, "quarantine")
+	if ps.GetUnfitValues() == apiv1.UnfitValues_UNFIT_VALUES_HOLD {
+		set = append(set, "unfitValues")
 	}
 	held := ps.GetHeld() != nil
 	for _, c := range ps.GetColumns() {

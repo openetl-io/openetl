@@ -64,19 +64,22 @@ A pipeline requires exactly-once delivery by default. OpenETL refuses to run it 
 
 `openetl plan` shows each stream's guarantee and its reason when the control plane has the necessary stream and connector information. The source catalog describes the streams. The destination connector's package describes its capabilities. Otherwise, the plan explains what it cannot check, and the runner checks before the sync.
 
-## Schema changes and holds
+## Schema changes
 
 The **schema** describes a stream's columns and types. The pipeline's **schema policy** controls how OpenETL handles new columns and type changes. By default, new columns are added to the destination. A stream's type can widen to represent larger values.
 
 An integer column that has contained a value beyond ±2^53 (9,007,199,254,740,992) widens to text if fractional values arrive. Conversion to floating point could round those integers. Text preserves their values.
 
-By default, OpenETL does not change an existing destination column's type. That operation can rewrite or lock a table. A pipeline can permit type changes for all streams or selected streams.
+By default, OpenETL does not change an existing destination column's type. That operation can rewrite or lock a table. A pipeline can permit type changes for all streams or selected streams. If the destination refuses a type change, OpenETL holds the column where it can, or stops the stream.
 
-If the destination refuses a type change, OpenETL **holds** the affected values where supported, or stops the stream. A hold saves values while the pipeline continues to deliver the rest of the row. It explains the destination change needed to accept those values.
+## Holds and quarantine
 
-After that change, **releasing** the hold writes the saved values into the destination on the next run. **Discarding** the hold deletes the saved values and leaves the destination column's type unchanged. See [Handle schema changes and holds](../pipelines/schema-changes.md) for the procedure.
+Sometimes OpenETL cannot write a value: it does not fit its column's type, or the destination refuses a change to its column. OpenETL keeps such a value back in one of two ways, and never drops it without a record.
 
-**Quarantine** saves a row or cell whose value does not fit its column's type. Row quarantine excludes the whole row from delivery. Cell quarantine holds only the affected cell where the destination supports later repair.
+- A **hold** keeps back a value, or a whole column, from a row that OpenETL writes. The row's other columns are current. After you change what refused the values, **releasing** the hold writes them into the same rows on the next run. **Discarding** it deletes the saved values. A hold needs a primary key and a destination that can patch rows.
+- **Quarantine** keeps back a whole row. OpenETL does not write the row, and saves it as the source sent it, with the reason. There is no row to patch, so a quarantined row comes back only when the source sends it again or you load it yourself.
+
+OpenETL holds a change to a column where it can. For a single value that does not fit, the pipeline chooses: quarantine the row, which is the default, or hold the value. If a pipeline holds values, it still quarantines a row whose value is in a column that OpenETL cannot hold, such as a primary key. [Holds and quarantine](../pipelines/holds-and-quarantine.md) explains when each applies and how to choose. [Handle schema changes and holds](../pipelines/schema-changes.md) walks through a release.
 
 ## Incidents
 

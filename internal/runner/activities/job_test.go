@@ -32,7 +32,7 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 					"b": {Type: apiv1.ColumnType_COLUMN_TYPE_FLOAT64},
 				},
 			}}},
-			Types:       &apiv1.Types{Infinity: apiv1.Infinity_INFINITY_QUARANTINE},
+			Types:       &apiv1.Types{Infinity: apiv1.Infinity_INFINITY_UNFIT},
 			Destination: &apiv1.PipelineDestination{TypeChanges: apiv1.TypeChanges_TYPE_CHANGES_ALLOW},
 		},
 		Releases: []*dataplanev1.HoldRelease{{Stream: "users", Column: "a", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}}},
@@ -44,7 +44,7 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 	if len(o) != 2 || !arrow.TypeEqual(o["a"], arrow.BinaryTypes.String) || !arrow.TypeEqual(o["b"], arrow.PrimitiveTypes.Float64) {
 		t.Errorf("overrides %v", o)
 	}
-	if !job.QuarantineInfinity {
+	if !job.UnfitInfinity {
 		t.Error("infinities aren't quarantined")
 	}
 	if !job.Streams[0].NanosecondTimestamps {
@@ -60,9 +60,9 @@ func TestBuildJobTakesTypeSettings(t *testing.T) {
 
 func TestStreamHoldsFromTheSpec(t *testing.T) {
 	h := streamHolds(&apiv1.PipelineStream{
-		Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL,
-		Held:       &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_VALUE, Value: "0"},
-		Groups:     []*apiv1.ColumnGroup{{Columns: []string{"amount", "currency"}}},
+		UnfitValues: apiv1.UnfitValues_UNFIT_VALUES_HOLD,
+		Held:        &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_VALUE, Value: "0"},
+		Groups:      []*apiv1.ColumnGroup{{Columns: []string{"amount", "currency"}}},
 		Columns: map[string]*apiv1.PipelineColumn{
 			"note":  {Held: &apiv1.Held{Mode: apiv1.HeldMode_HELD_MODE_LAST}},
 			"price": {Type: apiv1.ColumnType_COLUMN_TYPE_STRING},

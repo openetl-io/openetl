@@ -460,8 +460,8 @@ impl Plan {
             SchemaPolicy::Block => Policy::Block,
             SchemaPolicy::IgnoreNew => Policy::IgnoreNew,
         };
-        let infinity = match req.quarantine_infinity {
-            true => Infinity::Quarantine,
+        let infinity = match req.unfit_infinity {
+            true => Infinity::Unfit,
             false => Infinity::Clamp,
         };
         let types = sinks
@@ -1004,7 +1004,7 @@ pub(crate) mod tests {
             naming: None,
             quarantine_url: String::new(),
             schema_policy: 0,
-            quarantine_infinity: false,
+            unfit_infinity: false,
             passthrough: false,
             held_url: String::new(),
             lanes: 0,
@@ -1152,10 +1152,10 @@ pub(crate) mod tests {
     #[test]
     fn type_options_follow_the_job_and_each_stream() {
         let mut req = request(&["a", "b"]);
-        req.quarantine_infinity = true;
+        req.unfit_infinity = true;
         req.streams[1].nanosecond_timestamps = true;
         let p = Plan::from_request(req).unwrap();
-        let q = Infinity::Quarantine;
+        let q = Infinity::Unfit;
         assert_eq!(
             p.types,
             vec![

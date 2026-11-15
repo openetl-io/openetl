@@ -212,23 +212,23 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		policy = runner.IgnoreNew
 	}
 	return runner.Job{
-		Pipeline:           spec.GetPipelineId(),
-		Continuous:         plan.Continuous(p),
-		Source:             src,
-		Streams:            streams,
-		Paused:             pausedStreams,
-		Outputs:            outputs,
-		SQL:                sqlT,
-		Destination:        dst,
-		Namespace:          p.GetDestination().GetNamespace(),
-		Settings:           plan.Settings(p, dst.Capabilities()),
-		KeepSourceNames:    p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
-		SchemaPolicy:       policy,
-		QuarantineInfinity: p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_QUARANTINE,
-		Releases:           releases(spec.GetReleases()),
-		Resets:             resets(spec.GetResets()),
-		Rewind:             rewindPolicy(p.GetHeal().GetMode(), spec.GetRewind()),
-		KeyGroups:          int(spec.GetKeyGroups()),
+		Pipeline:        spec.GetPipelineId(),
+		Continuous:      plan.Continuous(p),
+		Source:          src,
+		Streams:         streams,
+		Paused:          pausedStreams,
+		Outputs:         outputs,
+		SQL:             sqlT,
+		Destination:     dst,
+		Namespace:       p.GetDestination().GetNamespace(),
+		Settings:        plan.Settings(p, dst.Capabilities()),
+		KeepSourceNames: p.GetDestination().GetNaming() == apiv1.Naming_NAMING_SOURCE,
+		SchemaPolicy:    policy,
+		UnfitInfinity:   p.GetTypes().GetInfinity() == apiv1.Infinity_INFINITY_UNFIT,
+		Releases:        releases(spec.GetReleases()),
+		Resets:          resets(spec.GetResets()),
+		Rewind:          rewindPolicy(p.GetHeal().GetMode(), spec.GetRewind()),
+		KeyGroups:       int(spec.GetKeyGroups()),
 	}, nil
 }
 
@@ -240,7 +240,7 @@ var columnTypes = map[apiv1.ColumnType]arrow.DataType{
 // streamHolds is how a stream holds back columns and cells.
 func streamHolds(ps *apiv1.PipelineStream) *runner.StreamHolds {
 	h := &runner.StreamHolds{
-		Cells: ps.GetQuarantine() == apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL,
+		Cells: ps.GetUnfitValues() == apiv1.UnfitValues_UNFIT_VALUES_HOLD,
 		Held:  held(ps.GetHeld()),
 	}
 	for name, c := range ps.GetColumns() {
