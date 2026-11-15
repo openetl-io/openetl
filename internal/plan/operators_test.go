@@ -174,3 +174,21 @@ func TestOperatorsSayWhatTheLastCheckpointHolds(t *testing.T) {
 		t.Errorf("notes for a dropped operator with nothing held: %v", notes)
 	}
 }
+
+// An earlier operator whose state the last checkpoint holds restores it,
+// so it needs no backfill; where that isn't known, the backfill's warning
+// says it applies only if the state starts empty.
+func TestAnEarlierOperatorsBackfill(t *testing.T) {
+	applied := &apiv1.SqlPlan{Outputs: []*apiv1.SqlOutput{{Name: "out", Operator: "window-b"}}, Operators: []string{"window-b"}, Dropped: []string{"window-a"}}
+	a := &sqlplan.Answer{Statements: []sqlplan.Statement{window(1, "out", "orders", "window-a")}}
+	read := map[string]bool{"orders": true}
+	ops, warnings, _ := Operators(windowSpec(0), windowCatalog, a, applied, read, map[string]bool{"window-a": true, "window-b": true})
+	if len(ops) != 1 || len(ops[0].GetBackfill()) != 0 || len(warnings) != 1 || strings.Contains(warnings[0].GetMessage(), "hold only rows") {
+		t.Errorf("held: %v %v", ops, warnings)
+	}
+	ops, warnings, _ = Operators(windowSpec(0), windowCatalog, a, applied, read, nil)
+	if len(ops) != 1 || !slices.Equal(ops[0].GetBackfill(), []string{"orders"}) || len(warnings) != 1 ||
+		!strings.Contains(warnings[0].GetMessage(), ": if it starts empty, from the next sync, its windows hold only rows read from then on") {
+		t.Errorf("unknown: %v %v", ops, warnings)
+	}
+}

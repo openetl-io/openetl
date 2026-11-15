@@ -10,11 +10,20 @@ use datafusion_expr::utils::split_conjunction;
 use datafusion_expr::{Expr as DfExpr, LogicalPlan};
 use twox_hash::XxHash3_64;
 
-/// The longest text a column of a step is written as. A longer one is
-/// written as `$` and the hash of its text, so the text of a chain of steps
-/// that each read a column several times grows with the steps, not with
-/// the columns they expand to.
+/// The longest text an expression is written as. A longer one is written
+/// as `$` and the hash of its text, so the text of a chain of steps that
+/// each read a column several times grows with the steps, not with the
+/// columns they expand to. Every expression is bounded alike, a column of a
+/// view's as any part of a statement's, so where an expression is written
+/// doesn't change its text.
 const LONGEST: usize = 256;
+
+fn bounded(text: String) -> String {
+    match text.len() > LONGEST {
+        true => format!("${:016x}", XxHash3_64::oneshot(text.as_bytes())),
+        false => text,
+    }
+}
 
 /// Writes expressions over a plan's steps as text over the stream's
 /// columns. It keeps each column of each step it has written, so a column
@@ -28,6 +37,10 @@ impl Canon {
     /// `e`, an expression over `node`'s output, as text over the stream's
     /// columns: each column it reads written as what computes it.
     pub(crate) fn over(&mut self, e: &DfExpr, node: &LogicalPlan) -> Result<String, String> {
+        self.unbounded(e, node).map(bounded)
+    }
+
+    fn unbounded(&mut self, e: &DfExpr, node: &LogicalPlan) -> Result<String, String> {
         use DfExpr as E;
         let not = |negated: bool| if negated { "not " } else { "" };
         Ok(match e {
@@ -152,10 +165,7 @@ impl Canon {
             }
             other => return Err(format!("a {} step", other.display())),
         };
-        let text = match text.len() > LONGEST {
-            true => format!("${:016x}", XxHash3_64::oneshot(text.as_bytes())),
-            false => text,
-        };
+        let text = bounded(text);
         self.columns.insert(key, text.clone());
         Ok(text)
     }

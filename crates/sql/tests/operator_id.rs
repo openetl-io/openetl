@@ -150,6 +150,28 @@ fn edits_that_keep_what_it_computes_keep_its_id() {
         ),
         "an argument that a view names as another column"
     );
+    // A long expression, written in the statement or in a view, whole or
+    // in part.
+    let long = vec!["qty"; 60].join(" + ");
+    let inline = id(&format!(
+        "INSERT INTO revenue SELECT window_start, region, sum({long} + 1) AS total \
+         FROM orders GROUP BY tumble(created_at, INTERVAL '1 minute'), region"
+    ));
+    assert!(long.len() > 256, "the expression is shorter than the bound");
+    for (what, view, arg) in [
+        ("the argument", format!("{long} + 1"), "x"),
+        ("part of it", long.clone(), "x + 1"),
+    ] {
+        assert_eq!(
+            id(&format!(
+                "CREATE VIEW v AS SELECT {view} AS x, region, created_at FROM orders;\n\
+                 INSERT INTO revenue SELECT window_start, region, sum({arg}) AS total \
+                 FROM v GROUP BY tumble(created_at, INTERVAL '1 minute'), region"
+            )),
+            inline,
+            "a long expression with {what} in a view"
+        );
+    }
 }
 
 #[test]

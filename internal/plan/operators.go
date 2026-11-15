@@ -72,7 +72,8 @@ func Operators(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer, 
 		}
 		holds(op)
 		fresh := op.Change == apiv1.OperatorChange_OPERATOR_CHANGE_NEW || op.Change == apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED
-		if fresh && op.Input != "" && read[op.Input] && !full {
+		restores := op.GetEarlier() && op.GetHeld()
+		if fresh && !restores && op.Input != "" && read[op.Input] && !full {
 			op.Backfill = []string{op.Input}
 		}
 		if w := changeWarning(op); w != "" {
@@ -123,8 +124,12 @@ func changeWarning(op *apiv1.OperatorPlan) string {
 	at := fmt.Sprintf("transform.sql:%d:%d: ", op.GetLine(), op.GetColumn())
 	backfill := ""
 	if len(op.GetBackfill()) > 0 {
-		backfill = fmt.Sprintf(": from the next sync, its windows hold only rows read from then on, and a window open now loses the rows read before; "+
-			"openetl reset --stream %s, after applying, reads %s again from the start to build it (a backfill)", op.GetInput(), op.GetInput())
+		empty := "from the next sync"
+		if op.GetEarlier() {
+			empty = "if it starts empty, from the next sync"
+		}
+		backfill = fmt.Sprintf(": %s, its windows hold only rows read from then on, and a window open now loses the rows read before; "+
+			"openetl reset --stream %s, after applying, reads %s again from the start to build it (a backfill)", empty, op.GetInput(), op.GetInput())
 	}
 	// An operator that an earlier version had: the current version dropped
 	// its state, but a sync may not have yet.

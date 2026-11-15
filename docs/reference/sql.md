@@ -216,7 +216,7 @@ A group window keeps each window's aggregates as state, by key group, until its 
 
 ### Changing a query
 
-The operator's ID is a hash of what the operator computes and keeps. The engine writes it over the stream's own columns, so names and the shape of the SQL do not change it. Each checkpoint names the state by the ID.
+The operator's ID is a hash of what the operator computes and keeps. The engine writes it over the stream's own columns, so the names of columns, aliases and views, and the shape of the SQL, do not change it. The output's name is part of the ID: an output of another name is another operator, which does not keep the state. Each checkpoint names the state by the ID.
 
 These edits keep the ID, and with it the state:
 

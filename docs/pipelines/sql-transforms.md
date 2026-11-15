@@ -275,9 +275,9 @@ A group window keeps state between syncs, under an ID that the plan shows. Other
 1. Edit the statement.
 2. Run `openetl plan -f FILE`, and read the `state` section of `transform.sql`. Each window shows `kept`, `new`, `changed` or `dropped`.
 3. Run `openetl apply -f FILE`. The next sync drops the state of each changed or dropped window.
-4. If a changed or new window must include the rows that the pipeline read before, read its stream again. A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again ([Read streams again from the start](./positions.md#read-streams-again-from-the-start)). Run `openetl reset --stream STREAM NAME`.
+4. If the stream is not read with `full_refresh`, and a changed or new window must include the rows that the pipeline read before, read the stream again. A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again ([Read streams again from the start](./positions.md#read-streams-again-from-the-start)). Run `openetl reset --stream STREAM NAME`.
 
-Without step 4, a changed or new window holds only the rows read after the change. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
+A stream read with `full_refresh` is read whole at each sync, so a changed or new window over it holds every row from the next sync on. Over another stream, without step 4, a changed or new window holds only the rows read after the change. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
 
 ## Changelog streams
 

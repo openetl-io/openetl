@@ -1,5 +1,6 @@
 import { OperatorChange, type OperatorPlan, type StatementPlan, type TransformPlan, type ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
-import { duration, durationMs } from "@/lib/format";
+import type { Duration } from "@bufbuild/protobuf/wkt";
+import { goDuration } from "@/lib/spec-yaml";
 
 // A SQL transform's plan as the console shows it: the plan's problems and
 // notes about transform.sql, each at its place in the SQL when it has one.
@@ -59,14 +60,17 @@ export function notDelivered(t: TransformPlan) {
   return t.withheld.filter((s) => !replaced.has(s));
 }
 
+/** A duration of a plan exactly, as the spec writes one: 1h1s, 90s as 1m30s. */
+export const span = (d?: Duration) => (d ? goDuration(`${Number(d.seconds) + d.nanos / 1e9}s`) : "0s");
+
 /**
  * What a stateful operator computes, by the stream's names: "tumble 1m 00s by created_at on region: sum(amount), count(*)".
  * Empty for a dropped one, whose statement is gone.
  */
 export function operatorComputes(op: OperatorPlan) {
   if (!op.window) return "";
-  let s = `${op.window} ${duration(durationMs(op.size))}`;
-  if (op.slide) s += ` every ${duration(durationMs(op.slide))}`;
+  let s = `${op.window} ${span(op.size)}`;
+  if (op.slide) s += ` every ${span(op.slide)}`;
   s += ` by ${op.eventTime}`;
   if (op.keys.length) s += ` on ${op.keys.join(", ")}`;
   return `${s}: ${op.aggregates.join(", ")}`;
