@@ -284,11 +284,19 @@ func TestWorkersOnKubernetes(t *testing.T) {
 	}
 	// The cluster enforces the policies: a job pod reaches the coordinator,
 	// and then, with the policies applied for as long, another pod of the
-	// data plane doesn't, in one try.
-	if !p.reaches(t, map[string]string{"app.kubernetes.io/managed-by": "openetl", "app.kubernetes.io/component": "attempt"}, at, 12) {
+	// data plane doesn't, in one try, while a job pod still does after it,
+	// so the coordinator was listening throughout.
+	job := func() map[string]string {
+		return map[string]string{"app.kubernetes.io/managed-by": "openetl", "app.kubernetes.io/component": "attempt"}
+	}
+	if !p.reaches(t, job(), at, 12) {
 		t.Fatalf("a job pod doesn't reach the coordinator at %s under the Kubernetes page's NetworkPolicy", at)
 	}
-	if p.reaches(t, map[string]string{"app.kubernetes.io/name": "probe"}, at, 1) {
+	denied := p.reaches(t, map[string]string{"app.kubernetes.io/name": "probe"}, at, 1)
+	if !p.reaches(t, job(), at, 1) {
+		t.Fatalf("the coordinator at %s stopped listening during the denied probe, so that probe shows nothing", at)
+	}
+	if denied {
 		t.Errorf("a pod no policy allows reaches the coordinator at %s, so the cluster doesn't enforce NetworkPolicy", at)
 	}
 
