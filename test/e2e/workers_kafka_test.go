@@ -20,9 +20,12 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kgo"
 
+	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
@@ -173,13 +176,34 @@ func (p *laneLossProxy) read(ctx context.Context, path string) (checkpoint.Recor
 // generation.
 var laneRedoing = regexp.MustCompile(`msg="redoing a writer lane's part of an epoch from the source" .*lane=(\d+) epoch=(\d+) of_generation=(\d+)`)
 
-// A sync from Kafka's partitions into Kafka runs on two workers, each
-// committing its own writer lanes. One worker is lost once every lane has
-// staged an epoch the record names: its lanes' transactions are left open
-// while the other worker's commit. The next attempt finds the committed
-// lanes' markers, and reads the lost lanes' part of the epoch from the
-// source again, up to where it ended, so the topic, read committed, has
-// every record once.
+// produceRound writes ids from..from+n-1 to topic, outside a transaction,
+// each partition in turn from 0.
+func produceRound(t *testing.T, cl *kgo.Client, topic string, from, n int, partitions int32) {
+	t.Helper()
+	recs := make([]*kgo.Record, 0, n)
+	var p int32
+	for i := from; i < from+n; i++ {
+		recs = append(recs, &kgo.Record{Topic: topic, Partition: p, Key: []byte(strconv.Itoa(i)), Value: []byte(fmt.Sprintf(`{"id": %d, "name": "e%d"}`, i, i))})
+		p = (p + 1) % partitions
+	}
+	if err := cl.ProduceSync(t.Context(), recs...).FirstErr(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A continuous pipeline from Kafka's partitions into Kafka runs on two
+// workers, each committing its own writer lanes. One worker is lost once
+// every lane has staged an epoch the record names: its lanes' transactions
+// are left open while the other worker's commit. The next attempt finds the
+// committed lanes' markers, and reads the lost lanes' part of the epoch
+// from the source again, up to where it ended, so the topic, read
+// committed, has every record once.
+//
+// The pipeline never ends by itself, and the test writes to every
+// partition every 100 ms until the stop: each partition is a split, each
+// worker reads three of them on two lanes, and each lane writes on its own
+// writer lane, so every 1 s epoch holds rows of every writer lane however
+// fast or slow the runner.
 func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	plane, token := placementPlane(t)
 	bucket := "lanes-" + strings.TrimPrefix(unique("x"), "x-")
@@ -206,31 +230,37 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	topic, ns := schema(name), schema(name)+"_out"
 	dst := kafkaDest(t, ns)
 	src := kafkaSource(t, topic)
-	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), 6, 1, nil, topic); err != nil {
+	const partitions = 6
+	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), partitions, 1, nil, topic); err != nil {
 		t.Fatal(err)
 	}
-	const records = 60_000
-	produceJSON(t, topic, 0, records)
 	apply(t,
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "720h"}, "dataPlane": %q, "resources": {"size": "m", "workers": 2},
-			"source": {"ref": %q}, "destination": {"ref": %q}, "delivery": {"commit": {"maxBytes": "64KB"}}}}`, name, plane, name, name))
+			"spec": {"mode": "continuous", "dataPlane": %q, "resources": {"size": "m", "workers": 2},
+			"source": {"ref": %q}, "destination": {"ref": %q}, "delivery": {"commit": {"interval": "1s"}}}}`, name, plane, name, name))
+	t.Cleanup(func() {
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+	})
 
-	eventually(t, 3*time.Minute, "an epoch on workers with rows in every writer lane", func() bool {
+	producer := kafkaClient(t, kgo.RecordPartitioner(kgo.ManualPartitioner()))
+	const round = 10 * partitions
+	produced := 0
+	for deadline := time.Now().Add(3 * time.Minute); ; {
 		select {
 		case <-proxy.done:
-			return true
 		default:
+			if time.Now().After(deadline) {
+				t.Fatalf("no epoch on workers had rows in every writer lane in 3 minutes; attempts on 2 workers: %d", attemptsOnTwoWorkers(t, name))
+			}
+			produceRound(t, producer, topic, produced, round, partitions)
+			produced += round
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
-		if status, _ := query[string](t, `SELECT s.status FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id
-			WHERE p.name = $1 ORDER BY s.start_time DESC LIMIT 1`, name); status != "" && status != "running" {
-			a := lastAttempt(t, name)
-			t.Fatalf("the sync ended %s, on %d workers (%q), before an epoch had rows in every writer lane: %s", status, a.GetWorkers(), a.GetOnePod(), lastSyncError(t, name))
-		}
-		return false
-	})
+		break
+	}
 	proxy.mu.Lock()
 	rec, pid, failed := proxy.rec, proxy.stopped, proxy.failed
 	proxy.mu.Unlock()
@@ -243,13 +273,12 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		t.Fatal(err)
 	}
-	t.Logf("stopped worker pod %d before HEAD named epoch %d of generation %d, of %d writer lanes, then killed it", pid, rec.Epoch, rec.Generation, len(rec.Committables))
+	t.Logf("stopped worker pod %d before HEAD named epoch %d of generation %d, of %d writer lanes, then killed it; %d records written", pid, rec.Epoch, rec.Generation, len(rec.Committables), produced)
 
-	status, stats := waitSync(t, name, 4*time.Minute)
-	finishedLater(t, status, stats)
-	checkTopics(t, ns, records, topic)
-	if a := lastAttempt(t, name); a.GetWorkers() != 2 {
-		t.Errorf("the sync's last attempt ran on %d workers (%q), want 2", a.GetWorkers(), a.GetOnePod())
+	eventually(t, 3*time.Minute, "every record in the output topic", func() bool { return len(topicRecords(t, ns+"."+topic)) >= produced })
+	checkTopics(t, ns, produced, topic)
+	if n := attemptsOnTwoWorkers(t, name); n < 2 {
+		t.Errorf("%d attempts ran on 2 workers, want the lost one and the one after it", n)
 	}
 	redone := map[string]bool{}
 	for _, m := range laneRedoing.FindAllStringSubmatch(launcher.out.String(), -1) {
@@ -260,4 +289,17 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	if len(redone) == 0 || len(redone) >= len(rec.Committables) {
 		t.Errorf("of epoch %d's %d writer lanes, %d were read again from the source (%v); want some, and not those that committed", rec.Epoch, len(rec.Committables), len(redone), redone)
 	}
+	if _, err := pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name})); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, 2*time.Minute, "the stream's pods to go", func() bool { return launcher.pods(t) == 0 })
+}
+
+// attemptsOnTwoWorkers is how many of the pipeline's attempts ran on 2
+// workers.
+func attemptsOnTwoWorkers(t *testing.T, pipeline string) int {
+	t.Helper()
+	n, _ := query[int](t, `SELECT count(*) FROM attempts a JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id
+		WHERE p.name = $1 AND a.workers = 2`, pipeline)
+	return n
 }

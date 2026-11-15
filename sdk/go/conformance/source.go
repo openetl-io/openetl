@@ -488,7 +488,8 @@ func (r *sourceRun) checkUntil(t T) {
 }
 
 // endsAt: a read until the i-th resume point's state sends a resume point
-// with it after its last record, then completes with it.
+// with it after its last record, then completes with it, and sends nothing
+// more.
 func endsAt(t T, name string, i int, events []event, until []byte) {
 	t.Helper()
 	end := slices.IndexFunc(events, func(e event) bool { return e.complete })
@@ -509,6 +510,9 @@ func endsAt(t T, name string, i int, events []event, until []byte) {
 	}
 	if !events[end].hasNext || !bytes.Equal(events[end].next, until) {
 		t.Errorf("%s: a read until resume point %d completed at %q, not at it", name, i, events[end].next)
+	}
+	if k := slices.IndexFunc(events[end+1:], func(e event) bool { return !e.progress }); k >= 0 {
+		t.Errorf("%s: a read until resume point %d sent a %s after it completed", name, i, kindOf(events[end+1+k]))
 	}
 }
 

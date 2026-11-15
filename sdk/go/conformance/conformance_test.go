@@ -215,6 +215,9 @@ func (s *memSource) readUsers(n, seq int64, state, until []byte, out source.Emit
 	if err := out.Complete("users", next); err != nil {
 		return err
 	}
+	if until != nil && s.bug == "until-after-complete" {
+		return out.ResumePoint("users", until)
+	}
 	if s.bug == "batch-after-complete" {
 		return out.Records("users", usersBatch([]int64{n}, []string{"late"}))
 	}
@@ -443,6 +446,7 @@ func TestSourceBugsFail(t *testing.T) {
 		"until-ignored":         {"read/until"},
 		"until-no-end":          {"read/until"},
 		"until-completes-first": {"read/until"},
+		"until-after-complete":  {"read/until"},
 		"completion-moves":      {"read/until"},
 	}
 	for bug, checks := range cases {
