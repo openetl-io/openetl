@@ -29,7 +29,7 @@ OpenETL applies two rules to data it cannot write:
 
 Quarantine and holds apply these rules at two sizes:
 
-- **Quarantine treats the row as the unit.** The destination gets only rows whose values fit their types. A row with a bad value is missing until you load it again. On a `merge` stream, the key's other columns keep their old values until the source changes the row again. If the row was an insert, rows that refer to it point at nothing.
+- **Quarantine treats the row as the unit.** The destination gets only rows whose values fit their types. A row with a bad value is missing until you load it again. On a `merge` stream, the key's other columns keep their old values until OpenETL writes a later version of the row. If that version also has a value that does not fit, OpenETL quarantines it too. If the row was an insert, rows that refer to it point at nothing.
 - **A hold treats the value as the unit.** OpenETL writes the row, and its other columns are current. Only the held value is missing. The row's `_openetl_held` column names the held columns. A reader that does not check `_openetl_held` takes a partial row for a complete one.
 
 A partial row changes what a row means. So OpenETL holds single values only if you tell it to. By default, a value that does not fit quarantines its row. A change to a whole column is different, because a stop for that change would stop every row of the stream. So OpenETL holds the column by default where it can ([Column holds](#column-holds)).
