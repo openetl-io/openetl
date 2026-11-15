@@ -265,13 +265,35 @@ type QuarantineFile struct {
 	Rows   uint64 `json:"rows"`
 }
 
-// Snapshot is one operator's state at a checkpoint, for the key groups it
-// covers.
+// Snapshot is a stateful operator's state on one lane at a checkpoint, for
+// the lane's key groups. An operator's snapshots in a record hold every key
+// group between them.
 type Snapshot struct {
-	Operator string `json:"operator"`
-	URL      string `json:"url"`
-	// Nil: all of them.
-	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
+	Operator  string        `json:"operator"`
+	KeyGroups KeyGroupRange `json:"key_groups"`
+	// The layout of the state's keys.
+	Layout uint32 `json:"layout"`
+	// What the engine opens it by.
+	Data []byte `json:"data,omitempty"`
+	// The objects it names, below StateDir: what retention keeps.
+	Runs []string `json:"runs,omitempty"`
+}
+
+// KeptSnapshots are the snapshots a record names of those an epoch's
+// lanes reported: an operator's on every lane, unless none of its lanes has
+// written any state yet.
+func KeptSnapshots(snapshots []Snapshot) []Snapshot {
+	wrote := map[string]bool{}
+	for _, s := range snapshots {
+		wrote[s.Operator] = wrote[s.Operator] || len(s.Runs) > 0
+	}
+	var out []Snapshot
+	for _, s := range snapshots {
+		if wrote[s.Operator] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // KeyGroups is how many key groups a pipeline has, unless its record says

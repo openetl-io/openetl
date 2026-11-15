@@ -153,6 +153,9 @@ type Job struct {
 	SchemaPolicy    SchemaPolicy
 	// Where the dataflow keeps records it can't take, as Plan says.
 	QuarantineURL string
+	// Where the dataflow's stateful operators keep their state, as Plan
+	// says.
+	StateURL string
 	// Infinite dates and timestamps are quarantined instead of clamped.
 	QuarantineInfinity bool
 	Dataflow           Dataflow
@@ -356,6 +359,9 @@ func (j *Job) transformed() bool { return j.ownCode() || j.SQL != nil }
 // destination.
 func (j *Job) ownCode() bool { return j.Transform != nil || j.Flink != nil }
 
+// keepsState: the SQL has stateful operators, whose state the records name.
+func (j *Job) keepsState() bool { return j.SQL != nil && len(j.SQL.Operators) > 0 }
+
 // sinkStreams are the destination's streams.
 func (j *Job) sinkStreams() []Stream {
 	if j.transformed() {
@@ -500,7 +506,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		for i := range every {
 			every[i] = i
 		}
-		rs, err := job.settleCommittables(rctx, res.Generation, recovering, every, forced, log)
+		rs, err := job.settleCommittables(rctx, res.Generation, recovering, prev, every, forced, log)
 		if err != nil {
 			return res, err
 		}
@@ -1422,6 +1428,7 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 	}
 	if j.SQL != nil {
 		plan.SQL, plan.Outputs, plan.OutputSchemas = j.SQL, j.Outputs, outputSchemas
+		plan.StateURL = j.StateURL
 	}
 	if len(holdPlans) > 0 {
 		plan.HeldURL, plan.Holds = j.HeldURL, holdPlans
@@ -1826,7 +1833,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		KeyGroups:    c.job.keyGroups(),
 		Committables: make([][]byte, len(st.descs)),
 		Files:        recordFiles(st.flow.Files()),
-		Snapshots:    st.flow.Snapshots,
+		Snapshots:    checkpoint.KeptSnapshots(st.flow.Snapshots),
 		Quarantine:   st.flow.Quarantine,
 		Sync:         c.job.Sync,
 		Flink:        st.flink,

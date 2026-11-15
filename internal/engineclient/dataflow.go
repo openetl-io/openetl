@@ -393,12 +393,9 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 			return nil, nil, nil, err
 		}
 	}
+	req.StateUrl, req.StateReadOnly = plan.StateURL, plan.StateReadOnly
 	for _, s := range plan.Snapshots {
-		ss := &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL}
-		if r := s.KeyGroups; r != nil {
-			ss.KeyGroups = &enginev1.KeyGroupRange{First: ints.Uint32(r.First), Last: ints.Uint32(r.Last)}
-		}
-		req.RestoredSnapshots = append(req.RestoredSnapshots, ss)
+		req.RestoredSnapshots = append(req.RestoredSnapshots, attempt.SnapshotProto(s))
 	}
 	for l := range max(plan.Lanes, 1) {
 		req.Edges = append(req.Edges, &enginev1.Edge{Id: inEdge(l), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names, Lane: uint32(l)})
@@ -480,11 +477,7 @@ func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
 		}
 	}
 	for _, s := range r.GetSnapshots() {
-		snap := checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()}
-		if kg := s.GetKeyGroups(); kg != nil {
-			snap.KeyGroups = &checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}
-		}
-		ready.Snapshots = append(ready.Snapshots, snap)
+		ready.Snapshots = append(ready.Snapshots, attempt.SnapshotOf(s))
 	}
 	for _, q := range r.GetQuarantine() {
 		ready.Quarantine = append(ready.Quarantine, checkpoint.QuarantineFile{Stream: q.GetStream(), Output: q.GetOutput(), URL: q.GetUrl(), Rows: q.GetRows()})

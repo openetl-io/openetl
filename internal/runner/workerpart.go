@@ -281,7 +281,14 @@ func (p *workerPart) settle(ctx context.Context, s *attemptv1.Settle) (*attemptv
 	for i, c := range s.GetCommittables() {
 		which[i] = int(c)
 	}
-	rs, err := p.job.settleCommittables(ctx, p.t.Generation, &rec, which, forced, p.log)
+	var before *checkpoint.Record
+	if len(s.GetPrevious()) > 0 {
+		before = &checkpoint.Record{}
+		if err := json.Unmarshal(s.GetPrevious(), before); err != nil {
+			return nil, errs.Wrap(errs.Internal, err, "runner: the record before the one to settle")
+		}
+	}
+	rs, err := p.job.settleCommittables(ctx, p.t.Generation, &rec, before, which, forced, p.log)
 	if err != nil {
 		return nil, err
 	}

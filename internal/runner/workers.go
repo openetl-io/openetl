@@ -753,7 +753,13 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	byLane := settlesByLane(j.Destination.Capabilities(), recovering)
 	var settled destination.Recovery
 	if byLane {
-		if settled, err = settleOnWorkers(rctx, co, n, recovering, settle.GetRecord(), settle.GetForced()); err != nil {
+		var previous []byte
+		if at.prev != nil {
+			if previous, err = json.Marshal(at.prev); err != nil {
+				return res, err
+			}
+		}
+		if settled, err = settleOnWorkers(rctx, co, n, recovering, settle.GetRecord(), previous, settle.GetForced()); err != nil {
 			return res, err
 		}
 	}
@@ -875,8 +881,9 @@ func (j *Job) startSchemas(restored *checkpoint.Record) map[ownedKey][]byte {
 
 // settleOnWorkers has the workers settle rec's committables, raw as the
 // log holds it, those that hold rows of one split on one worker, and says
-// how: Redone if any was.
-func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *checkpoint.Record, raw []byte, forced []string) (destination.Recovery, error) {
+// how: Redone if any was. previous is the record before rec, as JSON; nil
+// for none.
+func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *checkpoint.Record, raw, previous []byte, forced []string) (destination.Recovery, error) {
 	groups := settleGroups(rec, n)
 	got := make([][]destination.Recovery, n)
 	g, gctx := errgroup.WithContext(ctx)
@@ -885,7 +892,7 @@ func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *ch
 			continue
 		}
 		g.Go(func() error {
-			ans, err := co.Call(gctx, w, &attemptv1.Call{Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{Record: raw, Committables: which, Forced: forced}}})
+			ans, err := co.Call(gctx, w, &attemptv1.Call{Call: &attemptv1.Call_Settle{Settle: &attemptv1.Settle{Record: raw, Committables: which, Forced: forced, Previous: previous}}})
 			if err == nil {
 				err = answerErr(ans.GetError())
 			}
