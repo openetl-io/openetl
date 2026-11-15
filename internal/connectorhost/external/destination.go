@@ -17,8 +17,8 @@ import (
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/destination"
-	"github.com/openetl-io/openetl/sdk/go/preflight"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -45,8 +45,43 @@ func NewDestination(exe string, config []byte, opts Options) *Destination {
 func (d *Destination) Check(ctx context.Context) error { return d.check(ctx) }
 
 // CheckItems is Check, with what the check looked at, item by item.
-func (d *Destination) CheckItems(ctx context.Context) ([]preflight.Item, error) {
+func (d *Destination) CheckItems(ctx context.Context) ([]check.Item, error) {
 	return d.checkItems(ctx)
+}
+
+// PreflightItems runs the destination's preflight for what a pipeline would
+// write: what it looked at, item by item, and its error.
+func (d *Destination) PreflightItems(ctx context.Context, req destination.PreflightRequest) ([]check.Item, error) {
+	p, err := d.proc(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pr := &protocolv1.PreflightDestinationRequest{Config: p.config, Pipeline: req.Pipeline, Namespace: req.Namespace, Streams: writeStreams(req.Streams)}
+	for _, s := range req.Streams {
+		sc := req.Schemas[s.Name]
+		if sc == nil {
+			continue
+		}
+		b, err := arrowipc.EncodeSchema(sc)
+		if err != nil {
+			return nil, err
+		}
+		pr.Schemas = append(pr.Schemas, &protocolv1.StreamSchema{Name: s.Name, ArrowSchema: b})
+	}
+	resp, err := protocolv1.NewDestinationServiceClient(p.conn).PreflightDestination(ctx, pr)
+	return preflightResult(p, resp, err)
+}
+
+func writeStreams(streams []destination.Stream) []*protocolv1.WriteStream {
+	var out []*protocolv1.WriteStream
+	for _, s := range streams {
+		out = append(out, &protocolv1.WriteStream{
+			Name: s.Name, Mode: ints.Enum[protocolv1.WriteMode](s.Mode), PrimaryKey: s.PrimaryKey,
+			Dedupe: ints.Enum[protocolv1.Dedupe](s.Dedupe), Deletes: ints.Enum[protocolv1.DeleteMode](s.Deletes),
+			AllowTypeChanges: s.AllowTypeChanges,
+		})
+	}
+	return out
 }
 
 // SetStaging serves st's files and cursors to the destination's host
@@ -122,13 +157,7 @@ func (d *Destination) Open(ctx context.Context, cfg destination.OpenConfig) (des
 	if cfg.CommitInterval > 0 {
 		open.CommitInterval = durationpb.New(cfg.CommitInterval)
 	}
-	for _, s := range cfg.Streams {
-		open.Streams = append(open.Streams, &protocolv1.WriteStream{
-			Name: s.Name, Mode: ints.Enum[protocolv1.WriteMode](s.Mode), PrimaryKey: s.PrimaryKey,
-			Dedupe: ints.Enum[protocolv1.Dedupe](s.Dedupe), Deletes: ints.Enum[protocolv1.DeleteMode](s.Deletes),
-			AllowTypeChanges: s.AllowTypeChanges,
-		})
-	}
+	open.Streams = writeStreams(cfg.Streams)
 	// The stream lives until Close, or until ctx is done.
 	sctx, cancel := context.WithCancel(ctx)
 	stream, err := protocolv1.NewDestinationServiceClient(p.conn).Write(sctx)

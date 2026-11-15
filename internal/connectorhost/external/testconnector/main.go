@@ -24,9 +24,9 @@ import (
 
 	"github.com/openetl-io/openetl/connectors/native/faker"
 	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
-	"github.com/openetl-io/openetl/sdk/go/preflight"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -266,14 +266,14 @@ func newFiles(config []byte, _ host.Host) (destination.Destination, error) {
 
 func (f *files) Capabilities() destination.Capabilities { return destination.Capabilities{} }
 
-// Preflight checks the token, then the directory.
-func (f *files) Preflight(_ context.Context, r *preflight.Report) {
+// CheckReport checks the token, then the directory.
+func (f *files) CheckReport(_ context.Context, r *check.Report) {
 	ok := r.Run("token", "Sign in", func() error {
 		if f.token != "s3cr3t" {
-			return preflight.Fix(sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, fmt.Errorf("files: wrong token (%d bytes)", len(f.token))), "use the token you were given")
+			return check.Fix(sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, fmt.Errorf("files: wrong token (%d bytes)", len(f.token))), "use the token you were given")
 		}
 		return nil
-	}, preflight.Field("token"))
+	}, check.Field("token"))
 	if !ok {
 		r.Skip("dir", "Write to the directory", "it needs a token")
 		return

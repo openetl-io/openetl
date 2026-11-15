@@ -19,12 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	SourceService_Discover_FullMethodName  = "/openetl.connector.v1.SourceService/Discover"
-	SourceService_Read_FullMethodName      = "/openetl.connector.v1.SourceService/Read"
-	SourceService_Committed_FullMethodName = "/openetl.connector.v1.SourceService/Committed"
-	SourceService_Splits_FullMethodName    = "/openetl.connector.v1.SourceService/Splits"
-	SourceService_Resplit_FullMethodName   = "/openetl.connector.v1.SourceService/Resplit"
-	SourceService_Retention_FullMethodName = "/openetl.connector.v1.SourceService/Retention"
+	SourceService_Discover_FullMethodName        = "/openetl.connector.v1.SourceService/Discover"
+	SourceService_Read_FullMethodName            = "/openetl.connector.v1.SourceService/Read"
+	SourceService_Committed_FullMethodName       = "/openetl.connector.v1.SourceService/Committed"
+	SourceService_Splits_FullMethodName          = "/openetl.connector.v1.SourceService/Splits"
+	SourceService_Resplit_FullMethodName         = "/openetl.connector.v1.SourceService/Resplit"
+	SourceService_Retention_FullMethodName       = "/openetl.connector.v1.SourceService/Retention"
+	SourceService_PreflightSource_FullMethodName = "/openetl.connector.v1.SourceService/PreflightSource"
 )
 
 // SourceServiceClient is the client API for SourceService service.
@@ -59,6 +60,12 @@ type SourceServiceClient interface {
 	// isn't running, such as when it's paused. Called only when
 	// SourceCapabilities.retention is set.
 	Retention(ctx context.Context, in *RetentionRequest, opts ...grpc.CallOption) (*RetentionResponse, error)
+	// Whether a pipeline's reads would work, for its streams as a sync would
+	// read them, without reading records: each stream there, readable, and
+	// read in a mode the source has, and positions the schedule keeps within
+	// retention. The platform calls it after Check passes. A source without
+	// one answers with no items.
+	PreflightSource(ctx context.Context, in *PreflightSourceRequest, opts ...grpc.CallOption) (*PreflightSourceResponse, error)
 }
 
 type sourceServiceClient struct {
@@ -138,6 +145,16 @@ func (c *sourceServiceClient) Retention(ctx context.Context, in *RetentionReques
 	return out, nil
 }
 
+func (c *sourceServiceClient) PreflightSource(ctx context.Context, in *PreflightSourceRequest, opts ...grpc.CallOption) (*PreflightSourceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreflightSourceResponse)
+	err := c.cc.Invoke(ctx, SourceService_PreflightSource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SourceServiceServer is the server API for SourceService service.
 // All implementations must embed UnimplementedSourceServiceServer
 // for forward compatibility.
@@ -170,6 +187,12 @@ type SourceServiceServer interface {
 	// isn't running, such as when it's paused. Called only when
 	// SourceCapabilities.retention is set.
 	Retention(context.Context, *RetentionRequest) (*RetentionResponse, error)
+	// Whether a pipeline's reads would work, for its streams as a sync would
+	// read them, without reading records: each stream there, readable, and
+	// read in a mode the source has, and positions the schedule keeps within
+	// retention. The platform calls it after Check passes. A source without
+	// one answers with no items.
+	PreflightSource(context.Context, *PreflightSourceRequest) (*PreflightSourceResponse, error)
 	mustEmbedUnimplementedSourceServiceServer()
 }
 
@@ -197,6 +220,9 @@ func (UnimplementedSourceServiceServer) Resplit(context.Context, *ResplitRequest
 }
 func (UnimplementedSourceServiceServer) Retention(context.Context, *RetentionRequest) (*RetentionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Retention not implemented")
+}
+func (UnimplementedSourceServiceServer) PreflightSource(context.Context, *PreflightSourceRequest) (*PreflightSourceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreflightSource not implemented")
 }
 func (UnimplementedSourceServiceServer) mustEmbedUnimplementedSourceServiceServer() {}
 func (UnimplementedSourceServiceServer) testEmbeddedByValue()                       {}
@@ -320,6 +346,24 @@ func _SourceService_Retention_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SourceService_PreflightSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreflightSourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SourceServiceServer).PreflightSource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SourceService_PreflightSource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SourceServiceServer).PreflightSource(ctx, req.(*PreflightSourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SourceService_ServiceDesc is the grpc.ServiceDesc for SourceService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -346,6 +390,10 @@ var SourceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Retention",
 			Handler:    _SourceService_Retention_Handler,
+		},
+		{
+			MethodName: "PreflightSource",
+			Handler:    _SourceService_PreflightSource_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

@@ -568,7 +568,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	connectorOps := &dpactivities.Ops{
 		API: apiClient, Connectors: connectors, Versions: versions, Secrets: stores, Storage: cfg.Checkpoints, Checkpoints: cps,
 		Flink:    flink.Options{Logger: log.With("component", "flink"), HTTP: (&netguard.Policy{Allow: allow}).Client()},
-		AWSRoles: roles,
+		AWSRoles: roles, Engine: sync.Engine,
 	}
 	every, err := time.ParseDuration(cfg.ReportInterval)
 	if cfg.ReportInterval != "" && (err != nil || every <= 0) {
@@ -597,6 +597,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			contract.RunDbt:              {Handler: dpworker.Handle(dbt.RunDbt)},
 			contract.RunSpark:            {Handler: dpworker.Handle(sparkSteps.RunSpark)},
 			contract.CheckConnector:      {Handler: dpworker.Handle(connectorOps.CheckConnector)},
+			contract.PreflightPipeline:   {Handler: dpworker.Handle(connectorOps.PreflightPipeline)},
 			contract.DiscoverSource:      {Handler: dpworker.Handle(connectorOps.DiscoverSource)},
 			contract.TeardownSource:      {Handler: dpworker.Handle(connectorOps.TeardownSource)},
 			contract.TeardownDestination: {Handler: dpworker.Handle(connectorOps.TeardownDestination)},

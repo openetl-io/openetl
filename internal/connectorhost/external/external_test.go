@@ -29,8 +29,8 @@ import (
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/destination"
-	"github.com/openetl-io/openetl/sdk/go/preflight"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -524,10 +524,10 @@ func TestDestinationSecrets(t *testing.T) {
 	if errs.CodeOf(err) != errs.AuthInvalid || len(items) != 2 {
 		t.Fatalf("check items %+v, %v", items, err)
 	}
-	if it := items[0]; it.Status != preflight.Failed || it.Field != "token" || it.Fix != "use the token you were given" || errs.CodeOf(it.Err) != errs.AuthInvalid {
+	if it := items[0]; it.Status != check.Failed || it.Field != "token" || it.Fix != "use the token you were given" || errs.CodeOf(it.Err) != errs.AuthInvalid {
 		t.Errorf("the token's item %+v", it)
 	}
-	if items[1].Status != preflight.Skipped {
+	if items[1].Status != check.Skipped {
 		t.Errorf("the directory's item %+v", items[1])
 	}
 }

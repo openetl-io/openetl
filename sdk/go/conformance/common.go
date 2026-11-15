@@ -193,17 +193,17 @@ func (c *common) checkCheck(t T) {
 	if e := resp.GetError(); e != nil {
 		t.Errorf("Check failed with the good config: %s: %s", e.GetCode(), e.GetMessage())
 	}
-	checkItems(t, resp)
+	checkItems(t, resp.GetItems(), resp.GetError())
 }
 
-// checkItems: a pre-flight's items have unique names, titles and statuses,
-// a failed one has an error, and the response fails with the first failed
-// item's.
-func checkItems(t T, resp *protocolv1.CheckResponse) {
+// checkItems: a check's or a preflight's items have unique names, titles and
+// statuses, a failed one has an error, and the response fails with the
+// first failed item's.
+func checkItems(t T, items []*protocolv1.CheckItem, rerr *protocolv1.Error) {
 	t.Helper()
 	names := map[string]bool{}
 	var failed *protocolv1.CheckItem
-	for _, it := range resp.GetItems() {
+	for _, it := range items {
 		switch {
 		case it.GetName() == "" || it.GetTitle() == "":
 			t.Errorf("check item %q has no name or no title", it.GetName()+it.GetTitle())
@@ -219,12 +219,28 @@ func checkItems(t T, resp *protocolv1.CheckResponse) {
 			failed = it
 		}
 	}
-	if failed != nil && resp.GetError().GetCode() != failed.GetError().GetCode() {
-		t.Errorf("Check failed with %s, but its first failed item, %s, with %s", resp.GetError().GetCode(), failed.GetName(), failed.GetError().GetCode())
+	if failed != nil && rerr.GetCode() != failed.GetError().GetCode() {
+		t.Errorf("it failed with %s, but its first failed item, %s, with %s", rerr.GetCode(), failed.GetName(), failed.GetError().GetCode())
 	}
-	if failed == nil && len(resp.GetItems()) > 0 && resp.GetError() != nil {
-		t.Errorf("Check failed with %s, but none of its items failed", resp.GetError().GetCode())
+	if failed == nil && len(items) > 0 && rerr != nil {
+		t.Errorf("it failed with %s, but none of its items failed", rerr.GetCode())
 	}
+}
+
+// preflightResult: a preflight with the good config passed, as an RPC and
+// in its response, and its items are well formed.
+func preflightResult(t T, resp interface {
+	GetError() *protocolv1.Error
+	GetItems() []*protocolv1.CheckItem
+}, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("the preflight failed as an RPC, not in its response: %v", rpcerr.FromStatus(err))
+	}
+	if e := resp.GetError(); e != nil {
+		t.Errorf("the preflight failed with the good config: %s: %s", e.GetCode(), e.GetMessage())
+	}
+	checkItems(t, resp.GetItems(), resp.GetError())
 }
 
 // Errors: bad credentials are AUTH_INVALID and an upstream that doesn't
@@ -254,7 +270,7 @@ func (c *common) checkErrors(t T) {
 		case resp.GetError() == nil:
 			t.Errorf("with %s, Check passed", tc.name)
 		default:
-			checkItems(t, resp)
+			checkItems(t, resp.GetItems(), resp.GetError())
 		}
 		switch {
 		case err != nil || resp.GetError() == nil:

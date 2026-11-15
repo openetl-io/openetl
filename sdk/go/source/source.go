@@ -12,7 +12,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
-	"github.com/openetl-io/openetl/sdk/go/preflight"
+	"github.com/openetl-io/openetl/sdk/go/check"
 )
 
 // Replay is whether a stream can carry the same record version more than
@@ -567,11 +567,33 @@ type Checker interface {
 	Check(ctx context.Context) error
 }
 
-// Preflighter is implemented by sources whose check says what it looked at,
-// item by item: reaching the source, each permission, each stream it would
-// read. It takes Checker's place. A pre-flight reads no records, and it
-// records a failure in r rather than stopping at it, so one check shows
-// everything that's wrong.
+// CheckReporter is implemented by sources whose check says what it looked
+// at, item by item, such as reaching the source and signing in. It takes
+// Checker's place. A check is about the connection alone and is light: the
+// pipeline's streams are its preflight's. It records a failure in r rather
+// than stopping at it, so one check shows everything that's wrong.
+type CheckReporter interface {
+	CheckReport(ctx context.Context, r *check.Report)
+}
+
+// Preflighter is implemented by sources that can say whether a pipeline's
+// reads would work, without reading records: each stream there and
+// readable, its sync mode one the source has, positions the schedule keeps
+// within retention. The platform runs it after the check passes. Which
+// items apply is the source's to say from its config, such as a consumer
+// only a mode of reading uses.
 type Preflighter interface {
-	Preflight(ctx context.Context, r *preflight.Report)
+	Preflight(ctx context.Context, req PreflightRequest, r *check.Report)
+}
+
+// PreflightRequest is what a pipeline would read.
+type PreflightRequest struct {
+	Pipeline string
+	// As a sync would read them, without states or splits.
+	Streams []ConfiguredStream
+	// Otherwise on a schedule, or when asked.
+	Continuous bool
+	// How long a scheduled pipeline goes between syncs at most; 0 when it's
+	// continuous or has no regular schedule.
+	Interval time.Duration
 }

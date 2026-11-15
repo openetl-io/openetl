@@ -15,13 +15,13 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/configschema"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
 	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	"github.com/openetl-io/openetl/sdk/go/internal/launch"
 	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
-	"github.com/openetl-io/openetl/sdk/go/preflight"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -281,27 +281,26 @@ func (b *base) Check(ctx context.Context, req *protocolv1.CheckRequest) (*protoc
 	}
 	switch c := c.(type) {
 	case interface {
-		Preflight(context.Context, *preflight.Report)
+		CheckReport(context.Context, *check.Report)
 	}:
-		var r preflight.Report
-		c.Preflight(ctx, &r)
-		return checkResponse(&r), nil
+		var r check.Report
+		c.CheckReport(ctx, &r)
+		return &protocolv1.CheckResponse{Error: protoError(r.Err()), Items: checkItems(&r)}, nil
 	case interface{ Check(context.Context) error }:
 		err = c.Check(ctx)
 	}
 	return &protocolv1.CheckResponse{Error: protoError(err)}, nil
 }
 
-// checkResponse is a pre-flight's report as a CheckResponse.
-func checkResponse(r *preflight.Report) *protocolv1.CheckResponse {
-	resp := &protocolv1.CheckResponse{Error: protoError(r.Err())}
+func checkItems(r *check.Report) []*protocolv1.CheckItem {
+	var out []*protocolv1.CheckItem
 	for _, it := range r.Items() {
-		resp.Items = append(resp.Items, &protocolv1.CheckItem{
+		out = append(out, &protocolv1.CheckItem{
 			Name: it.Name, Title: it.Title, Status: ints.Enum[protocolv1.CheckStatus](it.Status), Message: it.Message,
 			Error: protoError(it.Err), Fix: it.Fix, Field: it.Field,
 		})
 	}
-	return resp
+	return out
 }
 
 func (b *base) Setup(ctx context.Context, req *protocolv1.SetupRequest) (*protocolv1.SetupResponse, error) {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/internal/ints"
@@ -95,6 +96,7 @@ func newSourceRun(s SourceSuite) *sourceRun {
 func (r *sourceRun) checks() []Check {
 	return append(r.common.checks(),
 		Check{"discover", r.checkDiscover},
+		Check{"preflight", r.checkPreflight},
 		Check{"read/full", r.checkFull},
 		Check{"read/resume", r.checkResume},
 		Check{"read/until", r.checkUntil},
@@ -133,6 +135,22 @@ func (r *sourceRun) discover(t T) map[string]*protocolv1.CatalogStream {
 		t.Fatalf("Discover: %v", r.catalogErr)
 	}
 	return r.catalog
+}
+
+// Preflight: with the good config, a preflight of every discovered stream,
+// in its first sync mode, passes.
+func (r *sourceRun) checkPreflight(t T) {
+	cat := r.discover(t)
+	req := &protocolv1.PreflightSourceRequest{Config: r.process(t).Config(), Pipeline: "conformance", Interval: durationpb.New(time.Hour)}
+	for _, name := range r.order {
+		cs := &protocolv1.ConfiguredStream{Name: name, Cursor: cat[name].GetDefaultCursor()}
+		if modes := cat[name].GetSyncModes(); len(modes) > 0 {
+			cs.SyncMode = modes[0]
+		}
+		req.Streams = append(req.Streams, cs)
+	}
+	resp, err := protocolv1.NewSourceServiceClient(r.process(t).Conn()).PreflightSource(t.Context(), req)
+	preflightResult(t, resp, err)
 }
 
 // Discover: schemas are valid, and keys and cursors name their fields.

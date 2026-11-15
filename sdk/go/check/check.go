@@ -1,11 +1,16 @@
-// Package preflight is a check that says what it looked at: reaching the
-// service, each permission, each stream, item by item, with what to do about
-// each that fails. A source or destination reports one by implementing
+// Package check is a report of what a check or a preflight looked at, item
+// by item, with what to do about each that fails.
+//
+// A check is about a connection: whether a config reaches the source or the
+// destination, such as signing in. A source or destination reports one by
+// implementing source.CheckReporter or destination.CheckReporter. A
+// preflight is about a pipeline: whether the streams it reads or writes
+// would work, such as each stream's permissions, and it's reported by
 // source.Preflighter or destination.Preflighter.
 //
 // Item text is shown to people and kept in results, so it never holds
 // secrets or records.
-package preflight
+package check
 
 import (
 	"errors"

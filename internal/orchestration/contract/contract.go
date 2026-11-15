@@ -38,6 +38,7 @@ const (
 	RunDbt              = "RunDbt"
 	RunSpark            = "RunSpark"
 	CheckConnector      = "CheckConnector"
+	PreflightPipeline   = "PreflightPipeline"
 	DiscoverSource      = "DiscoverSource"
 	TeardownSource      = "TeardownSource"
 	TeardownDestination = "TeardownDestination"
@@ -231,6 +232,9 @@ const DefaultLogHistory = 30 * 24 * time.Hour
 const (
 	OpCheck    = "check"
 	OpDiscover = "discover"
+	// Checks a pipeline's source and destination, then runs their preflights
+	// for the streams a sync of its version would read and write.
+	OpPreflight = "preflight"
 	// Removes what a source or destination keeps for a deleted pipeline.
 	OpTeardown = "teardown"
 	// Cancels a deleted pipeline's Flink jobs.
@@ -536,8 +540,10 @@ type ConnectorOpInput struct {
 	// have, or OpTeardownFlink, on no connector.
 	Op string
 	// The deleted pipeline, for OpTeardown and OpTeardownFlink; the pipeline
-	// asked about, for OpRetention.
+	// asked about, for OpRetention and OpPreflight.
 	PipelineID string
+	// The pipeline's version a preflight checks.
+	Version string `json:",omitempty"`
 	// One of them.
 	SourceID      string
 	DestinationID string
@@ -648,6 +654,25 @@ type ConnectorOpResult struct {
 	// What a check looked at, item by item; none from a connector that
 	// reports only a result.
 	Checks []CheckItem `json:",omitempty"`
+	// A preflight's parts, in the order they ran.
+	Preflight []CheckGroup `json:",omitempty"`
+}
+
+// CheckGroup is one part of a pipeline's preflight: a source's or a
+// destination's check or preflight, or the sync's plan.
+type CheckGroup struct {
+	// source, destination or sync.
+	Role string
+	// check, preflight or plan.
+	Stage string
+	// The connector version that answered; empty for the plan.
+	Version string `json:",omitempty"`
+	// The part's failure; empty if it passed.
+	Code    string `json:",omitempty"`
+	Message string `json:",omitempty"`
+	// Why it didn't run; empty if it ran.
+	Skipped string      `json:",omitempty"`
+	Items   []CheckItem `json:",omitempty"`
 }
 
 // CheckItem is one thing a connector's check looked at.
