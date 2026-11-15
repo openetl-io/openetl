@@ -54,10 +54,10 @@ With `unfitValues: hold`, OpenETL holds the value of `amount` and writes the fir
 | `code` | string | Always | What was wrong, from [the codes](#codes). |
 | `column` | string | Where one column caused it | The column. In a stream's file, it is the column as the source names it. In an output's file, it is the output's column for `type`, `range`, `precision` and `nan`. It is the input stream's column for `unsent` and for `notHeld: transform`. |
 | `notHeld` | string | Where the stream holds values that do not fit, and OpenETL quarantined the row instead | Why OpenETL did not hold the row's value, from [the values of notHeld](#why-a-value-was-not-held). |
-| `reason` | string | Always | Why, as a sentence for people. Its words can change from one version to the next, so read `code`, `column` and `notHeld` in your tools instead. For the code `statement`, the reason is the SQL engine's message, which can quote values of the row, as `record` does. For every other code, the reason names the column and never contains a value. |
+| `reason` | string | Always | Why, as a sentence for people. Its words can change from one version to the next, so read `code`, `column` and `notHeld` in your tools instead. For the code `statement`, the reason is the SQL engine's message, which can quote values of the row, as `record` does. For every other code, the reason never contains a value. If the line has a `column`, the reason names it. |
 | `record` | string | Always | The row, as text. [What record holds](#what-record-holds) describes it. |
 
-Only `record` holds values of the row. Ignore fields that this page does not list.
+Only `record`, and the `reason` of a `statement` line, hold values of the row. Ignore fields that this page does not list.
 
 ## Codes
 
