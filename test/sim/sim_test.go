@@ -10,7 +10,9 @@
 // them, and checks the records against what the job did. The workers kind
 // is a model of what isn't built yet: a SQL transform on several workers
 // under a coordinator, with an exchange by key group (workers_test.go),
-// whose workers commit and recover the destination (workers_commit_test.go).
+// whose workers commit and recover the destination (workers_commit_test.go),
+// and whose keyed operator keeps its state as runs on object storage that
+// the checkpoint record names (workers_state_test.go).
 // The pods kind places attempts on workers with the real placer, and models
 // the launchers that make their pods and the pods that run them
 // (pods_test.go).
@@ -18,6 +20,7 @@
 //	go test ./test/sim -seeds=10000         # more seeds per sink class
 //	go test ./test/sim -run 'TestSimulation/kafka' -seed=42 -v   # one seed, with its trace
 //	go test ./test/sim -run 'TestSimulation/workers' -broken=unaligned -seed=3 -v   # a broken variant
+//	go test ./test/sim -run 'TestSimulation/workers' -wexchange=on -wstate=step1,drop -seeds=3000   # state's features fixed
 //	go test ./test/sim -run 'TestSimulation/pods' -broken=stale-target -seed=3 -v   # one of the pods kind
 package sim
 

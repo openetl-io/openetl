@@ -1,7 +1,6 @@
 package sim
 
 import (
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,8 +40,9 @@ func (m *wModel) observeMark(l *wLane, c *wCursor) {
 }
 
 // onRecord checks a record HEAD has just moved to: it covers every split,
-// each split's watermark is at least the one before's, and nothing in it
-// is another generation's.
+// each split's watermark is at least the one before's, nothing in it is
+// another generation's, every object it names is there, and each keyed
+// lane's watermark at its barrier was the record's horizon.
 func (m *wModel) onRecord(rec *wRecord) {
 	for _, g := range rec.sharedBy {
 		if g != rec.Generation {
@@ -52,6 +52,19 @@ func (m *wModel) onRecord(rec *wRecord) {
 	if len(rec.Splits) != len(m.cfg.splits) {
 		m.problem("record", "%v has %d splits of %d", rec, len(rec.Splits), len(m.cfg.splits))
 	}
+	for _, s := range rec.Sections {
+		if _, err := m.readRun(s.URL); errors.Is(err, checkpoint.ErrNotFound) {
+			m.problem("restore", "%v names the %s of %s, which isn't there", rec, s.Kind, s.URL)
+		}
+	}
+	for _, o := range m.opMarks[rec.ref()] {
+		if h := rec.horizon(); o.wm != h {
+			m.problem("watermark", "%v: the keyed lane of key groups %d-%d was at %d at its barrier, not the record's horizon %d", rec, o.kg.First, o.kg.Last, o.wm, h)
+		}
+	}
+	m.stats["records"]++
+	m.stats["sections records named"] += len(rec.Sections)
+	m.stats["pending entries records carried"] += len(rec.Pending)
 	prev, err := m.readRecord(rec.Previous)
 	if err != nil {
 		prev = nil
@@ -60,8 +73,8 @@ func (m *wModel) onRecord(rec *wRecord) {
 }
 
 // checkLink checks rec against the record before it, prev, if it's kept:
-// watermarks, and the snapshot files rec names, each written by rec's
-// generation or named by prev, whose state it carries.
+// watermarks, and the runs rec names, each written by rec's generation or
+// named by prev, whose state it carries.
 func (m *wModel) checkLink(rec, prev *wRecord) {
 	if prev != nil {
 		for _, s := range rec.Splits {
@@ -71,11 +84,11 @@ func (m *wModel) checkLink(rec, prev *wRecord) {
 		}
 	}
 	carried := map[string]bool{}
-	for _, s := range prev.snapshots() {
+	for _, s := range prev.sections() {
 		carried[s.URL] = true
 	}
-	for _, s := range rec.Snapshots {
-		f, err := m.readState(s.URL)
+	for _, s := range rec.Sections {
+		f, err := m.readRun(s.URL)
 		switch {
 		case err != nil:
 		case f.Generation == rec.Generation && f.Epoch <= rec.Epoch:
@@ -105,9 +118,10 @@ func (m *wModel) landed(stream string, upTo uint64) []row {
 
 // cut checks a lane's state at a record, for key groups kg: the windows it
 // holds, and those epochs up to the record's emitted, are the fold of the
-// rows before the record's positions that weren't late, each window in one
-// place.
-func (m *wModel) cut(rec *wRecord, kg checkpoint.KeyGroupRange, state map[int]map[wKey]*wAcc) []string {
+// rows before the record's positions that weren't late or repeats, each
+// window in one place, with its timer; and its dedupe IDs are those of the
+// rows before the positions that the record's horizon hasn't expired.
+func (m *wModel) cut(rec *wRecord, kg checkpoint.KeyGroupRange, st wState) []string {
 	if !m.cfg.exchange {
 		return nil
 	}
@@ -115,18 +129,26 @@ func (m *wModel) cut(rec *wRecord, kg checkpoint.KeyGroupRange, state map[int]ma
 	for _, r := range m.landed("late", rec.epoch()) {
 		late[r.ID] = true
 	}
-	want := map[wKey]*wAcc{}
+	h := rec.horizon()
+	want, seen, wantSet := map[wKey]*wAcc{}, map[string]bool{}, map[string]int64{}
 	for s, evs := range m.cfg.splits {
 		for _, e := range evs[:rec.split(s).Pos] {
-			if !e.kept() || late[e.ID] || !inRange(kg, keyGroupOf(e.Key)) {
+			if !e.kept() || !inRange(kg, keyGroupOf(e.Key)) {
 				continue
 			}
+			if m.cfg.dedupe && e.T+m.cfg.horizon > h {
+				wantSet[e.uid()] = e.T + m.cfg.horizon
+			}
+			if seen[e.uid()] || late[e.uid()] {
+				continue
+			}
+			seen[e.uid()] = true
 			k := wKey{e.Key, windowStart(e.T, m.cfg.size)}
 			if want[k] == nil {
 				want[k] = &wAcc{}
 			}
 			want[k].Sum, want[k].Count = want[k].Sum+e.value(), want[k].Count+1
-			want[k].Rows = append(want[k].Rows, wContrib{ID: e.ID})
+			want[k].Rows = append(want[k].Rows, wContrib{ID: e.uid()})
 		}
 	}
 	var problems []string
@@ -139,11 +161,31 @@ func (m *wModel) cut(rec *wRecord, kg checkpoint.KeyGroupRange, state map[int]ma
 		}
 		got[k], where[k] = a, at
 	}
-	for _, g := range slices.Sorted(maps.Keys(state)) {
-		if inRange(kg, g) {
-			for k, a := range state[g] {
-				add(k, a, "in state")
+	gotSet := map[string]int64{}
+	for _, g := range slices.Sorted(maps.Keys(st.vals)) {
+		if !inRange(kg, g) {
+			continue
+		}
+		for _, k := range slices.SortedFunc(maps.Keys(st.vals[g]), cmpWKey) {
+			add(k, st.vals[g][k], "in state")
+			if at, ok := st.timers[g][k]; !ok || at != k.W+m.cfg.size {
+				problems = append(problems, fmt.Sprintf("window %d of %s is in state, and its timer isn't", k.W, k.Key))
 			}
+		}
+	}
+	for _, g := range slices.Sorted(maps.Keys(st.timers)) {
+		if !inRange(kg, g) {
+			continue
+		}
+		for _, k := range slices.SortedFunc(maps.Keys(st.timers[g]), cmpWKey) {
+			if st.vals[g][k] == nil {
+				problems = append(problems, fmt.Sprintf("the timer of window %d of %s is in state, and its window isn't", k.W, k.Key))
+			}
+		}
+	}
+	for g, ids := range st.set {
+		if inRange(kg, g) {
+			maps.Copy(gotSet, ids)
 		}
 	}
 	for _, r := range m.landed("agg", rec.epoch()) {
@@ -161,8 +203,7 @@ func (m *wModel) cut(rec *wRecord, kg checkpoint.KeyGroupRange, state map[int]ma
 		slices.Sort(out)
 		return out
 	}
-	keys := slices.SortedFunc(maps.Keys(want), func(a, b wKey) int { return cmp.Or(cmp.Compare(a.W, b.W), cmp.Compare(a.Key, b.Key)) })
-	for _, k := range keys {
+	for _, k := range slices.SortedFunc(maps.Keys(want), cmpWKey) {
 		w, g := want[k], got[k]
 		switch {
 		case g == nil:
@@ -176,35 +217,24 @@ func (m *wModel) cut(rec *wRecord, kg checkpoint.KeyGroupRange, state map[int]ma
 			problems = append(problems, fmt.Sprintf("window %d of %s %s holds rows %v, past the record's positions", k.W, k.Key, where[k], ids(got[k])))
 		}
 	}
-	slices.Sort(problems)
-	return problems
-}
-
-// stateAt reads the state a record's snapshots hold.
-func (m *wModel) stateAt(rec *wRecord) (map[int]map[wKey]*wAcc, error) {
-	state := map[int]map[wKey]*wAcc{}
-	for _, s := range rec.snapshots() {
-		f, err := m.readState(s.URL)
-		if err != nil {
-			return nil, fmt.Errorf("%v names %s: %w", rec, s.URL, err)
-		}
-		for g, entries := range f.Groups {
-			if !inRange(*s.KeyGroups, g) {
-				continue
-			}
-			state[g] = map[wKey]*wAcc{}
-			for _, e := range entries {
-				state[g][wKey{e.Key, e.W}] = &wAcc{Sum: e.Sum, Count: e.Count, Rows: e.Rows}
-			}
+	for _, id := range slices.Sorted(maps.Keys(wantSet)) {
+		if at, ok := gotSet[id]; !ok || at != wantSet[id] {
+			problems = append(problems, fmt.Sprintf("dedupe ID %s, until %d, isn't in state", id, wantSet[id]))
 		}
 	}
-	return state, nil
+	for _, id := range slices.Sorted(maps.Keys(gotSet)) {
+		if _, ok := wantSet[id]; !ok {
+			problems = append(problems, fmt.Sprintf("dedupe ID %s is in state, past the record's positions or its horizon", id))
+		}
+	}
+	slices.Sort(problems)
+	return problems
 }
 
 // check checks a seed that ended: the destination's tables, and every
 // record kept along the chain from HEAD.
 func (m *wModel) check() {
-	kept := map[string]bool{}
+	kept, firsts := map[string]bool{}, map[string]bool{}
 	want := map[wKey]*wAcc{}
 	for _, evs := range m.cfg.splits {
 		for _, e := range evs {
@@ -212,6 +242,10 @@ func (m *wModel) check() {
 				continue
 			}
 			kept[e.ID] = true
+			if e.Of != "" {
+				continue
+			}
+			firsts[e.ID] = true
 			k := wKey{e.Key, windowStart(e.T, m.cfg.size)}
 			if want[k] == nil {
 				want[k] = &wAcc{}
@@ -219,7 +253,7 @@ func (m *wModel) check() {
 			want[k].Sum, want[k].Count = want[k].Sum+e.value(), want[k].Count+1
 		}
 	}
-	once := func(what string, n map[string]int) {
+	once := func(what string, kept map[string]bool, n map[string]int) {
 		for _, id := range slices.Sorted(maps.Keys(kept)) {
 			switch c := n[id]; {
 			case c == 0:
@@ -230,7 +264,7 @@ func (m *wModel) check() {
 		}
 		for _, id := range slices.Sorted(maps.Keys(n)) {
 			if !kept[id] {
-				m.problem("exactly-once", "%s: row %s, which the filter drops", what, id)
+				m.problem("exactly-once", "%s: row %s, which the filter drops or repeats", what, id)
 			}
 		}
 	}
@@ -245,7 +279,7 @@ func (m *wModel) check() {
 			}
 		}
 	}
-	once("filtered", filtered)
+	once("filtered", kept, filtered)
 	if !m.cfg.exchange {
 		// Without the keyed operator, only filtered is written.
 		want = nil
@@ -255,7 +289,7 @@ func (m *wModel) check() {
 			}
 		}
 	} else {
-		once("agg and late", effects)
+		once("agg and late", firsts, effects)
 	}
 
 	got := map[wKey][]wEntry{}
@@ -264,8 +298,7 @@ func (m *wModel) check() {
 		_ = json.Unmarshal([]byte(r.Value), &e)
 		got[wKey{e.Key, e.W}] = append(got[wKey{e.Key, e.W}], e)
 	}
-	keys := slices.SortedFunc(maps.Keys(want), func(a, b wKey) int { return cmp.Or(cmp.Compare(a.W, b.W), cmp.Compare(a.Key, b.Key)) })
-	for _, k := range keys {
+	for _, k := range slices.SortedFunc(maps.Keys(want), cmpWKey) {
 		w, g := want[k], got[k]
 		switch {
 		case len(g) != 1:
@@ -274,7 +307,7 @@ func (m *wModel) check() {
 			m.problem("aggregate", "window %d of %s is sum %d count %d, want sum %d count %d", k.W, k.Key, g[0].Sum, g[0].Count, w.Sum, w.Count)
 		}
 	}
-	for _, k := range slices.SortedFunc(maps.Keys(got), func(a, b wKey) int { return cmp.Or(cmp.Compare(a.W, b.W), cmp.Compare(a.Key, b.Key)) }) {
+	for _, k := range slices.SortedFunc(maps.Keys(got), cmpWKey) {
 		if want[k] == nil {
 			m.problem("aggregate", "window %d of %s, which no run without failures has", k.W, k.Key)
 		}
@@ -308,16 +341,24 @@ func (m *wModel) check() {
 			prev = chain[i+1]
 		}
 		m.checkLink(rec, prev)
-		state, err := m.stateAt(rec)
+		st, err := m.stateAt(rec)
 		if err != nil {
 			m.problem("restore", "%v", err)
 			continue
 		}
-		for _, p := range m.cut(rec, all, state) {
+		for _, p := range m.cut(rec, all, st) {
 			m.problem("restore", "%v: %s", rec, p)
 		}
-	}
-	if len(chain) > 0 && len(chain[0].Snapshots) > 0 {
-		m.problem("restore", "%v, after the read's end, still holds state", chain[0])
+		if i > 0 {
+			continue
+		}
+		n := 0
+		for _, ws := range st.vals {
+			n += len(ws)
+		}
+		if n > 0 {
+			m.problem("restore", "%v, after the read's end, still holds %d windows", rec, n)
+		}
+		m.stats["sections the last record names"] += len(rec.Sections)
 	}
 }
