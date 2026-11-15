@@ -269,8 +269,10 @@ openetl apply -f app-db.yaml
 unchanged workspaces/default/sources/app-db (version 5e1d0feeafb7)
 unchanged workspaces/default/destinations/warehouse (version f9aec669685a)
 created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
-checked source app-db, destination warehouse
+checked pipeline app-db-to-warehouse
 ```
+
+The apply also ran the pipeline's [preflight](../get-started/concepts.md#checks-and-preflights): the checks of both connections, each connector's checks of the tables the pipeline reads and writes, and the plan. `checked` means it passed. To run it again, for example after you change a grant, use `openetl preflight app-db-to-warehouse`.
 
 A new pipeline starts its first sync immediately. List its syncs:
 

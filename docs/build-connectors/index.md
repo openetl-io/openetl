@@ -71,7 +71,8 @@ Sources can also implement these operations:
 
 | Operation | Contract |
 |---|---|
-| `Check` | Check the connection configuration without reading. A `Preflight` says what it looked at, item by item; see [Pre-flight checks](#pre-flight-checks). |
+| `Check` | Check the connection alone, without reading: for example, sign in. See [Checks and preflights](#checks-and-preflights). |
+| `PreflightSource` | Check a pipeline's streams as a sync would read them, without reading records. See [Checks and preflights](#checks-and-preflights). |
 | `Committed` | Acknowledge upstream offsets or replication positions. Notifications are one checkpoint behind. |
 | `Splits`, `Resplit` | Divide streams into concurrent reads. |
 | `Retention` | Report retention usage for saved positions while the pipeline is stopped. Set `Retention: true` in `sdk.Connector` to enable checks every 15 minutes. Reports can open a **Retention at risk** incident. |
@@ -96,6 +97,8 @@ A reply to **PreCommit** or **Commit** names the epoch of the request it answers
 
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.
 
+A destination can also implement `Check` and `PreflightDestination`, as [Checks and preflights](#checks-and-preflights) describes.
+
 ### Setup and teardown
 
 Connectors that maintain pipeline-specific resources, such as replication slots or staging tables, declare `setup` in their spec. In Go, set `Setup: true` in `sdk.Connector`. Implement `Setup`, `Teardown` or both.
@@ -108,27 +111,54 @@ A destination must not change an existing column's type unless the pipeline perm
 
 OpenETL holds the affected column where supported, or stops the stream. It shows the repair to the user. New columns can still be added.
 
-### Pre-flight checks
+### Checks and preflights
 
-`Check` answers whether a config works. A pre-flight also says what the check looked at: reaching the service, each permission, each stream or table, and what to do about each one that fails. The console shows each item on a source's or destination's page, and `openetl check` prints them.
+A connector answers two questions before any data moves:
 
-A check's response lists its items in the order they ran. Each has a `name`, unique and the same from one check to the next, such as `stream.clicks.read`; a `title` for people; a status, `passed`, `warning`, `failed` or `skipped`; a `message`; a failed item's classified `error`; a `fix`, what to do about a failure or a warning; and the config `field` it concerns, as a dotted path. The response's `error` is its first failed item's. A warning doesn't fail the check: the pipeline can still run, not as configured or not as well as it could. Skip what an earlier failure makes pointless, and what can't be checked without changing something, such as writing a record, and say in the `fix` which permission it needs. Item text is shown and kept, so it never holds secrets or records.
+- **Check:** does this configuration reach the system? A check is about one source or destination, with no pipeline. Keep it light: connect, sign in, reach a schema registry. Users run it from a source's or destination's page and with `openetl check`.
+- **Preflight:** would this pipeline work? A preflight gets what a sync of the pipeline would read or write, and examines each stream. Users run it from a pipeline's page, with `openetl preflight`, and after each `apply` that changes a pipeline.
 
-In Go, implement `source.Preflighter` or `destination.Preflighter` in place of `Checker`. Record failures in the report rather than stopping at the first, so one check shows everything that's wrong:
+OpenETL runs a pipeline's preflight in parts: the source's check, then the destination's check. Then it calls `PreflightSource` if the source's check passed, and `PreflightDestination` if the destination's check passed. Last, it plans the sync.
+
+| | Check | Preflight |
+|---|---|---|
+| RPC | `ConnectorService.Check` | `SourceService.PreflightSource`, `DestinationService.PreflightDestination` |
+| Gets | The config | The config, and the pipeline's ID |
+| A source also gets | Nothing | The streams, with their sync modes and cursors; whether the pipeline is continuous; the longest interval between its scheduled syncs |
+| A destination also gets | Nothing | The namespace; the streams, with their write modes, keys and delete modes; each stream's declared columns and its table, in the `openetl.table` schema metadata |
+| Belongs here | Reach the service, credentials, the account's own permissions | Each stream: exists, readable or writable, a mode the connector has; retention against the schedule; resources the pipeline will create |
+
+Which items a connector reports depends on its configuration. For example, a source that reads through a consumer checks that consumer only in the mode that uses one.
+
+Both answer with items, in the order they ran. Each item has these fields:
+
+- `name`: unique and the same from one run to the next, such as `stream.clicks.read`.
+- `title`: for people, such as "Read clicks".
+- A status: `passed`, `warning`, `failed` or `skipped`.
+- `message`: what it found.
+- `error`: the classified error of a failed item.
+- `fix`: what to do about a failure or a warning.
+- `field`: the config field it concerns, as a dotted path.
+
+The response's `error` is the first failed item's error. A warning does not fail it: the pipeline can still run, but not as configured or not as well as it could. Skip an item that an earlier failure makes pointless. Also skip an item that cannot be checked without a change, such as writing a record, and name the permission it needs in its `fix`. Item text is shown and kept, so it never holds secrets or records. A connector without a preflight answers with no items, and `sdk.Serve` does that for you.
+
+In Go, implement `source.CheckReporter` or `destination.CheckReporter` in place of `Checker` for an itemised check. Implement `source.Preflighter` or `destination.Preflighter` for a preflight. Record failures in the report rather than stopping at the first, so one run shows everything that is wrong:
 
 ```go
-func (s *Source) Preflight(ctx context.Context, r *preflight.Report) {
-	if !r.Run("connect", "Reach the API", func() error { return s.ping(ctx) }, preflight.Field("url")) {
-		r.Skip("stream.orders.read", "Read orders", "the API can't be reached")
-		return
+func (s *Source) CheckReport(ctx context.Context, r *check.Report) {
+	r.Run("connect", "Reach the API", func() error { return s.ping(ctx) }, check.Field("url"))
+}
+
+func (s *Source) Preflight(ctx context.Context, req source.PreflightRequest, r *check.Report) {
+	for _, st := range req.Streams {
+		r.Run("stream."+st.Name+".read", "Read "+st.Name, func() error {
+			return check.Fix(s.peek(ctx, st.Name), "Grant the API key the "+st.Name+":read scope.")
+		}, check.Field("streams"))
 	}
-	r.Run("stream.orders.read", "Read orders", func() error {
-		return preflight.Fix(s.peek(ctx, "orders"), "Grant the API key the orders:read scope.")
-	})
 }
 ```
 
-`preflight.Fix` attaches a fix to an error, so the code that classifies errors can say what to do about each. `Warn`, `Pass` and `Skip` record the other statuses.
+`check.Fix` attaches a fix to an error, so the code that classifies errors can say what to do about each. `Warn`, `Pass` and `Skip` record the other statuses.
 
 ### The config schema
 
@@ -306,11 +336,11 @@ greetings: 3 records, complete
 
 Connectors run as trusted code: `egress` says what yours means to reach, and OpenETL doesn't enforce it yet. [What that means for the people who run them](../self-host/index.md#connectors-are-trusted-code).
 
-`openetl connector check` checks a config reaches the upstream, and prints a pre-flight's items. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
+`openetl connector check` checks a config reaches the upstream, and prints the check's items. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
 
 ## Test it with the conformance kit
 
-The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications and their config schemas, connection checks and their pre-flight items, discovery, reads, resumption, and reads that stop at a redo's `until`. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
+The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications and their config schemas, connection checks and their items, a preflight of every discovered stream, discovery, reads, resumption, and reads that stop at a redo's `until`. Destination checks cover a preflight of the suite's streams, commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
 
 Run it from the CLI:
 

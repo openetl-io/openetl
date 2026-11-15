@@ -46,7 +46,13 @@ openetl check destination DESTINATION
 
 The runner needs network access to your systems; the CLI's computer reaching them does not prove the runner can. In a container, `localhost` means that container. Check DNS, ports, TLS settings, the secret being used, and the permissions required by the selected connector version.
 
-An `Auth` incident may have paused the pipeline. An editor can update its secret with `openetl secret set NAME`, or apply corrected connection config. Run the checks again before resuming. Platform administrators manage runner authentication separately through [runner tokens](../self-host/access.md#rotate-a-runner-token).
+To test the whole pipeline, including the permissions on each stream it reads and writes, run its preflight:
+
+```sh
+openetl preflight PIPELINE
+```
+
+Each item that fails names the config field it concerns and gives a fix. An `Auth` incident may have paused the pipeline. An editor can update its secret with `openetl secret set NAME`, or apply corrected connection config. Run the checks again before resuming. Platform administrators manage runner authentication separately through [runner tokens](../self-host/access.md#rotate-a-runner-token).
 
 ## A sync fails repeatedly
 

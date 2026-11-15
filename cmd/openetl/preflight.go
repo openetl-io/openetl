@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"slices"
@@ -164,7 +165,14 @@ func printPreflight(out io.Writer, r *apiv1.PreflightResult) {
 }
 
 func runPreflight(ctx context.Context, args []string, out io.Writer) error {
-	fs, conn, workspace, _ := connectorFlags("preflight", "PIPELINE")
+	fs := flag.NewFlagSet("openetl preflight", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: openetl preflight [flags] PIPELINE")
+		fmt.Fprintln(fs.Output(), "\nRuns on a runner of the pipeline's own data plane.")
+		fs.PrintDefaults()
+	}
+	conn := apiFlags(fs)
+	workspace := fs.String("workspace", "default", "the pipeline's workspace")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

@@ -39,10 +39,10 @@ Neither command accepts positional arguments. A document's `metadata.workspace` 
 
 After `apply` changes resources, it asks a runner to check them:
 
-- Each source and destination that the apply created or updated.
-- The source and destination of each pipeline that the apply created or updated, on the pipeline's data plane.
+- A preflight of each pipeline that the apply created or updated, as `openetl preflight` runs it.
+- A check of each other source and destination that the apply created or updated.
 
-`apply` discovers each source that passes its check, which refreshes the catalog that plans read. Then it prints the problems in the changed pipelines' plans. A failed check or a plan problem prints a warning and does not change the exit status, because the applied resources stay. The checks stop after 2 minutes. `--dry-run` and `--no-check` skip them.
+`apply` discovers each source that passes its check, which refreshes the catalog that plans read. Then it prints the problems in the plans of pipelines that depend on what changed. A failed check, a failed preflight or a plan problem prints a warning and does not change the exit status, because the applied resources stay. The checks stop after 2 minutes. `--dry-run` and `--no-check` skip them.
 
 For a pipeline with `transform.sql`, `plan` and `apply` send the statements to a runner of the pipeline's data plane and wait up to 30 seconds for one to take them. Without a runner, the plan has a note instead of the statements' plan.
 
@@ -145,17 +145,24 @@ A cause is a code, the column if one column caused it, and why OpenETL did not h
 
 `quarantine show` needs the editor role, and the audit log records each read. A runner of the pipeline's data plane reads the file. The control plane passes the lines to the command, and does not keep them. If the file has more lines, the command says so on standard error. If the pipeline's `quarantine.retention` or a rule of the store deleted the file, the command fails with `not_found`.
 
-## Check connections and discover streams
+## Check connections, preflight pipelines and discover streams
 
 | Syntax | Result |
 |---|---|
-| `openetl check source SOURCE` | Ask a runner to check a source connection. |
-| `openetl check destination DESTINATION` | Ask a runner to check a destination connection. |
-| `openetl check pipeline PIPELINE` | Ask a runner to check the pipeline's source and destination, discover the source's streams, and then print the pipeline's plan. |
+| `openetl check source SOURCE` | Ask a runner to check a source's connection. |
+| `openetl check destination DESTINATION` | Ask a runner to check a destination's connection. |
+| `openetl preflight PIPELINE` | Ask a runner of the pipeline's data plane to run its preflight, then print the pipeline's plan. |
 | `openetl discover SOURCE` | Ask a runner to list a source's streams and columns. |
 
 | Flag | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `--data-plane` | string | No | The server's default data plane. For `check pipeline`, the pipeline's data plane. | The data plane whose runner performs the operation. |
+| `--data-plane` | string | No | The server's default data plane. | The data plane whose runner performs the operation. Available on `check` and `discover` only. |
 
-Put flags before `source`, `destination` or `pipeline` for `check`. `check pipeline` returns an error if a check fails or the plan has problems. When the connector says what its check looked at, each command prints one line an item, its status (`passed`, `warning`, `failed` or `skipped`) and title, then its error code and message, and under an item that failed or warned, the config `field` it concerns and its `fix`. After an `apply`, a warning about a failed check lists the fixes of its failed items. These commands use connections already applied to the API. To test a connector locally with a config file, use the [connector CLI](./index.md#the-openetl-cli).
+Put flags before `source` or `destination` for `check`, and before the pipeline for `preflight`. A [check](../get-started/concepts.md#checks-and-preflights) tests one connection. A preflight tests a pipeline, in these parts, in order:
+
+1. The check of the pipeline's source, then of its destination.
+2. The source connector's checks of the streams the pipeline reads, with their sync modes and the pipeline's schedule. They are skipped if the source's check failed.
+3. The destination connector's checks of the streams the pipeline writes, with their write modes, keys, columns and tables. They are skipped if the destination's check failed.
+4. The sync's plan, from the source's refreshed catalog: its problems fail it, and its warnings are warnings.
+
+`preflight` prints each part with `passed`, `failed` or `skipped`, and returns an error if any part fails. When a connector says what it looked at, each command prints one line an item: its status (`passed`, `warning`, `failed` or `skipped`) and title, then its error code and message. Under an item that failed or warned, it prints the config `field` it concerns and its `fix`. After an `apply`, a warning about a failure lists the fixes of its failed items. These commands use connections and pipelines already applied to the API. To test a connector locally with a config file, use the [connector CLI](./index.md#the-openetl-cli).
