@@ -6,7 +6,8 @@
 //! rows, which run the row-wise steps before the window. A row goes to
 //! each window its event time falls in. A window's state is a value under
 //! its group keys and start: its accumulators, how many times its row has
-//! been given, and whether the output has it now. A session's is a value
+//! been given, and the values of the row the output has now, if it has
+//! one, which a delete of the row gives again. A session's is a value
 //! under its group keys: every session the keys have open or kept.
 //!
 //! The watermark goes by [`Operator::advance`]: `t` means every row whose
@@ -63,17 +64,26 @@ struct State {
     emitted: u32,
     /// The output has its row now.
     visible: bool,
+    /// While it's visible, the aggregates' values of the row the output
+    /// has, which a delete of it gives again; empty otherwise.
+    shown: Vec<Option<Value>>,
+    /// While it's visible, the end that row has: a session's moves as it
+    /// grows.
+    shown_end: i64,
     accs: Vec<Acc>,
 }
 
-/// The layout of a window's state, and of a key's sessions.
-const LAYOUT: u8 = 1;
+/// The layout of a window's state, and of a key's sessions, which the
+/// operator's ID covers: a change of it is a new operator, with no state.
+const LAYOUT: u8 = openetl_sql::WINDOW_STATE;
 
 impl State {
     fn new(specs: &[Spec]) -> Self {
         Self {
             emitted: 0,
             visible: false,
+            shown: Vec::new(),
+            shown_end: 0,
             accs: specs.iter().map(Acc::new).collect(),
         }
     }
@@ -81,6 +91,12 @@ impl State {
     fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.emitted.to_be_bytes());
         out.push(u8::from(self.visible));
+        if self.visible {
+            for v in &self.shown {
+                codec::encode(v.as_ref(), out);
+            }
+            out.extend_from_slice(&self.shown_end.to_be_bytes());
+        }
         for a in &self.accs {
             a.encode(out);
         }
@@ -89,6 +105,14 @@ impl State {
     fn decode(specs: &[Spec], buf: &mut &[u8]) -> Result<Self, String> {
         let emitted = u32::from_be_bytes(take(buf)?);
         let [visible] = take::<1>(buf)?;
+        let mut shown = Vec::new();
+        let mut shown_end = 0;
+        if visible == 1 {
+            for _ in specs {
+                shown.push(codec::decode(buf)?);
+            }
+            shown_end = i64::from_be_bytes(take(buf)?);
+        }
         let mut accs = Vec::with_capacity(specs.len());
         for _ in specs {
             accs.push(Acc::decode(buf)?);
@@ -96,8 +120,24 @@ impl State {
         Ok(Self {
             emitted,
             visible: visible == 1,
+            shown,
+            shown_end,
             accs,
         })
+    }
+
+    /// The values a delete of its row gives: those of the row the output
+    /// has, which its steps took once.
+    fn deleted(&self, specs: &[Spec]) -> Vec<Option<Value>> {
+        match self.visible {
+            true => self.shown.clone(),
+            false => self
+                .accs
+                .iter()
+                .zip(specs)
+                .map(|(a, spec)| a.value(spec).ok().flatten())
+                .collect(),
+        }
     }
 
     fn merge(&mut self, other: State) {
@@ -325,6 +365,8 @@ impl Operator {
                     {
                         s.state.emitted = e.state.emitted;
                         s.state.visible = e.state.visible;
+                        s.state.shown = e.state.shown;
+                        s.state.shown_end = e.state.shown_end;
                     }
                 }
                 for (g, k, list) in &lists {
@@ -631,6 +673,8 @@ impl Operator {
                         true if s.start == start => {
                             merged.emitted = s.state.emitted;
                             merged.visible = s.state.visible;
+                            merged.shown = s.state.shown.clone();
+                            merged.shown_end = s.state.shown_end;
                             merged.merge(s.state);
                         }
                         true => merged.merge(s.state),
@@ -676,10 +720,12 @@ impl Operator {
                         group: g,
                         key: k.clone(),
                         start: old.start,
-                        end: old.end,
+                        end: old.state.shown_end,
                         state: State {
                             emitted: old.state.emitted,
                             visible: true,
+                            shown: old.state.deleted(&self.specs),
+                            shown_end: old.state.shown_end,
                             accs: Vec::new(),
                         },
                         merged: true,
@@ -874,6 +920,8 @@ impl Operator {
             {
                 s.state.emitted = e.state.emitted;
                 s.state.visible = e.state.visible;
+                s.state.shown = e.state.shown;
+                s.state.shown_end = e.state.shown_end;
             }
         }
         for (g, k, list) in &lists {
@@ -884,8 +932,8 @@ impl Operator {
 
     /// The rows of `windows`: each that passes HAVING as an insert or an
     /// update, and each that the output has but that no longer passes, or
-    /// that was merged away (no accumulators), as a delete. Gives the
-    /// windows with their counts and visibility updated.
+    /// that was merged away, as a delete with the values the output has.
+    /// Gives the windows with their counts and visibility updated.
     fn emit_states(&self, windows: Vec<Emit>) -> Result<(Out, Vec<Emit>), JobError> {
         let mut out = Out::default();
         let mut gone = Vec::new();
@@ -950,23 +998,36 @@ impl Operator {
             .filter(|r| !passing.contains(r) && !failing.contains(r) && ok[*r].state.visible)
             .collect();
         if !deleted.is_empty() {
-            let rows =
-                steps::take(&grouped, &deleted).map_err(|e| JobError::internal(e.message))?;
-            let (ran, _) = steps::run_rows(&self.plan.steps, rows, false)
-                .map_err(|e| JobError::internal(self.reason(&e.message)))?;
+            // The row the output has: its values and its end.
+            let rows: Vec<Emit> = deleted
+                .iter()
+                .map(|&r| {
+                    let e = &ok[r];
+                    Emit {
+                        group: e.group,
+                        key: e.key.clone(),
+                        start: e.start,
+                        end: e.state.shown_end,
+                        state: e.state.clone(),
+                        merged: false,
+                    }
+                })
+                .collect();
+            let refs: Vec<&Emit> = rows.iter().collect();
+            let shown: Vec<Vec<Option<Value>>> =
+                refs.iter().map(|e| e.state.deleted(&self.specs)).collect();
+            let rows = self.grouped(&refs, &shown)?;
+            let ran = self.delete_rows(rows)?;
             let dels = ran.rows.iter().map(|&i| (deleted[i], "delete")).collect();
             parts.push((ran.batch, dels));
         }
-        // Rows of sessions merged away: their key, and nothing else.
         let mut gone_parts = Vec::new();
         if !gone.is_empty() {
             let refs: Vec<&Emit> = gone.iter().collect();
-            let empty: Vec<Vec<Option<Value>>> =
-                gone.iter().map(|_| vec![None; self.specs.len()]).collect();
-            let rows = self.grouped(&refs, &empty)?;
-            let (ran, _) = steps::run_rows(&self.plan.steps, rows, false)
-                .map_err(|e| JobError::internal(self.reason(&e.message)))?;
-            gone_parts.push(ran);
+            let shown: Vec<Vec<Option<Value>>> =
+                gone.iter().map(|e| e.state.shown.clone()).collect();
+            let rows = self.grouped(&refs, &shown)?;
+            gone_parts.push(self.delete_rows(rows)?);
         }
         let mut batches = Vec::new();
         let mut ids = Vec::new();
@@ -984,6 +1045,12 @@ impl Operator {
             }
             batches.push(batch);
         }
+        for (r, vs) in values.into_iter().enumerate() {
+            if counts.get(&r).is_some_and(|(_, visible)| *visible) {
+                ok[r].state.shown = vs;
+                ok[r].state.shown_end = ok[r].end;
+            }
+        }
         for ran in gone_parts {
             for &r in &ran.rows {
                 let e = &gone[r];
@@ -998,6 +1065,9 @@ impl Operator {
             if let Some((n, visible)) = counts.get(&r) {
                 e.state.emitted = *n;
                 e.state.visible = *visible;
+                if !*visible {
+                    e.state.shown.clear();
+                }
             }
             updated.push(e);
         }
@@ -1022,6 +1092,47 @@ impl Operator {
             });
         }
         Ok((out, updated))
+    }
+
+    /// Deletes' rows of grouped rows that hold what the output's rows were
+    /// given from. HAVING doesn't run. An output column that gives the same
+    /// value for the same input gives the row's again, which its steps took
+    /// before. One that may not, as one that reads `now()`, isn't evaluated
+    /// again: a delete is by the output's key, which its window and keys
+    /// give, so it's null, or its type's zero where it can't be.
+    fn delete_rows(&self, rows: RecordBatch) -> Result<steps::Ran, JobError> {
+        let bad =
+            |e: String| JobError::internal(self.reason(&format!("a delete of a row it gave: {e}")));
+        let n = rows.num_rows();
+        let mut cur = rows;
+        for step in &self.plan.steps {
+            match step {
+                openetl_sql::Step::Filter(_) => {}
+                openetl_sql::Step::Project(p) => {
+                    let mut columns = Vec::with_capacity(p.columns.len());
+                    for (c, f) in p.columns.iter().zip(p.schema.fields()) {
+                        let a = match c.expr.is_deterministic() {
+                            true => c.expr.eval(&cur).map_err(|e| bad(e.message))?,
+                            false => empty(f, n).map_err(bad)?,
+                        };
+                        columns.push(a);
+                    }
+                    cur = RecordBatch::try_new_with_options(
+                        p.schema.clone(),
+                        columns,
+                        &arrow_array::RecordBatchOptions::new().with_row_count(Some(n)),
+                    )
+                    .map_err(|e| bad(e.to_string()))?;
+                }
+                openetl_sql::Step::Unnest(_) => {
+                    return Err(bad("a window's output that unnests".into()));
+                }
+            }
+        }
+        Ok(steps::Ran {
+            batch: cur,
+            rows: (0..n).collect(),
+        })
     }
 
     fn schema_of(&self, batches: &[RecordBatch]) -> SchemaRef {
@@ -1207,6 +1318,22 @@ fn canonical_json(a: &ArrayRef) -> ArrayRef {
         })
         .collect();
     Arc::new(out)
+}
+
+/// `n` values of `f` for a column whose value doesn't matter: nulls, or
+/// where it can't be null, its type's zero.
+fn empty(f: &Field, n: usize) -> Result<ArrayRef, String> {
+    let nulls = arrow_array::new_null_array(f.data_type(), n);
+    if f.is_nullable() {
+        return Ok(nulls);
+    }
+    let zeros = nulls
+        .to_data()
+        .into_builder()
+        .nulls(None)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(arrow_array::make_array(zeros))
 }
 
 /// The state layer's operator for a plan's operator ID.
