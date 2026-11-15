@@ -65,7 +65,11 @@ func (s *Server) ReadQuarantineFile(ctx context.Context, req *connect.Request[ap
 		return nil, err
 	}
 	defer func() {
-		if err := s.Dispatch.Forget(context.WithoutCancel(ctx), ref); err != nil {
+		// Its own deadline, so a stuck delete doesn't hold the request; the
+		// row expires anyway.
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if err := s.Dispatch.Forget(fctx, ref); err != nil {
 			s.log().Warn("a read of a quarantine file wasn't deleted; it expires", "work", ref.ID, "err", err)
 		}
 	}()

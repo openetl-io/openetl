@@ -46,6 +46,22 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, checkpoint.Version
 	return data, version(resp.ETag), nil
 }
 
+func (s *Store) GetPrefix(ctx context.Context, key string, n int) ([]byte, error) {
+	resp, err := s.container.NewBlobClient(key).DownloadStream(ctx, nil)
+	if bloberror.HasCode(err, bloberror.BlobNotFound) {
+		return nil, checkpoint.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: azure get %s: %w", key, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(n)))
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: azure get %s: %w", key, err)
+	}
+	return data, nil
+}
+
 func (s *Store) Create(ctx context.Context, key string, data []byte) (checkpoint.Version, error) {
 	star := azcore.ETagAny
 	v, err := s.put(ctx, key, data, &blob.ModifiedAccessConditions{IfNoneMatch: &star})

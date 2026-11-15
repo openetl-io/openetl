@@ -190,7 +190,9 @@ func showQuarantine(ctx context.Context, args []string, out, notes io.Writer) er
 		return err
 	}
 	for _, l := range res.Msg.GetLines() {
-		fmt.Fprintln(out, l)
+		if _, err := fmt.Fprintln(out, l); err != nil {
+			return err
+		}
 	}
 	if res.Msg.GetMore() {
 		fmt.Fprintf(notes, "the file has more lines than these %d; read it from the data plane's storage for the rest\n", len(res.Msg.GetLines()))

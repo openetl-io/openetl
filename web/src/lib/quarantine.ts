@@ -47,7 +47,9 @@ export function parseLine(line: string): Line {
   const record = str("record");
   let pretty = record;
   try {
-    pretty = JSON.stringify(JSON.parse(record), null, 2);
+    // JSON.parse turns numbers into doubles, so a record with a number that
+    // doesn't print back as written, such as an ID past 2^53, is shown as it came.
+    if (numbersRoundTrip(record)) pretty = JSON.stringify(JSON.parse(record), null, 2);
   } catch {
     // Not JSON, as a record whose code is json: shown as it came.
   }
@@ -56,4 +58,28 @@ export function parseLine(line: string): Line {
     reason: str("reason") || undefined,
     record: pretty,
   };
+}
+
+/** Whether every number in JSON text, outside its strings, prints back from a double exactly as written. */
+export function numbersRoundTrip(text: string): boolean {
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charAt(i);
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+    if (c === "-" || (c >= "0" && c <= "9")) {
+      const m = /^-?\d+(\.\d+)?([eE][+-]?\d+)?/.exec(text.slice(i));
+      if (!m) continue;
+      if (String(Number(m[0])) !== m[0]) return false;
+      i += m[0].length - 1;
+    }
+  }
+  return true;
 }

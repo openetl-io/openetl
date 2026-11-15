@@ -104,7 +104,7 @@ function QuarantineFiles({ workspace, pipeline, stream, focus }: { workspace: st
         )}
         {files.map((f) => (
           <FileItem
-            key={f.path}
+            key={`${parent}/${f.path}`}
             workspace={workspace}
             pipeline={pipeline}
             file={f}

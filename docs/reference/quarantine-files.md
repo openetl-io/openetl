@@ -159,6 +159,15 @@ The control plane does not know what a lifecycle rule deletes. It lists the file
 
 `openetl quarantine show PIPELINE PATH` prints the first lines of a file, at most 100. A runner of the pipeline's data plane reads the file, and the control plane does not keep the lines. The API method is `ReadQuarantineFile`, at `GET /v1/workspaces/WORKSPACE/pipelines/PIPELINE/quarantine:read`. It needs the editor role, and the audit log records each read. In the console, **Show records** does the same.
 
+| Field | Where | Type | Required | Default | Meaning |
+|---|---|---|---|---|---|
+| `path` | Query | string | Yes | — | The file's path, as `ListQuarantine` gives it, such as `3/17/orders.jsonl`. The file must be one that the control plane lists. |
+| `limit` | Query | integer | No | `20` | At most this many lines, from the first. The most is `100`. |
+| `lines` | Response | list of strings | — | — | The file's first lines, without their newlines. Each line is a JSON object, as [The lines](#the-lines) describes. The lines stop before `limit` if the next line would take them past 256 KiB. |
+| `more` | Response | boolean | — | — | `true` if the file has lines after these. |
+
+If the first line is larger than 256 KiB, the method fails with `failed_precondition`. If the store no longer has the file, it fails with `not_found`.
+
 After each committed epoch that quarantined rows, OpenETL sends a [`stream.quarantined`](./events.md#when-type-is-streamquarantined) event. The event has the epoch's files and their rows by cause.
 
 To read a file from S3, print the records of one code:

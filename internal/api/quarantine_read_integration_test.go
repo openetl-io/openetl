@@ -72,7 +72,7 @@ func TestReadQuarantineFile(t *testing.T) {
 		return contract.ReadQuarantineResult{Lines: lines[:min(in.Lines, len(lines))], More: in.Lines < 3}
 	})
 
-	res, err := e.owner.ReadQuarantineFile(ctx, connect.NewRequest(&apiv1.ReadQuarantineFileRequest{Parent: e.parent, Path: "2/5/orders.jsonl", Limit: 2}))
+	res, err := e.editor.ReadQuarantineFile(ctx, connect.NewRequest(&apiv1.ReadQuarantineFileRequest{Parent: e.parent, Path: "2/5/orders.jsonl", Limit: 2}))
 	if err != nil {
 		t.Fatal(err)
 	}

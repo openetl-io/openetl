@@ -1,6 +1,7 @@
 package activities
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -41,6 +42,18 @@ func TestReadQuarantine(t *testing.T) {
 	if _, err = a.ReadQuarantine(t.Context(), in); err == nil || !strings.Contains(err.Error(), "larger than 256 KiB") {
 		t.Errorf("a first line past the bound: %v", err)
 	}
+	// A file far past the bound: the store gives one byte past it, and the
+	// read stops at the last whole line within it.
+	long := org + "/" + pipeline + "/_quarantine/3/20/orders.jsonl"
+	if _, err := store.Create(t.Context(), long, []byte(strings.Repeat(strings.Repeat("y", 4096)+"\n", 200))); err != nil {
+		t.Fatal(err)
+	}
+	counted := &prefixCounter{MemStore: store}
+	in = contract.ReadQuarantineInput{OrgID: org, PipelineID: pipeline, Path: "3/20/orders.jsonl", Lines: 100}
+	res, err = (&Quarantine{Store: counted}).ReadQuarantine(t.Context(), in)
+	if err != nil || len(res.Lines) != 63 || !res.More || counted.n != contract.MaxQuarantineRead+1 {
+		t.Errorf("a long file: %d lines, more %v, read %d bytes, %v", len(res.Lines), res.More, counted.n, err)
+	}
 	for _, bad := range []contract.ReadQuarantineInput{
 		{OrgID: org, PipelineID: pipeline, Path: "../../other/_quarantine/1/1/x.jsonl"},
 		{OrgID: org, PipelineID: pipeline, Path: "/3/17/orders.jsonl"},
@@ -51,4 +64,15 @@ func TestReadQuarantine(t *testing.T) {
 			t.Errorf("read %+v", bad)
 		}
 	}
+}
+
+// prefixCounter records the most GetPrefix was asked for.
+type prefixCounter struct {
+	*checkpoint.MemStore
+	n int
+}
+
+func (p *prefixCounter) GetPrefix(ctx context.Context, key string, n int) ([]byte, error) {
+	p.n = max(p.n, n)
+	return p.MemStore.GetPrefix(ctx, key, n)
 }

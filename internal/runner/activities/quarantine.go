@@ -38,7 +38,9 @@ func (a *Quarantine) ReadQuarantine(ctx context.Context, in contract.ReadQuarant
 	if limit <= 0 || limit > maxQuarantineLines {
 		limit = maxQuarantineLines
 	}
-	data, _, err := a.Store.Get(ctx, in.OrgID+"/"+in.PipelineID+"/"+checkpoint.QuarantineDir+"/"+in.Path)
+	// One byte past the most a read returns tells a file that ends there
+	// from one that goes on.
+	data, err := a.Store.GetPrefix(ctx, in.OrgID+"/"+in.PipelineID+"/"+checkpoint.QuarantineDir+"/"+in.Path, contract.MaxQuarantineRead+1)
 	if errors.Is(err, checkpoint.ErrNotFound) {
 		res.Missing = true
 		return res, nil
@@ -46,10 +48,13 @@ func (a *Quarantine) ReadQuarantine(ctx context.Context, in contract.ReadQuarant
 	if err != nil {
 		return res, errs.Wrap(errs.Transient, err, "read quarantine file "+in.Path)
 	}
+	whole := len(data) <= contract.MaxQuarantineRead
 	size := 0
 	for len(data) > 0 {
-		line, rest, _ := bytes.Cut(data, []byte("\n"))
-		if len(res.Lines) == limit || size+len(line) > contract.MaxQuarantineRead {
+		line, rest, ended := bytes.Cut(data, []byte("\n"))
+		// A line without its newline in a read that stopped short is cut.
+		cut := !ended && !whole
+		if len(res.Lines) == limit || cut || size+len(line) > contract.MaxQuarantineRead {
 			if len(res.Lines) == 0 {
 				return res, errs.New(errs.ConfigInvalid, "quarantine file %s's first line is larger than %d KiB; read it from the data plane's storage", in.Path, contract.MaxQuarantineRead>>10)
 			}

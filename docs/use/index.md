@@ -140,7 +140,9 @@ A file of the sync or checkpoint that you selected is marked **This sync** or **
 
 If the stream holds values that do not fit (`unfitValues: hold`), a cause can also show **not held**. These rows had values that OpenETL could not hold, so it quarantined the rows. Point to the word after **not held** to see why.
 
-If you are an editor or above, each file has **Show records**. Select it to see the file's first 20 records, with the cause and the reason of each. A runner of the pipeline's data plane reads them from the data plane's storage. OpenETL does not keep the records, and the audit log records each read. If the file has more records, the panel shows the command that reads up to 100.
+If you are an editor or above, each file has **Show records**. Select it to see the file's first 20 records, with the cause and the reason of each. The panel shows at most 256 KiB of records. A runner of the pipeline's data plane reads them from the data plane's storage. The audit log records each read. OpenETL does not keep a copy of what the panel shows. The file itself stays in the data plane's storage until the pipeline's retention or a rule of the store deletes it.
+
+If the file has more records, the panel shows the command that reads up to 100. If the first record is larger than 256 KiB, the panel and the command cannot show it. Read it from the file in the data plane's storage.
 
 ### SQL
 

@@ -2,7 +2,7 @@ import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
 import { QuarantineFileSchema } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncSchema } from "@/gen/openetl/api/v1/sync_pb";
-import { anyNotHeld, causeText, parseLine, rowsLabel, showCommand } from "../quarantine";
+import { anyNotHeld, causeText, numbersRoundTrip, parseLine, rowsLabel, showCommand } from "../quarantine";
 import { quarantinedStream } from "../status";
 
 describe("causeText", () => {
@@ -60,5 +60,22 @@ describe("quarantinedStream", () => {
     expect(quarantinedStream(sync(0n, 3n))).toBe("s1");
     expect(quarantinedStream(sync(1n, 3n))).toBeUndefined();
     expect(quarantinedStream(sync(0n))).toBeUndefined();
+  });
+});
+
+describe("numbersRoundTrip", () => {
+  it("is false for a number a double changes, and ignores strings", () => {
+    expect(numbersRoundTrip('{"id": 7, "amount": -3.25, "n": [0, 12]}')).toBe(true);
+    expect(numbersRoundTrip('{"id": 9007199254740993}')).toBe(false);
+    expect(numbersRoundTrip('{"x": 1.0}')).toBe(false);
+    expect(numbersRoundTrip('{"s": "9007199254740993", "t": "a\\"1.0"}')).toBe(true);
+  });
+});
+
+describe("parseLine and large numbers", () => {
+  it("shows a record whose numbers a double would change as it came", () => {
+    const record = '{"id":9007199254740993}';
+    expect(parseLine(JSON.stringify({ stream: "a", code: "type", reason: "r", record })).record).toBe(record);
+    expect(parseLine(JSON.stringify({ stream: "a", code: "type", reason: "r", record: '{"id":7}' })).record).toBe('{\n  "id": 7\n}');
   });
 });
