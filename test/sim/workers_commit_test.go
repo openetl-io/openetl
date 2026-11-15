@@ -127,6 +127,9 @@ var variantShapes = map[string]wShape{
 	"replay-own-watermarks":      {dest: "txn", staging: "none", exchange: "on"},
 	"prune-to-head":              {dest: "txn", staging: "none", exchange: "on"},
 	"replay-not-exact":           {dest: "txn", staging: "none"},
+	"routed-own-splits":          {dest: "txn", staging: "none", exchange: "on"},
+	"routed-redo-whole":          {dest: "txn", staging: "none", exchange: "on"},
+	"redo-every-output":          {dest: "txn", staging: "none", exchange: "on"},
 	// State's.
 	"state-before-record":    {exchange: "on"},
 	"restore-by-listing":     {exchange: "on"},
@@ -256,21 +259,25 @@ func newTxnBroker() *wBroker {
 
 // wTxnStaged is a txn writer lane's committable: its transaction and the
 // producer that holds it; what of the epoch it holds, the splits whose rows
-// it wrote, with where each one's part of the epoch began, and the key
-// groups whose windows it did, in the layout that wrote it; and whether the
+// its lane read and wrote to filtered, with where each one's part of the
+// epoch began, the key groups whose rows and windows it wrote, and the
+// splits whose rows of those key groups the exchange brought it for routed,
+// with where each began, in the layout that wrote it; and whether the
 // writer staged a copy, of which streams.
 type wTxnStaged struct {
-	Lane     int                      `json:"lane"`
-	Slot     int                      `json:"slot"`
-	IDGen    uint64                   `json:"id_gen,omitempty"`
-	Producer uint64                   `json:"producer_epoch"`
-	Gen      uint64                   `json:"gen"`
-	N        uint64                   `json:"n"`
-	Splits   []int                    `json:"splits,omitempty"`
-	From     []int                    `json:"from,omitempty"`
-	KG       checkpoint.KeyGroupRange `json:"key_groups"`
-	Staged   bool                     `json:"staged,omitempty"`
-	Streams  []string                 `json:"streams,omitempty"`
+	Lane       int                      `json:"lane"`
+	Slot       int                      `json:"slot"`
+	IDGen      uint64                   `json:"id_gen,omitempty"`
+	Producer   uint64                   `json:"producer_epoch"`
+	Gen        uint64                   `json:"gen"`
+	N          uint64                   `json:"n"`
+	Splits     []int                    `json:"splits,omitempty"`
+	From       []int                    `json:"from,omitempty"`
+	Routed     []int                    `json:"routed,omitempty"`
+	RoutedFrom []int                    `json:"routed_from,omitempty"`
+	KG         checkpoint.KeyGroupRange `json:"key_groups"`
+	Staged     bool                     `json:"staged,omitempty"`
+	Streams    []string                 `json:"streams,omitempty"`
 }
 
 func (s wTxnStaged) id() wTxnID      { return wTxnID{Lane: s.Lane, Slot: s.Slot, Gen: s.IDGen} }
@@ -460,7 +467,9 @@ func (m *wModel) redo(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout, id wT
 
 // replay is a committable's part of rec's epoch, read again from the
 // source: the row-wise statement's output of its splits, from where the
-// committable says each one's part began, and the windows of its key groups
+// committable says each one's part began; routed's rows of its key groups,
+// of the splits the committable says the exchange brought them from, from
+// where it says each began; and the windows of its key groups
 // that the epoch closed, from the state of the record before and every
 // split's rows since, less repeats of rows that state or the replay has
 // seen. Its rows are the epoch's, and carry its generation. Only the keyed
@@ -493,11 +502,7 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 			}
 		}
 	}
-	rng := func(s int) []wEvent {
-		from, ok := began[s]
-		if !ok || m.cfg.broken == "redo-by-new-layout" {
-			from = prev.split(s).Pos
-		}
+	part := func(s, from int) []wEvent {
 		to := rec.split(s).Pos
 		if m.trimmed[s] > from {
 			m.problem("exactly-once", "%s redoes %v from split %d at %d, but positions below %d were acknowledged", w.name(), c.marker(), s, from, m.trimmed[s])
@@ -508,6 +513,24 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 		}
 		return evs
 	}
+	rng := func(s int) []wEvent {
+		from, ok := began[s]
+		if !ok || m.cfg.broken == "redo-by-new-layout" {
+			from = prev.split(s).Pos
+		}
+		return part(s, from)
+	}
+	routed := map[int]int{}
+	for i, s := range c.Routed {
+		routed[s] = c.RoutedFrom[i]
+	}
+	if m.cfg.broken == "redo-every-output" {
+		for _, s := range slices.Sorted(maps.Keys(routed)) {
+			if !slices.Contains(splits, s) {
+				splits, began[s] = append(slices.Clone(splits), s), routed[s]
+			}
+		}
+	}
 	rows := map[string][]row{}
 	for _, s := range splits {
 		for _, e := range rng(s) {
@@ -515,6 +538,18 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 				rows["filtered"] = append(rows["filtered"], row{ID: e.ID, Seq: e.T, Key: e.Key, Value: string(must(json.Marshal(wContrib{ID: e.ID, Gen: c.Gen})))})
 			}
 		}
+	}
+	// routed's rows of the lane's key groups, of every split the exchange
+	// brought them from.
+	for _, s := range slices.Sorted(maps.Keys(routed)) {
+		for _, e := range part(s, routed[s]) {
+			if e.kept() && (inRange(kg, keyGroupOf(e.Key)) || m.cfg.broken == "routed-redo-whole") {
+				rows["routed"] = append(rows["routed"], row{ID: e.ID, Seq: e.T, Key: e.Key, Value: string(must(json.Marshal(wContrib{ID: e.ID, Gen: c.Gen})))})
+			}
+		}
+	}
+	if len(routed) > 0 {
+		m.stats["lanes redone with routed rows"]++
 	}
 	m.stats["lanes redone from the source"]++
 	if !m.cfg.exchange {
@@ -708,7 +743,7 @@ func settlers(cs []wTxnStaged, n int) []int {
 	first := map[int]int{}
 	for j, c := range cs {
 		parent[j] = j
-		for _, s := range c.Splits {
+		for _, s := range slices.Concat(c.Splits, c.Routed) {
 			if g, ok := first[s]; ok {
 				parent[root(j)] = root(g)
 			} else {

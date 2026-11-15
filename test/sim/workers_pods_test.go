@@ -863,6 +863,7 @@ func (l *wLane) take(d decision, c *wConn) {
 	switch f.kind {
 	case 'r':
 		for _, r := range f.rows {
+			l.emit(l.kcur, "routed", row{ID: r.ID, Seq: r.T, Key: r.Key, Value: string(must(json.Marshal(wContrib{ID: r.ID, Gen: r.Gen})))})
 			l.fold(r)
 		}
 	case 'w':
