@@ -5,7 +5,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strconv"
 	"syscall"
 	"testing"
@@ -47,6 +46,11 @@ func TestCDCAcrossWorkers(t *testing.T) {
 	plane, token := placementPlane(t)
 	launcher := startPodLauncher(t, plane, token)
 	startPlaneRunner(t, plane, token, "1,2Gi")
+	// A pipeline applied before the launcher reports runs on one pod.
+	eventually(t, 30*time.Second, "the pod launcher to report", func() bool {
+		n, err := query[int](t, "SELECT count(*) FROM runners WHERE data_plane_id = $1 AND launcher AND attempt = ''", plane)
+		return err == nil && n == 1
+	})
 	name := unique("exchange")
 	in, out := schema(name), schema(name)+"_out"
 	src := pgx.Identifier{in, "users"}.Sanitize()
@@ -85,21 +89,20 @@ func TestCDCAcrossWorkers(t *testing.T) {
 		t.Errorf("the records cover %d splits of users in %d committables, want its one in both workers'", splits, committables)
 	}
 
-	// The newest worker pod of the pipeline's attempt, as the launcher's
-	// pods log it.
-	id := mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
-	started := regexp.MustCompile(`msg="runner running one worker of an attempt" .*id=\S+:(\d+) attempt=\S*` + regexp.QuoteMeta(id) + `\S* placement=\d+ worker=(\d+)`)
-	m := started.FindAllStringSubmatch(launcher.out.String(), -1)
-	if len(m) == 0 {
-		t.Fatal("no worker pod of the pipeline")
+	// Both worker pods of the attempt, as the launcher's pods log them as
+	// they start: the launcher serves only this test's data plane, whose
+	// one pipeline is continuous, so it runs until the kill.
+	pods := workerPodStarted.FindAllStringSubmatch(launcher.out.String(), -1)
+	if len(pods) < 2 {
+		t.Fatalf("%d worker pods started, want the attempt's 2", len(pods))
 	}
-	pid, err := strconv.Atoi(m[len(m)-1][1])
+	pid, err := strconv.Atoi(pods[len(pods)-1][1])
 	if err != nil {
 		t.Fatal(err)
 	}
 	run(t, "UPDATE "+src+" SET name = 'renamed' WHERE id <= 1000")
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
-		t.Fatalf("killing worker %s's pod: %v", m[len(m)-1][2], err)
+		t.Fatalf("killing worker pod %d: %v", pid, err)
 	}
 	run(t, "DELETE FROM "+src+" WHERE id BETWEEN 2001 AND 2100",
 		"INSERT INTO "+src+" SELECT i, 'new' FROM generate_series(3001, 3500) i")

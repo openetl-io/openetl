@@ -108,13 +108,16 @@ The plan warns about each one, in this form:
 STREAM: each attempt reads it on one of its 4 workers: REASON
 ```
 
-Each such stream is read no faster than on one pod. Different such streams can go to different workers, which read them at the same time, except that every `cdc` stream goes to one worker. A worker with no stream or split to read has no rows to read. For example, a job with only two such streams leaves two of four workers with nothing to read. They still write the rows that the exchange sends them.
+Each such stream is read no faster than on one pod. Different streams written with `overwrite` can go to different workers, which read them at the same time. Every `cdc` stream goes to the same worker. A worker with no stream or split to read has no rows to read. For example, a job of four workers with only two streams, both written with `overwrite`, leaves two workers with nothing to read. If both streams are read with `cdc` instead, one worker reads both, and three workers have nothing to read. Workers that read nothing still write the rows that the exchange sends them.
 
 With a [SQL transform](./sql-transforms.md), these rules apply to each statement's output, and to each stream that passes through. One worker reads all the splits of a stream that is read with `cdc`, or when an output written from it is written with `overwrite`. The plan's warning names the stream that the statement reads.
 
 ## The exchange between workers
 
-A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. So each worker reads some of the stream's splits, and every worker writes the keys that it owns.
+A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Every worker writes the keys that it owns:
+
+- A stream that the source does not split by key is read by all the workers, each of them some of its splits.
+- A stream read with `cdc` is read by one worker, as [Streams that one worker reads](#streams-that-one-worker-reads) says.
 
 Each worker's engine connects to every other worker's engine once, on TCP port 7720 in Kubernetes. The connection uses TLS 1.3 with a certificate that the coordinator makes for each attempt. The engines trust only that certificate, and each connection proves a secret of the attempt. An engine refuses a connection of another attempt, or of an earlier try of the same attempt. [The route between pods](../self-host/kubernetes.md#the-route-between-pods) says what the network must allow.
 
@@ -124,7 +127,7 @@ The exchange costs a job on workers more than an exchange in one pod:
 - A writer lane that falls behind slows the workers that send it rows. Each worker's engine holds at most an eighth of the job's memory, and at most 8 MiB for each other worker, in rows that wait to be sent.
 - A writer lane passes a checkpoint only after every lane of every worker has passed it. So the slowest worker sets the pace of every checkpoint.
 
-If a connection between workers breaks, or a worker cannot reach another within a minute, the attempt fails with `TRANSIENT`, and OpenETL retries it from the last checkpoint.
+If a connection between workers breaks, or a worker cannot reach another within a minute, the attempt fails with `TRANSIENT`, and OpenETL retries it from the last checkpoint. If the other worker failed with an error of its own, such as `SCHEMA_DRIFT`, within 5 seconds, the attempt fails with that error instead.
 
 ## Schema changes and holds
 
