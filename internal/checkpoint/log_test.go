@@ -321,6 +321,37 @@ func TestSetSplitsKeepsTheWholeStreamInState(t *testing.T) {
 	}
 }
 
+// A split's watermark is kept with it, the whole stream's in its stream,
+// and survives the record's JSON.
+func TestRecordsKeepEachSplitsWatermark(t *testing.T) {
+	wm := func(v int64) *int64 { return &v }
+	rec := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{}}
+	rec.SetSplits("whole", []checkpoint.SplitState{{ID: checkpoint.WholeStream, State: []byte("x"), Watermark: wm(5)}})
+	rec.SetSplits("split", []checkpoint.SplitState{{ID: "0", Watermark: wm(7)}, {ID: "1"}})
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back checkpoint.Record
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if w := back.Streams["whole"].Watermark; w == nil || *w != 5 {
+		t.Fatalf("the whole stream's watermark is %v in %s", w, b)
+	}
+	if got := back.Splits("whole"); got[0].Watermark == nil || *got[0].Watermark != 5 {
+		t.Fatalf("splits %+v", got)
+	}
+	got := back.Splits("split")
+	if got[0].Watermark == nil || *got[0].Watermark != 7 || got[1].Watermark != nil {
+		t.Fatalf("splits %+v", got)
+	}
+	back.SetSplits("whole", []checkpoint.SplitState{{ID: "0"}, {ID: "1"}})
+	if back.Streams["whole"].Watermark != nil {
+		t.Fatal("splits replacing the whole stream keep its watermark")
+	}
+}
+
 // HEAD names the record before its own, through claims and rewinds, so a
 // record that can't be read can be stepped back from.
 func TestHeadKnowsTheRecordBefore(t *testing.T) {

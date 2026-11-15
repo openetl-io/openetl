@@ -39,6 +39,11 @@ const (
 	// Out of the dataflow only: Batch holds patches of held cells,
 	// for the destination's Patcher.
 	FramePatch
+	// Into the dataflow only, for a stream with event time: one of its
+	// splits joins Lane, the first of its splits' on it, or its watermark
+	// is raised. The splits a lane reads join it before anything else of
+	// the stream on it; a split a split adds joins its lane.
+	FrameSplit
 )
 
 // Frame is one unit on a job's data path. Barriers travel in band, ordered
@@ -49,8 +54,14 @@ type Frame struct {
 	// writer lane it goes to.
 	Lane   int
 	Stream string
-	Rows   []json.RawMessage
-	Batch  arrow.RecordBatch
+	// Into the dataflow, of a stream with event time: the split a
+	// FrameRows, FrameBatch or FrameSplit is of.
+	Split string
+	// A FrameSplit's: the split's watermark from here is at least this, in
+	// microseconds since the Unix epoch; nil: unchanged.
+	Watermark *int64
+	Rows      []json.RawMessage
+	Batch     arrow.RecordBatch
 	// A batch into the dataflow, in place of Batch, as an external source
 	// encoded it: an Arrow IPC stream holding one batch.
 	IPC   []byte
@@ -79,6 +90,9 @@ type Ready struct {
 	Delivered map[string][]byte
 	// The destination's streams that hold, at their barriers.
 	Holds map[string]*ReadyHolds
+	// Each split's watermark at its lane's barrier, by stream with event
+	// time and split.
+	Watermarks map[string]map[string]int64
 }
 
 // LaneReady is a writer lane's part of an epoch.
@@ -170,6 +184,10 @@ type Plan struct {
 	// A worker's: the attempt's index of its first writer lane, and the
 	// attempt's writer lanes, which name held files; 0: WriterLanes.
 	FirstWriterLane, AttemptWriterLanes int
+	// By stream with event time: the least watermark of the splits the
+	// attempt reads, every worker's, which a lane past an exchange starts
+	// at; missing where one has none.
+	Floors map[string]int64
 }
 
 // SchemaOwner decides the schemas of the destination's streams, with the
@@ -463,6 +481,10 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 		if s == nil || f.Lane < 0 || f.Lane >= lanes {
 			release(f)
 			return fmt.Errorf("runner: a frame for %s on lane %d, which the plan doesn't have", f.Stream, f.Lane)
+		}
+		// Without the engine, nothing has a watermark.
+		if f.Kind == FrameSplit {
+			continue
 		}
 		lane := f.Lane
 		switch {

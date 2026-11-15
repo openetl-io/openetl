@@ -2,6 +2,7 @@ package engineclient
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -25,6 +26,7 @@ var (
 	bytesOut, _     = meter.Int64Counter("openetl.job.bytes.out", metric.WithUnit("By"), metric.WithDescription("Bytes of batches the engine passed to the sink"))
 	laneTime, _     = meter.Float64Counter("openetl.lane.time", metric.WithUnit("s"), metric.WithDescription("Where a job's lane spent its time: busy, backpressured or idle"))
 	laneRows, _     = meter.Int64Counter("openetl.lane.rows", metric.WithUnit("{row}"), metric.WithDescription("Rows a job's lane took in"))
+	watermark, _    = meter.Float64Gauge("openetl.job.watermark", metric.WithUnit("s"), metric.WithDescription("A stream with event time: the least of its lanes' watermarks, in seconds since the Unix epoch"))
 )
 
 var (
@@ -81,6 +83,10 @@ func (j *jobCounters) record(ctx context.Context, m *enginev1.Metrics) {
 		add(bytesIn, s.GetBytesIn(), prev.GetBytesIn())
 		add(rowsOut, s.GetRowsOut(), prev.GetRowsOut())
 		add(bytesOut, s.GetBytesOut(), prev.GetBytesOut())
+		// The end of input has no time.
+		if s.Watermark != nil && s.GetWatermark() != math.MaxInt64 {
+			watermark.Record(ctx, float64(s.GetWatermark())/1e6, opt)
+		}
 		j.last[s.GetStream()] = s
 	}
 	j.lanes = j.recordLanes(ctx, m.GetLanes())

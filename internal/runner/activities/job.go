@@ -134,6 +134,9 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		if ps != nil {
 			s.Collapse = ps.Collapse
 		}
+		if col := ps.GetEventTime(); col != "" && p.GetTransform().GetSql() != nil {
+			s.EventTime = &runner.EventTime{Column: col, Delay: ps.GetWatermark().GetDelay().AsDuration(), Held: !plan.OrderedRead(read, cursor, col)}
+		}
 		if !transformed && plan.Holds(caps, mode, keyed) {
 			s.Holds = streamHolds(ps)
 		}

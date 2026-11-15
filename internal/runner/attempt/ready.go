@@ -25,6 +25,8 @@ type Ready struct {
 	OutputSchemas map[string][]byte
 	Delivered     map[string][]byte
 	Holds         map[string]*Holds
+	// Each split's watermark at its lane's barrier, by stream and split.
+	Watermarks map[string]map[string]int64
 }
 
 // Holds are a stream's holds at its barrier.
@@ -47,7 +49,7 @@ type ReplayProgress struct {
 
 // EpochReady is r as a share of epoch e carries it.
 func (r Ready) EpochReady(e *protocolv1.Epoch) *enginev1.EpochReady {
-	p := &enginev1.EpochReady{Epoch: e, Schemas: r.Schemas, OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: holdsProto(r.Holds)}
+	p := &enginev1.EpochReady{Epoch: e, Schemas: r.Schemas, OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: holdsProto(r.Holds), Watermarks: watermarksProto(r.Watermarks)}
 	for _, s := range r.Snapshots {
 		snap := &enginev1.StateSnapshot{Operator: s.Operator, Url: s.URL}
 		if kg := s.KeyGroups; kg != nil {
@@ -67,7 +69,7 @@ func ReadyOf(p *enginev1.EpochReady) (Ready, error) {
 	if len(p.GetFiles()) > 0 || len(p.GetStaged()) > 0 {
 		return Ready{}, errors.New("a worker's share holds what runs on one pod: staged files")
 	}
-	r := Ready{Schemas: p.GetSchemas(), OutputSchemas: p.GetOutputSchemas(), Delivered: p.GetDelivered(), Holds: HoldsOf(p.GetHolds())}
+	r := Ready{Schemas: p.GetSchemas(), OutputSchemas: p.GetOutputSchemas(), Delivered: p.GetDelivered(), Holds: HoldsOf(p.GetHolds()), Watermarks: WatermarksOf(p.GetWatermarks())}
 	for _, s := range p.GetSnapshots() {
 		snap := checkpoint.Snapshot{Operator: s.GetOperator(), URL: s.GetUrl()}
 		if kg := s.GetKeyGroups(); kg != nil {
@@ -84,6 +86,30 @@ func ReadyOf(p *enginev1.EpochReady) (Ready, error) {
 // KeyGroups is key groups first to last as the protocol carries them.
 func KeyGroups(first, last int) *enginev1.KeyGroupRange {
 	return &enginev1.KeyGroupRange{First: ints.Uint32(first), Last: ints.Uint32(last)}
+}
+
+// WatermarksOf are the splits' watermarks as the engine reports them at
+// their lanes' barriers, by stream and split; nil for none.
+func WatermarksOf(m map[string]*enginev1.SplitWatermarks) map[string]map[string]int64 {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]int64, len(m))
+	for name, w := range m {
+		out[name] = maps.Clone(w.GetSplits())
+	}
+	return out
+}
+
+func watermarksProto(m map[string]map[string]int64) map[string]*enginev1.SplitWatermarks {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]*enginev1.SplitWatermarks, len(m))
+	for name, w := range m {
+		out[name] = &enginev1.SplitWatermarks{Splits: maps.Clone(w)}
+	}
+	return out
 }
 
 // HoldsOf are holds as the engine reports them at its streams' barriers;
