@@ -2221,8 +2221,8 @@ struct Pieces {
     staged: BTreeMap<usize, Vec<u8>>,
     files: Vec<StagedStream>,
     held: Vec<StagedStream>,
-    /// Each keyed lane's state, and whether it holds nothing.
-    snapshots: Vec<(openetl_proto::engine::v1::StateSnapshot, bool)>,
+    /// Each keyed lane's state, of each of its operators.
+    snapshots: Vec<openetl_proto::engine::v1::StateSnapshot>,
 }
 
 /// Which epochs each writer lane has crossed or ended on each stream.
@@ -2386,7 +2386,7 @@ impl Flow {
                     n,
                 }),
                 staged: staged.into_values().collect(),
-                snapshots: kept(snapshots),
+                snapshots,
                 schemas,
                 quarantine,
                 files,
@@ -2397,24 +2397,6 @@ impl Flow {
             })),
         })
     }
-}
-
-/// The snapshots an epoch's record names: an operator's on every lane, but
-/// none where every lane's is empty, so a record after every window closed
-/// names no state.
-fn kept(
-    snapshots: Vec<(openetl_proto::engine::v1::StateSnapshot, bool)>,
-) -> Vec<openetl_proto::engine::v1::StateSnapshot> {
-    let full: HashSet<String> = snapshots
-        .iter()
-        .filter(|(_, empty)| !empty)
-        .map(|(s, _)| s.operator.clone())
-        .collect();
-    snapshots
-        .into_iter()
-        .filter(|(s, _)| full.contains(&s.operator))
-        .map(|(s, _)| s)
-        .collect()
 }
 
 /// Returns false if the inbound edges closed before every stream ended.
@@ -5382,21 +5364,22 @@ pub(crate) mod tests {
     /// A job whose statement groups stream a by a window: a's rows have an
     /// event time, `at`, its watermark trails them by `delay` seconds, and
     /// `lanes` lanes and writer lanes read them. Stream b passes through.
+    /// A job of `sql` over stream a, which keeps its state below `state`.
     fn window_request(
-        pipeline: &str,
+        state: &std::path::Path,
         sql: &str,
         lanes: u32,
         generation: u64,
         first_epoch: u64,
     ) -> openetl_proto::engine::v1::StartJobRequest {
         let email = arrow_schema::Field::new("email", DataType::Utf8, true);
-        window_request_by(pipeline, sql, email, lanes, generation, first_epoch)
+        window_request_by(state, sql, email, lanes, generation, first_epoch)
     }
 
     /// As window_request, with `key` in place of email, the column the
     /// output is keyed by beside window_start.
     fn window_request_by(
-        pipeline: &str,
+        state: &std::path::Path,
         sql: &str,
         key: arrow_schema::Field,
         lanes: u32,
@@ -5424,7 +5407,8 @@ pub(crate) mod tests {
         });
         req.generation = generation;
         req.first_epoch = first_epoch;
-        req.pipeline = pipeline.into();
+        req.pipeline = "windows".into();
+        req.state_url = format!("file://{}", state.display());
         let inputs: Vec<crate::transform::Input> = req
             .streams
             .iter()
@@ -5562,10 +5546,11 @@ pub(crate) mod tests {
     /// no second exchange: each key on one writer lane. A window closes once
     /// every lane's watermark has passed its end, in the epoch that happens
     /// in, and the rest at the end of input. Each epoch names each keyed
-    /// lane's state while it holds any.
+    /// lane's state, and a run of what the lane changed in it.
     #[tokio::test]
     async fn a_window_closes_once_every_lanes_watermark_passes_it() {
-        let req = window_request("closes", MINUTES, 2, 1, 1);
+        let state = tempfile::tempdir().unwrap();
+        let req = window_request(state.path(), MINUTES, 2, 1, 1);
         let mut h = start_lanes(req);
         for (l, w) in h.ins.iter_mut().enumerate() {
             let l = i64::try_from(l).unwrap();
@@ -5611,14 +5596,31 @@ pub(crate) mod tests {
             assert_eq!(lanes, 1, "{e} on {lanes} writer lanes");
         }
         assert_eq!(ready.len(), 2);
-        assert_eq!(ready[0].snapshots.len(), 2);
-        assert!(
-            ready[0]
-                .snapshots
-                .iter()
-                .all(|s| s.url.starts_with("memory:"))
-        );
-        assert!(ready[1].snapshots.is_empty());
+        let mut named: Vec<BTreeSet<String>> = Vec::new();
+        for (n, r) in ready.iter().enumerate() {
+            let epoch = n as u64 + 1;
+            assert_eq!(r.snapshots.len(), 2, "epoch {epoch}");
+            let mut runs = BTreeSet::new();
+            for s in &r.snapshots {
+                let range = s.key_groups.unwrap();
+                for run in &s.runs {
+                    let (dir, name) = run.split_once('/').unwrap();
+                    assert_eq!(dir, crate::state::dir(&s.operator));
+                    let parsed = openetl_state::runs::RunName::parse(name).unwrap();
+                    assert!(parsed.epoch <= epoch && parsed.generation == 1, "{run}");
+                    assert_eq!(
+                        (parsed.range.first, parsed.range.last),
+                        (range.first, range.last)
+                    );
+                    assert!(state.path().join(run).is_file(), "{run} is written");
+                    runs.insert(run.clone());
+                }
+            }
+            named.push(runs);
+        }
+        assert!(named[0].iter().any(|r| r.contains("/e1/")), "{named:?}");
+        assert!(named[1].iter().any(|r| r.contains("/e2/")), "{named:?}");
+        assert!(named[1].is_superset(&named[0]), "{named:?}");
     }
 
     /// A lane holds a window open until each of its splits' watermarks
@@ -5626,7 +5628,8 @@ pub(crate) mod tests {
     /// idle one, moves it on.
     #[tokio::test]
     async fn a_quiet_split_holds_windows_until_it_moves_on() {
-        let req = window_request("quiet", MINUTES, 1, 1, 1);
+        let state = tempfile::tempdir().unwrap();
+        let req = window_request(state.path(), MINUTES, 1, 1, 1);
         let mut h = start_lanes(req);
         let w = &mut h.ins[0];
         put(w, FrameKind::Split, 0, split("busy", None)).await;
@@ -5657,7 +5660,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_late_row_updates_its_window_within_the_lateness() {
         let dir = tempfile::tempdir().unwrap();
-        let mut req = window_request("late", MINUTES, 1, 1, 1);
+        let mut req = window_request(&dir.path().join("state"), MINUTES, 1, 1, 1);
         req.quarantine_url = format!("file://{}", dir.path().display());
         event_time(&mut req).lateness_micros = 30 * SEC;
         let mut h = start_lanes(req);
@@ -5679,13 +5682,16 @@ pub(crate) mod tests {
         assert_eq!(quarantined(&ready, "minutes"), 1);
     }
 
-    /// A restore resumes a window's state from the record's snapshots, on
-    /// another number of lanes, from the record's watermarks: a window that
-    /// closed before it stays closed, and a row of it is late.
+    /// A restore resumes a window's state from the record's snapshots, in
+    /// another job, on another number of lanes, from the record's
+    /// watermarks: a window that closed before it stays closed, and a row of
+    /// it is late. The restored lanes name the runs they read on, beside
+    /// their own.
     #[tokio::test]
     async fn a_restored_window_goes_on_and_a_closed_one_stays_closed() {
         let dir = tempfile::tempdir().unwrap();
-        let mut req = window_request("resumes", MINUTES, 2, 1, 1);
+        let state = dir.path().join("state");
+        let mut req = window_request(&state, MINUTES, 2, 1, 1);
         req.quarantine_url = format!("file://{}", dir.path().display());
         let mut h = start_lanes(req);
         for (l, w) in h.ins.iter_mut().enumerate() {
@@ -5717,7 +5723,9 @@ pub(crate) mod tests {
         // The next attempt, or the next read of a stream read in the order of
         // its time, starts each split at its watermark, and the lanes past
         // the exchange at the least of them.
-        let mut req = window_request("resumes", MINUTES, 3, 2, 2);
+        let restored: BTreeSet<String> = snapshots.iter().flat_map(|s| s.runs.clone()).collect();
+        assert!(!restored.is_empty());
+        let mut req = window_request(&state, MINUTES, 3, 2, 2);
         req.quarantine_url = format!("file://{}", dir.path().display());
         req.restored_snapshots = snapshots;
         event_time(&mut req).floor = Some(70 * SEC);
@@ -5740,57 +5748,297 @@ pub(crate) mod tests {
         let (outs, ready) = h.finish().await;
         assert_eq!(all_rows(&outs, 2), [row(60, "y", 2, 2), row(60, "z", 2, 2)]);
         assert_eq!(quarantined(&ready, "minutes"), 1, "x at 30 is late");
-        assert!(ready[0].snapshots.is_empty());
+        assert_eq!(ready[0].snapshots.len(), 3);
+        let named: BTreeSet<String> = ready[0]
+            .snapshots
+            .iter()
+            .flat_map(|s| s.runs.clone())
+            .collect();
+        assert!(named.is_superset(&restored), "{named:?}");
+        assert!(named.iter().any(|r| r.contains("/g2/e2/")), "{named:?}");
     }
 
-    /// A keyed lane keeps only its newest versions of state, however many
-    /// barriers pass.
-    #[tokio::test]
-    async fn a_window_keeps_only_its_newest_state() {
-        let req = window_request("released", MINUTES, 2, 1, 1);
-        let operator = req.transform.as_ref().unwrap().operators[0].clone();
-        let mut h = start_lanes(req);
-        for w in &mut h.ins {
-            put(w, FrameKind::Split, 0, split("s", None)).await;
-            for n in 1..=10 {
-                put(
-                    w,
-                    FrameKind::Rows,
-                    0,
-                    rows(&[&minute_row(n as i64, "x", 10)]),
-                )
-                .await;
-                barriers(w, 1, n).await;
+    /// Split `split`'s rows of part `part`, as ID, key and second: part 0
+    /// of minute 1, which closes no window, and part 1 of minutes 1 and 2.
+    fn spanning(split: usize, part: usize) -> Vec<(i64, &'static str, i64)> {
+        let keys = ["x", "y", "z", "w"];
+        (0..12)
+            .map(|i| {
+                let id = (split * 100 + part * 1000 + i) as i64;
+                let second = match part {
+                    0 => 60 + i as i64 * 3,
+                    _ => 90 + i as i64 * 4,
+                };
+                (id, keys[(i + split) % keys.len()], second)
+            })
+            .collect()
+    }
+
+    fn spanning_rows(split: usize, part: usize) -> Vec<String> {
+        spanning(split, part)
+            .into_iter()
+            .map(|(id, key, second)| minute_row(id, key, second))
+            .collect()
+    }
+
+    /// What a GROUP BY of both splits' rows of `parts` gives, by start and
+    /// key.
+    fn spanning_counts(parts: &[usize]) -> Vec<(i64, String, i64)> {
+        let mut want: BTreeMap<(i64, String), i64> = BTreeMap::new();
+        for split in 0..2 {
+            for &part in parts {
+                for (_, key, second) in spanning(split, part) {
+                    *want.entry((second - second % 60, key.into())).or_default() += 1;
+                }
+            }
+        }
+        want.into_iter().map(|((s, k), n)| (s, k, n)).collect()
+    }
+
+    fn counts(outs: &[Vec<frame::Frame>], first: u64) -> Vec<(i64, String, i64)> {
+        all_rows(outs, first)
+            .into_iter()
+            .map(|r| (r.start, r.email, r.n))
+            .collect()
+    }
+
+    /// The first job of the spanning rows: two lanes, a split each, part 0
+    /// in epoch 1, which closes no window; part 1 in epoch 2 with the end of
+    /// input, if `both`. Its window rows and EpochReadys.
+    async fn first_spanning_job(
+        state: &std::path::Path,
+        both: bool,
+    ) -> (Vec<(i64, String, i64)>, Vec<EpochReady>) {
+        let mut h = start_lanes(window_request(state, MINUTES, 2, 1, 1));
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            let id = format!("s{l}");
+            put(w, FrameKind::Split, 0, split(&id, None)).await;
+            let rs = spanning_rows(l, 0);
+            let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+            put(w, FrameKind::Rows, 0, rows(&refs)).await;
+            barriers(w, 1, 1).await;
+            if both {
+                let rs = spanning_rows(l, 1);
+                let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                put(w, FrameKind::Rows, 0, rows(&refs)).await;
+                put(w, FrameKind::Split, 0, split(&id, Some(watermark::END))).await;
+                barriers(w, 1, 2).await;
             }
         }
         h.end_all(2).await;
-        let (_, ready) = h.finish().await;
-        assert_eq!(ready.len(), 10);
-        let held = crate::state::versions("released", &operator);
-        assert!(held <= 4, "{held} versions for 2 lanes");
+        let (outs, ready) = h.finish().await;
+        assert!(
+            all_rows(&outs, 1).iter().all(|r| r.epoch == 2),
+            "no window closes in epoch 1"
+        );
+        (counts(&outs, 1), ready)
     }
 
-    /// The state the record names is in the memory of the engine that
-    /// wrote it, so another engine can't restore it, and says what to do.
+    /// A job restored from `from`, epoch 1's, on `lanes` lanes, as
+    /// generation `generation`, reads part 1 and the end of input, each
+    /// split from its watermark in `from`. Its window rows and EpochReadys.
+    async fn restored_spanning_job(
+        state: &std::path::Path,
+        from: &EpochReady,
+        lanes: u32,
+        generation: u64,
+        change: impl FnOnce(&mut openetl_proto::engine::v1::StartJobRequest),
+    ) -> (Vec<(i64, String, i64)>, Vec<EpochReady>) {
+        let marks: BTreeMap<String, i64> = split_marks(from, "a").into_iter().collect();
+        let mut req = window_request(state, MINUTES, lanes, generation, 2);
+        req.restored_snapshots = from.snapshots.clone();
+        event_time(&mut req).floor = marks.values().min().copied();
+        change(&mut req);
+        let mut h = start_lanes(req);
+        let lanes = h.ins.len();
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            // Split s is on lane s, or on the one lane; other lanes have
+            // none. A lane has each of its splits before any ends.
+            let mine: Vec<String> = (0..2)
+                .filter(|s| s % lanes == l)
+                .map(|s| format!("s{s}"))
+                .collect();
+            for s in &mine {
+                put(w, FrameKind::Split, 0, split(s, marks.get(s).copied())).await;
+            }
+            for s in &mine {
+                put(w, FrameKind::Split, 0, split(s, None)).await;
+                let rs = spanning_rows(s[1..].parse().unwrap(), 1);
+                let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                put(w, FrameKind::Rows, 0, rows(&refs)).await;
+            }
+            for s in &mine {
+                put(w, FrameKind::Split, 0, split(s, Some(watermark::END))).await;
+            }
+            barriers(w, generation, 2).await;
+        }
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        (counts(&outs, 2), ready)
+    }
+
+    /// State written by one job's lanes, which ended, restores in other
+    /// jobs on one, two and four lanes, each lane opening the part of the
+    /// record's runs its key groups hold: each gives every window whole, as
+    /// one job reading every row does.
     #[tokio::test]
-    async fn a_restore_of_state_another_engine_had_fails_and_says_what_to_do() {
-        let mut req = window_request("gone", MINUTES, 1, 2, 2);
-        let operator = req.transform.as_ref().unwrap().operators[0].clone();
-        req.restored_snapshots = vec![openetl_proto::engine::v1::StateSnapshot {
-            operator,
-            url: format!("memory:{}/g1/e1/kg0-255", openetl_state::LAYOUT),
-            key_groups: None,
-        }];
+    async fn state_restores_onto_any_number_of_lanes() {
+        let dir = tempfile::tempdir().unwrap();
+        let want = spanning_counts(&[0, 1]);
+        let starts: BTreeSet<i64> = want.iter().map(|(s, _, _)| *s).collect();
+        assert_eq!(starts, BTreeSet::from([60, 120]), "{want:?}");
+        let (whole, _) = first_spanning_job(&dir.path().join("whole"), true).await;
+        assert_eq!(whole, want, "in one job");
+
+        let state = dir.path().join("state");
+        let (_, first) = first_spanning_job(&state, false).await;
+        assert_eq!(first[0].snapshots.len(), 2);
+        let mut compared = 0;
+        for (generation, lanes) in [(2, 1), (3, 2), (4, 4)] {
+            let (got, ready) =
+                restored_spanning_job(&state, &first[0], lanes, generation, |_| {}).await;
+            assert_eq!(got, want, "on {lanes} lanes");
+            assert_eq!(ready[0].snapshots.len(), lanes as usize);
+            compared += 1;
+        }
+        assert_eq!(compared, 3);
+    }
+
+    /// A run a lane wrote at a barrier whose record never landed is an
+    /// orphan: a restore from the record before it doesn't read it, and the
+    /// epoch's rows, read again, count once.
+    #[tokio::test]
+    async fn a_failed_epochs_run_is_an_orphan_and_isnt_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (_, first) = first_spanning_job(&state, true).await;
+        let (one, two) = (&first[0], &first[1]);
+        let orphans: Vec<&String> = two
+            .snapshots
+            .iter()
+            .flat_map(|s| &s.runs)
+            .filter(|r| r.contains("/g1/e2/"))
+            .collect();
+        assert!(!orphans.is_empty(), "epoch 2 wrote runs");
+        for r in &orphans {
+            assert!(state.join(r).is_file());
+            assert!(one.snapshots.iter().all(|s| !s.runs.contains(r)));
+        }
+        let (got, _) = restored_spanning_job(&state, one, 2, 2, |_| {}).await;
+        assert_eq!(got, spanning_counts(&[0, 1]));
+    }
+
+    /// A redo of an epoch starts from the state of the record before it,
+    /// writes none and names none: its rows are the epoch's.
+    #[tokio::test]
+    async fn a_redo_reads_the_state_before_its_epoch_and_writes_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (_, first) = first_spanning_job(&state, true).await;
+        let files = |d: &std::path::Path| -> usize {
+            let mut n = 0;
+            let mut stack = vec![d.to_path_buf()];
+            while let Some(p) = stack.pop() {
+                for e in std::fs::read_dir(&p).unwrap() {
+                    let e = e.unwrap().path();
+                    match e.is_dir() {
+                        true => stack.push(e),
+                        false => n += 1,
+                    }
+                }
+            }
+            n
+        };
+        let before = files(&state);
+        assert!(before > 0);
+        let (got, ready) = restored_spanning_job(&state, &first[0], 1, 2, |r| {
+            r.state_read_only = true;
+            r.first_lane = 1;
+        })
+        .await;
+        assert_eq!(got, spanning_counts(&[0, 1]));
+        assert!(ready.iter().all(|r| r.snapshots.is_empty()));
+        assert_eq!(files(&state), before, "a redo writes no run");
+    }
+
+    /// A job with a group window keeps its state at the job's state URL, and
+    /// is refused without one.
+    #[test]
+    fn a_group_window_needs_a_state_url() {
+        let state = tempfile::tempdir().unwrap();
+        let mut req = window_request(state.path(), MINUTES, 1, 1, 1);
+        req.state_url.clear();
+        let Err(e) = Plan::from_request(req) else {
+            panic!("planned");
+        };
+        assert_eq!(e.code, ErrorCode::ConfigInvalid);
+        assert!(e.message.contains("no state URL"), "{}", e.message);
+    }
+
+    /// A record whose snapshots of an operator don't hold every key group
+    /// fails the job as a corrupt checkpoint, and says how to start the
+    /// state again: on a lane that a snapshot holds part of, and on one
+    /// that none does, which doesn't start empty.
+    #[tokio::test]
+    async fn state_the_record_names_in_part_fails_the_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (_, first) = first_spanning_job(&state, false).await;
+        assert_eq!(first[0].snapshots.len(), 2);
+        let mut failed = 0;
+        for lanes in [1, 2] {
+            let mut req = window_request(&state, MINUTES, lanes, 2, 2);
+            req.restored_snapshots = first[0].snapshots[..1].to_vec();
+            let mut h = start_lanes(req);
+            h.end_all(2).await;
+            let err = h.job.await.unwrap().unwrap_err();
+            assert_eq!(err.code, ErrorCode::CheckpointCorrupt, "on {lanes} lanes");
+            assert!(
+                err.message
+                    .contains("can't open the state the checkpoint names")
+                    && err
+                        .message
+                        .contains("none of its snapshots holds key group")
+                    && err.message.contains("openetl reset --stream a NAME"),
+                "on {lanes} lanes: {}",
+                err.message
+            );
+            failed += 1;
+        }
+        assert_eq!(failed, 2);
+    }
+
+    /// A run the record names that's gone fails the job as a corrupt
+    /// checkpoint, which no retry reads.
+    #[tokio::test]
+    async fn a_missing_run_fails_the_job_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let (_, first) = first_spanning_job(&state, false).await;
+        let run = first[0]
+            .snapshots
+            .iter()
+            .flat_map(|s| &s.runs)
+            .next()
+            .unwrap();
+        std::fs::remove_file(state.join(run)).unwrap();
+        let mut req = window_request(&state, MINUTES, 2, 2, 2);
+        req.restored_snapshots = first[0].snapshots.clone();
+        // Restored at the record's watermark, the lanes read their timers.
+        event_time(&mut req).floor = Some(least_mark(&first[0]));
         let mut h = start_lanes(req);
         h.end_all(2).await;
         let err = h.job.await.unwrap().unwrap_err();
-        assert_eq!(err.code, ErrorCode::ConfigInvalid);
-        assert!(
-            err.message.contains("can't restore its state")
-                && err.message.contains("openetl reset --stream a NAME"),
-            "{}",
-            err.message
-        );
+        assert_eq!(err.code, ErrorCode::CheckpointCorrupt);
+        assert!(err.message.contains("is missing"), "{}", err.message);
+    }
+
+    fn least_mark(r: &EpochReady) -> i64 {
+        split_marks(r, "a")
+            .into_iter()
+            .map(|(_, m)| m)
+            .min()
+            .unwrap()
     }
 
     /// A cell the stream holds, in a column the window doesn't read, leaves
@@ -5799,7 +6047,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_held_cell_the_window_doesnt_read_leaves_its_row_in() {
         let dir = tempfile::tempdir().unwrap();
-        let mut req = window_request("held", MINUTES, 1, 1, 1);
+        let mut req = window_request(&dir.path().join("state"), MINUTES, 1, 1, 1);
         let declared = arrow_schema::Schema::new(vec![
             arrow_schema::Field::new("id", DataType::Int64, false),
             arrow_schema::Field::new("email", DataType::Utf8, true),
@@ -5877,7 +6125,8 @@ pub(crate) mod tests {
         );
         let sql = "INSERT INTO minutes SELECT window_start, j, count(*) AS n \
                    FROM a GROUP BY tumble(at, INTERVAL '1 minute'), j";
-        let req = window_request_by("json", sql, json, 3, 1, 1);
+        let state = tempfile::tempdir().unwrap();
+        let req = window_request_by(state.path(), sql, json, 3, 1, 1);
         let mut h = start_lanes(req);
         let spellings = [
             r#"{"a": 1, "b": {"y": 2, "x": [3, {"q": 4, "p": 5}]}}"#,
@@ -5934,6 +6183,7 @@ pub(crate) mod tests {
         type Change = Box<dyn Fn(&mut openetl_proto::engine::v1::StartJobRequest)>;
         let refused: Vec<(&str, Change)> = vec![
             ("a worker's part", Box::new(|r| r.attempt_writer_lanes = 2)),
+            ("a later worker's lanes", Box::new(|r| r.first_lane = 1)),
             (
                 "a mesh",
                 Box::new(|r| {
@@ -5955,9 +6205,13 @@ pub(crate) mod tests {
                 }),
             ),
         ];
-        assert!(Plan::from_request(window_request("one", MINUTES, 1, 1, 1)).is_ok());
+        let state = tempfile::tempdir().unwrap();
+        assert!(Plan::from_request(window_request(state.path(), MINUTES, 1, 1, 1)).is_ok());
+        let mut redo = window_request(state.path(), MINUTES, 1, 1, 1);
+        (redo.first_lane, redo.state_read_only) = (3, true);
+        assert!(Plan::from_request(redo).is_ok(), "a redo runs on one lane");
         for (name, change) in refused {
-            let mut req = window_request("one", MINUTES, 1, 1, 1);
+            let mut req = window_request(state.path(), MINUTES, 1, 1, 1);
             change(&mut req);
             let Err(e) = Plan::from_request(req) else {
                 panic!("{name}: planned");
@@ -5974,11 +6228,17 @@ pub(crate) mod tests {
     /// after the statement changed, is refused, saying how to drop it.
     #[test]
     fn a_restore_of_an_operator_no_statement_keeps_says_to_reset() {
-        let mut req = window_request("changed", MINUTES, 1, 2, 2);
+        let state = tempfile::tempdir().unwrap();
+        let mut req = window_request(state.path(), MINUTES, 1, 2, 2);
         req.restored_snapshots = vec![openetl_proto::engine::v1::StateSnapshot {
             operator: "window-0123456789abcdef".into(),
-            url: format!("memory:{}/g1/e1/kg0-255", openetl_state::LAYOUT),
-            key_groups: None,
+            key_groups: Some(openetl_proto::engine::v1::KeyGroupRange {
+                first: 0,
+                last: 255,
+            }),
+            layout: openetl_state::LAYOUT,
+            data: openetl_state::runs::encode(&[]).to_vec(),
+            runs: Vec::new(),
         }];
         let Err(e) = Plan::from_request(req) else {
             panic!("planned");
@@ -6029,7 +6289,8 @@ pub(crate) mod tests {
                             .collect()
                     })
                     .collect();
-                let mut req = window_request(&format!("any-{q}-{seed}"), sql, lanes, 1, 1);
+                let state = tempfile::tempdir().unwrap();
+                let mut req = window_request(state.path(), sql, lanes, 1, 1);
                 event_time(&mut req).delay_micros = delay * SEC;
                 let mut h = start_lanes(req);
                 let mut epochs = 0;
