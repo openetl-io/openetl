@@ -97,6 +97,9 @@ type StreamState struct {
 	Delivered []byte `json:"delivered,omitempty"`
 	// Columns and cells held back.
 	Holds *Holds `json:"holds,omitempty"`
+	// The whole stream's watermark, as SplitState's, where it has no other
+	// splits.
+	Watermark *int64 `json:"watermark,omitempty"`
 }
 
 // WholeStream is the ID of the split that is the whole stream. A stream
@@ -115,6 +118,10 @@ type SplitState struct {
 	// As Record.Forced and Record.Reread, for the split.
 	Forced bool `json:"forced,omitempty"`
 	Reread bool `json:"reread,omitempty"`
+	// A stream with event time: the split's watermark at the barrier, in
+	// microseconds since the Unix epoch, where a restore starts it; the
+	// largest int64 is the end of its input. Nil: it has none.
+	Watermark *int64 `json:"watermark,omitempty"`
 }
 
 // Holds are a stream's held columns and cells, where their values are, and
@@ -409,7 +416,7 @@ func (r *Record) Splits(stream string) []SplitState {
 		return st.Splits
 	}
 	return []SplitState{{ID: WholeStream, State: st.State, Complete: st.Complete,
-		Forced: slices.Contains(r.Forced, stream), Reread: slices.Contains(r.Reread, stream)}}
+		Forced: slices.Contains(r.Forced, stream), Reread: slices.Contains(r.Reread, stream), Watermark: st.Watermark}}
 }
 
 // SetSplits sets a stream's splits, and the record's marks for it, keeping
@@ -417,14 +424,14 @@ func (r *Record) Splits(stream string) []SplitState {
 // State.
 func (r *Record) SetSplits(stream string, splits []SplitState) {
 	st := r.Streams[stream]
-	st.State, st.Splits, st.Complete = nil, nil, len(splits) > 0
+	st.State, st.Splits, st.Complete, st.Watermark = nil, nil, len(splits) > 0, nil
 	forced, reread := false, false
 	for _, sp := range splits {
 		st.Complete = st.Complete && sp.Complete
 		forced, reread = forced || sp.Forced, reread || sp.Reread
 	}
 	if len(splits) == 1 && splits[0].ID == WholeStream {
-		st.State = splits[0].State
+		st.State, st.Watermark = splits[0].State, splits[0].Watermark
 	} else {
 		st.Splits = splits
 	}

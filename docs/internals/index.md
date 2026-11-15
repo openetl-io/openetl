@@ -80,6 +80,14 @@ The same plan gives `openetl plan` its `partitioning` section, and the runner th
 
 Lanes and writer lanes own contiguous ranges of the pipeline's key groups, picked together ([`crates/engine/src/layout.rs`](../../crates/engine/src/layout.rs), and `plan.NewLayout` for the runner). Writer lane `w` owns the `w`-th of the writer lanes' equal ranges. Each writer lane's range is cut again among the lanes that feed it, in lane order: each writer lane gets one lane, and each other lane goes to the writer lane with the most key groups per lane. A lane without an exchange writes to the writer lane whose range holds its own. An attempt has no more lanes than key groups.
 
+### Watermarks
+
+A stream that a SQL transform reads can have event time (`StreamPlan.event_time`). For such a stream, the runner's source pump gives each split a lane as the read starts, and the split joins that lane with a `SPLIT` frame before anything else of the stream. The frame carries the watermark the attempt starts the split at. A split that another split adds joins that split's lane. Before a batch of another split than the last one, the runner sends a `SPLIT` frame that names it. The pump also sends `SPLIT` frames to raise a split's watermark: when the split is idle in a continuous read, and when it completes. These go through the pump as the split's events, so a split that waits at a barrier has them sent after the lane's barrier.
+
+[`crates/engine/src/watermark.rs`](../../crates/engine/src/watermark.rs) has the two halves. `Splits` is a lane's splits of one stream: each split's watermark is the latest event time it has read less the delay, or what its `SPLIT` frames raise it to, and the lane's is the least of them. The splits a read starts with join together, so a restore never starts a lane above one of its splits. `Senders` is whatever takes a stream from several senders: it starts at the stream's floor, the least watermark of the attempt's splits, and takes the least of every sender, counting each one from the start. A sender's watermark never goes back.
+
+On a lane, each advance reaches the statements that read the stream through `Stage::watermark`, after the batch that moved it, and then goes to the writer lanes in the outputs' `Out::Watermark`, as barriers do. A writer lane aligns a watermark with the barriers as it aligns rows. So, at a barrier, it has the least watermark that each lane had at its own barrier. At each barrier of the stream, a lane reports its splits' watermarks, which `EpochReady.watermarks` carries to the runner, and the checkpoint record keeps with each split. A worker's share carries them in its `EpochReady`.
+
 ### Keyed state
 
 [`crates/state`](../../crates/state) is the state layer for stateful operators. No operator uses it.

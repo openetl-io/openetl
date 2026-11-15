@@ -76,6 +76,9 @@ type Stream struct {
 	// One of a SQL transform's outputs: the stream its statement reads, or
 	// the stream itself where it passes through.
 	From string
+	// A stream a SQL transform reads whose rows' time is a column's; nil
+	// for none.
+	EventTime *EventTime
 }
 
 func (s Stream) delivery() delivery.Stream {
@@ -270,10 +273,11 @@ type Rewound struct {
 // to keep together, and its destination puts rows in tables, whose order
 // doesn't follow what a stream emits. A log keeps a split's order, as a
 // partition's or a shard's matters there. A destination whose lanes commit
-// on their own has each split's rows on one, so a redo can find them.
+// on their own has each split's rows on one, so a redo can find them, and
+// a stream with event time, so each split's watermark is one lane's.
 func (j *Job) inTurn(s Stream) bool {
 	caps := j.Destination.Capabilities()
-	return j.lanes() > 1 && len(s.PrimaryKey) == 0 && caps.Class == destination.StageAndApply && !caps.LaneCommits
+	return j.lanes() > 1 && len(s.PrimaryKey) == 0 && caps.Class == destination.StageAndApply && !caps.LaneCommits && s.EventTime == nil
 }
 
 // canResplit says the source splits a running split's remainder. Not where
@@ -993,6 +997,7 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		for _, sp := range splits {
 			out[s.Name] = append(out[s.Name], checkpoint.SplitState{ID: sp.ID, State: sp.State})
 		}
+		out[s.Name] = carryMarks(s.EventTime, prev, out[s.Name])
 	}
 	return out, nil
 }
@@ -1340,6 +1345,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	ends := newReadEnds()
 	c.pump = newSourcePump(gctx, c.job, c.committed, splits, canForce, done, ends, toFlow, c.events)
 	plan := c.job.plan(c.sess.Generation(), c.next, restored, c.readStarts, schemas, c.outputSchemas, c.holdPlans)
+	plan.Floors = floors(c.job.Streams, splits)
 	var staging Staging
 	if c.job.staged() {
 		staging = c.job.Staging
@@ -1815,6 +1821,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	// The destination's streams' holds: a transform's outputs', or else the
 	// streams'.
 	sinks := !c.job.transformed()
+	markSplits(st.splits, st.flow.Watermarks)
 	for _, name := range slices.Sorted(maps.Keys(st.splits)) {
 		s := checkpoint.StreamState{
 			Schema:    st.flow.Schemas[name],
