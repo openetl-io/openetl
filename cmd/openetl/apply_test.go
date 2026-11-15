@@ -213,19 +213,32 @@ func (f *fakeChecks) PreflightPipeline(_ context.Context, r *connect.Request[api
 	return connect.NewResponse(&apiv1.PreflightPipelineResponse{Result: f.preflight}), nil
 }
 
-// preflight is a result whose destination check fails with code and
-// message, and passes otherwise.
+// The parts of a preflight, in the order the runner runs them.
+const (
+	partSourceCheck = iota
+	partDestinationCheck
+	partPlan
+	partSourcePreflight
+	partDestinationPreflight
+)
+
+// preflight is a result as the API gives it, whose destination check fails
+// with code and message, and so its destination preflight is skipped; and
+// passes otherwise. The plan's part has the item the API gives a plan
+// without problems.
 func preflight(code, message string, items ...*apiv1.CheckItem) *apiv1.PreflightResult {
 	ok := code == ""
 	parts := []*apiv1.PreflightPart{
-		{Role: "source", Stage: "check", Resource: "workspaces/default/sources/shop", Ok: true},
-		{Role: "destination", Stage: "check", Resource: "workspaces/default/destinations/lake", Ok: ok, Code: code, Message: message, Items: items},
-		{Role: "source", Stage: "preflight", Resource: "workspaces/default/sources/shop", Ok: true, Items: []*apiv1.CheckItem{{Name: "s", Title: "Read orders", Status: "passed"}}},
-		{Role: "destination", Stage: "preflight", Resource: "workspaces/default/destinations/lake", Ok: ok},
-		{Role: "sync", Stage: "plan", Ok: true},
+		partSourceCheck:      {Role: "source", Stage: "check", Resource: "workspaces/default/sources/shop", Ok: true},
+		partDestinationCheck: {Role: "destination", Stage: "check", Resource: "workspaces/default/destinations/lake", Ok: ok, Code: code, Message: message, Items: items},
+		partPlan: {Role: "sync", Stage: "plan", Ok: true, Items: []*apiv1.CheckItem{
+			{Name: "plan", Title: "The plan", Status: "passed", Kind: "configuration", Message: "2 streams, no problems"}}},
+		partSourcePreflight: {Role: "source", Stage: "preflight", Resource: "workspaces/default/sources/shop", Ok: true,
+			Items: []*apiv1.CheckItem{{Name: "s", Title: "Read orders", Status: "passed"}}},
+		partDestinationPreflight: {Role: "destination", Stage: "preflight", Resource: "workspaces/default/destinations/lake", Ok: ok},
 	}
 	if !ok {
-		parts[3].Skipped = "the destination's check failed"
+		parts[partDestinationPreflight].Skipped = "the destination's check failed"
 	}
 	return &apiv1.PreflightResult{Ok: ok, Version: "abababababababab", Parts: parts}
 }
@@ -286,7 +299,8 @@ func TestApplyChecksWhatChanged(t *testing.T) {
 		"checked source other\n" +
 		"\nthe apply stands, but its checks found:\n" +
 		"  pipeline shop-to-lake: destination lake's check failed: AUTH_INVALID: no CREATE on schema\n" +
-		"    Create tables: GRANT CREATE\n"
+		"    failed   Create tables\n" +
+		"             fix: GRANT CREATE\n"
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
 	}
@@ -327,8 +341,8 @@ func TestPreflight(t *testing.T) {
 	if err := run(t.Context(), []string{"preflight", "--api-url", url, "shop-to-lake"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := "source shop's check: passed\ndestination lake's check: passed\nsource shop's preflight: passed\n  passed   Read orders\n" +
-		"destination lake's preflight: passed\nthe sync's plan: passed\n\nworkspaces/default/pipelines/shop-to-lake (version 0123456789ab)\n"
+	want := "source shop's check: passed\ndestination lake's check: passed\nthe sync's plan: passed\n  passed   The plan\n           2 streams, no problems\n" +
+		"source shop's preflight: passed\n  passed   Read orders\ndestination lake's preflight: passed\n\nworkspaces/default/pipelines/shop-to-lake (version 0123456789ab)\n"
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
 	}
@@ -344,7 +358,7 @@ func TestPreflight(t *testing.T) {
 	for _, line := range []string{
 		"destination lake's check: failed: PERMISSION_DENIED: no PutRecords\n",
 		"  passed   Reach Kinesis\n",
-		"  failed   Write to clicks: PERMISSION_DENIED: no PutRecords\n           field: streams\n           fix: allow kinesis:PutRecords\n",
+		"  failed   Write to clicks\n           no PutRecords\n           fix: allow kinesis:PutRecords\n           field: streams\n           code: PERMISSION_DENIED\n",
 		"destination lake's preflight: skipped, the destination's check failed\n",
 	} {
 		if !strings.Contains(out.String(), line) {
@@ -352,9 +366,6 @@ func TestPreflight(t *testing.T) {
 		}
 	}
 
-	if err := run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out); err == nil || !strings.Contains(err.Error(), "openetl preflight") {
-		t.Errorf("check pipeline: %v", err)
-	}
 }
 
 func TestCheckPrintsItems(t *testing.T) {

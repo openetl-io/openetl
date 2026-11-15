@@ -456,7 +456,17 @@ func printAs(out io.Writer, format string, v any) error {
 
 func runConnectorCheck(ctx context.Context, args []string, out io.Writer) error {
 	f := newRunFlags("check", "TARGET")
+	f.fs.SetOutput(stderr)
+	usage := f.fs.Usage
+	f.fs.Usage = func() {
+		usage()
+		fmt.Fprint(f.fs.Output(), connectorCheckExitUsage)
+	}
+	format := f.fs.String("format", formatText, "text, or json for the connector's answer as one JSON document, in the connector protocol's shape, its templates unfilled")
 	if err := f.parse(args); err != nil {
+		return err
+	}
+	if err := checkFormat(*format); err != nil {
 		return err
 	}
 	config, err := f.readConfig()
@@ -477,20 +487,31 @@ func runConnectorCheck(ctx context.Context, args []string, out io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("%s's check: %w", t.name, err)
 	}
-	return printConnectorCheck(out, t.name, res)
+	return printConnectorCheck(out, *format, t.name, res)
 }
 
 // printConnectorCheck prints a connector's answer to Check, read failing
 // closed, and fails when it didn't pass: a failed item fails it even when
-// the answer has no error.
-func printConnectorCheck(out io.Writer, name string, res *protocolv1.CheckResponse) error {
+// the answer has no error. As JSON, the answer is as check.Report gives it
+// back: an unknown status FAILED, and the error of its first failed item.
+func printConnectorCheck(out io.Writer, format, name string, res *protocolv1.CheckResponse) error {
 	r := check.FromProto(res)
-	if err := r.Err(); err != nil {
-		printCheckItems(out, "", reportItems(r.Items))
-		return fmt.Errorf("%s failed its check: %s: %s", name, errs.CodeOf(err), err.Error())
+	err := r.Err()
+	if format == formatJSON {
+		items, e := r.Proto()
+		if err := printJSON(out, &protocolv1.CheckResponse{Items: items, Error: e}); err != nil {
+			return err
+		}
+	} else {
+		var why string
+		if err != nil {
+			why = errs.CodeOf(err).String() + ": " + printable(err.Error())
+		}
+		printCheckResult(out, printable(name), "", why, err != nil, reportItems(r.Items))
 	}
-	fmt.Fprintf(out, "%s passed its check\n", name)
-	printCheckItems(out, "  ", reportItems(r.Items))
+	if err != nil {
+		return checkFailed("%s failed its check: %s: %s", name, errs.CodeOf(err), err.Error())
+	}
 	return nil
 }
 

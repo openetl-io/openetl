@@ -94,9 +94,10 @@ func (c checkClients) check(ctx context.Context, t checkTarget) checkOutcome {
 			o.err = err
 			return o
 		}
-		o.preflight = r.Msg.GetResult()
-		if !o.preflight.GetOk() {
-			o.err = errors.New(preflightFailure(o.preflight))
+		if o.preflight = r.Msg.GetResult(); o.preflight == nil {
+			o.err = errNoResult
+		} else if why, failed := preflightFailure(o.preflight); failed {
+			o.err = checkFailed("%s", why)
 		}
 		return o
 	case checkDestination:
@@ -114,9 +115,13 @@ func (c checkClients) check(ctx context.Context, t checkTarget) checkOutcome {
 		}
 		res = r.Msg.GetResult()
 	}
+	if res == nil {
+		o.err = errNoResult
+		return o
+	}
 	o.items = apiCheckItems(res.GetItems())
-	if !res.GetOk() {
-		o.err = fmt.Errorf("%s: %s", res.GetCode(), res.GetMessage())
+	if why, failed := resultFailure(res, o.items); failed {
+		o.err = checkFailed("%s", why)
 		return o
 	}
 	// Discovering refreshes the catalog that plans read.
@@ -126,37 +131,84 @@ func (c checkClients) check(ctx context.Context, t checkTarget) checkOutcome {
 	return o
 }
 
+var errNoResult = errors.New("the API answered without a result")
+
+// resultFailure is why a check's result failed. It failed when it isn't ok
+// or when an item failed, whatever its code says.
+func resultFailure(res *apiv1.CheckResult, items []checkItem) (why string, failed bool) {
+	it, failing := firstFailing(items)
+	switch {
+	case res.GetOk() && !failing:
+		return "", false
+	case res.GetCode() != "" || res.GetMessage() != "":
+		return codeText(res.GetCode(), res.GetMessage()), true
+	case failing:
+		return it.text(), true
+	}
+	return "it failed", true
+}
+
+func codeText(code, message string) string {
+	return printable(code) + ": " + printable(message)
+}
+
 // partLabel names a preflight's part: "source shop's check".
 func partLabel(p *apiv1.PreflightPart) string {
 	if p.GetRole() == "sync" {
 		return "the sync's plan"
 	}
-	return fmt.Sprintf("%s %s's %s", p.GetRole(), shortName(p.GetResource()), p.GetStage())
+	return printable(fmt.Sprintf("%s %s's %s", p.GetRole(), shortName(p.GetResource()), p.GetStage()))
 }
 
-// preflightFailure is the first part that failed.
-func preflightFailure(r *apiv1.PreflightResult) string {
+// partFailure is why a preflight's part failed. It failed when it neither
+// passed nor was skipped, or when an item failed, whatever its ok says.
+func partFailure(p *apiv1.PreflightPart) (why string, failed bool) {
+	it, failing := firstFailing(apiCheckItems(p.GetItems()))
+	switch {
+	case !failing && (p.GetOk() || p.GetSkipped() != ""):
+		return "", false
+	case p.GetCode() != "":
+		return codeText(p.GetCode(), p.GetMessage()), true
+	case failing:
+		return it.text(), true
+	}
+	return "", true
+}
+
+// preflightFailure is the first part that failed; or else, as a skipped
+// part leaves the preflight unfinished, the first part skipped; or else why
+// a result that isn't ok failed without either.
+func preflightFailure(r *apiv1.PreflightResult) (why string, failed bool) {
 	for _, p := range r.GetParts() {
-		if !p.GetOk() && p.GetSkipped() == "" {
-			if p.GetCode() == "" {
-				return partLabel(p) + " failed"
+		if why, failed := partFailure(p); failed {
+			if why == "" {
+				return partLabel(p) + " failed", true
 			}
-			return fmt.Sprintf("%s failed: %s: %s", partLabel(p), p.GetCode(), p.GetMessage())
+			return partLabel(p) + " failed: " + why, true
 		}
 	}
-	return "it failed"
+	for _, p := range r.GetParts() {
+		if p.GetSkipped() != "" {
+			return partLabel(p) + " was skipped: " + printable(p.GetSkipped()), true
+		}
+	}
+	if !r.GetOk() {
+		return "it failed, though none of its parts did; run it again", true
+	}
+	return "", false
 }
 
 // printPreflight prints each part of a preflight, and its items.
 func printPreflight(out io.Writer, r *apiv1.PreflightResult) {
 	for _, p := range r.GetParts() {
+		_, failed := partFailure(p)
 		switch {
-		case p.GetSkipped() != "":
-			fmt.Fprintf(out, "%s: skipped, %s\n", partLabel(p), p.GetSkipped())
-		case p.GetOk():
+		case !failed && p.GetSkipped() != "":
+			fmt.Fprintf(out, "%s: skipped, %s\n", partLabel(p), printable(p.GetSkipped()))
+		case !failed:
 			fmt.Fprintf(out, "%s: passed\n", partLabel(p))
 		case p.GetCode() != "":
-			fmt.Fprintf(out, "%s: failed: %s: %s\n", partLabel(p), p.GetCode(), p.GetMessage())
+			fmt.Fprintf(out, "%s: failed: %s\n", partLabel(p), codeText(p.GetCode(), p.GetMessage()))
 		default:
 			fmt.Fprintf(out, "%s: failed\n", partLabel(p))
 		}
@@ -166,14 +218,21 @@ func printPreflight(out io.Writer, r *apiv1.PreflightResult) {
 
 func runPreflight(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("openetl preflight", flag.ContinueOnError)
+	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: openetl preflight [flags] PIPELINE")
-		fmt.Fprintln(fs.Output(), "\nRuns on a runner of the pipeline's own data plane.")
+		fmt.Fprint(fs.Output(), "\nChecks that a pipeline would run, on a runner of its own data plane: both\n"+
+			"connections, then both connectors for the streams it reads and writes. As\n"+
+			"text, it then prints the pipeline's plan.\n"+exitStatusUsage+"\n")
 		fs.PrintDefaults()
 	}
 	conn := apiFlags(fs)
 	workspace := fs.String("workspace", "default", "the pipeline's workspace")
+	format := formatFlag(fs)
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := checkFormat(*format); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -188,14 +247,23 @@ func runPreflight(ctx context.Context, args []string, out io.Writer) error {
 	if o.preflight == nil {
 		return o.err
 	}
-	printPreflight(out, o.preflight)
-	plan, err := c.pipelines.GetPipelinePlan(ctx, connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: name}))
-	if err != nil {
-		return err
+	if *format == formatJSON {
+		if err := printJSON(out, o.preflight); err != nil {
+			return err
+		}
+	} else {
+		printPreflight(out, o.preflight)
+		plan, err := c.pipelines.GetPipelinePlan(ctx, connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: name}))
+		if err != nil && o.err != nil {
+			return checkFailed("%s failed its preflight: %w; and its plan: %w", name, o.err, err)
+		}
+		if err != nil {
+			return err
+		}
+		printPlan(out, plan.Msg.GetPlan())
 	}
-	printPlan(out, plan.Msg.GetPlan())
 	if o.err != nil {
-		return fmt.Errorf("%s failed its preflight: %w", name, o.err)
+		return checkFailed("%s failed its preflight: %w", name, o.err)
 	}
 	return nil
 }
@@ -252,20 +320,35 @@ func checkApplied(ctx context.Context, conn *api, res *apiv1.ApplyResponse, out 
 	}
 	var passed []string
 	for _, o := range c.run(ctx, targets) {
-		if o.err == nil {
-			passed = append(passed, o.target.label())
-			continue
-		}
-		warnings = append(warnings, fmt.Sprintf("%s: %v", o.target.label(), o.err))
 		items := o.items
 		for _, p := range o.preflight.GetParts() {
 			items = append(items, apiCheckItems(p.GetItems())...)
 		}
+		// Each failed or warning item, with its message and its fix.
+		var found []string
 		for _, it := range items {
-			if it.status == "failed" && it.fix != "" {
-				warnings = append(warnings, fmt.Sprintf("  %s: %s", it.title, it.fix))
+			if it.status != statusFailed && it.status != statusWarning {
+				continue
+			}
+			line := fmt.Sprintf("  %-8s %s", it.status, it.title)
+			if it.message != "" {
+				line += ": " + it.message
+			}
+			found = append(found, line)
+			if it.fix != "" {
+				found = append(found, strings.Repeat(" ", 11)+"fix: "+it.fix)
 			}
 		}
+		switch {
+		case o.err != nil:
+			warnings = append(warnings, fmt.Sprintf("%s: %v", o.target.label(), o.err))
+		case len(found) > 0:
+			passed = append(passed, o.target.label())
+			warnings = append(warnings, o.target.label()+": passed, with warnings")
+		default:
+			passed = append(passed, o.target.label())
+		}
+		warnings = append(warnings, found...)
 	}
 	// A pipeline that depends on what changed, without changing itself, gets
 	// its plan looked at, with its source's catalog refreshed above.
@@ -288,7 +371,7 @@ func checkApplied(ctx context.Context, conn *api, res *apiv1.ApplyResponse, out 
 	if len(warnings) > 0 {
 		fmt.Fprintln(out, "\nthe apply stands, but its checks found:")
 		for _, w := range warnings {
-			fmt.Fprintf(out, "  %s\n", w)
+			fmt.Fprintf(out, "  %s\n", printable(w))
 		}
 	}
 }
