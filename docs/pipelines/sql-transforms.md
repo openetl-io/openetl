@@ -270,14 +270,14 @@ The output's primary key is `window_start` and `region`. With `full_refresh`, ea
 
 ### Change a group window
 
-A group window keeps state between syncs, under an ID that the plan shows. Renames, a new column through a view and `HAVING` keep the ID and the state. A new window size, key or aggregate gives the window a new ID, and its state starts empty.
+A group window keeps state between syncs, under an ID that the plan shows. Other names for the columns, a new column through a view and a `HAVING` over the aggregates that the statement computes keep the ID and the state. Another output name, window size, key or aggregate gives the window a new ID, and its state starts empty.
 
 1. Edit the statement.
 2. Run `openetl plan -f FILE`, and read the `state` section of `transform.sql`. Each window shows `kept`, `new`, `changed` or `dropped`.
 3. Run `openetl apply -f FILE`. The next sync drops the state of each changed or dropped window.
-4. If a changed window must include the rows that the pipeline read before, read its stream again: `openetl reset --stream STREAM NAME`.
+4. If a changed or new window must include the rows that the pipeline read before, read its stream again. A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again ([Read streams again from the start](./positions.md#read-streams-again-from-the-start)). Run `openetl reset --stream STREAM NAME`.
 
-Without step 4, the changed window holds only the rows read after the change. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
+Without step 4, a changed or new window holds only the rows read after the change. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
 
 ## Changelog streams
 

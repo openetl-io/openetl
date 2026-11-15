@@ -5493,7 +5493,12 @@ type OperatorPlan struct {
 	// their start: openetl reset --stream. Empty: its state builds from what
 	// the next sync reads, as each sync reads the stream whole, or the
 	// pipeline hasn't read it.
-	Backfill      []string `protobuf:"bytes,17,rep,name=backfill,proto3" json:"backfill,omitempty"`
+	Backfill []string `protobuf:"bytes,17,rep,name=backfill,proto3" json:"backfill,omitempty"`
+	// With OPERATOR_CHANGE_NEW: an earlier version had it, and the current
+	// version dropped it. If no sync of the current version has run since,
+	// the checkpoint still holds its state, and the next sync restores that
+	// state rather than starting empty.
+	Earlier       bool `protobuf:"varint,18,opt,name=earlier,proto3" json:"earlier,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5645,6 +5650,13 @@ func (x *OperatorPlan) GetBackfill() []string {
 		return x.Backfill
 	}
 	return nil
+}
+
+func (x *OperatorPlan) GetEarlier() bool {
+	if x != nil {
+		return x.Earlier
+	}
+	return false
 }
 
 // StatementPlan is one INSERT INTO … SELECT of a SQL transform.
@@ -8066,7 +8078,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x05views\x18\x02 \x03(\v2\x18.openetl.api.v1.ViewPlanR\x05views\x12%\n" +
 	"\x0epassed_through\x18\x03 \x03(\tR\rpassedThrough\x12\x1a\n" +
 	"\bwithheld\x18\x04 \x03(\tR\bwithheld\x12:\n" +
-	"\toperators\x18\x05 \x03(\v2\x1c.openetl.api.v1.OperatorPlanR\toperators\"\xb9\x04\n" +
+	"\toperators\x18\x05 \x03(\v2\x1c.openetl.api.v1.OperatorPlanR\toperators\"\xd3\x04\n" +
 	"\fOperatorPlan\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06output\x18\x02 \x01(\tR\x06output\x12\x12\n" +
@@ -8088,7 +8100,8 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\tretention\x18\x0e \x01(\v2\x19.google.protobuf.DurationR\tretention\x126\n" +
 	"\x06change\x18\x0f \x01(\x0e2\x1e.openetl.api.v1.OperatorChangeR\x06change\x12\x1a\n" +
 	"\breplaces\x18\x10 \x01(\tR\breplaces\x12\x1a\n" +
-	"\bbackfill\x18\x11 \x03(\tR\bbackfill\"\xc4\x02\n" +
+	"\bbackfill\x18\x11 \x03(\tR\bbackfill\x12\x18\n" +
+	"\aearlier\x18\x12 \x01(\bR\aearlier\"\xc4\x02\n" +
 	"\rStatementPlan\x12\x12\n" +
 	"\x04line\x18\x01 \x01(\rR\x04line\x12\x16\n" +
 	"\x06column\x18\x02 \x01(\rR\x06column\x12\x16\n" +

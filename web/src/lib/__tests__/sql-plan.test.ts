@@ -81,6 +81,8 @@ describe("operators", () => {
       "Its state starts empty, in place of window-old, whose state is dropped.",
     );
     expect(changeText(op({ change: OperatorChange.KEPT }))).toBe("Keeps its state.");
+    expect(changeText(op({ change: OperatorChange.NEW }))).toBe("Its state starts empty.");
+    expect(changeText(op({ change: OperatorChange.NEW, earlier: true }))).toContain("the next sync restores that state");
     expect(changeText(op({}))).toBe("The current version wasn't planned when it was applied.");
   });
 });

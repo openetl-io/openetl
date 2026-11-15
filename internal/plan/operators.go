@@ -58,6 +58,7 @@ func Operators(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer, 
 			taken[op.Replaces] = true
 		default:
 			op.Change = apiv1.OperatorChange_OPERATOR_CHANGE_NEW
+			op.Earlier = slices.Contains(applied.GetDropped(), st.Operator)
 		}
 		fresh := op.Change == apiv1.OperatorChange_OPERATOR_CHANGE_NEW || op.Change == apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED
 		if fresh && op.Input != "" && read[op.Input] && !full {
@@ -116,6 +117,10 @@ func changeWarning(op *apiv1.OperatorPlan) string {
 		return at + fmt.Sprintf("the group window writing %s computes or keeps something else now, so it's a new operator, %s, in place of %s: "+
 			"its state starts empty, and %s's is dropped%s", op.GetOutput(), op.GetId(), op.GetReplaces(), op.GetReplaces(), backfill)
 	case apiv1.OperatorChange_OPERATOR_CHANGE_NEW:
+		if op.GetEarlier() {
+			return at + fmt.Sprintf("the group window writing %s is operator %s, which an earlier version had and the current version dropped: "+
+				"if no sync has run since, the next sync restores its state from then; otherwise its state starts empty%s", op.GetOutput(), op.GetId(), backfill)
+		}
 		if backfill == "" {
 			return ""
 		}

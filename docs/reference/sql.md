@@ -219,7 +219,7 @@ These edits keep the ID, and with it the state:
 - Formatting, comments and the case of keywords, and an equal interval, such as `INTERVAL '60 seconds'` for `INTERVAL '1 minute'`.
 - The `FROM` alias, other names for the output's columns, and views that rename columns or pass more columns.
 - The order of the `GROUP BY` keys, of the `SELECT` list and of the aggregates. The output's primary key follows the order of `GROUP BY`.
-- `HAVING`, `window_end`, and expressions over the aggregates.
+- `HAVING`, `window_end`, and expressions over the aggregates, when they use only aggregates that the statement already computes. An aggregate that only `HAVING` or an expression uses is still an aggregate that the operator keeps: adding one gives a new ID.
 - The same filters written in a view or in the statement, and `count(1)` for `count(*)`.
 - Other statements, and the order of the statements.
 
@@ -245,21 +245,22 @@ The plan's warnings say the same for `orders_by_hour`, with the command for the 
 
 | What | Means | Its state |
 |---|---|---|
-| `kept` | The current version has the operator. | The next sync restores it. |
-| `new` | The current version has no operator that writes the output. | Starts empty. |
+| `kept` | The current version has the operator. | The next sync restores it, if the checkpoint's state can be restored: [State](#state) says when an attempt fails with `CONFIG_INVALID` instead, and how to recover. |
+| `new` | The current version has no operator that writes the output. | Starts empty. If an earlier version had the operator and the current version dropped it, the line says so: when no sync has run since, the checkpoint still holds that state, and the next sync restores it. |
 | `changed` | The current version's operator for the output computes or keeps something else. | Starts empty. The next sync drops the old operator's state. |
 | `dropped` | No statement keeps the current version's operator. | The next sync drops it. |
 | `unknown` | The current version's statements were not planned when it was applied. | As for `kept` if the ID is the same, otherwise the next sync fails as below. |
 
 A new or changed operator starts from now: its windows hold only the rows that the pipeline reads after the change. A window that is open at the change, or that a late row opens again, loses the rows read before. The plan has a warning for each changed operator, and for each new one over a stream that the pipeline has read, unless each sync reads the stream whole.
 
-To build the state from the stream's start, read the stream again after you apply the change (a backfill):
+To build the state from the stream's start, read the stream again after you apply the change (a backfill).
+
+> [!WARNING]
+> A reset reads the stream again for every statement that reads it, not only for the changed window. It drops the state of each of those statements, and each of their outputs gets the stream's rows again. [Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start) has what the destination gets.
 
 ```sh
 openetl reset --stream orders NAME
 ```
-
-The reset reads the stream again for every statement that reads it, and drops their state. [Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start) has what the destination gets.
 
 If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the next attempt fails with `CONFIG_INVALID`. Its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
 

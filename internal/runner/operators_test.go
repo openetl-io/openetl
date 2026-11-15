@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"log/slog"
 	"slices"
 	"testing"
 
@@ -34,5 +35,23 @@ func TestWithoutDropped(t *testing.T) {
 	}
 	if got, _ := j.withoutDropped(nil); got != nil {
 		t.Errorf("without a record: %v", got)
+	}
+}
+
+// Both restore paths, on one process and on workers, take a newer reset
+// and drop the version's dropped operators.
+func TestRestoring(t *testing.T) {
+	rec := &checkpoint.Record{Epoch: 4, Reset: "r1", Streams: map[string]checkpoint.StreamState{"orders": {State: []byte("pos")}, "users": {State: []byte("pos")}},
+		Snapshots: []checkpoint.Snapshot{{Operator: "window-kept"}, {Operator: "window-old"}}}
+	j := &Job{Streams: []Stream{{Name: "orders"}, {Name: "users"}}, Resets: []Reset{{ID: "r2", Streams: []string{"users"}}},
+		SQL: &SQLTransform{Operators: []string{"window-kept"}, Dropped: []string{"window-old"},
+			Expected: []ExpectedOutput{{Name: "minutes", Input: "orders", Operator: "window-kept"}}}}
+	got, reset := j.restoring(rec, slog.New(slog.DiscardHandler))
+	var left []string
+	for _, s := range got.Snapshots {
+		left = append(left, s.Operator)
+	}
+	if reset != "r2" || got.Streams["users"].State != nil || string(got.Streams["orders"].State) != "pos" || !slices.Equal(left, []string{"window-kept"}) {
+		t.Errorf("reset %q, streams %v, operators %v", reset, got.Streams, left)
 	}
 }

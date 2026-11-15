@@ -562,14 +562,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 		restored = prev
 	}
-	restored, reset, resetStreams := job.reset(restored)
-	if len(resetStreams) > 0 {
-		log.Info("reading streams again from the start", "streams", resetStreams, "reset", reset)
-	}
-	restored, dropped := job.withoutDropped(restored)
-	if len(dropped) > 0 {
-		log.Info("dropping the state of operators the pipeline's version changed or dropped", "operators", dropped)
-	}
+	restored, reset := job.restoring(restored, log)
 	if restored != nil {
 		res.Restored = restored.Epoch
 	}

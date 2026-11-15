@@ -598,6 +598,9 @@ func operatorText(op *apiv1.OperatorPlan) string {
 	switch op.GetChange() {
 	case apiv1.OperatorChange_OPERATOR_CHANGE_NEW:
 		then = "starts empty"
+		if op.GetEarlier() {
+			then = "an earlier version's, so it restores that state if the checkpoint still holds it, or starts empty"
+		}
 	case apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED:
 		then = "starts empty, in place of " + op.GetReplaces()
 	case apiv1.OperatorChange_OPERATOR_CHANGE_DROPPED:

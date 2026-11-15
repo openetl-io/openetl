@@ -87,7 +87,9 @@ export function changeText(op: OperatorPlan) {
     case OperatorChange.KEPT:
       return "Keeps its state.";
     case OperatorChange.NEW:
-      return "Its state starts empty.";
+      return op.earlier
+        ? "An earlier version had it. If no sync has run since the current version, the next sync restores that state; otherwise it starts empty."
+        : "Its state starts empty.";
     case OperatorChange.CHANGED:
       return `Its state starts empty, in place of ${op.replaces}, whose state is dropped.`;
     case OperatorChange.DROPPED:

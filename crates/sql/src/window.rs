@@ -440,6 +440,7 @@ pub(crate) fn lower(
     let written: Vec<(usize, String)> = keys.iter().map(|(i, k)| (*i, k.stream.clone())).collect();
     keys.sort_by(|(i, a), (j, b)| a.stream.cmp(&b.stream).then(i.cmp(j)));
 
+    let mut canon = crate::canon::Canon::default();
     let mut aggregates = Vec::with_capacity(agg.aggr_expr.len());
     for (j, e) in agg.aggr_expr.iter().enumerate() {
         let data_type = agg
@@ -448,7 +449,7 @@ pub(crate) fn lower(
             .data_type()
             .clone();
         let a = aggregate(e, schema, data_type, at)?;
-        let computes = computes(e, &a, &agg.input, at)?;
+        let computes = computes(&mut canon, e, &a, &agg.input, at)?;
         aggregates.push((j, a, computes));
     }
     aggregates.sort_by(|(i, _, a), (j, _, b)| a.cmp(b).then(i.cmp(j)));
@@ -513,7 +514,8 @@ pub(crate) fn lower(
     let (aggregates, computes): (Vec<Aggregate>, Vec<String>) =
         aggregates.into_iter().map(|(_, a, c)| (a, c)).unzip();
     let event_time = stream.event_time.clone().unwrap_or_default();
-    let before = crate::canon::rows(&agg.input)
+    let before = canon
+        .rows(&agg.input)
         .map_err(|e| internal(at.statement, &format!("{e} before the window")))?;
     let id = operator_id(&Kept {
         output,
@@ -1007,14 +1009,20 @@ fn operator_id(k: &Kept) -> String {
 /// An aggregate as the stream's columns compute it, such as `sum(amount)`
 /// or `count(*) FILTER (WHERE (amount > …))`: `e` is over `input`'s
 /// output.
-fn computes(e: &DfExpr, a: &Aggregate, input: &LogicalPlan, at: &At) -> Result<String, Error> {
+fn computes(
+    canon: &mut crate::canon::Canon,
+    e: &DfExpr,
+    a: &Aggregate,
+    input: &LogicalPlan,
+    at: &At,
+) -> Result<String, Error> {
     let inner = e.clone().unalias_nested().data;
     let DfExpr::AggregateFunction(f) = &inner else {
         return Err(internal(at.statement, &format!("an aggregate {e}")));
     };
-    let over = |e: &DfExpr| {
-        crate::canon::unfold(e, input)
-            .map(|u| crate::canon::text(&u))
+    let mut over = |e: &DfExpr| {
+        canon
+            .over(e, input)
             .map_err(|m| internal(at.statement, &format!("{m} under an aggregate")))
     };
     let arg = match (&a.arg, f.params.args.first()) {

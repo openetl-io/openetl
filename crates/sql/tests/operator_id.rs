@@ -271,3 +271,111 @@ fn keys_and_aggregates_take_an_order_of_their_own() {
     assert_eq!(g.event_time, "created_at");
     assert_eq!(s.key, ["window_start", "region", "country"]);
 }
+
+fn lists() -> Catalog {
+    let list = DataType::List(Arc::new(Field::new_list_field(DataType::Int64, true)));
+    let mut c = Catalog::new();
+    c.insert(
+        "events",
+        Stream {
+            schema: Arc::new(Schema::new(vec![
+                Field::new("xs", list, true),
+                Field::new("unnest(xs)", DataType::Int64, true),
+                Field::new("region", DataType::Utf8, true),
+                Field::new(
+                    "at",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    true,
+                ),
+            ])),
+            key: Vec::new(),
+            changelog: false,
+            event_time: Some("at".into()),
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    c
+}
+
+/// An unnested value is never written as a stream's column, whatever the
+/// column's name.
+#[test]
+fn an_unnest_is_not_a_column_of_its_name() {
+    let c = lists();
+    let view =
+        "CREATE VIEW v AS SELECT unnest(xs) AS x, \"unnest(xs)\" AS y, region, at FROM events;\n";
+    let sum = |of: &str| {
+        id_in(
+            &c,
+            &format!(
+                "{view}INSERT INTO revenue SELECT window_start, region, sum({of}) AS total \
+                 FROM v GROUP BY tumble(at, INTERVAL '1 minute'), region"
+            ),
+            "revenue",
+        )
+    };
+    assert_ne!(sum("x"), sum("y"));
+}
+
+/// Each unnest multiplies the rows, so unnesting a list twice is another
+/// operator than unnesting it once.
+#[test]
+fn each_unnest_counts() {
+    let c = lists();
+    let once = "CREATE VIEW a AS SELECT unnest(xs) AS x, xs, region, at FROM events;\n";
+    let twice = "CREATE VIEW a AS SELECT unnest(xs) AS x, xs, region, at FROM events;\n\
+                 CREATE VIEW b AS SELECT unnest(xs) AS y, region, at FROM a;\n";
+    let count = |views: &str, from: &str| {
+        id_in(
+            &c,
+            &format!(
+                "{views}INSERT INTO n SELECT window_start, region, count(*) AS n \
+                 FROM {from} GROUP BY tumble(at, INTERVAL '1 minute'), region"
+            ),
+            "n",
+        )
+    };
+    assert_ne!(count(once, "a"), count(twice, "b"));
+}
+
+/// A chain of views that each read a column twice plans in time that grows
+/// with the chain, and its operator's ID still follows what it computes.
+/// Binding a plan this deep takes more stack than a test's thread has.
+#[test]
+fn a_deep_chain_of_views_keeps_its_id_short() {
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(deep_chain)
+        .unwrap_or_else(|e| panic!("{e}"))
+        .join()
+        .unwrap_or_else(|_| panic!("the chain failed"));
+}
+
+fn deep_chain() {
+    let chain = |depth: usize, last: &str| {
+        let mut sql =
+            String::from("CREATE VIEW v0 AS SELECT qty AS x, region, created_at FROM orders;\n");
+        for i in 1..=depth {
+            let op = if i == depth { last } else { "+" };
+            sql.push_str(&format!(
+                "CREATE VIEW v{i} AS SELECT x {op} x AS x, region, created_at FROM v{};\n",
+                i - 1
+            ));
+        }
+        sql.push_str(&format!(
+            "INSERT INTO revenue SELECT window_start, region, sum(x) AS total \
+             FROM v{depth} GROUP BY tumble(created_at, INTERVAL '1 minute'), region"
+        ));
+        sql
+    };
+    let start = std::time::Instant::now();
+    let deep = id(&chain(40, "+"));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "40 views took {:?}",
+        start.elapsed()
+    );
+    assert_eq!(deep, id(&chain(40, "+")));
+    assert_ne!(deep, id(&chain(40, "*")));
+    assert_ne!(deep, id(&chain(39, "+")));
+}

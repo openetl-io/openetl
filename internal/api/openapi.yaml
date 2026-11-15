@@ -4633,6 +4633,13 @@ components:
                          their start: openetl reset --stream. Empty: its state builds from what
                          the next sync reads, as each sync reads the stream whole, or the
                          pipeline hasn't read it.
+                earlier:
+                    type: boolean
+                    description: |-
+                        With OPERATOR_CHANGE_NEW: an earlier version had it, and the current
+                         version dropped it. If no sync of the current version has run since,
+                         the checkpoint still holds its state, and the next sync restores that
+                         state rather than starting empty.
             description: |-
                 OperatorPlan is a stateful operator of a SQL transform, and what it does
                  to state the pipeline keeps. Its ID is a hash of what it computes and
