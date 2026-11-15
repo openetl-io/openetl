@@ -129,11 +129,11 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 		var err error
 		switch st.Name {
 		case "users":
-			err = s.readUsers(users, seq, st.State, out)
+			err = s.readUsers(users, seq, st.State, st.Until, out)
 		case "events":
-			err = s.readEvents(events, st.State, out)
+			err = s.readEvents(events, st.State, st.Until, out)
 		case "changes":
-			err = s.readChanges(ctx, req.Continuous, st.State, out)
+			err = s.readChanges(ctx, req.Continuous, st.State, st.Until, out)
 		default:
 			err = fmt.Errorf("no stream %q", st.Name)
 		}
@@ -144,8 +144,19 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 	return nil
 }
 
-// readUsers reads users from the state on; with seq above 0, they carry it.
-func (s *memSource) readUsers(n, seq int64, state []byte, out source.Emitter) error {
+// untilOf is where a read ends: an until's position, else end.
+func untilOf(until []byte, end int64) (int64, error) {
+	if until == nil {
+		return end, nil
+	}
+	var u int64
+	err := json.Unmarshal(until, &u)
+	return min(u, end), err
+}
+
+// readUsers reads users from the state on, up to until; with seq above 0,
+// they carry it.
+func (s *memSource) readUsers(n, seq int64, state, until []byte, out source.Emitter) error {
 	var from int64
 	if state != nil {
 		if err := json.Unmarshal(state, &from); err != nil {
@@ -155,8 +166,15 @@ func (s *memSource) readUsers(n, seq int64, state []byte, out source.Emitter) er
 			from++
 		}
 	}
-	for i := from; i < n; i += 5 {
-		to := min(i+5, n)
+	if s.bug == "until-ignored" {
+		until = nil
+	}
+	end, err := untilOf(until, n)
+	if err != nil {
+		return err
+	}
+	for i := from; i < end; i += 5 {
+		to := min(i+5, end)
 		ids, names := []int64{}, []string{}
 		for j := i; j < to; j++ {
 			id := j
@@ -172,13 +190,33 @@ func (s *memSource) readUsers(n, seq int64, state []byte, out source.Emitter) er
 		if err := out.Records("users", batch); err != nil {
 			return err
 		}
+		if until != nil && to == end && s.bug == "until-completes-first" {
+			break
+		}
 		st, _ := json.Marshal(to)
 		if err := out.ResumePoint("users", st); err != nil {
 			return err
 		}
 	}
-	if err := out.Complete("users", nil); err != nil {
+	var next []byte
+	switch {
+	case until != nil && s.bug == "until-completes-first":
+		if err := out.Complete("users", until); err != nil {
+			return err
+		}
+		return out.ResumePoint("users", until)
+	case until != nil && s.bug != "until-no-end":
+		next = until
+	case until == nil && s.bug == "completion-moves":
+		s.up.mu.Lock()
+		next, _ = json.Marshal(s.up.reads)
+		s.up.mu.Unlock()
+	}
+	if err := out.Complete("users", next); err != nil {
 		return err
+	}
+	if until != nil && s.bug == "until-after-complete" {
+		return out.ResumePoint("users", until)
 	}
 	if s.bug == "batch-after-complete" {
 		return out.Records("users", usersBatch([]int64{n}, []string{"late"}))
@@ -186,18 +224,23 @@ func (s *memSource) readUsers(n, seq int64, state []byte, out source.Emitter) er
 	return nil
 }
 
-// Event i has ts 10i; a state is the last ts read.
-func (s *memSource) readEvents(n int64, state []byte, out source.Emitter) error {
+// Event i has ts 10i; a state is the last ts read, and until the last ts
+// to read.
+func (s *memSource) readEvents(n int64, state, until []byte, out source.Emitter) error {
 	after := int64(-1)
 	if state != nil {
 		if err := json.Unmarshal(state, &after); err != nil {
 			return err
 		}
 	}
+	upTo, err := untilOf(until, 10*(n-1))
+	if err != nil {
+		return err
+	}
 	last := after
-	for i := after/10 + 1; i < n; i += 4 {
+	for i := after/10 + 1; 10*i <= upTo; i += 4 {
 		ids, ts := []int64{}, []int64{}
-		for j := i; j < min(i+4, n); j++ {
+		for j := i; j < min(i+4, n) && 10*j <= upTo; j++ {
 			ids, ts = append(ids, j), append(ts, 10*j)
 			last = 10 * j
 		}
@@ -209,6 +252,9 @@ func (s *memSource) readEvents(n int64, state []byte, out source.Emitter) error 
 			return err
 		}
 	}
+	if until != nil {
+		return out.Complete("events", until)
+	}
 	if s.bug == "incremental-no-next" {
 		return out.Complete("events", nil)
 	}
@@ -219,9 +265,10 @@ func (s *memSource) readEvents(n int64, state []byte, out source.Emitter) error 
 	return out.Complete("events", next)
 }
 
-// readChanges reads the log from the state, the next id, on: up to where it
-// ended when the read started, or, read continuously, until cancelled.
-func (s *memSource) readChanges(ctx context.Context, continuous bool, state []byte, out source.Emitter) error {
+// readChanges reads the log from the state, the next id, on: up to until or
+// where it ended when the read started, or, read continuously, until
+// cancelled.
+func (s *memSource) readChanges(ctx context.Context, continuous bool, state, until []byte, out source.Emitter) error {
 	var from int64
 	if state != nil {
 		if err := json.Unmarshal(state, &from); err != nil {
@@ -231,6 +278,12 @@ func (s *memSource) readChanges(ctx context.Context, continuous bool, state []by
 	s.up.mu.Lock()
 	end := s.up.changes
 	s.up.mu.Unlock()
+	if !continuous {
+		var err error
+		if end, err = untilOf(until, end); err != nil {
+			return err
+		}
+	}
 	caughtUp := false
 	for {
 		s.up.mu.Lock()
@@ -261,6 +314,9 @@ func (s *memSource) readChanges(ctx context.Context, continuous bool, state []by
 				return err
 			}
 			continue
+		}
+		if !continuous && until != nil {
+			return out.Complete("changes", until)
 		}
 		if !continuous || s.bug == "continuous-completes" {
 			return out.Complete("changes", nil)
@@ -338,8 +394,9 @@ func memSuite(up *upstream, bug string) conformance.SourceSuite {
 			},
 		}),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
-		Streams:     []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}, {Name: "changes", Mode: source.Stream}},
-		ReadTimeout: 5 * time.Second,
+		Streams:      []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}, {Name: "changes", Mode: source.Stream}},
+		ReadTimeout:  5 * time.Second,
+		StopsAtUntil: true,
 		AddRecords: func(_ context.Context, stream string) (int, error) {
 			up.mu.Lock()
 			defer up.mu.Unlock()
@@ -361,6 +418,13 @@ func TestSourcePasses(t *testing.T) {
 	sourceSuite("").Test(t)
 }
 
+// The resume and until checks can start from one resume point.
+func TestSourceOneResumePoint(t *testing.T) {
+	s := sourceSuite("")
+	s.ResumePoints = 1
+	s.Test(t)
+}
+
 // Records read again after a resume point are the same records, though
 // their control sequence is new.
 func TestSourceSequencesAreNotRecords(t *testing.T) {
@@ -369,16 +433,21 @@ func TestSourceSequencesAreNotRecords(t *testing.T) {
 
 func TestSourceBugsFail(t *testing.T) {
 	cases := map[string][]string{
-		"resume-gap":           {"read/resume", "read/committed"},
-		"dup-key":              {"read/full"},
-		"batch-after-complete": {"read/full"},
-		"incremental-no-next":  {"read/incremental"},
-		"incremental-skips":    {"read/incremental"},
-		"check-internal":       {"errors"},
-		"committed-fails":      {"read/committed"},
-		"ack-trims-too-far":    {"read/committed"},
-		"continuous-completes": {"read/continuous"},
-		"continuous-no-resume": {"read/continuous"},
+		"resume-gap":            {"read/resume", "read/until", "read/committed"},
+		"dup-key":               {"read/full"},
+		"batch-after-complete":  {"read/full", "read/until"},
+		"incremental-no-next":   {"read/incremental"},
+		"incremental-skips":     {"read/incremental"},
+		"check-internal":        {"errors"},
+		"committed-fails":       {"read/committed"},
+		"ack-trims-too-far":     {"read/committed"},
+		"continuous-completes":  {"read/continuous"},
+		"continuous-no-resume":  {"read/continuous"},
+		"until-ignored":         {"read/until"},
+		"until-no-end":          {"read/until"},
+		"until-completes-first": {"read/until"},
+		"until-after-complete":  {"read/until"},
+		"completion-moves":      {"read/until"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {

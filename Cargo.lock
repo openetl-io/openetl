@@ -2343,8 +2343,12 @@ name = "openetl-state"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "futures-util",
+ "lz4_flex",
+ "object_store 0.14.2",
  "thiserror",
  "tokio",
+ "twox-hash",
 ]
 
 [[package]]

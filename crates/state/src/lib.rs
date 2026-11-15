@@ -23,8 +23,9 @@
 //! or a time a record carries; never the clock at a call, so a replay sees
 //! what the first run saw. `i64::MAX` is the watermark at the end of input.
 //!
-//! The one store here, [`MemoryBucket`], keeps every version in the
-//! process's memory, for tests: nothing it holds outlives the process.
+//! Two stores are here: [`RunStores`], runs of our own on object storage,
+//! and [`MemoryBucket`], which keeps every version in the process's memory,
+//! for tests: nothing it holds outlives the process.
 
 use std::future::Future;
 
@@ -33,11 +34,13 @@ use bytes::Bytes;
 mod layer;
 mod layout;
 mod memory;
+pub mod runs;
 mod store;
 
 pub use layer::{Layer, Memory};
-pub use layout::LAYOUT;
+pub use layout::{LAYOUT, SectionKind};
 pub use memory::MemoryBucket;
+pub use runs::{ObjectStorage, Objects, RunConfig, RunStores};
 pub use store::{BoxFuture, Change, Snapshot, Store, Stores};
 
 /// A key's group, out of the pipeline's key groups, as routing gives it.

@@ -271,7 +271,7 @@ Connectors run as trusted code: `egress` says what yours means to reach, and Ope
 
 ## Test it with the conformance kit
 
-The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications, connection checks, discovery, reads and resumption. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
+The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications, connection checks, discovery, reads, resumption, and reads that stop at a redo's `until`. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
 
 Run it from the CLI:
 
@@ -290,16 +290,20 @@ PASS discover
 PASS read/full
 SKIP read/resume
     no stream sent a resume point
+SKIP read/until
+    the suite doesn't say the source stops at until
 SKIP read/incremental
     the suite reads no stream incrementally
 SKIP read/committed
     the source doesn't acknowledge, so the platform never calls Committed
 SKIP read/continuous
     the suite reads no stream with cdc or stream
-source-greetings: 10 checks, 4 passed, 0 failed, 6 skipped
+source-greetings: 11 checks, 4 passed, 0 failed, 7 skipped
 ```
 
 `--bad-credentials` and `--unreachable` add configs for the errors check, and `--add-records-command` lets the incremental check add records upstream. A destination's checks that write need `--read-command`, which prints what the destination made visible; they're skipped without it. `openetl connector test -h` has the details.
+
+The until check runs only for a source that stops at `until`: pass `--stops-at-until`, or set `StopsAtUntil` in Go. The check reads from a resume point, with the next resume point's state as `until`. It expects the records between the two and nothing past them, then a resume point and a completion at `until`. It also reads from the last resume point with no `until`, and expects a completion at the state the first read completed at.
 
 In Go, a connector's own tests run the same checks with `conformance.SourceSuite` or `conformance.DestinationSuite` and `Test(t)`, as every official connector does in its `conformance_test.go`.
 

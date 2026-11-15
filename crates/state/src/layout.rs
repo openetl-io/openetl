@@ -170,6 +170,121 @@ pub fn parse_timer(k: &[u8]) -> Option<(i64, u16, &[u8])> {
     Some((time, group, &k[key_at..]))
 }
 
+/// The kind of state a key holds, and so the section of a run it goes in:
+/// each section has an index and a filter of its own, and ages as its
+/// kind does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SectionKind {
+    /// Values per key, and the set's horizons.
+    Values,
+    Rows,
+    Set,
+    Timers,
+}
+
+impl SectionKind {
+    pub const ALL: [SectionKind; 4] = [
+        SectionKind::Values,
+        SectionKind::Rows,
+        SectionKind::Set,
+        SectionKind::Timers,
+    ];
+
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) fn code(self) -> u8 {
+        match self {
+            SectionKind::Values => b'v',
+            SectionKind::Rows => b'r',
+            SectionKind::Set => b's',
+            SectionKind::Timers => b't',
+        }
+    }
+
+    pub(crate) fn from_code(c: u8) -> Option<SectionKind> {
+        SectionKind::ALL.into_iter().find(|k| k.code() == c)
+    }
+}
+
+pub fn section_of(k: &[u8]) -> Option<SectionKind> {
+    match *k.first()? {
+        KEYED if k.len() >= KEYED_HEAD => kind_section(k[7]),
+        TIMED if k.len() >= TIMED_HEAD && k[5] == Kind::Timer as u8 => Some(SectionKind::Timers),
+        _ => None,
+    }
+}
+
+fn kind_section(kind: u8) -> Option<SectionKind> {
+    match kind {
+        k if k == Kind::Value as u8 || k == Kind::Horizon as u8 => Some(SectionKind::Values),
+        k if k == Kind::Row as u8 => Some(SectionKind::Rows),
+        k if k == Kind::Set as u8 => Some(SectionKind::Set),
+        _ => None,
+    }
+}
+
+/// Which sections can hold a key in `[start, end)`, by
+/// [`SectionKind::index`]: exactly the one for a scan within one kind of
+/// one operator's group, as the layer's are, and more for a wider one.
+pub fn sections_between(start: &[u8], end: &[u8]) -> [bool; 4] {
+    let mut out = [false; 4];
+    if start >= end {
+        return out;
+    }
+    out[SectionKind::Timers.index()] = end > &[TIMED][..] && start < &[TIMED + 1][..];
+    if start >= &[TIMED][..] {
+        return out;
+    }
+    let same = start.len() >= KEYED_HEAD - 1
+        && end.len() > KEYED_HEAD - 1
+        && start[0] == KEYED
+        && start[..KEYED_HEAD - 1] == end[..KEYED_HEAD - 1];
+    if !same {
+        for k in [SectionKind::Values, SectionKind::Rows, SectionKind::Set] {
+            out[k.index()] = true;
+        }
+        return out;
+    }
+    let lo = start.get(KEYED_HEAD - 1).copied().unwrap_or(0);
+    let hi = end[KEYED_HEAD - 1];
+    // An end of exactly a kind's prefix holds none of that kind.
+    let below = |kind: Kind| {
+        let k = kind as u8;
+        lo <= k && (k < hi || (k == hi && end.len() > KEYED_HEAD))
+    };
+    for kind in [Kind::Value, Kind::Horizon, Kind::Row, Kind::Set] {
+        if below(kind)
+            && let Some(s) = kind_section(kind as u8)
+        {
+            out[s.index()] = true;
+        }
+    }
+    out
+}
+
+/// What a section's filter holds of a key: for a row, its slot, so a read
+/// of a key's rows at a time asks the filter; any other key whole.
+pub fn filtered(k: &[u8]) -> &[u8] {
+    match parse_row(k) {
+        Some(_) => &k[..k.len() - 8],
+        None => k,
+    }
+}
+
+/// Whether `[start, end)` is exactly one row slot's rows, which a filter of
+/// slots can rule out.
+pub fn is_slot(start: &[u8], end: &[u8]) -> bool {
+    if start.len() < KEYED_HEAD + 8 + 4 || start[0] != KEYED || start[7] != Kind::Row as u8 {
+        return false;
+    }
+    let Some(len) = u32_at(start, KEYED_HEAD + 8).and_then(|n| usize::try_from(n).ok()) else {
+        return false;
+    };
+    start.len() == KEYED_HEAD + 8 + 4 + len && successor(start)[..] == *end
+}
+
 /// The key group of any key of this layout.
 pub fn group_of(k: &[u8]) -> Option<u16> {
     match *k.first()? {
@@ -391,6 +506,78 @@ mod tests {
         assert_eq!(group_of(b""), None);
         assert_eq!(parse_time_value(b"short"), None);
         assert_eq!(parse_time_value(&time_value(-3)), Some(-3));
+    }
+
+    fn kinds(start: &[u8], end: &[u8]) -> Vec<SectionKind> {
+        let between = sections_between(start, end);
+        SectionKind::ALL
+            .into_iter()
+            .filter(|k| between[k.index()])
+            .collect()
+    }
+
+    /// Each scan the layer makes reads one kind of section; any other scan
+    /// reads every kind its range can hold.
+    #[test]
+    fn a_scan_reads_the_sections_its_range_can_hold() {
+        use SectionKind::*;
+        for w in [i64::MIN, -1, 0, i64::MAX] {
+            let (s, e) = rows_due(4, OP, w);
+            assert_eq!(kinds(&s, &e), [Rows]);
+            let (s, e) = timers_due(OP, w);
+            assert_eq!(kinds(&s, &e), [Timers]);
+        }
+        let slot = row_slot(4, OP, 7, b"k");
+        assert_eq!(kinds(&slot, &successor(&slot)), [Rows]);
+        let (s, e) = set_range(4, OP);
+        assert_eq!(kinds(&s, &e), [Set]);
+        let all = kinds(b"", b"\x02");
+        assert_eq!(all, SectionKind::ALL);
+        assert_eq!(
+            kinds(&value(1, OP, b""), &value(2, OP, b"")),
+            [Values, Rows, Set]
+        );
+        assert_eq!(
+            kinds(&value(1, OP, b"a"), &successor(&value(1, OP, b""))),
+            [Values]
+        );
+        assert_eq!(
+            kinds(&horizon(1, OP), &value(1, OP, b"")),
+            [Values, Rows, Set]
+        );
+        assert!(kinds(&value(1, OP, b"b"), &value(1, OP, b"a")).is_empty());
+        // Every key a range holds is of a kind it names.
+        let keys = [
+            value(1, OP, b"k"),
+            horizon(1, OP),
+            set(1, OP, b"k"),
+            row(1, OP, 3, b"k", 0),
+            timer(OP, 3, 1, b"k"),
+        ];
+        for a in &keys {
+            for b in &keys {
+                let named = kinds(a, b);
+                for k in keys.iter().filter(|k| a <= *k && *k < b) {
+                    assert!(named.contains(&section_of(k).unwrap()), "{a:?} {b:?} {k:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn filters_hold_a_rows_slot() {
+        let r = row(3, OP, 9, b"key", 77);
+        let slot = row_slot(3, OP, 9, b"key");
+        assert_eq!(filtered(&r), &slot[..]);
+        assert_eq!(filtered(&value(3, OP, b"x")), &value(3, OP, b"x")[..]);
+        assert!(is_slot(&slot, &successor(&slot)));
+        assert!(!is_slot(&r, &successor(&r)));
+        assert!(!is_slot(&slot, &after(&slot)));
+        let (s, e) = rows_due(3, OP, 9);
+        assert!(!is_slot(&s, &e));
+        assert_eq!(section_of(&slot), Some(SectionKind::Rows));
+        assert_eq!(section_of(b"\x00ab"), None);
+        assert_eq!(section_of(&timer(OP, 1, 2, b"")), Some(SectionKind::Timers));
     }
 
     #[test]
