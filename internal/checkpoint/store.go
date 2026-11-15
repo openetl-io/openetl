@@ -28,6 +28,9 @@ type Version string
 // applied.
 type Store interface {
 	Get(ctx context.Context, key string) ([]byte, Version, error)
+	// GetPrefix returns key's first n bytes, or all of it if it's shorter,
+	// and reads no further.
+	GetPrefix(ctx context.Context, key string, n int) ([]byte, error)
 	// Create writes key only if it doesn't exist (If-None-Match: *).
 	Create(ctx context.Context, key string, data []byte) (Version, error)
 	// Swap replaces key only if its current version is prev (If-Match).

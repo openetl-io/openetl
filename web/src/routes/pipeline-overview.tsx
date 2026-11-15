@@ -12,6 +12,7 @@ import { useDataTable } from "@/components/data-table/use-data-table";
 import { ErrorNote } from "@/components/empty";
 import { Holds } from "@/components/holds";
 import { Incidents } from "@/components/incidents";
+import { QuarantineCount, QuarantineView } from "@/components/quarantine";
 import { RunOverrides } from "@/components/run-overrides";
 import { Badge } from "@/components/ui/badge";
 import { IncidentService, IncidentState } from "@/gen/openetl/api/v1/incident_pb";
@@ -193,18 +194,21 @@ export function Overview({
             ))}
           </div>
         )}
-        <StreamsTable
-          workspace={workspace}
-          pipeline={lastSegment(pipeline.name)}
-          streams={streams}
-          planned={!!plan.data?.plan?.streams.length}
-          empty={
-            <>
-              No streams to show yet. They show once a sync commits rows, or once the plan can list them, after{" "}
-              <code className="font-mono text-[0.8125rem] text-foreground">openetl discover {spec?.source?.ref}</code>.
-            </>
-          }
-        />
+        <QuarantineView workspace={workspace} pipeline={lastSegment(pipeline.name)}>
+          <StreamsTable
+            workspace={workspace}
+            pipeline={lastSegment(pipeline.name)}
+            streams={streams}
+            sync={last?.name}
+            planned={!!plan.data?.plan?.streams.length}
+            empty={
+              <>
+                No streams to show yet. They show once a sync commits rows, or once the plan can list them, after{" "}
+                <code className="font-mono text-[0.8125rem] text-foreground">openetl discover {spec?.source?.ref}</code>.
+              </>
+            }
+          />
+        </QuarantineView>
       </section>
 
       <Holds workspace={workspace} pipeline={pipeline.name} live={live} />
@@ -216,12 +220,15 @@ function StreamsTable({
   workspace,
   pipeline,
   streams,
+  sync,
   planned,
   empty,
 }: {
   workspace: string;
   pipeline: string;
   streams: Row[];
+  /** The sync whose rows they are. */
+  sync?: string;
   planned: boolean;
   empty: ReactNode;
 }) {
@@ -318,7 +325,9 @@ function StreamsTable({
         header: "Quarantined",
         cell: ({ row }) =>
           row.original.quarantined ? (
-            <span className="text-degraded tabular-nums">{full(row.original.quarantined)}</span>
+            <QuarantineCount stream={row.original.name} focus={sync ? { sync } : undefined}>
+              {full(row.original.quarantined)}
+            </QuarantineCount>
           ) : (
             <span className="text-muted-foreground">0</span>
           ),
@@ -355,7 +364,7 @@ function StreamsTable({
         meta: { align: "right", className: "hidden xl:table-cell" },
       },
     ],
-    [workspace, pipeline, planned],
+    [workspace, pipeline, planned, sync],
   );
   const table = useDataTable({ data: streams, columns, paged: false });
   return <DataTable table={table} empty={empty} />;

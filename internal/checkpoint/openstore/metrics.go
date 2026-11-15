@@ -50,6 +50,13 @@ func (i instrumented) Get(ctx context.Context, key string) ([]byte, checkpoint.V
 	return b, v, err
 }
 
+func (i instrumented) GetPrefix(ctx context.Context, key string, n int) ([]byte, error) {
+	start := time.Now()
+	b, err := i.s.GetPrefix(ctx, key, n)
+	i.record(ctx, "get", start, err)
+	return b, err
+}
+
 func (i instrumented) Create(ctx context.Context, key string, data []byte) (checkpoint.Version, error) {
 	start := time.Now()
 	v, err := i.s.Create(ctx, key, data)

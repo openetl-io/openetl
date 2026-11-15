@@ -46,6 +46,7 @@ type holdsEnv struct {
 	conn     *pgx.Conn
 	owner    apiv1connect.PipelineServiceClient
 	viewer   apiv1connect.PipelineServiceClient
+	editor   apiv1connect.PipelineServiceClient
 	runner   dataplanev1connect.DataPlaneServiceClient
 	sched    *refreshes
 	pipeline uuid.UUID
@@ -54,7 +55,10 @@ type holdsEnv struct {
 	url      string
 }
 
-func newHoldsEnv(t *testing.T) *holdsEnv {
+// newHoldsEnv is a server with a continuous pipeline, its running sync, a
+// runner token of its data plane, a viewer and an editor. opts change the
+// server.
+func newHoldsEnv(t *testing.T, opts ...func(*api.Server)) *holdsEnv {
 	t.Helper()
 	ctx := t.Context()
 	url := storetest.NewDatabase(t)
@@ -107,6 +111,9 @@ func newHoldsEnv(t *testing.T) *holdsEnv {
 		t.Fatal(err)
 	}
 	srv := &api.Server{Store: s, Tenant: tenant, Schedules: e.sched, DefaultDataPlane: "dp1", Authless: true, Logger: slog.New(slog.DiscardHandler)}
+	for _, o := range opts {
+		o(srv)
+	}
 	h, err := srv.Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -118,21 +125,25 @@ func newHoldsEnv(t *testing.T) *holdsEnv {
 	e.runner = dataplanev1connect.NewDataPlaneServiceClient(http.DefaultClient, ts.URL, auth.WithBearer(token.Secret))
 
 	access := apiv1connect.NewAccessServiceClient(http.DefaultClient, ts.URL)
-	p, err := access.CreatePrincipal(ctx, connect.NewRequest(&apiv1.CreatePrincipalRequest{
-		PrincipalId: "watcher", Principal: &apiv1.Principal{Type: apiv1.PrincipalType_PRINCIPAL_TYPE_SERVICE_ACCOUNT, DisplayName: "watcher"},
-	}))
-	if err != nil {
-		t.Fatal(err)
+	as := func(id string, role apiv1.Role) apiv1connect.PipelineServiceClient {
+		p, err := access.CreatePrincipal(ctx, connect.NewRequest(&apiv1.CreatePrincipalRequest{
+			PrincipalId: id, Principal: &apiv1.Principal{Type: apiv1.PrincipalType_PRINCIPAL_TYPE_SERVICE_ACCOUNT, DisplayName: id},
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := p.Msg.GetPrincipal().GetName()
+		if _, err := access.GrantRole(ctx, connect.NewRequest(&apiv1.GrantRoleRequest{Name: name, Binding: &apiv1.RoleBinding{Role: role}})); err != nil {
+			t.Fatal(err)
+		}
+		key, err := access.CreateKey(ctx, connect.NewRequest(&apiv1.CreateKeyRequest{Parent: name}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return apiv1connect.NewPipelineServiceClient(http.DefaultClient, ts.URL, auth.WithBearer(key.Msg.GetSecret()))
 	}
-	name := p.Msg.GetPrincipal().GetName()
-	if _, err := access.GrantRole(ctx, connect.NewRequest(&apiv1.GrantRoleRequest{Name: name, Binding: &apiv1.RoleBinding{Role: apiv1.Role_ROLE_VIEWER}})); err != nil {
-		t.Fatal(err)
-	}
-	key, err := access.CreateKey(ctx, connect.NewRequest(&apiv1.CreateKeyRequest{Parent: name}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.viewer = apiv1connect.NewPipelineServiceClient(http.DefaultClient, ts.URL, auth.WithBearer(key.Msg.GetSecret()))
+	e.viewer = as("watcher", apiv1.Role_ROLE_VIEWER)
+	e.editor = as("fixer", apiv1.Role_ROLE_EDITOR)
 	return e
 }
 

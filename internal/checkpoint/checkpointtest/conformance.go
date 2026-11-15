@@ -37,6 +37,22 @@ func TestStore(t *testing.T, newStore func(t *testing.T) checkpoint.Store) {
 		}
 	})
 
+	t.Run("GetPrefix", func(t *testing.T) {
+		s := newStore(t)
+		_, err := s.Create(ctx, prefix+"p", []byte("abcdef"))
+		must(t, err)
+		for n, want := range map[int]string{0: "", 3: "abc", 6: "abcdef", 100: "abcdef"} {
+			got, err := s.GetPrefix(ctx, prefix+"p", n)
+			must(t, err)
+			if string(got) != want {
+				t.Fatalf("GetPrefix %d = %q, want %q", n, got, want)
+			}
+		}
+		if _, err := s.GetPrefix(ctx, prefix+"missing", 3); !errors.Is(err, checkpoint.ErrNotFound) {
+			t.Fatalf("GetPrefix missing: err = %v, want ErrNotFound", err)
+		}
+	})
+
 	t.Run("CreateExistingFails", func(t *testing.T) {
 		s := newStore(t)
 		_, err := s.Create(ctx, prefix+"a", []byte("one"))
