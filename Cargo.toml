@@ -34,6 +34,8 @@ datafusion-functions-nested = { version = "55.2.0", default-features = false }
 datafusion-optimizer = { version = "55.2.0", default-features = false }
 datafusion-physical-expr = { version = "55.2.0", default-features = false }
 datafusion-sql = { version = "55.2.0", default-features = false, features = ["unicode_expressions"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "checked-decode"] }
 mimalloc = { version = "0.1.52", default-features = false, features = ["v2"] }
 opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["trace", "grpc-tonic", "http-proto", "reqwest-blocking-client"] }

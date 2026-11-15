@@ -1,9 +1,7 @@
 package sim
 
 import (
-	"cmp"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -283,7 +281,7 @@ func (w *wWorker) assign(msg wMsg) {
 			continue
 		}
 		l := &wLane{w: w, idx: i, kg: spec.kg, outs: map[int]*wConn{}, at: map[uint64][]wSplit{}, began: map[uint64]map[int]int{},
-			snaps: map[uint64][]checkpoint.Snapshot{}, buf: map[uint64]map[string][]row{}, staged: map[uint64][]byte{}}
+			named: map[uint64]wNamed{}, buf: map[uint64]map[string][]row{}, staged: map[uint64][]byte{}}
 		for s, li := range w.lay.splits {
 			if li == i {
 				l.splits = append(l.splits, &wCursor{split: s})
@@ -406,7 +404,8 @@ func (w *wWorker) share(d decision) {
 	for _, l := range w.lanes {
 		s.Splits = append(s.Splits, l.at[e]...)
 		s.Committables[l.idx] = l.staged[e]
-		s.Snapshots = append(s.Snapshots, l.snaps[e]...)
+		s.Sections = append(s.Sections, l.named[e].Sections...)
+		s.Pending = append(s.Pending, l.named[e].Pending...)
 	}
 	ok, err := w.m.call(w.kill, d, func() error {
 		w.m.route(w, wMsg{kind: "share", attempt: w.a.n, gen: w.gen, worker: w.idx, epoch: e, share: s})
@@ -430,7 +429,7 @@ func (w *wWorker) share(d decision) {
 		delete(l.at, e)
 		delete(l.began, e)
 		delete(l.staged, e)
-		delete(l.snaps, e)
+		delete(l.named, e)
 	}
 }
 
@@ -492,22 +491,33 @@ type wLane struct {
 	began      map[uint64]map[int]int
 	readerPast uint64
 	// The keyed operator: its senders' watermarks and its own, the least its
-	// own may be once every sender's is in after a restore, its state and
-	// the groups changed since the last snapshot, the file holding each
-	// group's state, and the senders whose barrier for kcur arrived.
+	// own may be once every sender's is in after a restore, and the senders
+	// whose barrier for kcur arrived.
 	ins        []*wConn
 	senderWM   map[int]int64
 	senderIdle map[int]bool
 	opWM       int64
 	opFloor    int64
-	state      map[int]map[wKey]*wAcc
-	dirty      map[int]bool
-	files      map[int]string
 	kcur       uint64
 	aligned    map[int]bool
 	snapDue    bool
-	snaps      map[uint64][]checkpoint.Snapshot
 	keyedPast  uint64
+	// Its state (workers_state_test.go): in memory, with the key groups
+	// read, nil if every one is, and those with timers due that wait for
+	// their read; the sections it names, and those it restored; its
+	// changes since its last run, and since its last barrier; the runs it
+	// has read or written; a merge waiting for its record; by epoch, what
+	// its share names; and the horizon of the record it restored.
+	st         wState
+	loaded     map[int]bool
+	due        map[int]bool
+	handles    []wSection
+	resHandles []wSection
+	pend, chg  map[string]wStEntry
+	known      map[string]wRun
+	merged     *wMerged
+	named      map[uint64]wNamed
+	restoreH   int64
 	// The writer: rows by epoch and stream, and committables.
 	buf          map[uint64]map[string][]row
 	staged       map[uint64][]byte
@@ -516,56 +526,14 @@ type wLane struct {
 
 func (l *wLane) name() string { return fmt.Sprintf("%s.l%d", l.w.name(), l.idx) }
 
-// restore reads the snapshot files the record names for the lane's key
-// groups, and its splits' positions and watermarks.
+// restore reads the state the record names for the lane's key groups, and
+// its splits' positions and watermarks.
 func (l *wLane) restore(d decision) {
 	w, m := l.w, l.w.m
 	rec := w.restored
-	state, files := map[int]map[wKey]*wAcc{}, map[int]string{}
-	var gone string
-	ok, err := m.call(w.kill, d, func() error {
-		for _, s := range rec.snapshots() {
-			r := *s.KeyGroups
-			if r.Last < l.kg.First || r.First > l.kg.Last {
-				continue
-			}
-			f, err := m.readState(s.URL)
-			if errors.Is(err, checkpoint.ErrNotFound) {
-				gone = s.URL
-			}
-			if err != nil {
-				return err
-			}
-			for g, entries := range f.Groups {
-				if !inRange(r, g) || !inRange(l.kg, g) {
-					continue
-				}
-				files[g], state[g] = s.URL, map[wKey]*wAcc{}
-				for _, e := range entries {
-					a := &wAcc{Sum: e.Sum, Count: e.Count}
-					for _, c := range e.Rows {
-						c.Restored = true
-						a.Rows = append(a.Rows, c)
-					}
-					state[g][wKey{e.Key, e.W}] = a
-				}
-			}
-		}
-		return nil
-	})
-	switch {
-	case !ok:
-		return
-	case gone != "":
-		if h, _, _ := m.readHead(); h.Generation == w.gen {
-			m.problem("restore", "%s: %v names %s, which is gone", l.name(), rec, gone)
-		}
-		w.fail("restore: " + gone + " is gone")
-		return
-	case err != nil:
+	if !l.restoreState(d) {
 		return
 	}
-	l.state, l.files, l.dirty = state, files, map[int]bool{}
 	e := rec.epoch()
 	l.cur, l.kcur = e+1, e+1
 	l.readerPast, l.keyedPast, l.precommitted = e, e, e
@@ -597,10 +565,7 @@ func (l *wLane) restore(d decision) {
 	l.began[l.cur] = l.positions()
 	l.restored = true
 	m.stats["lanes restored"]++
-	m.tracef("%s restored %v: %d key groups with state", l.name(), rec, len(l.state))
-	for _, p := range m.cut(rec, l.kg, l.state) {
-		m.problem("restore", "%s restored %v: %s", l.name(), rec, p)
-	}
+	m.tracef("%s restored %v: %d sections, %d pending", l.name(), rec, len(l.handles), len(l.pend))
 	for _, x := range w.lanes {
 		if !x.restored {
 			return
@@ -624,8 +589,14 @@ func (l *wLane) actions(acts *[]wAction) {
 			add("take from "+c.from.name(), aLocal, func(d decision) { l.take(d, c) })
 		}
 	}
-	if l.snapDue {
+	if l.snapDue && len(l.due) == 0 {
 		add("snapshot", aCall, l.snapshot)
+	}
+	if len(l.needs()) > 0 {
+		add("load", aCall, l.load)
+	}
+	if l.mergeable() {
+		add("merge", aCall, l.merge)
 	}
 	if e := l.precommitted + 1; l.readerPast >= e && l.keyedPast >= e {
 		add("stage", aCall, l.stage)
@@ -826,8 +797,23 @@ func (l *wLane) positions() map[int]int {
 }
 
 // deliverable says whether the lane takes c's next frame: not past the
-// sender's barrier until every sender's has arrived.
+// sender's barrier until every sender's has arrived, and not rows of a key
+// group it hasn't read.
 func (l *wLane) deliverable(c *wConn) bool {
+	if !l.ready(c) {
+		return false
+	}
+	if c.q[0].kind == 'r' && !l.loadedAll() {
+		for _, r := range c.q[0].rows {
+			if !l.isLoaded(keyGroupOf(r.Key)) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (l *wLane) ready(c *wConn) bool {
 	if len(c.q) == 0 || l.snapDue || l.w.m.tick < c.slowUntil {
 		return false
 	}
@@ -924,29 +910,6 @@ func (l *wLane) allAligned() bool {
 	return true
 }
 
-func (l *wLane) fold(r wRow) {
-	m := l.w.m
-	size := m.cfg.size
-	k := wKey{r.Key, windowStart(r.T, size)}
-	if k.W+size <= l.opWM {
-		m.stats["late rows"]++
-		l.emit(l.kcur, "late", row{ID: r.ID, Seq: r.T, Key: r.Key, Value: string(must(json.Marshal(wContrib{ID: r.ID, Gen: r.Gen})))})
-		return
-	}
-	g := keyGroupOf(r.Key)
-	if l.state[g] == nil {
-		l.state[g] = map[wKey]*wAcc{}
-	}
-	a := l.state[g][k]
-	if a == nil {
-		a = &wAcc{}
-		l.state[g][k] = a
-	}
-	a.Sum, a.Count = a.Sum+r.value(), a.Count+1
-	a.Rows = append(a.Rows, wContrib{ID: r.ID, Gen: r.Gen})
-	l.dirty[g] = true
-}
-
 // mark takes a sender's watermark. The operator's is the least of every
 // sender's of the attempt, and closes the windows it passes.
 func (l *wLane) mark(c *wConn, wm int64) {
@@ -994,94 +957,7 @@ func (l *wLane) advance() {
 		return
 	}
 	l.opWM = op
-	size := m.cfg.size
-	for _, g := range slices.Sorted(maps.Keys(l.state)) {
-		keys := slices.SortedFunc(maps.Keys(l.state[g]), func(a, b wKey) int { return cmp.Or(cmp.Compare(a.W, b.W), cmp.Compare(a.Key, b.Key)) })
-		for _, k := range keys {
-			if k.W+size > op {
-				continue
-			}
-			a := l.state[g][k]
-			l.emit(l.kcur, "agg", row{ID: fmt.Sprintf("%d/%s", k.W, k.Key), Seq: k.W, Key: k.Key, Value: string(must(json.Marshal(wEntry{Key: k.Key, W: k.W, Sum: a.Sum, Count: a.Count, Rows: a.Rows})))})
-			delete(l.state[g], k)
-			l.dirty[g] = true
-		}
-	}
-}
-
-// snapshot writes the key groups that changed since the last barrier to a
-// file, and names, for the others, the files that hold them.
-func (l *wLane) snapshot(d decision) {
-	w, m := l.w, l.w.m
-	e := l.kcur
-	f := wStateFile{Generation: w.gen, Epoch: e, Groups: map[int][]wEntry{}}
-	for _, g := range slices.Sorted(maps.Keys(l.dirty)) {
-		for _, k := range slices.SortedFunc(maps.Keys(l.state[g]), func(a, b wKey) int { return cmp.Or(cmp.Compare(a.W, b.W), cmp.Compare(a.Key, b.Key)) }) {
-			a := l.state[g][k]
-			f.Groups[g] = append(f.Groups[g], wEntry{Key: k.Key, W: k.W, Sum: a.Sum, Count: a.Count, Rows: slices.Clone(a.Rows)})
-		}
-	}
-	url := ""
-	if len(f.Groups) > 0 {
-		url = m.stateURL(w.gen, e, l.kg)
-	}
-	if url != "" && d == proceed && m.slowWrites > 0 && m.rng.IntN(4) == 0 {
-		m.slowWrites--
-		at := m.tick + 1 + m.rng.IntN(2*wTimeout)
-		m.later = append(m.later, wLater{at, func() {
-			m.tracef("%s's write of %s lands", l.name(), url)
-			_ = m.putState(url, f)
-		}})
-		m.stats["snapshot writes landing late"]++
-		m.tracef("%s: the write of %s times out, and lands at t%d", l.name(), url, at)
-		return
-	}
-	ok, err := m.call(w.kill, d, func() error {
-		switch {
-		case url == "":
-		case m.cfg.broken == "snapshot-unwaited":
-			// The pod writes it in the background, a tick on, if it's still up.
-			m.later = append(m.later, wLater{m.tick + 1, func() {
-				if w.live() {
-					_ = m.putState(url, f)
-				}
-			}})
-		default:
-			return m.putState(url, f)
-		}
-		return nil
-	})
-	if !ok || err != nil {
-		return
-	}
-	for g := range l.dirty {
-		if len(f.Groups[g]) > 0 {
-			l.files[g] = url
-		} else {
-			delete(l.files, g)
-			delete(l.state, g)
-		}
-	}
-	if url != "" {
-		m.stats["snapshot files"]++
-	}
-	var snaps []checkpoint.Snapshot
-	for g := l.kg.First; g <= l.kg.Last; g++ {
-		u := l.files[g]
-		switch {
-		case u == "":
-		case len(snaps) > 0 && snaps[len(snaps)-1].URL == u && snaps[len(snaps)-1].KeyGroups.Last == g-1:
-			snaps[len(snaps)-1].KeyGroups.Last = g
-		default:
-			snaps = append(snaps, checkpoint.Snapshot{Operator: wOperator, URL: u, KeyGroups: &checkpoint.KeyGroupRange{First: g, Last: g}})
-		}
-	}
-	l.snaps[e] = snaps
-	m.snapped[w.gen] = max(m.snapped[w.gen], e)
-	at := checkpoint.RecordRef{Epoch: e, Generation: w.gen}
-	m.opMarks[at] = append(m.opMarks[at], wOpMark{l.kg, l.opWM})
-	l.dirty, l.aligned, l.snapDue = map[int]bool{}, map[int]bool{}, false
-	l.keyedPast, l.kcur = e, e+1
+	l.fire()
 }
 
 // stage is the writer's pre-commit: it stages the epoch's rows, by
