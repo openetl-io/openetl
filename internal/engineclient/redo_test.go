@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -194,12 +195,14 @@ func (w *txnLane) Recover(_ context.Context, _ uint64, e destination.Epoch, stag
 
 func (w *txnLane) Close(context.Context) error { return nil }
 
-// A keyed stream's epoch, its key groups spread over a worker's writer
-// lanes, committed in part when a worker is lost: the next attempt's engines
-// write each lost lane's part again, the rows of its key groups alone, and
-// every row lands once.
+// A keyed stream's epoch, its key groups spread over the workers' writer
+// lanes through the exchange between their engines, committed in part when
+// a worker is lost: the next attempt's engines write each lost lane's part
+// again, the rows of its key groups alone of every split, whichever worker
+// read it, and every row lands once.
 func TestARedoThroughTheEngine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	var crossed atomic.Bool
 	defer cancel()
 	srv, err := attempt.Listen(ctx, attempt.ListenConfig{Address: "127.0.0.1:0"})
 	if err != nil {
@@ -222,6 +225,15 @@ func TestARedoThroughTheEngine(t *testing.T) {
 		var workers sync.WaitGroup
 		cancels := make([]context.CancelFunc, n)
 		j := job(src())
+		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+			for _, c := range rec.Coverage {
+				readers := map[string]bool{}
+				for _, s := range c.Splits {
+					readers[s.ID] = true
+				}
+				crossed.Store(crossed.Load() || len(readers) > 1)
+			}
+		}
 		j.Workers = &runner.Workers{Count: n, Server: srv, Options: timings, Launch: func(_ context.Context, targets []attempt.Target) error {
 			for _, tg := range targets {
 				wctx, stop := context.WithCancel(ctx)
@@ -262,9 +274,17 @@ func TestARedoThroughTheEngine(t *testing.T) {
 		workers.Wait()
 		return err
 	}
-	src := func() source.Reader { return &chunkSource{splits: 3, chunks: 40, rows: 50} }
+	// Each worker reads a split, so enough chunks that the first attempt
+	// fails mid-read.
+	const chunks = 150
+	src := func() source.Reader { return &chunkSource{splits: 3, chunks: chunks, rows: 50} }
 	if err := run("a1", 3, src); err == nil {
 		t.Fatal("the attempt went on without its worker")
+	}
+	// Each worker reads one split, and its engine's exchange sends rows to
+	// every worker's writer lanes, so a committable holds others' splits.
+	if !crossed.Load() {
+		t.Error("no committable held the rows of splits two workers read")
 	}
 	head, err := log.Latest(ctx)
 	if err != nil {
@@ -288,7 +308,7 @@ func TestARedoThroughTheEngine(t *testing.T) {
 		}
 		seen[id] = true
 	}
-	if want := 3 * 40 * 50; len(seen) != want {
+	if want := 3 * chunks * 50; len(seen) != want {
 		t.Errorf("landed %d rows, want %d", len(seen), want)
 	}
 }

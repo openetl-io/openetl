@@ -1407,14 +1407,7 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 		plan.HeldURL, plan.Holds = j.HeldURL, holdPlans
 	}
 	plan.Lanes, plan.WriterLanes, plan.KeyGroups = j.lanes(), j.writerLanes(), j.keyGroups()
-	for _, s := range j.sinkStreams() {
-		if cols := exchange(s, plan.WriterLanes); cols != nil {
-			if plan.Exchanges == nil {
-				plan.Exchanges = map[string][]string{}
-			}
-			plan.Exchanges[s.Name] = cols
-		}
-	}
+	plan.Exchanges = j.exchanges(plan.WriterLanes)
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots
 	}
@@ -1422,6 +1415,21 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 		plan.Sink = es.EngineSink()
 	}
 	return plan
+}
+
+// exchanges are the columns each of the destination's streams is exchanged
+// by before the writer, on writers writer lanes; nil for none.
+func (j *Job) exchanges(writers int) map[string][]string {
+	var out map[string][]string
+	for _, s := range j.sinkStreams() {
+		if cols := exchange(s, writers); cols != nil {
+			if out == nil {
+				out = map[string][]string{}
+			}
+			out[s.Name] = cols
+		}
+	}
+	return out
 }
 
 // exchange is the columns a stream's rows are exchanged by before the

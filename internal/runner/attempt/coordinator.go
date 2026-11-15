@@ -464,10 +464,17 @@ func checkAssignment(a *attemptv1.Assignment, workers int) error {
 	if a.GetFirstEpoch() == 0 {
 		return errors.New("its first epoch is 0")
 	}
+	x := a.GetExchange()
+	if x != nil && (len(x.GetCertificate()) == 0 || len(x.GetKey()) == 0 || len(x.GetSecret()) == 0) {
+		return errors.New("its exchange lacks a certificate, a key or a secret")
+	}
 	check := func(what string, ls []*attemptv1.Lane) error {
 		for i, l := range ls {
 			if int(l.GetWorker()) >= workers {
 				return fmt.Errorf("%s %d is worker %d's, of %d", what, i, l.GetWorker(), workers)
+			}
+			if x != nil && l.GetKeyGroups() == nil {
+				return fmt.Errorf("%s %d has no key groups in an attempt whose engines exchange rows", what, i)
 			}
 			if kg := l.GetKeyGroups(); kg != nil && (kg.GetFirst() > kg.GetLast() || a.GetKeyGroups() > 0 && kg.GetLast() >= a.GetKeyGroups()) {
 				return fmt.Errorf("%s %d owns key groups %d to %d, of %d", what, i, kg.GetFirst(), kg.GetLast(), a.GetKeyGroups())
@@ -514,6 +521,11 @@ func (c *coordinator) Assign(ctx context.Context, a *attemptv1.Assignment) error
 	}
 	a = proto.CloneOf(a)
 	a.Workers = make([]string, len(c.members))
+	for i, m := range c.members {
+		if a.GetExchange() != nil && m.address == "" {
+			return errs.New(errs.ConfigInvalid, "attempt: the workers' engines exchange rows, and worker %d joined without an address for them", i)
+		}
+	}
 	for i, m := range c.members {
 		a.Workers[i] = m.address
 		m.shared = a.GetFirstEpoch() - 1

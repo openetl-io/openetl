@@ -186,19 +186,29 @@ func (service) Attend(st grpc.BidiStreamingServer[attemptv1.AttendRequest, attem
 // selfSigned makes a certificate for serverName, and returns it with its
 // PEM encoding.
 func selfSigned() (tls.Certificate, []byte, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, key, err := certificate(serverName)
 	if err != nil {
 		return tls.Certificate{}, nil, err
 	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
+}
+
+// certificate makes a self-signed server certificate for name, as DER,
+// and its key.
+func certificate(name string) ([]byte, *ecdsa.PrivateKey, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
 	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
 	if err != nil {
-		return tls.Certificate{}, nil, err
+		return nil, nil, err
 	}
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: serverName},
-		DNSNames:     []string{serverName},
+		Subject:      pkix.Name{CommonName: name},
+		DNSNames:     []string{name},
 		NotBefore:    now.Add(-time.Hour),
 		NotAfter:     now.AddDate(10, 0, 0),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -206,7 +216,61 @@ func selfSigned() (tls.Certificate, []byte, error) {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
-		return tls.Certificate{}, nil, err
+		return nil, nil, err
 	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), nil
+	return der, key, nil
+}
+
+// ExchangeAddresses are where a worker's engine listens for the other
+// workers' engines, and where they reach it: a host alone takes the listen
+// address's port, and none is the listen address. An empty listen address
+// is 127.0.0.1, which only workers on this machine reach. Port 0 takes a
+// free one now, which the engine binds once the attempt is assigned.
+func ExchangeAddresses(ctx context.Context, listen, advertise string) (string, string, error) {
+	if listen == "" {
+		listen = "127.0.0.1:0"
+	}
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", "", errs.Wrap(errs.ConfigInvalid, err, "attempt: where the worker's engine listens for the others")
+	}
+	if port == "0" {
+		l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
+		if err != nil {
+			return "", "", errs.Wrap(errs.Transient, err, "attempt: a port for the worker's engine")
+		}
+		_, port, _ = net.SplitHostPort(l.Addr().String())
+		_ = l.Close()
+		listen = net.JoinHostPort(host, port)
+	}
+	switch _, _, err := net.SplitHostPort(advertise); {
+	case advertise == "":
+		advertise = listen
+	case err != nil:
+		advertise = net.JoinHostPort(advertise, port)
+	}
+	return listen, advertise, nil
+}
+
+// exchangeName is the name in the certificate an attempt's engines share,
+// which they trust by itself, not by its name.
+const exchangeName = "openetl-exchange"
+
+// NewExchange makes what the engines of an attempt's workers share to
+// exchange rows: a certificate, its key and a secret, for one generation
+// of it, as Assignment.exchange carries them.
+func NewExchange() (*attemptv1.Exchange, error) {
+	der, key, err := certificate(exchangeName)
+	if err != nil {
+		return nil, fmt.Errorf("attempt: the exchange's certificate: %w", err)
+	}
+	pkcs8, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("attempt: the exchange's key: %w", err)
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("attempt: the exchange's secret: %w", err)
+	}
+	return &attemptv1.Exchange{Certificate: der, Key: pkcs8, Secret: secret}, nil
 }

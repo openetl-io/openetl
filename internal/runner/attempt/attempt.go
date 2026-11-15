@@ -203,6 +203,9 @@ type Target struct {
 	// Where other workers' engines reach this worker's, as host:port;
 	// empty: nowhere.
 	Exchange string
+	// Where this worker's engine listens for theirs, as host:port; empty:
+	// Exchange.
+	Listen string
 }
 
 func lost(who string, cause error) error {

@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/protobuf/proto"
 
 	attemptv1 "github.com/openetl-io/openetl/gen/openetl/attempt/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
@@ -95,6 +96,11 @@ type fleet struct {
 	writers       int
 	writerWorkers []int
 	order         map[checkpoint.SplitRef]int
+	// Where the workers' engines exchange rows: each writer lane's key
+	// groups, and the primary key of each of the destination's streams
+	// whose rows any worker's lanes send to any writer lane.
+	ranges   []plan.KeyGroupRange
+	crossing map[string][]string
 	// The bytes an epoch reads before the coordinator asks for a barrier,
 	// each worker's share of it its threshold.
 	maxBytes atomic.Int64
@@ -276,6 +282,7 @@ func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 		splits: map[string][]checkpoint.SplitState{}, rows: map[string]uint64{},
 		descs: make([]destination.Staged, f.writers), coverage: make([]checkpoint.Coverage, f.writers), flow: &Ready{},
 	}
+	refs := make([][]*attemptv1.SplitRef, f.writers)
 	for _, s := range shares {
 		for _, p := range s.GetPositions() {
 			sh.splits[p.GetStream()] = append(sh.splits[p.GetStream()], splitStateOf(p))
@@ -289,11 +296,15 @@ func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 				return nil, fmt.Errorf("a committable of writer lane %d, of %d", w, f.writers)
 			}
 			sh.descs[w] = c.GetStaged()
-			sh.coverage[w] = coverageOf(c.GetSplits())
+			refs[w] = c.GetSplits()
 		}
 		if err := mergeReady(sh.flow, s); err != nil {
 			return nil, err
 		}
+	}
+	f.cross(refs)
+	for w, rs := range refs {
+		sh.coverage[w] = coverageOf(rs)
 	}
 	for name, ss := range sh.splits {
 		// Splits an epoch added come after the assignment's, in the order
@@ -304,6 +315,41 @@ func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 	}
 	f.schemas.own(sh.flow, f.job.SQL != nil)
 	return sh, nil
+}
+
+// cross adds to each writer lane's part of an epoch, refs by writer lane,
+// the splits of streams whose rows the workers' engines exchange that
+// another worker read: any lane sends their rows to any writer lane, so a
+// writer lane's committable holds its key groups of every split read.
+func (f *fleet) cross(refs [][]*attemptv1.SplitRef) {
+	if len(f.crossing) == 0 {
+		return
+	}
+	var read []*attemptv1.SplitRef
+	seen := map[checkpoint.SplitRef]bool{}
+	for _, rs := range refs {
+		for _, r := range rs {
+			k := checkpoint.SplitRef{Stream: r.GetStream(), ID: r.GetSplit()}
+			if _, ok := f.crossing[k.Stream]; ok && !seen[k] {
+				seen[k] = true
+				read = append(read, r)
+			}
+		}
+	}
+	for w := range refs {
+		has := map[checkpoint.SplitRef]bool{}
+		for _, r := range refs[w] {
+			has[checkpoint.SplitRef{Stream: r.GetStream(), ID: r.GetSplit()}] = true
+		}
+		for _, r := range read {
+			if has[checkpoint.SplitRef{Stream: r.GetStream(), ID: r.GetSplit()}] {
+				continue
+			}
+			c := proto.CloneOf(r)
+			c.KeyGroups, c.Key = attempt.KeyGroups(f.ranges[w].First, f.ranges[w].Last), f.crossing[r.GetStream()]
+			refs[w] = append(refs[w], c)
+		}
+	}
 }
 
 func (f *fleet) place(stream, id string) int {
@@ -749,10 +795,23 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	if err != nil {
 		return res, err
 	}
-	log.Debug("attempt laid out", "lanes", len(a.GetLanes()), "writer_lanes", len(a.GetWriterLanes()), "splits", layoutString(a))
+	log.Debug("attempt laid out", "lanes", len(a.GetLanes()), "writer_lanes", len(a.GetWriterLanes()), "splits", layoutString(a), "exchange_between_workers", j.meshed(n))
 	f.writers, f.order = len(a.GetWriterLanes()), map[checkpoint.SplitRef]int{}
 	for _, l := range a.GetWriterLanes() {
 		f.writerWorkers = append(f.writerWorkers, int(l.GetWorker()))
+		kg := l.GetKeyGroups()
+		f.ranges = append(f.ranges, plan.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())})
+	}
+	if j.meshed(n) {
+		if a.Exchange, err = attempt.NewExchange(); err != nil {
+			return res, err
+		}
+		f.crossing = map[string][]string{}
+		for _, s := range j.sinkStreams() {
+			if j.keyGrouped(s) {
+				f.crossing[s.Name] = s.PrimaryKey
+			}
+		}
 	}
 	for i, s := range a.GetSplits() {
 		f.order[checkpoint.SplitRef{Stream: s.GetSplit().GetStream(), ID: s.GetSplit().GetSplit().GetId()}] = i
@@ -914,16 +973,22 @@ func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, don
 }
 
 // layout spreads the attempt over n workers. A stream's splits go to the
-// workers emitting least, but those of a stream whose key's rows meet on a
-// writer lane, of an overwrite, whose read one pump ends, and of a stream
-// the attempt doesn't read stay on one worker. Every stream read with CDC
-// goes to one worker, the same for all of them: a source reads their
-// changes from one log, such as a replication slot, which one read holds.
-// Each worker runs as many lanes as the job, no more than its splits unless
-// the source splits running ones, and at least one of the destination's
-// writer lanes. Worker 0 has the first writer lane, which applies schemas
-// and commits.
+// workers emitting least, but those of an overwrite, whose read one pump
+// ends, and of a stream the attempt doesn't read stay on one worker, and so
+// do those of a stream whose key's rows meet on a writer lane through an
+// exchange, unless the workers' engines exchange rows between them. Every
+// stream read with CDC goes to one worker, the same for all of them: a
+// source reads their changes from one log, such as a replication slot,
+// which one read holds; with the exchange between engines, its rows still
+// reach every worker's writer lanes. Each worker runs as many lanes as the
+// job, no more than its splits unless the source splits running ones, and
+// at least one of the destination's writer lanes. Worker 0 has the first
+// writer lane, which applies schemas and commits. Where the engines
+// exchange rows, every lane and writer lane has its key groups in the
+// attempt's layout, and a worker no more lanes than its writer lanes have
+// key groups.
 func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[string]bool, resplits bool) (*attemptv1.Assignment, error) {
+	mesh := j.meshed(n)
 	load := make([]int, n)
 	inParts := make([]bool, n)
 	least := func() int { return slices.Index(load, slices.Min(load)) }
@@ -936,7 +1001,7 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 	changes := -1
 	for _, s := range j.Streams {
 		ss := splits[s.Name]
-		together := done[s.Name] || len(ss) <= 1 || j.oneWorker(s)
+		together := done[s.Name] || len(ss) <= 1 || j.oneWorker(s, mesh)
 		w := least()
 		if s.Read == source.CDC && !done[s.Name] {
 			if changes < 0 {
@@ -956,13 +1021,11 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 		}
 	}
 	lanes := make([]int, n)
-	total := 0
 	for i := range n {
 		lanes[i] = min(j.lanes(), max(load[i], 1))
 		if resplits && inParts[i] {
 			lanes[i] = j.lanes()
 		}
-		total += lanes[i]
 	}
 	writers := make([]int, n)
 	for i := range writers {
@@ -980,6 +1043,20 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 		if !more {
 			break
 		}
+	}
+	var laid plan.Layout
+	if mesh {
+		if err := capLanes(j.keyGroups(), lanes, writers); err != nil {
+			return nil, err
+		}
+		var err error
+		if laid, err = plan.NewWorkerLayout(j.keyGroups(), lanes, writers); err != nil {
+			return nil, errs.Wrap(errs.Internal, err, "runner: the attempt's layout")
+		}
+	}
+	total := 0
+	for _, l := range lanes {
+		total += l
 	}
 	j.Meter.SetLanes(total, 0)
 	a := &attemptv1.Assignment{KeyGroups: ints.Uint32(j.keyGroups())}
@@ -1001,20 +1078,58 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 		next[p.worker]++
 		a.Splits = append(a.Splits, &attemptv1.SplitAssignment{Split: positionOf(p.stream, p.split), Lane: ints.Uint32(lane)})
 	}
+	if mesh {
+		for i, r := range laid.Lanes {
+			a.Lanes[i].KeyGroups = attempt.KeyGroups(r.First, r.Last)
+		}
+		for w, r := range laid.Writers {
+			a.WriterLanes[w].KeyGroups = attempt.KeyGroups(r.First, r.Last)
+		}
+	}
 	return a, nil
+}
+
+// capLanes keeps each worker's lanes within the key groups its writer
+// lanes own in the attempt's layout, one each at least.
+func capLanes(groups int, lanes, writers []int) error {
+	l, err := plan.NewWorkerLayout(groups, writers, writers)
+	if err != nil {
+		return errs.Wrap(errs.Internal, err, "runner: the attempt's writer lanes")
+	}
+	first := 0
+	for i := range lanes {
+		owned := 0
+		for _, r := range l.Writers[first : first+writers[i]] {
+			owned += r.Last - r.First + 1
+		}
+		lanes[i] = min(lanes[i], owned)
+		first += writers[i]
+	}
+	return nil
+}
+
+// meshed says an attempt on n workers has their engines exchange rows
+// between them: the workers' dataflow can, and a destination's stream has
+// an exchange before its writer, which every writer lane of the attempt
+// then takes part in.
+func (j *Job) meshed(n int) bool {
+	if n < 2 || !meshes(j.Dataflow) {
+		return false
+	}
+	return slices.ContainsFunc(j.sinkStreams(), j.keyGrouped)
 }
 
 // oneWorker says one worker reads all of s's splits: a destination's stream
 // it becomes, itself or a SQL transform's output from it, is an overwrite,
-// whose read one pump ends, or has an exchange before its writer, which
-// runs inside one engine. An output's partitioning is its stream's past
-// the statement.
-func (j *Job) oneWorker(s Stream) bool {
+// whose read one pump ends, or has an exchange before its writer and the
+// workers' engines don't exchange rows between them (mesh). An output's
+// partitioning is its stream's past the statement.
+func (j *Job) oneWorker(s Stream, mesh bool) bool {
 	if j.SQL == nil {
-		return s.Mode == destination.Overwrite || j.keyGrouped(s)
+		return s.Mode == destination.Overwrite || !mesh && j.keyGrouped(s)
 	}
 	for _, o := range j.Outputs {
-		if o.From == s.Name && (o.Mode == destination.Overwrite || j.keyGrouped(o)) {
+		if o.From == s.Name && (o.Mode == destination.Overwrite || !mesh && j.keyGrouped(o)) {
 			return true
 		}
 	}
