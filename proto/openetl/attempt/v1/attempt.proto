@@ -225,7 +225,8 @@ message Committable {
   // writer's producer.
   bool local = 3;
   // What it holds: the splits whose rows its writer lane got in the epoch,
-  // in this attempt's layout.
+  // in this attempt's layout. With a SQL transform, a split is named once
+  // for each output whose rows of it the writer lane got.
   repeated SplitRef splits = 4;
 }
 
@@ -241,8 +242,12 @@ message SplitRef {
   bytes from = 4;
   // The rows the split emitted in the epoch, to every writer lane.
   uint64 rows = 5;
-  // With key_groups: the stream's primary key, whose groups they are.
+  // With key_groups: the primary key whose groups they are, the output's
+  // with output, else the stream's.
   repeated string key = 6;
+  // With a SQL transform: the output, written from the stream by a
+  // statement, whose rows of the split these are.
+  string output = 7;
 }
 
 // Commit asks the worker to commit what a record names, at the

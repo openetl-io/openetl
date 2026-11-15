@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -135,44 +136,88 @@ func (j *Job) redoStart(rec, before *checkpoint.Record) *checkpoint.Record {
 
 // redoRead is a covered split read again: from where its part of the epoch
 // began, to where the record has it, and the rows it emitted on the way; 0
-// if not known.
+// if not known. It's read on the redo's lane of the destination's streams
+// whose rows of it the committable holds.
 type redoRead struct {
 	stream, id string
 	from       []byte
 	to         checkpoint.SplitState
 	rows       uint64
+	lane       int
+	// The stream has event time, so its frames name the split.
+	timed bool
 }
 
-// redoReads are what committable c of rec holds, read again: its splits,
-// but those whose part of the epoch was empty, and of each stream the key
-// groups whose rows it holds, where not all. A stream grouped by another
-// key than the pipeline's now can't be read again as the epoch had it.
-func (j *Job) redoReads(rec *checkpoint.Record, i int) ([]redoRead, map[string]checkpoint.KeyGroupRange, error) {
-	var reads []redoRead
-	ranges := map[string]checkpoint.KeyGroupRange{}
+// redoPart is what a committable holds, as a redo reads it again: its
+// splits, each on the lane of the destination's streams it reaches there,
+// and of each of those streams the key groups whose rows it holds, where
+// not all.
+type redoPart struct {
+	reads  []redoRead
+	ranges map[string]checkpoint.KeyGroupRange
+	// By lane, the destination's streams whose rows it keeps: a split whose
+	// lane fed the writer lane gave it all of its rows, and one that only
+	// an exchange brought there only those of the streams exchanged. At
+	// least one lane.
+	keeps []map[string]bool
+}
+
+// redoReads are what committable i of rec holds, read again: its splits,
+// but those whose part of the epoch was empty, and of each of the
+// destination's streams the key groups whose rows it holds, where not all.
+// A stream grouped by another key than the pipeline's now can't be read
+// again as the epoch had it, nor an epoch that other statements of the
+// pipeline's SQL wrote.
+func (j *Job) redoReads(rec *checkpoint.Record, i int) (redoPart, error) {
+	part := redoPart{ranges: map[string]checkpoint.KeyGroupRange{}}
+	if j.SQL != nil && rec.SQLDigest != j.SQL.digest() {
+		// Other statements would write other rows than the other writer
+		// lanes committed of the epoch.
+		return part, errs.New(errs.ConfigInvalid, "runner: epoch %d was written by other statements of transform.sql than the pipeline has now, so writer lane %d's part can't be written again as it was: apply the pipeline with the SQL that wrote the epoch until the epoch is settled, then change it", rec.Epoch, i)
+	}
 	whole := map[string]bool{}
+	// Each split, in the coverage's order, and the destination's streams
+	// it reaches in the committable.
+	var order []checkpoint.CoveredSplit
+	reaches := map[checkpoint.SplitRef]map[string]bool{}
 	for _, cs := range rec.Coverage[i].Splits {
-		k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == cs.Stream })
-		if k < 0 {
-			return nil, nil, errs.New(errs.ConfigInvalid, "runner: epoch %d holds rows of stream %q, which the pipeline no longer reads, so writer lane %d's part can't be written again: read the stream again until the epoch is settled", rec.Epoch, cs.Stream, i)
+		if !slices.ContainsFunc(j.Streams, func(s Stream) bool { return s.Name == cs.Stream }) {
+			return part, errs.New(errs.ConfigInvalid, "runner: epoch %d holds rows of stream %q, which the pipeline no longer reads, so writer lane %d's part can't be written again: read the stream again until the epoch is settled", rec.Epoch, cs.Stream, i)
 		}
-		if key := j.Streams[k].PrimaryKey; cs.KeyGroups != nil && !slices.Equal(cs.Key, key) {
-			return nil, nil, errs.New(errs.ConfigInvalid, "runner: epoch %d split stream %q between writer lanes by its primary key %s, and the pipeline now keys it by %s, so writer lane %d's part can't be written again as it was: apply the pipeline with the key %s until the epoch is settled, then change it",
-				rec.Epoch, cs.Stream, keyName(cs.Key), keyName(key), i, keyName(cs.Key))
+		d, err := j.coveredStream(rec, i, cs)
+		if err != nil {
+			return part, err
 		}
+		if cs.KeyGroups != nil && !slices.Equal(cs.Key, d.PrimaryKey) {
+			what := fmt.Sprintf("stream %q", cs.Stream)
+			if cs.Output != "" {
+				what = fmt.Sprintf("output %q", cs.Output)
+			}
+			return part, errs.New(errs.ConfigInvalid, "runner: epoch %d split %s between writer lanes by its primary key %s, and the pipeline now keys it by %s, so writer lane %d's part can't be written again as it was: apply the pipeline with the key %s until the epoch is settled, then change it",
+				rec.Epoch, what, keyName(cs.Key), keyName(d.PrimaryKey), i, keyName(cs.Key))
+		}
+		r, ranged := part.ranges[d.Name]
+		switch {
+		case cs.KeyGroups == nil && ranged, cs.KeyGroups != nil && (whole[d.Name] || ranged && r != *cs.KeyGroups):
+			return part, errs.New(errs.Internal, "runner: a committable of epoch %d holds rows of %q in more than one range of key groups", rec.Epoch, d.Name)
+		case cs.KeyGroups == nil:
+			whole[d.Name] = true
+		default:
+			part.ranges[d.Name] = *cs.KeyGroups
+		}
+		ref := checkpoint.SplitRef{Stream: cs.Stream, ID: cs.ID}
+		if reaches[ref] == nil {
+			reaches[ref] = map[string]bool{}
+			order = append(order, cs)
+		}
+		reaches[ref][d.Name] = true
+	}
+	lanes := map[string]int{}
+	for _, cs := range order {
 		splits := rec.Splits(cs.Stream)
 		at := slices.IndexFunc(splits, func(sp checkpoint.SplitState) bool { return sp.ID == cs.ID })
 		if at < 0 {
-			return nil, nil, errs.New(errs.CheckpointCorrupt, "runner: epoch %d's record holds rows of %s, and has no position for it", rec.Epoch, splitName(cs.Stream, cs.ID))
-		}
-		r, ranged := ranges[cs.Stream]
-		switch {
-		case cs.KeyGroups == nil && ranged, cs.KeyGroups != nil && (whole[cs.Stream] || ranged && r != *cs.KeyGroups):
-			return nil, nil, errs.New(errs.Internal, "runner: a committable of epoch %d holds rows of stream %q in more than one range of key groups", rec.Epoch, cs.Stream)
-		case cs.KeyGroups == nil:
-			whole[cs.Stream] = true
-		default:
-			ranges[cs.Stream] = *cs.KeyGroups
+			return part, errs.New(errs.CheckpointCorrupt, "runner: epoch %d's record holds rows of %s, and has no position for it", rec.Epoch, splitName(cs.Stream, cs.ID))
 		}
 		to := splits[at]
 		if !to.Complete && bytes.Equal(cs.From, to.State) {
@@ -180,9 +225,40 @@ func (j *Job) redoReads(rec *checkpoint.Record, i int) ([]redoRead, map[string]c
 			// from the record.
 			continue
 		}
-		reads = append(reads, redoRead{stream: cs.Stream, id: cs.ID, from: cs.From, to: to, rows: cs.Rows})
+		keep := reaches[checkpoint.SplitRef{Stream: cs.Stream, ID: cs.ID}]
+		names := strings.Join(slices.Sorted(maps.Keys(keep)), "\x00")
+		lane, ok := lanes[names]
+		if !ok {
+			lane = len(part.keeps)
+			lanes[names] = lane
+			part.keeps = append(part.keeps, keep)
+		}
+		k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == cs.Stream })
+		part.reads = append(part.reads, redoRead{stream: cs.Stream, id: cs.ID, from: cs.From, to: to, rows: cs.Rows, lane: lane, timed: j.Streams[k].EventTime != nil})
 	}
-	return reads, ranges, nil
+	if len(part.keeps) == 0 {
+		part.keeps = []map[string]bool{{}}
+	}
+	return part, nil
+}
+
+// coveredStream is the destination's stream whose rows of a covered split
+// committable i of rec holds: the split's stream, or with a SQL transform
+// the output the coverage names, which a statement must still write from
+// the split's stream.
+func (j *Job) coveredStream(rec *checkpoint.Record, i int, cs checkpoint.CoveredSplit) (Stream, error) {
+	if j.SQL == nil {
+		if cs.Output != "" {
+			return Stream{}, errs.New(errs.ConfigInvalid, "runner: epoch %d holds rows of a SQL transform's output %q, and the pipeline has no SQL transform now, so writer lane %d's part can't be written again: apply the pipeline with the SQL that wrote the epoch until it is settled", rec.Epoch, cs.Output, i)
+		}
+		k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == cs.Stream })
+		return j.Streams[k], nil
+	}
+	k := slices.IndexFunc(j.Outputs, func(o Stream) bool { return o.Name == cs.Output })
+	if k < 0 || j.Outputs[k].From != cs.Stream {
+		return Stream{}, errs.New(errs.ConfigInvalid, "runner: epoch %d holds rows of output %q written from stream %q, which the pipeline's SQL no longer writes, so writer lane %d's part can't be written again: apply the pipeline with the SQL that wrote the epoch until it is settled", rec.Epoch, cs.Output, cs.Stream, i)
+	}
+	return j.Outputs[k], nil
 }
 
 // keyName is a primary key as a message names it.
@@ -196,10 +272,14 @@ func keyName(key []string) string {
 // redo reads committable i's part of rec's epoch again from the source, as
 // rec's coverage names it, and writes and commits it on w as that epoch's:
 // each covered split from where its part began up to its position in rec,
-// and the rows of the key groups the committable holds. The dataflow shapes
-// rows by rec's schemas, and runs as generation gen, which names what it
-// quarantines. Its stateful operators start from the state before, the
-// record before rec, with its watermarks, and write none.
+// and of each of the destination's streams the rows of the key groups the
+// committable holds. Its dataflow has a lane for each set of the
+// destination's streams that the splits reach the committable as, each
+// writing a writer lane of its own, whose rows of other streams it drops.
+// It shapes rows by rec's schemas, and runs as generation gen, which names
+// what it quarantines. Its stateful operators start from the state before,
+// the record before rec, as rec's attempt restored it, with its watermarks,
+// and write none.
 func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, before *checkpoint.Record, i int) error {
 	if j.ownCode() || j.staged() {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
@@ -214,12 +294,13 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 		return errs.New(errs.CheckpointCorrupt, "runner: writer lane %d's part of epoch %d is redone from the state its SQL had at the epoch's start, and the checkpoint before it, %d-g%d, can't be read",
 			i, rec.Epoch, rec.Previous.Epoch, rec.Previous.Generation)
 	}
-	reads, ranges, err := j.redoReads(rec, i)
+	part, err := j.redoReads(rec, i)
 	if err != nil {
 		return err
 	}
 	rj := *j
-	rj.Lanes, rj.writers = 1, 1
+	lanes := len(part.keeps)
+	rj.Lanes, rj.writers = lanes, lanes
 	readStarts, schemas := map[string]int64{}, map[string][]byte{}
 	for name, st := range rec.Streams {
 		readStarts[name] = st.ReadStart
@@ -229,7 +310,8 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	}
 	before = j.redoStart(rec, before)
 	plan := rj.plan(gen, rec.Epoch, before, readStarts, schemas, outputSchemas(rec), nil)
-	plan.KeyGroupRanges, plan.FirstLane = ranges, i
+	// Each lane writes its own writer lane.
+	plan.KeyGroupRanges, plan.FirstLane, plan.Exchanges = part.ranges, i, nil
 	plan.StateReadOnly = true
 	if before != nil {
 		splits := map[string][]checkpoint.SplitState{}
@@ -241,33 +323,46 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	if plan.Sink != (SinkPlan{}) {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
 	}
-	// A reader that tracks reads gets their starts, and the end of each read
-	// the record ended.
-	starts, ends := map[string]time.Time{}, newReadEnds()
-	for _, r := range reads {
+	// A writer that tracks reads gets the starts of those read again, and
+	// the end of each read the record ended.
+	reading, unread, ends := map[string]int64{}, map[string]bool{}, newReadEnds()
+	for _, r := range part.reads {
 		st := rec.Streams[r.stream]
-		starts[r.stream] = time.UnixMicro(st.ReadStart).UTC()
+		reading[r.stream] = st.ReadStart
 		if st.Complete {
 			ends.set(r.stream, rec.Epoch)
 		}
+	}
+	for _, s := range j.Streams {
+		_, read := reading[s.Name]
+		unread[s.Name] = !read
+	}
+	starts, sinkEnds := j.sinkStarts(reading, unread, ends)
+	// What each writer lane keeps is its lane's, as the plan lays them out:
+	// one each.
+	keeps := make([]map[string]bool, lanes)
+	for l, w := range plan.laidOut().WriterOf {
+		keeps[w] = part.keeps[l]
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	toFlow, fromFlow, lane := make(chan Frame, 16), make(chan Frame, 16), make(chan Frame, 16)
 	// The epoch's staging and readiness, which wait here.
 	events := make(chan event, 4)
-	sink := newSinkPump(w, 0, rec.Generation, rec.Epoch, false, nil, j.sinkStreams(), starts, ends, lane, events)
+	sink := newSinkPump(w, 0, rec.Generation, rec.Epoch, false, nil, j.sinkStreams(), starts, sinkEnds, lane, events)
 	g.Go(func() error { return sink.run(gctx) })
 	g.Go(func() error { return j.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
-	g.Go(func() error { return demux(gctx, fromFlow, []chan Frame{lane}) })
+	g.Go(func() error { return joinLanes(gctx, fromFlow, lane, keeps) })
 	g.Go(func() error {
 		defer close(toFlow)
-		if err := j.replay(gctx, rec.Epoch, reads, toFlow); err != nil {
+		if err := j.replay(gctx, rec.Epoch, part.reads, toFlow); err != nil {
 			return err
 		}
-		for _, s := range plan.Streams {
-			if err := send(gctx, toFlow, Frame{Kind: FrameBarrier, Stream: s.Name, Epoch: rec.Epoch}); err != nil {
-				return err
+		for l := range lanes {
+			for _, s := range plan.Streams {
+				if err := send(gctx, toFlow, Frame{Kind: FrameBarrier, Lane: l, Stream: s.Name, Epoch: rec.Epoch}); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -297,6 +392,48 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// joinLanes sends a redo dataflow's frames from its writer lanes, one a
+// lane, on to the one writer that redoes the committable: of each writer
+// lane, the rows of the destination's streams keeps has for it, and each
+// stream's barrier once every writer lane has passed it.
+func joinLanes(ctx context.Context, from <-chan Frame, to chan<- Frame, keeps []map[string]bool) error {
+	defer close(to)
+	crossed := map[string]int{}
+	for {
+		var f Frame
+		select {
+		case fr, ok := <-from:
+			if !ok {
+				return nil
+			}
+			f = fr
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		switch f.Kind {
+		case FrameReady:
+		case FrameBarrier:
+			if crossed[f.Stream]++; crossed[f.Stream] < len(keeps) {
+				continue
+			}
+			delete(crossed, f.Stream)
+		default:
+			if f.Lane < 0 || f.Lane >= len(keeps) {
+				release(f)
+				return fmt.Errorf("runner: the redo's dataflow sent %s to writer lane %d of %d", f.Stream, f.Lane, len(keeps))
+			}
+			if !keeps[f.Lane][f.Stream] {
+				release(f)
+				continue
+			}
+		}
+		f.Lane = 0
+		if err := send(ctx, to, f); err != nil {
+			return err
+		}
+	}
 }
 
 // replay reads each of reads again, as many at once as the job has lanes,
@@ -411,7 +548,10 @@ func (e *redoEmitter) open(mine bool) bool {
 // keeps what the source handed it, and leaves a batch the source's when it
 // fails.
 func (e *redoEmitter) send(f Frame, rows uint64) error {
-	f.Stream = e.read.stream
+	f.Stream, f.Lane = e.read.stream, e.read.lane
+	if e.read.timed {
+		f.Split = e.read.id
+	}
 	select {
 	case e.out <- f:
 	case <-e.ctx.Done():

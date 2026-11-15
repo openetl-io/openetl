@@ -1,6 +1,7 @@
 package engineclient
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,9 +25,11 @@ import (
 )
 
 // chunkSource reads its splits a chunk of rows at a time, with a resume
-// point after each, its state the last chunk read.
+// point after each, its state the last chunk read, and pause between
+// chunks: a millisecond if zero.
 type chunkSource struct {
 	splits, chunks, rows int
+	pause                time.Duration
 }
 
 func (s *chunkSource) Splits(_ context.Context, _ source.ConfiguredStream, _ []source.Split) ([]source.Split, error) {
@@ -62,7 +65,7 @@ func (s *chunkSource) Read(ctx context.Context, req source.ReadRequest, out sour
 				return err
 			}
 			select {
-			case <-time.After(time.Millisecond):
+			case <-time.After(cmp.Or(s.pause, time.Millisecond)):
 			case <-ctx.Done():
 				return ctx.Err()
 			}

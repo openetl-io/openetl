@@ -327,6 +327,9 @@ type Record struct {
 	// What each committable holds, by its index, in the layout of the
 	// attempt that wrote it; nil from an attempt without workers.
 	Coverage []Coverage `json:"coverage,omitempty"`
+	// The SHA-256, in hex, of the SQL transform's statements that wrote the
+	// epoch; empty without one.
+	SQLDigest string `json:"sql_digest,omitempty"`
 	// The files the dataflow staged for a destination that loads them, by
 	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
@@ -375,7 +378,9 @@ type FlinkCheckpoint struct {
 	From string `json:"from,omitempty"`
 }
 
-// Coverage is what one committable holds: rows of its splits.
+// Coverage is what one committable holds: rows of its splits. With a SQL
+// transform, a split is named once for each output whose rows of it the
+// committable holds.
 type Coverage struct {
 	Splits []CoveredSplit `json:"splits,omitempty"`
 }
@@ -384,6 +389,9 @@ type Coverage struct {
 type CoveredSplit struct {
 	Stream string `json:"stream"`
 	ID     string `json:"id,omitempty"`
+	// With a SQL transform: the output, which a statement writes from
+	// Stream, whose rows of the split these are.
+	Output string `json:"output,omitempty"`
 	// Nil: all of them.
 	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
 	// Where the split's part of the epoch began: its state at the barrier
@@ -393,7 +401,8 @@ type CoveredSplit struct {
 	// The rows the split emitted in the epoch, to every writer lane; 0 if
 	// not known.
 	Rows uint64 `json:"rows,omitempty"`
-	// With KeyGroups: the stream's primary key, whose groups they are.
+	// With KeyGroups: the primary key whose groups they are, Output's with
+	// one, else the stream's.
 	Key []string `json:"key,omitempty"`
 }
 

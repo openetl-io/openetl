@@ -28,16 +28,18 @@ import (
 // built, and later work can be checked against it. The transform is
 //
 //	INSERT INTO filtered SELECT id, key, t, v * 3 + 1 AS v FROM events WHERE v % 4 <> 0;
+//	INSERT INTO routed SELECT id, key, t, v * 3 + 1 AS v FROM events WHERE v % 4 <> 0;
 //	INSERT INTO agg SELECT window_start, key, sum(v * 3 + 1), count(*)
 //	FROM events WHERE v % 4 <> 0 GROUP BY tumble(t, size), key;
 //
 // events is read in splits. Each lane runs the row-wise statement on the
 // splits it reads, writes what it keeps, and sends each kept row through the
-// exchange to the lane that owns its key's group. There the keyed operator
-// folds it into its window, closes a window once the operator's watermark,
-// the least of its senders', passes the window's end, and the lane's writer
-// stages what it emits. A row whose window has closed is late, and goes to
-// late as the design quarantines it.
+// exchange to the lane that owns its key's group. There the lane's writer
+// writes it to routed, a row-wise output whose writer needs a key's rows on
+// one writer lane, and the keyed operator folds it into its window, closes
+// a window once the operator's watermark, the least of its senders', passes
+// the window's end, and the lane's writer stages what it emits. A row whose
+// window has closed is late, and goes to late as the design quarantines it.
 //
 // A split's watermark is the latest event time it has read less a delay.
 // In half the seeds rows arrive over time, and a split with nothing to read
@@ -56,8 +58,9 @@ import (
 // and lanes as its seed says.
 //
 // The model's contract, checked on every seed:
-//   - exactly-once: each row the filter keeps lands once in filtered, and the
-//     effect of it and its repeats once: in one row of agg, or in late;
+//   - exactly-once: each row the filter keeps lands once in filtered, and in
+//     routed, and the effect of it and its repeats once: in one row of agg,
+//     or in late;
 //   - aggregate: agg is what a run without failures gives;
 //   - restore: what a lane restores, and every record kept, is with what
 //     committed epochs emitted the fold of the rows before the record's
@@ -74,8 +77,8 @@ import (
 //
 // The destination is stage and apply, or Kafka-like, whose writers may
 // stage or not; the coordinator never commits (workers_commit_test.go). In
-// a third of the seeds the transform is the row-wise statement alone, with
-// no keyed operator and no exchange.
+// a third of the seeds the transform is the first row-wise statement alone,
+// with no exchange, routed or keyed operator.
 //
 // No row is behind its own split's watermark, so none is late, and the
 // output doesn't depend on how the splits interleave.
@@ -101,7 +104,7 @@ const (
 
 var (
 	wHeadKey  = wPipeline + "_checkpoints/HEAD"
-	wStreams  = []string{"agg", "filtered", "late"}
+	wStreams  = []string{"agg", "filtered", "late", "routed"}
 	errRefuse = errors.New("sim: refused")
 	errNoPod  = errors.New("sim: nobody at the address")
 )
@@ -1335,7 +1338,30 @@ func (c *wCoord) takeShare(s *wShare) {
 	for _, x := range cs {
 		rec.Committables = append(rec.Committables, x.c)
 	}
+	c.cross(rec)
 	c.rec, c.phase = rec, coCreate
+}
+
+// cross names in each of the txn destination's committables the splits
+// whose rows reached its lane through the exchange, as the runner's
+// coverage does: every split any lane of the attempt read in the epoch,
+// with where its part began.
+func (c *wCoord) cross(rec *wRecord) {
+	if !c.m.txn() || !c.m.cfg.exchange {
+		return
+	}
+	cs := rec.txnCommittables()
+	for i, x := range cs {
+		var splits, from []int
+		for _, y := range cs {
+			if c.m.cfg.broken == "routed-own-splits" && c.lay.lanes[y.Lane].worker != c.lay.lanes[x.Lane].worker {
+				continue
+			}
+			splits, from = append(splits, y.Splits...), append(from, y.From...)
+		}
+		cs[i].Routed, cs[i].RoutedFrom = splits, from
+		rec.Committables[i] = must(json.Marshal(cs[i]))
+	}
 }
 
 func (c *wCoord) create(d decision) {

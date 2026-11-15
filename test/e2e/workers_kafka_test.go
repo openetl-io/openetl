@@ -191,20 +191,18 @@ func produceRound(t *testing.T, cl *kgo.Client, topic string, from, n int, parti
 	}
 }
 
-// A continuous pipeline from Kafka's partitions into Kafka runs on two
-// workers, each committing its own writer lanes. One worker is lost once
-// every lane has staged an epoch the record names: its lanes' transactions
-// are left open while the other worker's commit. The next attempt finds the
-// committed lanes' markers, and reads the lost lanes' part of the epoch
-// from the source again, up to where it ended, so the topic, read
-// committed, has every record once.
-//
-// The pipeline never ends by itself, and the test writes to every
-// partition every 100 ms until the stop: each partition is a split, each
-// worker reads three of them on two lanes, and each lane writes on its own
-// writer lane, so every 1 s epoch holds rows of every writer lane however
-// fast or slow the runner.
-func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
+// laneLoss is a data plane of its own, with a pod launcher and a runner
+// whose checkpoints go through a laneLossProxy.
+type laneLoss struct {
+	plane    string
+	proxy    *laneLossProxy
+	launcher *runner
+}
+
+// startLaneLoss starts a lane loss's data plane, and returns once its pod
+// launcher has reported: a pipeline applied before then runs on one pod.
+func startLaneLoss(t *testing.T) *laneLoss {
+	t.Helper()
 	plane, token := placementPlane(t)
 	bucket := "lanes-" + strings.TrimPrefix(unique("x"), "x-")
 	c, err := objectstore.S3Client(t.Context(), mustParse(t, "s3://"+bucket+"?anonymous=true&endpoint="+s3Endpoint()))
@@ -220,50 +218,67 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	launcher := startPodLauncher(t, plane, token, "--checkpoints", store)
 	proxy.launcher.Store(launcher)
 	startRunnerWith(t, token, env.apiURL, "--data-plane", plane, "--capacity", "1,2Gi", "--checkpoints", store)
-	// A pipeline applied before the launcher reports runs on one pod.
 	eventually(t, 30*time.Second, "the pod launcher to report", func() bool {
 		n, err := query[int](t, "SELECT count(*) FROM runners WHERE data_plane_id = $1 AND launcher AND attempt = ''", plane)
 		return err == nil && n == 1
 	})
+	return &laneLoss{plane: plane, proxy: proxy, launcher: launcher}
+}
 
-	name := unique("workers-kafka")
-	topic, ns := schema(name), schema(name)+"_out"
-	dst := kafkaDest(t, ns)
-	src := kafkaSource(t, topic)
-	const partitions = 6
-	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), partitions, 1, nil, topic); err != nil {
+// laneLossPartitions are the partitions of a lane loss's topic: each worker
+// reads three of them on two lanes.
+const laneLossPartitions = 6
+
+// docs makes pipeline name's topic, and returns its Source, Destination and
+// Pipeline, continuous on two workers of l's data plane from the topic into
+// Kafka's namespace ns, with transform, a "transform" field, if it's set.
+func (l *laneLoss) docs(t *testing.T, name, topic, ns, transform string) []string {
+	t.Helper()
+	dst, src := kafkaDest(t, ns), kafkaSource(t, topic)
+	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), laneLossPartitions, 1, nil, topic); err != nil {
 		t.Fatal(err)
 	}
-	apply(t,
+	if transform != "" {
+		transform += ", "
+	}
+	t.Cleanup(func() {
+		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
+	})
+	return []string{
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
 			"spec": {"mode": "continuous", "dataPlane": %q, "resources": {"size": "m", "workers": 2},
-			"source": {"ref": %q}, "destination": {"ref": %q}, "delivery": {"commit": {"interval": "1s"}}}}`, name, plane, name, name))
-	t.Cleanup(func() {
-		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
-	})
+			"source": {"ref": %q}, "destination": {"ref": %q}, %s"delivery": {"commit": {"interval": "1s"}}}}`, name, l.plane, name, name, transform),
+	}
+}
 
+// lose writes to every partition of pipeline name's topic every 100 ms
+// until the proxy stops a worker, then kills the worker once the other has
+// had time to commit its lanes. It returns the record HEAD was about to
+// name, and how many records it wrote.
+func (l *laneLoss) lose(t *testing.T, name, topic string) (checkpoint.Record, int) {
+	t.Helper()
 	producer := kafkaClient(t, kgo.RecordPartitioner(kgo.ManualPartitioner()))
-	const round = 10 * partitions
+	const round = 10 * laneLossPartitions
 	produced := 0
 	for deadline := time.Now().Add(3 * time.Minute); ; {
 		select {
-		case <-proxy.done:
+		case <-l.proxy.done:
 		default:
 			if time.Now().After(deadline) {
 				t.Fatalf("no epoch on workers had rows in every writer lane in 3 minutes; attempts on 2 workers: %d", attemptsOnTwoWorkers(t, name))
 			}
-			produceRound(t, producer, topic, produced, round, partitions)
+			produceRound(t, producer, topic, produced, round, laneLossPartitions)
 			produced += round
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		break
 	}
-	proxy.mu.Lock()
-	rec, pid, failed := proxy.rec, proxy.stopped, proxy.failed
-	proxy.mu.Unlock()
+	l.proxy.mu.Lock()
+	rec, pid, failed := l.proxy.rec, l.proxy.stopped, l.proxy.failed
+	l.proxy.mu.Unlock()
 	if failed != nil {
 		t.Fatal(failed)
 	}
@@ -274,14 +289,20 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("stopped worker pod %d before HEAD named epoch %d of generation %d, of %d writer lanes, then killed it; %d records written", pid, rec.Epoch, rec.Generation, len(rec.Committables), produced)
+	return rec, produced
+}
 
-	eventually(t, 3*time.Minute, "every record in the output topic", func() bool { return len(topicRecords(t, ns+"."+topic)) >= produced })
-	checkTopics(t, ns, produced, topic)
+// finish checks that pipeline name ran on two workers in the lost attempt
+// and the one after it, and that some of rec's writer lanes were read again
+// from the source, and not those that committed; then it deletes the
+// pipeline, and waits for its pods to go.
+func (l *laneLoss) finish(t *testing.T, name string, rec checkpoint.Record) {
+	t.Helper()
 	if n := attemptsOnTwoWorkers(t, name); n < 2 {
 		t.Errorf("%d attempts ran on 2 workers, want the lost one and the one after it", n)
 	}
 	redone := map[string]bool{}
-	for _, m := range laneRedoing.FindAllStringSubmatch(launcher.out.String(), -1) {
+	for _, m := range laneRedoing.FindAllStringSubmatch(l.launcher.out.String(), -1) {
 		if m[2] == strconv.FormatUint(rec.Epoch, 10) && m[3] == strconv.FormatUint(rec.Generation, 10) {
 			redone[m[1]] = true
 		}
@@ -292,7 +313,31 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	if _, err := pipelines().DeletePipeline(t.Context(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name})); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 2*time.Minute, "the stream's pods to go", func() bool { return launcher.pods(t) == 0 })
+	eventually(t, 2*time.Minute, "the stream's pods to go", func() bool { return l.launcher.pods(t) == 0 })
+}
+
+// A continuous pipeline from Kafka's partitions into Kafka runs on two
+// workers, each committing its own writer lanes. One worker is lost once
+// every lane has staged an epoch the record names: its lanes' transactions
+// are left open while the other worker's commit. The next attempt finds the
+// committed lanes' markers, and reads the lost lanes' part of the epoch
+// from the source again, up to where it ended, so the topic, read
+// committed, has every record once.
+//
+// The pipeline never ends by itself, and the test writes to every
+// partition every 100 ms until the stop: each partition is a split, each
+// worker reads three of them on two lanes, and each lane writes on its own
+// writer lane, so every 1 s epoch holds rows of every writer lane however
+// fast or slow the runner.
+func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
+	l := startLaneLoss(t)
+	name := unique("workers-kafka")
+	topic, ns := schema(name), schema(name)+"_out"
+	apply(t, l.docs(t, name, topic, ns, "")...)
+	rec, produced := l.lose(t, name, topic)
+	eventually(t, 3*time.Minute, "every record in the output topic", func() bool { return len(topicRecords(t, ns+"."+topic)) >= produced })
+	checkTopics(t, ns, produced, topic)
+	l.finish(t, name, rec)
 }
 
 // attemptsOnTwoWorkers is how many of the pipeline's attempts ran on 2
