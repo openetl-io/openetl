@@ -134,6 +134,25 @@ func (j *Job) redoStart(rec, before *checkpoint.Record) *checkpoint.Record {
 	return j.restart(before, rec.ResetStreams)
 }
 
+// redoFloors are the floors rec's epoch started at, as start is where it
+// started from (redoStart's): the attempt's, where the epoch was its first,
+// and otherwise those its splits had at the barrier before. A read that
+// started in the epoch's attempt had the splits rec has of it, with the
+// watermarks of the read before carried, as an attempt's start gives them.
+func (j *Job) redoFloors(rec, start *checkpoint.Record) map[string]int64 {
+	if start == nil {
+		return nil
+	}
+	splits, _ := j.startSplits(start, doneIn(start, rec.Sync), func(s Stream, _ []source.Split) ([]checkpoint.SplitState, error) {
+		var out []checkpoint.SplitState
+		for _, sp := range rec.Splits(s.Name) {
+			out = append(out, checkpoint.SplitState{ID: sp.ID})
+		}
+		return out, nil
+	})
+	return floors(j.Streams, splits)
+}
+
 // redoRead is a covered split read again: from where its part of the epoch
 // began, to where the record has it, and the rows it emitted on the way; 0
 // if not known. It's read on the redo's lane of the destination's streams
@@ -313,13 +332,7 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	// Each lane writes its own writer lane.
 	plan.KeyGroupRanges, plan.FirstLane, plan.Exchanges = part.ranges, i, nil
 	plan.StateReadOnly = true
-	if before != nil {
-		splits := map[string][]checkpoint.SplitState{}
-		for _, s := range j.Streams {
-			splits[s.Name] = before.Splits(s.Name)
-		}
-		plan.Floors = floors(j.Streams, splits)
-	}
+	plan.Floors = j.redoFloors(rec, before)
 	if plan.Sink != (SinkPlan{}) {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
 	}

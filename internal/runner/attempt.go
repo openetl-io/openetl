@@ -845,8 +845,14 @@ func (j *Job) restart(rec *checkpoint.Record, streams []string) *checkpoint.Reco
 
 // doneStreams are those a retry within the sync doesn't read again.
 func (j *Job) doneStreams(restored *checkpoint.Record) map[string]bool {
+	return doneIn(restored, j.Sync)
+}
+
+// doneIn are the streams that an attempt of sync, restoring restored,
+// doesn't read again: those that completed earlier in the sync.
+func doneIn(restored *checkpoint.Record, sync string) map[string]bool {
 	done := map[string]bool{}
-	if restored != nil && j.Sync != "" && restored.Sync == j.Sync {
+	if restored != nil && sync != "" && restored.Sync == sync {
 		for name, st := range restored.Streams {
 			done[name] = st.Complete
 		}
@@ -1004,6 +1010,26 @@ func flush(ctx context.Context, staging Staging, e destination.Epoch, log *slog.
 // restored splits, and a read that starts gets the source's, from where the
 // last one's ended.
 func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done map[string]bool) (map[string][]checkpoint.SplitState, error) {
+	return j.startSplits(restored, done, func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error) {
+		splits, err := j.newSplits(ctx, s, ended)
+		if err != nil {
+			return nil, err
+		}
+		var out []checkpoint.SplitState
+		for _, sp := range splits {
+			out = append(out, checkpoint.SplitState{ID: sp.ID, State: sp.State})
+		}
+		return out, nil
+	})
+}
+
+// startSplits are each stream's splits as an attempt that restores
+// restored starts: a read it continues, or one that completed earlier in
+// the sync (done), keeps its restored splits, and a read that starts gets
+// those fresh gives it, from where the last read's ended (nil for none),
+// with the last read's watermarks carried. The floors of an attempt's
+// lanes are these splits'.
+func (j *Job) startSplits(restored *checkpoint.Record, done map[string]bool, fresh func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error)) (map[string][]checkpoint.SplitState, error) {
 	out := make(map[string][]checkpoint.SplitState, len(j.Streams))
 	for _, s := range j.Streams {
 		prev, starts := j.startsRead(restored, done, s)
@@ -1018,14 +1044,11 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 		if prev == nil {
 			ended = nil
 		}
-		splits, err := j.newSplits(ctx, s, ended)
+		splits, err := fresh(s, ended)
 		if err != nil {
 			return nil, err
 		}
-		for _, sp := range splits {
-			out[s.Name] = append(out[s.Name], checkpoint.SplitState{ID: sp.ID, State: sp.State})
-		}
-		out[s.Name] = carryMarks(s.EventTime, prev, out[s.Name])
+		out[s.Name] = carryMarks(s.EventTime, prev, splits)
 	}
 	return out, nil
 }
