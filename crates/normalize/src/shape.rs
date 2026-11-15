@@ -777,13 +777,9 @@ impl Shaper {
                 .namer
                 .source_of(schema.field(i).name())
                 .unwrap_or(schema.field(i).name());
-            if let Some(v) = h
-                .values
-                .get(src)
-                .filter(|v| v.data_type() == columns[i].data_type())
-            {
+            if let Some(v) = shown_value(h, src, schema.field(i)) {
                 let mask = BooleanArray::from(mask);
-                columns[i] = arrow_select::zip::zip(&mask, &broadcast(v, n)?, &columns[i])?;
+                columns[i] = arrow_select::zip::zip(&mask, &broadcast(&v, n)?, &columns[i])?;
             }
         }
         let delivered = Arc::new(deliver_schema(&schema, &h.columns));
@@ -797,12 +793,8 @@ impl Shaper {
             let a = &columns[schema.index_of(f.name())?];
             out.push(match by_dest.get(f.name().as_str()) {
                 None => a.clone(),
-                Some((src, _)) => match h
-                    .values
-                    .get(src.as_str())
-                    .filter(|v| v.data_type() == f.data_type())
-                {
-                    Some(v) => broadcast(v, n)?,
+                Some((src, _)) => match shown_value(h, src, f) {
+                    Some(v) => broadcast(&v, n)?,
                     None => new_null_array(f.data_type(), n),
                 },
             });
@@ -1264,6 +1256,15 @@ fn held_value(f: &Field, text: &str) -> Option<ArrayRef> {
     let t = Target::of(f).filter(|t| *t != Target::TypedOnly)?;
     let (a, failed) = coerce::json(f, t, std::iter::once(Some(&v)), Default::default()).ok()?;
     (failed.is_empty() && !a.is_null(0)).then_some(a)
+}
+
+/// What a held cell or column of `src` shows, as a one-row array of `f`'s
+/// type, which may have changed since the holds were set up.
+fn shown_value(h: &Holds, src: &str, f: &Field) -> Option<ArrayRef> {
+    match h.values.get(src) {
+        Some(v) if v.data_type() == f.data_type() => Some(v.clone()),
+        _ => held_value(f, h.config.show(src).value()?),
+    }
 }
 
 fn broadcast(v: &ArrayRef, n: usize) -> Result<ArrayRef, Error> {
@@ -2734,6 +2735,95 @@ mod tests {
                 (4, None),
                 (5, Some(1_234_567_890_150))
             ]
+        );
+    }
+
+    #[test]
+    fn a_column_held_whole_shows_its_held_value_in_every_attempt() {
+        // The destination refused amount's change from int32 to int64, so
+        // amount is held whole at int32. It's NOT NULL, so the pipeline
+        // gives a heldValue.
+        let schema = |t: DataType| {
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("amount", t, true),
+            ]))
+        };
+        let config = |holding: Vec<ColumnHold>| HoldConfig {
+            cells: true,
+            show: Show::Value("0".into()),
+            holding,
+            limits: crate::hold::Limits {
+                not_null: HashSet::from(["amount".to_owned()]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut first = keyed(Policy::AllowAll, None, Some(schema(DataType::Int32)));
+        first
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("amount", Arc::new(arrow_array::Int32Array::from(vec![100]))),
+            ]))
+            .unwrap();
+        let wide = || {
+            typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("amount", Arc::new(Int64Array::from(vec![2_147_483_648]))),
+            ])
+        };
+        let shown = |n: &Shaped| {
+            let a = n.batch.column_by_name("amount").unwrap();
+            assert_eq!(a.data_type(), &DataType::Int32);
+            a.as_primitive::<arrow_array::types::Int32Type>()
+                .iter()
+                .collect::<Vec<_>>()
+        };
+        let refused = ColumnHold {
+            column: "amount".into(),
+            delivered: Some(Field::new("amount", DataType::Int32, true)),
+            reason: "the destination refused it".into(),
+            why: Why::Refused,
+            source: String::new(),
+        };
+        // The attempt the refusal starts, then the next, which restores what
+        // that one recorded.
+        let mut s = keyed(
+            Policy::AllowAll,
+            first.schema(),
+            Some(schema(DataType::Int64)),
+        )
+        .with_holds(config(vec![refused]))
+        .unwrap();
+        assert_eq!(shown(&s.batch(&wide()).unwrap()), [Some(0)]);
+        let mut next = keyed(Policy::AllowAll, s.schema(), Some(schema(DataType::Int64)))
+            .with_holds(config(s.holding()))
+            .unwrap();
+        assert_eq!(shown(&next.batch(&wide()).unwrap()), [Some(0)]);
+    }
+
+    #[test]
+    fn a_held_cell_shows_its_held_value_at_a_widened_type() {
+        // price widens from decimal(10, 2) to decimal(12, 2), which the
+        // destination takes; 1e20 fits neither.
+        let mut first = keyed(Policy::AllowAll, None, Some(decimals(10)));
+        first.batch(&priced(vec![Some("1.5")])).unwrap();
+        let mut s = keyed(Policy::AllowAll, first.schema(), Some(decimals(12)))
+            .with_holds(HoldConfig {
+                cells: true,
+                columns: HashMap::from([("price".into(), Show::Value("0".into()))]),
+                ..Default::default()
+            })
+            .unwrap();
+        let n = s.batch(&priced(vec![Some("1.5"), Some("1e20")])).unwrap();
+        assert_eq!(n.cells.len(), 1, "{:?}", n.cells);
+        let p = n.batch.column_by_name("price").unwrap();
+        assert_eq!(p.data_type(), &DataType::Decimal128(12, 2));
+        assert_eq!(
+            p.as_primitive::<arrow_array::types::Decimal128Type>()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some(150), Some(0)]
         );
     }
 }
