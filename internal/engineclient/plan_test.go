@@ -73,6 +73,12 @@ func TestPlanErrors(t *testing.T) {
 	if len(a.Statements) != 0 || len(a.Errors) != 1 || a.Errors[0].Kind != "later_tier" || a.Errors[0].Tier != 2 || a.Errors[0].At == nil || a.Errors[0].At.Line != 3 {
 		t.Errorf("%+v", a)
 	}
+	keyless := sqlplan.Stream{Name: "events", Changelog: true, Columns: []sqlplan.Column{{Name: "id", Type: "int64"}, {Name: "kind", Type: "utf8"}}}
+	a, err = Plan(t.Context(), opts, sqlplan.Request{SQL: "INSERT INTO clicks\nSELECT id, kind FROM events\nWHERE kind = 'click'", Streams: []sqlplan.Stream{keyless}})
+	if err != nil || len(a.Statements) != 0 || len(a.Errors) != 1 || a.Errors[0].Kind != "changelog_key" || a.Errors[0].At == nil ||
+		*a.Errors[0].At != (sqlplan.Position{Line: 3, Column: 7}) || !strings.Contains(a.Errors[0].Message, "scheduled pipeline") {
+		t.Errorf("a WHERE over a changelog without a key: %+v, %v", a, err)
+	}
 	a, err = Plan(t.Context(), opts, sqlplan.Request{SQL: "INSERT INTO x SELECT 1 AS one FROM missing"})
 	if err != nil || len(a.Errors) != 1 || a.Errors[0].Kind != "name" {
 		t.Errorf("no streams: %+v, %v", a, err)

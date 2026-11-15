@@ -43,6 +43,11 @@ type rangeSource struct {
 	// Set: a split that has read its rows keeps its read open until it's
 	// cancelled, instead of completing.
 	open bool
+	// Set: a read from a state pages a row short first, so that reading
+	// again misses the resume points of the first read.
+	shift bool
+	// Set: a split's read stops at its Until, and completes there.
+	until bool
 	// What the worker acknowledged, and read, and each split's read as
 	// "split@state" where it began.
 	mu    sync.Mutex
@@ -77,9 +82,20 @@ func (s *rangeSource) Read(ctx context.Context, req source.ReadRequest, out sour
 			}
 			next = last + 1
 		}
+		if s.until && sp.Until != nil {
+			u, err := strconv.Atoi(string(sp.Until))
+			if err != nil {
+				return err
+			}
+			end = min(end, u)
+		}
 		for first := true; next <= end; first = false {
+			page := s.page
+			if first && s.shift && sp.State != nil {
+				page = max(page-1, 1)
+			}
 			var rows []json.RawMessage
-			for ; len(rows) < s.page && next <= end; next++ {
+			for ; len(rows) < page && next <= end; next++ {
 				rows = append(rows, json.RawMessage(fmt.Sprintf(`{"id":%d}`, next)))
 			}
 			if err := e.Rows(rows); err != nil {

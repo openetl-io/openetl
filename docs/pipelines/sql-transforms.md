@@ -285,12 +285,30 @@ Its plan, trimmed to the `transform.sql` section and the notes:
 
 On a changelog, the engine does this with each row:
 
-- **Deletes pass.** A delete is written as a delete of its key.
-- **A row that leaves the `WHERE` is deleted.** An insert or update that fails the `WHERE` becomes a delete of its key. When order 1001 is closed, `open_orders` loses it. With `destination.deletes: soft`, the default, the row stays with `_openetl_deleted` true; with `hard`, the destination removes it.
+- **Deletes pass.** The `WHERE` does not apply to a delete. The engine runs the statement's `SELECT` list on the values that the source sent with the delete. Some sources send only the key. A column that the source did not send is null before the `SELECT` list runs, so a constant such as `1 AS version` still gives its value. If the statement cannot evaluate a delete, or its values do not fit the output's column types, the engine writes the delete with its key alone and the other columns null. If the output holds cells, the engine holds a value that does not fit instead, and writes the delete with its other values.
+- **A row that leaves the `WHERE` is deleted.** An insert or update that fails the `WHERE` becomes a delete of its key, with the other columns null. When order 1001 is closed, `open_orders` loses it. With `destination.deletes: soft`, the default, the row stays with `_openetl_deleted` true; with `hard`, the destination removes it.
 - **The key is kept.** A statement must pass the primary key through, renamed or not. A statement that drops or changes it is refused, and so is `unnest`.
+- **A stream without a primary key has no `WHERE`.** A row that fails the `WHERE` has no key for the delete. Without a `WHERE`, each row passes with its operation. A `WHERE` that planning simplifies to true, such as `WHERE TRUE`, leaves no filter, and the plan accepts it.
 - **An update that does not send a column keeps the destination's value.** Some sources leave a column out of an update when its value did not change, as Postgres does with large values. An output column that depends only on such columns is written unchanged.
 - **Such an update can enter the `WHERE` without the value.** If the row failed the `WHERE` before, the destination does not have the column's current value. The note above says so. To avoid it, have the source send whole rows on update, as its connector's documentation describes. You can also read such tables in a scheduled pipeline with `full_refresh` or `incremental`, which read whole rows, or accept it.
 - **Some updates cannot be evaluated.** If the `WHERE` reads a column that the update did not send, or an output column depends on a column it sent and one it did not, the engine quarantines the update.
+
+If a stream read with `cdc` has no primary key, the plan refuses a `WHERE` that filters it. For a stream `log` without a primary key, this statement is refused:
+
+```sql
+INSERT INTO clicks
+SELECT id, kind FROM log
+WHERE kind = 'click';
+```
+
+The plan has this problem:
+
+```text
+  problems:
+    transform.sql:3:7: log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+```
+
+To filter such a stream, give its table a primary key at the source. You can also read the stream with `full_refresh` or `incremental` in a scheduled pipeline.
 
 The [Pipeline reference](../reference/specs/pipeline.md#statements-that-run) has the details.
 

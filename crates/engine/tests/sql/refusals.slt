@@ -295,6 +295,20 @@ SELECT id, unnest(tags) AS tag FROM log
 changelog_key 1:12 log is a changelog, so what reads it gives one row for each of its rows; this multiplies the rows of it
 
 
+# A changelog without a key has no key to delete a row that fails a WHERE
+# by, so WHERE is refused, where it's written.
+query error
+SELECT id, tags FROM log WHERE id > 0
+----
+changelog_key 1:32 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+
+statement error
+CREATE VIEW recent AS SELECT id FROM log WHERE id IS NOT NULL
+----
+changelog_key 1:48 log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+
 query error
 SELECT tenant, name FROM cdc2
 ----

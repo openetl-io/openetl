@@ -11,7 +11,7 @@
 //! Parquet or staged sink, which stages each epoch and reports it in
 //! EpochReady.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -223,15 +223,23 @@ fn owned_shaper(
     holding: Option<&[ColumnHold]>,
 ) -> Result<Shaper, JobError> {
     let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
-    let columns = |s: Option<&SchemaRef>| {
-        s.map_or(0, |s| {
-            s.fields()
-                .iter()
-                .filter(|f| !f.name().starts_with("_openetl_"))
-                .count()
-        })
-    };
-    let added = columns(schema.as_ref()).saturating_sub(columns(plan.restored[s].as_ref()));
+    // The columns the stream added since it was restored that the
+    // destination takes: not those held whole that it has no field of, as a
+    // column added while held isn't counted where it's added.
+    let restored = plan.restored[s].as_ref();
+    let added = schema.as_ref().map_or(0, |sch| {
+        sch.fields()
+            .iter()
+            .filter(|f| {
+                !f.name().starts_with("_openetl_")
+                    && restored.is_none_or(|r| r.field_with_name(f.name()).is_err())
+                    && !holding.is_some_and(|h| {
+                        h.iter()
+                            .any(|c| &c.column == f.name() && c.delivered.is_empty())
+                    })
+            })
+            .count()
+    });
     let mut shaper = shaper(plan, s, schema)?;
     if let Some(h) = &plan.holds[s] {
         let mut config = h.clone();
@@ -536,8 +544,9 @@ impl InputOwner {
     }
 }
 
-/// `old` with what `new` adds to it: its new columns, and its types that
-/// hold `old`'s; None if it adds nothing.
+/// `old` with what `new` adds to it: its new columns, its types that hold
+/// `old`'s, and its schema metadata, the columns that held integers past
+/// ±2^53 as the union of both's; None if it adds nothing.
 fn joined(old: &SchemaRef, new: &SchemaRef) -> Option<SchemaRef> {
     let mut fields: Vec<arrow_schema::Field> = Vec::with_capacity(old.fields().len());
     let mut changed = false;
@@ -556,7 +565,34 @@ fn joined(old: &SchemaRef, new: &SchemaRef) -> Option<SchemaRef> {
             changed = true;
         }
     }
-    changed.then(|| Arc::new(arrow_schema::Schema::new(fields)))
+    let mut metadata = old.metadata().clone();
+    for (k, v) in new.metadata() {
+        match metadata.get(k) {
+            None => {
+                metadata.insert(k.clone(), v.clone());
+                changed = true;
+            }
+            Some(was) if k == openetl_normalize::BIG_INTS_KEY && was != v => {
+                let names =
+                    |s: &str| serde_json::from_str::<BTreeSet<String>>(s).unwrap_or_default();
+                let (was, both) = (
+                    names(was),
+                    names(was)
+                        .union(&names(v))
+                        .cloned()
+                        .collect::<BTreeSet<_>>(),
+                );
+                if both != was
+                    && let Ok(v) = serde_json::to_string(&both)
+                {
+                    metadata.insert(k.clone(), v);
+                    changed = true;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    changed.then(|| Arc::new(arrow_schema::Schema::new_with_metadata(fields, metadata)))
 }
 
 /// What every lane and writer lane of a job share.
@@ -1365,7 +1401,7 @@ async fn transform(
             .collect();
         hold(plan, name, &failed, record, &mut ls.quarantined, oc)?;
         let planned = stage.planned();
-        let n = ls
+        let mut n = ls
             .shape_own(
                 plan,
                 &flow.owners[s],
@@ -1382,8 +1418,25 @@ async fn transform(
                 },
             )
             .await?;
-        hold(plan, name, &n.rejected, record, &mut ls.quarantined, oc)?;
+        // A delete whose values don't fit the output goes again with its
+        // key alone, after the batch: its seq orders it among its key's.
+        // Where the schema is remote, the owner may have a newer version by
+        // then, which shapes it.
+        let (rejected, keys) = stage.deletes_by_key(&out, std::mem::take(&mut n.rejected))?;
+        hold(plan, name, &rejected, record, &mut ls.quarantined, oc)?;
         shaped(lane, ls, n, oc).await?;
+        if let Some(keys) = keys {
+            let n = ls
+                .shape_own(
+                    plan,
+                    &flow.owners[s],
+                    |_| Ok(copy(&keys)),
+                    |_, e| shape_error(name, e),
+                )
+                .await?;
+            hold(plan, name, &n.rejected, record, &mut ls.quarantined, oc)?;
+            shaped(lane, ls, n, oc).await?;
+        }
     }
     Ok(())
 }
@@ -2287,6 +2340,50 @@ mod tests {
         }
     }
 
+    /// As start_with; where the request's schemas are remote, with an owner
+    /// outside the engine that takes each proposal made from the version it
+    /// holds, and answers one from an older version with that version.
+    fn start_owned(req: openetl_proto::engine::v1::StartJobRequest) -> Harness {
+        let remote = req.remote_schemas;
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        if remote {
+            let owner = plan.remote.clone().unwrap();
+            let mut proposals = owner.take_proposals().unwrap();
+            tokio::spawn(async move {
+                let mut held: HashMap<(bool, u32), openetl_proto::engine::v1::SchemasRequest> =
+                    HashMap::new();
+                while let Some(Ok(p)) = proposals.recv().await {
+                    let v = held.entry((p.input, p.stream)).or_default();
+                    if p.base == v.version {
+                        *v = openetl_proto::engine::v1::SchemasRequest {
+                            stream: p.stream,
+                            input: p.input,
+                            version: p.base + 1,
+                            arrow_schema: p.arrow_schema,
+                            holding: p.holding,
+                        };
+                    }
+                    owner.update(v).unwrap();
+                }
+            });
+        }
+        let (to_engine, engine_in) = duplex(1 << 16);
+        let (engine_out, from_engine) = duplex(1 << 16);
+        let (tx, events) = mpsc::channel(64);
+        let job = tokio::spawn(run(
+            plan,
+            vec![BufReader::new(engine_in)],
+            vec![engine_out],
+            tx,
+        ));
+        Harness {
+            to_engine,
+            from_engine: BufReader::new(from_engine),
+            events,
+            job,
+        }
+    }
+
     async fn put(w: &mut DuplexStream, kind: FrameKind, stream: u32, payload: Vec<u8>) {
         frame::write(w, kind, stream, &payload).await.unwrap();
     }
@@ -2733,6 +2830,76 @@ mod tests {
                 }
             }
         }
+    }
+
+    // A shaper rebuilt from the remote owner's version counts against the
+    // destination's room only the columns it takes, as the shaper that
+    // added them did: not a new column held whole.
+    #[test]
+    fn a_followed_shaper_counts_only_the_columns_the_destination_takes() {
+        use openetl_proto::engine::v1::{ColumnHold as Hold, HoldCause, HoldPlan, hold_cause};
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = request(&["a"]);
+        req.streams[0].primary_key = vec!["id".into()];
+        req.streams[0].holds = Some(HoldPlan {
+            holding: vec![Hold {
+                column: "x".into(),
+                reason: "the destination refused it".into(),
+                cause: Some(HoldCause {
+                    kind: hold_cause::Kind::Refused as i32,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            limits: Some(openetl_proto::connector::v1::TableLimits {
+                max_columns: 3,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        req.held_url = format!("file://{}", dir.path().display());
+        let plan = Plan::from_request(req).unwrap();
+        let held = |sh: &Shaper, c: &str| sh.holding().iter().any(|h| h.column == c);
+        // Here x is held as it arrives, and takes none of the table's room.
+        let mut here = owned_shaper(&plan, 0, None, None).unwrap();
+        here.rows([br#"{"id": 1, "a": 1, "x": 1}"#.as_slice()])
+            .unwrap();
+        assert!(held(&here, "x"));
+        // An engine following it has room for y too.
+        let holding = column_holds(&here).unwrap();
+        let mut there = owned_shaper(&plan, 0, here.schema(), Some(&holding)).unwrap();
+        there
+            .rows([br#"{"id": 2, "a": 2, "x": 2, "y": 2}"#.as_slice()])
+            .unwrap();
+        assert!(!held(&there, "y"), "{:?}", there.holding());
+    }
+
+    // A join of a transform's input schemas keeps what either knew of the
+    // columns that held integers past ±2^53, which alone is a change.
+    #[test]
+    fn a_join_keeps_what_both_knew_of_big_integers() {
+        let schema = |big: &[&str]| -> SchemaRef {
+            let mut md = HashMap::new();
+            if !big.is_empty() {
+                md.insert(
+                    openetl_normalize::BIG_INTS_KEY.to_owned(),
+                    serde_json::to_string(big).unwrap(),
+                );
+            }
+            let fields = vec![
+                arrow_schema::Field::new("x", DataType::Int64, true),
+                arrow_schema::Field::new("y", DataType::Int64, true),
+            ];
+            Arc::new(arrow_schema::Schema::new_with_metadata(fields, md))
+        };
+        let big = |s: &SchemaRef| s.metadata().get(openetl_normalize::BIG_INTS_KEY).cloned();
+        assert!(joined(&schema(&[]), &schema(&[])).is_none());
+        assert!(joined(&schema(&["x"]), &schema(&[])).is_none());
+        assert!(joined(&schema(&["x"]), &schema(&["x"])).is_none());
+        let got = joined(&schema(&[]), &schema(&["x"])).unwrap();
+        assert_eq!(big(&got).as_deref(), Some(r#"["x"]"#));
+        let got = joined(&schema(&["y"]), &schema(&["x"])).unwrap();
+        assert_eq!(big(&got).as_deref(), Some(r#"["x","y"]"#));
     }
 
     #[test]
@@ -3994,8 +4161,8 @@ mod tests {
         ipc::encode_batch(&b).unwrap()
     }
 
-    /// On a changelog, deletes pass with their key, and an update the
-    /// filter drops becomes a delete of its key.
+    /// On a changelog, deletes pass projected, and an update the filter
+    /// drops becomes a delete of its key alone.
     #[tokio::test]
     async fn a_changelogs_deletes_pass_and_filtered_rows_become_deletes() {
         let mut req = sql_request(
@@ -4013,7 +4180,7 @@ mod tests {
             changelog_batch(&[
                 (1, Some("new"), "insert"),
                 (2, Some("void"), "update"),
-                (3, None, "delete"),
+                (3, Some("gone"), "delete"),
             ]),
         )
         .await;
@@ -4036,13 +4203,231 @@ mod tests {
         );
         assert_eq!(
             column_strings(&a[0], "email"),
-            [Some("NEW".into()), None, None]
+            [Some("NEW".into()), None, Some("GONE".into())]
         );
         assert_eq!(
             column_ints(&a[0], "_openetl_seq"),
             [Some(0), Some(1), Some(2)]
         );
         assert!(a[0].column_by_name("_openetl_unchanged").is_some());
+    }
+
+    /// A changelog's batch of id and n, with ops and seqs from `seq` on.
+    fn changelog_n(ids: &[i64], n: arrow_array::ArrayRef, ops: &[&str], seq: i64) -> Vec<u8> {
+        use arrow_array::{Int64Array, StringArray};
+        let control = |kind: &str| {
+            HashMap::from([(openetl_normalize::CONTROL_KEY.to_owned(), kind.to_owned())])
+        };
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int64, false),
+            arrow_schema::Field::new("n", n.data_type().clone(), true),
+            arrow_schema::Field::new("op", DataType::Utf8, false).with_metadata(control("op")),
+            arrow_schema::Field::new("seq", DataType::Int64, false).with_metadata(control("seq")),
+        ]));
+        let rows = ops.len();
+        let b = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(ids.to_vec())),
+                n,
+                Arc::new(StringArray::from(ops.to_vec())),
+                Arc::new(Int64Array::from_iter_values(
+                    (0..rows).map(|i| seq + i64::try_from(i).unwrap()),
+                )),
+            ],
+        )
+        .unwrap();
+        ipc::encode_batch(&b).unwrap()
+    }
+
+    /// Under ignore_new, a statement over a changelog, then an insert, and
+    /// an update and a delete whose n doesn't fit the type the insert gave
+    /// the output.
+    async fn a_delete_whose_n_doesnt_fit(
+        holds: bool,
+        remote: bool,
+        dir: &std::path::Path,
+    ) -> (Vec<frame::Frame>, Vec<EpochReady>) {
+        use arrow_array::{Float64Array, Int64Array};
+        let mut req = sql_request("INSERT INTO a SELECT * FROM a", &[("a", &["id"])]);
+        req.streams[0].changelog = true;
+        req.outputs[0].changelog = true;
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::IgnoreNew as i32;
+        req.quarantine_url = format!("file://{}/q", dir.display());
+        if holds {
+            req.held_url = format!("file://{}/held", dir.display());
+            req.outputs[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+                cells: true,
+                ..Default::default()
+            });
+        }
+        req.remote_schemas = remote;
+        let mut h = start_owned(req);
+        let w = &mut h.to_engine;
+        let ints = Arc::new(Int64Array::from(vec![1]));
+        put(
+            w,
+            FrameKind::Batch,
+            0,
+            changelog_n(&[1], ints, &["insert"], 0),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        let floats = Arc::new(Float64Array::from(vec![2.5, 2.5]));
+        put(
+            w,
+            FrameKind::Batch,
+            0,
+            changelog_n(&[1, 1], floats, &["update", "delete"], 1),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(w, FrameKind::Barrier, 1, barrier(2)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        put(w, FrameKind::EndOfStream, 1, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        h.job.await.unwrap().unwrap();
+        (frames, ready(&mut h.events).await)
+    }
+
+    /// With cell holds, the delete passes with n held, as a passed-through
+    /// stream's would.
+    #[tokio::test]
+    async fn a_delete_whose_values_dont_fit_the_output_passes_with_them_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let (frames, ready) = a_delete_whose_n_doesnt_fit(true, false, dir.path()).await;
+        let a = batches(&frames, 0);
+        let ops: Vec<Option<String>> = a
+            .iter()
+            .flat_map(|b| column_strings(b, "_openetl_op"))
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                Some("insert".into()),
+                Some("update".into()),
+                Some("delete".into())
+            ]
+        );
+        assert!(ready[1].quarantine.is_empty(), "{:?}", ready[1].quarantine);
+        assert_eq!(ready[1].holds["a"].cells["n"].cells, 2);
+    }
+
+    /// Without holds, a delete whose projected values don't fit the
+    /// output's established types passes as a delete of its key, where an
+    /// update is quarantined; where the output's schema has an owner outside
+    /// the engine too.
+    #[tokio::test]
+    async fn a_delete_whose_values_dont_fit_the_output_passes_with_its_key() {
+        for remote in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (frames, ready) = a_delete_whose_n_doesnt_fit(false, remote, dir.path()).await;
+            let a = batches(&frames, 0);
+            let ops: Vec<Option<String>> = a
+                .iter()
+                .flat_map(|b| column_strings(b, "_openetl_op"))
+                .collect();
+            assert_eq!(
+                ops,
+                [Some("insert".into()), Some("delete".into())],
+                "remote {remote}"
+            );
+            let last = a.last().unwrap();
+            assert_eq!(column_ints(last, "id"), [Some(1)]);
+            assert_eq!(column_ints(last, "n"), [None]);
+            assert_eq!(column_ints(last, "_openetl_seq"), [Some(2)]);
+            let q = &ready[1].quarantine;
+            assert_eq!((q.len(), q[0].rows), (1, 1), "remote {remote}: {q:?}");
+        }
+    }
+
+    /// Across writer lanes, a delete that goes again with its key alone
+    /// reaches the writer lane its key's other rows do.
+    #[tokio::test]
+    async fn a_delete_by_its_key_alone_meets_its_keys_rows_on_one_writer_lane() {
+        use arrow_array::{Float64Array, Int64Array};
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = sql_request("INSERT INTO a SELECT * FROM a", &[("a", &["id"])]);
+        req.streams[0].changelog = true;
+        req.outputs[0].changelog = true;
+        req.outputs[0].exchange = crate::plan::tests::exchange_by(&["id"]);
+        // Restored, so n is Int64 before any barrier seals it.
+        let restored = arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int64, true),
+            arrow_schema::Field::new("email", DataType::Utf8, true),
+            arrow_schema::Field::new("n", DataType::Int64, true),
+        ]);
+        req.outputs[0].restored_schema = ipc::encode_schema(&Arc::new(restored)).unwrap();
+        req.schema_policy = openetl_proto::engine::v1::SchemaPolicy::IgnoreNew as i32;
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        let (inbound, outbound) = (req.edges[0].clone(), req.edges[1].clone());
+        req.lanes = 2;
+        req.writer_lanes = 2;
+        req.edges.clear();
+        for (l, edge) in [(0, &inbound), (1, &inbound), (0, &outbound), (1, &outbound)] {
+            let mut e = edge.clone();
+            e.id = format!("{}-{l}", e.id);
+            e.lane = l;
+            req.edges.push(e);
+        }
+        let mut h = start_lanes(req);
+        let ids: Vec<i64> = (1..=40).collect();
+        let w = &mut h.ins[0];
+        let ints = Arc::new(Int64Array::from(vec![1; ids.len()]));
+        put(
+            w,
+            FrameKind::Batch,
+            0,
+            changelog_n(&ids, ints, &["insert"; 40], 0),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Barrier, 1, barrier(1)).await;
+        let floats = Arc::new(Float64Array::from(vec![2.5; ids.len()]));
+        put(
+            w,
+            FrameKind::Batch,
+            0,
+            changelog_n(&ids, floats, &["delete"; 40], 40),
+        )
+        .await;
+        put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        put(w, FrameKind::Barrier, 1, barrier(2)).await;
+        let idle = &mut h.ins[1];
+        for e in 1..=2 {
+            put(idle, FrameKind::Barrier, 0, barrier(e)).await;
+            put(idle, FrameKind::Barrier, 1, barrier(e)).await;
+        }
+        h.end_all(2).await;
+        let (out, ready) = h.finish().await;
+        let mut inserted = 0;
+        for frames in &out {
+            let mut by_op: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+            for f in frames
+                .iter()
+                .filter(|f| f.kind == FrameKind::Batch && f.stream == 0)
+            {
+                let b = ipc::decode_batch(f.payload.clone()).unwrap();
+                let ops = column_strings(&b, "_openetl_op");
+                if ops.iter().any(|o| o.as_deref() == Some("delete")) {
+                    assert_eq!(column_ints(&b, "n"), vec![None; b.num_rows()]);
+                }
+                for (op, id) in ops.into_iter().zip(column_ints(&b, "id")) {
+                    by_op.entry(op.unwrap()).or_default().push(id.unwrap());
+                }
+            }
+            let mut ins = by_op.remove("insert").unwrap_or_default();
+            let mut del = by_op.remove("delete").unwrap_or_default();
+            ins.sort();
+            del.sort();
+            assert!(!ins.is_empty(), "each writer lane gets some keys");
+            assert_eq!(ins, del, "a key's delete reaches its insert's writer lane");
+            inserted += ins.len();
+        }
+        assert_eq!(inserted, ids.len());
+        assert!(ready.iter().all(|r| r.quarantine.is_empty()));
     }
 
     /// A row a statement can't evaluate is quarantined under the output's

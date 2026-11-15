@@ -104,8 +104,10 @@ A changelog stream is one whose rows are inserts, updates and deletes of their k
 
 - Keeps the stream's primary key, unchanged and renamed or not. A statement that drops or changes a key column is refused.
 - Does not use `unnest`.
-- Passes each delete as a delete of its key.
-- Turns an insert or update that fails its `WHERE` into a delete of its key.
+- Has no `WHERE` if the stream has no primary key. Such a statement is refused, unless planning simplifies its `WHERE` to true, as with `WHERE TRUE`, which leaves no filter.
+- Passes each delete without its `WHERE`. The statement's `SELECT` list runs on the values the source sent with the delete, and gives the delete's columns. A column that the source did not send is null before the `SELECT` list runs, so an expression such as `1 AS version` still gives its value.
+- Passes a delete with its key alone if the statement cannot evaluate the delete, or if the values it gives do not fit the output's column types. The delete's other columns are then null. A delete is not quarantined. If the output holds cells, a value that does not fit is held instead, as it is on a stream that passes through, and the delete passes with its other values.
+- Turns an insert or update that fails its `WHERE` into a delete of its key alone. The delete's other columns are null.
 
 The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the destination applies these deletes, and what happens to an update that does not send every column.
 
@@ -524,6 +526,7 @@ A view of one of these kinds is refused too, where the view is defined.
 | A statement that drops a key column | `cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it` |
 | A statement that changes a key column, such as `id + 1` or a cast | `… keeps its key (id) unchanged, renamed or not; this changes it` |
 | `unnest` | `… keeps its key (id) unchanged, renamed or not; this multiplies the rows of it` |
+| `WHERE` on a changelog stream without a primary key | `log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline` |
 
 ### When rows run
 

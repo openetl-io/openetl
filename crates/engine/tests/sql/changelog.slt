@@ -1,10 +1,11 @@
 # A changelog's rows are inserts, updates and deletes of their key, in
 # order. A query gives each row's op first. What a statement does with
-# them: a delete passes as a delete of its key; an insert or update that
-# fails the WHERE becomes a delete of its key, so a row that leaves the
-# filter leaves the table; an update that didn't send a column is written
-# with that column unchanged, unless the WHERE reads it, or an output
-# column needs it with columns it did send, and then it's quarantined.
+# them: a delete passes, without the WHERE, with what the projection gives
+# of the values it came with; an insert or update that fails the WHERE
+# becomes a delete of its key alone, so a row that leaves the filter
+# leaves the table; an update that didn't send a column is written with
+# that column unchanged, unless the WHERE reads it, or an output column
+# needs it with columns it did send, and then it's quarantined.
 
 statement ok
 CREATE TABLE users (id BIGINT NOT NULL, email TEXT, name TEXT, plan TEXT, PRIMARY KEY (id)) WITH (changelog)
@@ -12,8 +13,8 @@ CREATE TABLE users (id BIGINT NOT NULL, email TEXT, name TEXT, plan TEXT, PRIMAR
 statement ok
 INSERT INTO users (_op, id, email, name, plan) VALUES ('insert', 1, 'A@x.io', 'Ann', 'pro'), ('insert', 2, 'b@x.io', 'Bo', 'free'), ('update', 1, 'A@x.io', 'Ann', 'free'), ('update', 2, 'b@x.io', 'Bo', 'pro'), ('delete', 1, NULL, NULL, NULL), ('insert', 3, NULL, 'Cy', 'pro')
 
-# Without a WHERE, each row passes with its op, and a delete carries only
-# its key.
+# Without a WHERE, each row passes with its op. This delete came with its
+# key alone.
 query TITT nosort
 SELECT id AS user_id, lower(email) AS email, plan FROM users
 ----
@@ -147,3 +148,72 @@ insert 1 10
 update 1 11
 delete 2 NULL
 quarantined row 2
+
+# A delete that came with its values, as Postgres sends one under REPLICA
+# IDENTITY FULL, keeps them through the projection, and passes whether or
+# not it meets the WHERE. A row that leaves the WHERE is a delete of its
+# key alone.
+statement ok
+CREATE TABLE accounts (id BIGINT NOT NULL, email TEXT, plan TEXT, PRIMARY KEY (id)) WITH (changelog)
+
+statement ok
+INSERT INTO accounts (_op, id, email, plan) VALUES ('insert', 1, 'A@x.io', 'pro'), ('update', 1, 'A@x.io', 'free'), ('insert', 2, 'B@x.io', 'pro'), ('delete', 2, 'B@x.io', 'pro'), ('delete', 1, 'A@x.io', 'free')
+
+query TITT nosort
+SELECT id AS account, lower(email) AS email, plan FROM accounts WHERE plan = 'pro'
+----
+insert 1 a@x.io pro
+delete 1 NULL NULL
+insert 2 b@x.io pro
+delete 2 b@x.io pro
+delete 1 a@x.io free
+
+# A delete the projection can't evaluate passes as a delete of its key
+# alone: a delete is never quarantined.
+statement ok
+INSERT INTO counts (_op, id, n) VALUES ('insert', 3, '30'), ('delete', 3, 'thirty')
+
+query TII nosort
+SELECT id, CAST(n AS BIGINT) AS n FROM counts
+----
+insert 1 10
+update 1 11
+delete 2 NULL
+insert 3 30
+delete 3 NULL
+quarantined row 2
+
+# A changelog without a key: without a WHERE, each row passes with its op,
+# and a delete with its values.
+statement ok
+CREATE TABLE events (id BIGINT, kind TEXT) WITH (changelog)
+
+statement ok
+INSERT INTO events (_op, id, kind) VALUES ('insert', 1, 'click'), ('update', 1, 'view'), ('delete', 1, 'view')
+
+query TIT nosort
+SELECT id, upper(kind) AS kind FROM events
+----
+insert 1 CLICK
+update 1 VIEW
+delete 1 VIEW
+
+# With a WHERE, it's refused.
+query error
+SELECT id, kind FROM events WHERE kind = 'click'
+----
+changelog_key 1:35 events is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline
+
+
+# A delete that came with its key alone has nulls in the other columns
+# before the projection, and a constant keeps its value.
+statement ok
+INSERT INTO events (_op, id, kind) VALUES ('delete', 2, NULL)
+
+query TIIT nosort
+SELECT id, 1 AS version, upper(kind) AS kind FROM events
+----
+insert 1 1 CLICK
+update 1 1 VIEW
+delete 1 1 VIEW
+delete 2 1 NULL

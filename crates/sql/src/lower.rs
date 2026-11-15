@@ -15,6 +15,9 @@ pub(crate) struct Lowered {
     /// The input is a changelog, and the statement loses its key or
     /// multiplies its rows.
     pub(crate) loses_changelog_key: bool,
+    /// The input is a changelog without a key, and the statement filters
+    /// it: a row that fails the filter has no key to be deleted by.
+    pub(crate) filters_keyless_changelog: bool,
 }
 
 pub(crate) fn row_wise(
@@ -88,9 +91,11 @@ pub(crate) fn row_wise(
         Vec::new()
     };
     let unnests = steps.iter().any(|s| matches!(s, Step::Unnest(_)));
+    let filters = steps.iter().any(|s| matches!(s, Step::Filter(_)));
     Ok(Lowered {
         loses_changelog_key: stream.changelog
             && (unnests || !stream.key.is_empty() && key.is_empty()),
+        filters_keyless_changelog: stream.changelog && stream.key.is_empty() && filters,
         operator: RowWise {
             input,
             changelog: stream.changelog,
