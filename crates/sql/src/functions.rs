@@ -13,12 +13,19 @@ use datafusion_common::{Result, ScalarValue, exec_err};
 use datafusion_expr::expr_rewriter::FunctionRewrite;
 use datafusion_expr::planner::ExprPlanner;
 use datafusion_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    AggregateUDF, ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    Volatility,
 };
 
 pub(crate) struct Functions {
     /// By name and by alias.
     pub(crate) scalars: HashMap<String, Arc<ScalarUDF>>,
+    /// `tumble`, `hop` and `session`, which only a group window's `GROUP BY`
+    /// calls, and which never run: they give the bounds of a row's window.
+    pub(crate) windows: HashMap<String, Arc<ScalarUDF>>,
+    /// The aggregates a group window runs, by name and by alias. Binding
+    /// types them; the engine's accumulators run them.
+    pub(crate) aggregates: HashMap<String, Arc<AggregateUDF>>,
     /// Syntax that plans to functions, such as `EXTRACT`, `POSITION`,
     /// `SUBSTRING`, `OVERLAY`, `a[i]`, `s['field']` and JSON's `->`. What it
     /// reaches must be in `scalars` too, or binding refuses it.
@@ -30,7 +37,7 @@ pub(crate) struct Functions {
 
 impl Functions {
     pub(crate) fn get(&self, name: &str) -> Option<&Arc<ScalarUDF>> {
-        self.scalars.get(name)
+        self.scalars.get(name).or_else(|| self.windows.get(name))
     }
 
     /// Whether a call by this name gives the same result for the same
@@ -57,8 +64,20 @@ pub(crate) static FUNCTIONS: LazyLock<Functions> = LazyLock::new(|| {
         Arc::new(datafusion_functions::unicode::planner::UnicodeFunctionPlanner),
         Arc::new(crate::json::Operators),
     ];
+    let mut aggregates = HashMap::new();
+    for f in crate::window::aggregates() {
+        for a in f.aliases() {
+            aggregates.insert(a.clone(), f.clone());
+        }
+        aggregates.insert(f.name().to_owned(), f);
+    }
     Functions {
         scalars,
+        windows: crate::window::functions()
+            .into_iter()
+            .map(|f| (f.name().to_owned(), f))
+            .collect(),
+        aggregates,
         planners,
         rewrites: vec![Arc::new(crate::json::Rewrites)],
     }

@@ -2251,6 +2251,7 @@ dependencies = [
  "openetl-normalize",
  "openetl-proto",
  "openetl-sql",
+ "openetl-state",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -2270,6 +2271,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "twox-hash",
  "url",
 ]
 
@@ -2327,6 +2329,7 @@ dependencies = [
  "datafusion-common",
  "datafusion-expr",
  "datafusion-functions",
+ "datafusion-functions-aggregate",
  "datafusion-functions-nested",
  "datafusion-optimizer",
  "datafusion-physical-expr",
@@ -2334,6 +2337,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "twox-hash",
 ]
 
 [[package]]

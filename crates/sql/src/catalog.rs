@@ -14,6 +14,9 @@ pub struct Stream {
     pub key: Vec<String>,
     /// Its rows are inserts, updates and deletes of their key, as CDC's are.
     pub changelog: bool,
+    /// The column of its schema that holds each row's event time, which
+    /// group windows go by; `None` without one.
+    pub event_time: Option<String>,
 }
 
 /// The streams statements can read, by their whole names: what `openetl
@@ -41,6 +44,15 @@ impl Catalog {
                 ErrorKind::Catalog,
                 None,
                 format!("stream {name}'s key column {k} isn't in its schema"),
+            ));
+        }
+        if let Some(t) = &stream.event_time
+            && stream.schema.field_with_name(t).is_err()
+        {
+            return Err(Error::new(
+                ErrorKind::Catalog,
+                None,
+                format!("stream {name}'s event-time column {t} isn't in its schema"),
             ));
         }
         if self.streams.contains_key(&name) {

@@ -39,7 +39,7 @@ pub(crate) fn function() -> Arc<ScalarUDF> {
     }))
 }
 
-/// Rewrites each `ts AT TIME ZONE zone` in a SELECT's list and WHERE as
+/// Rewrites each `ts AT TIME ZONE zone` in a SELECT's list, WHERE and HAVING as
 /// `timezone(zone, ts)`, and gives where a literal zone, there or in a call
 /// of `timezone`, in parentheses or not, isn't one, with why. A zone that
 /// folds to a constant otherwise, such as `'C' || 'ET'`, is [`constant`]'s
@@ -70,6 +70,7 @@ pub(crate) fn rewrite(s: &mut ast::Select) -> Vec<(Span, String)> {
     };
     let _ = ast::visit_expressions_mut(&mut s.projection, &mut visit);
     let _ = ast::visit_expressions_mut(&mut s.selection, &mut visit);
+    let _ = ast::visit_expressions_mut(&mut s.having, &mut visit);
     refused
 }
 

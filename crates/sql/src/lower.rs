@@ -179,7 +179,7 @@ fn internal(at: Position, what: &str) -> Error {
 
 /// What a node no row-wise statement has means. The checks before binding
 /// refuse each of these first, where they can say where.
-fn refusal(node: &LogicalPlan, at: Position) -> Error {
+pub(crate) fn refusal(node: &LogicalPlan, at: Position) -> Error {
     let later = |class, what: &str| Error::at(ErrorKind::LaterTier(class), at, what);
     let unsupported = |what: &str| Error::at(ErrorKind::Unsupported, at, what);
     match node {

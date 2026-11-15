@@ -15,6 +15,7 @@ chrono-tz.workspace = true
 datafusion-common.workspace = true
 datafusion-expr.workspace = true
 datafusion-functions.workspace = true
+datafusion-functions-aggregate.workspace = true
 datafusion-functions-nested.workspace = true
 datafusion-optimizer.workspace = true
 datafusion-physical-expr.workspace = true
@@ -22,6 +23,7 @@ datafusion-sql.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
+twox-hash.workspace = true
 
 [lints]
 workspace = true

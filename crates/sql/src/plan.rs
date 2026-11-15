@@ -97,10 +97,13 @@ impl Statement {
     /// What its operator needs of its input: the columns whose equal values
     /// must be on one lane, which an exchange by key group gives where the
     /// input's partitioning doesn't; `None` for nothing, as a row-wise
-    /// operator, which runs in the lane that read its rows.
+    /// operator, which runs in the lane that read its rows. A group window
+    /// needs its group keys, by the stream's names, and keeps its state by
+    /// their key groups; with none, it needs every row on one lane.
     pub fn need(&self) -> Option<&[String]> {
-        match self.operator {
+        match &self.operator {
             Operator::RowWise(_) => None,
+            Operator::GroupWindow(g) => Some(&g.need),
         }
     }
 
@@ -109,6 +112,15 @@ impl Statement {
     pub fn passes(&self) -> Vec<(String, String)> {
         match &self.operator {
             Operator::RowWise(r) => r.passes(),
+            Operator::GroupWindow(g) => g.passes.clone(),
+        }
+    }
+
+    /// Its stateful operator's ID; `None` for a statement without state.
+    pub fn operator_id(&self) -> Option<&str> {
+        match &self.operator {
+            Operator::RowWise(_) => None,
+            Operator::GroupWindow(g) => Some(&g.id),
         }
     }
 }
@@ -129,11 +141,116 @@ pub struct View {
 #[derive(Debug)]
 pub enum Operator {
     RowWise(RowWise),
+    GroupWindow(Box<GroupWindow>),
+}
+
+/// `GROUP BY` a window over the stream's event time, and keys, with
+/// aggregates. Each row goes to the windows its event time falls in, and
+/// each window's row is given once the watermark passes its end. Times
+/// are in the event-time column's unit: microseconds, or nanoseconds
+/// where the column keeps them.
+#[derive(Debug)]
+pub struct GroupWindow {
+    /// The row-wise steps on the stream's batches before the window, whose
+    /// output is the rows it groups: [`GroupWindow::rows`].
+    pub input: RowWise,
+    pub rows: SchemaRef,
+    pub window: Window,
+    /// The column of `rows` with each row's event time: the stream's
+    /// event-time column, passed through.
+    pub time: usize,
+    pub keys: Vec<GroupKey>,
+    pub aggregates: Vec<Aggregate>,
+    /// What the steps after the window take: `window_start` and
+    /// `window_end`, then each key's column, then each aggregate's value.
+    pub grouped: SchemaRef,
+    /// On the grouped rows, in order: `HAVING`'s filter, and the
+    /// projection to the output.
+    pub steps: Vec<Step>,
+    /// The stream's columns its keys are, in order.
+    pub need: Vec<String>,
+    /// The stream's columns that reach the output unchanged, with their
+    /// names there: its keys.
+    pub passes: Vec<(String, String)>,
+    /// Stable while the state's meaning is: a hash of the output, the
+    /// window, the keys, the aggregates and the state's layout.
+    pub id: String,
+}
+
+/// A group key: a column of the rows grouped, which is the stream's
+/// column `stream`, renamed or not.
+#[derive(Debug)]
+pub struct GroupKey {
+    pub column: usize,
+    pub stream: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// Windows of `size`, one after another from the Unix epoch.
+    Tumble { size: i64 },
+    /// Windows of `size` that start every `slide`, from the Unix epoch: a
+    /// row is in `size / slide` of them, rounded up.
+    Hop { slide: i64, size: i64 },
+    /// A key's rows with no more than `gap` between one and the next. A
+    /// session ends `gap` after its last row.
+    Session { gap: i64 },
+}
+
+impl Window {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Window::Tumble { .. } => "tumble",
+            Window::Hop { .. } => "hop",
+            Window::Session { .. } => "session",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Aggregate {
+    pub kind: AggregateKind,
+    /// Its argument, on the rows grouped; `None` for `count(*)`.
+    pub arg: Option<Expr>,
+    /// `FILTER (WHERE …)`: only rows where it's true count.
+    pub filter: Option<Expr>,
+    /// Its value's.
+    pub data_type: DataType,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AggregateKind {
+    /// Rows where the argument isn't null; with none, every row.
+    Count,
+    Sum,
+    Min,
+    Max,
+    Avg,
+    /// An estimate of how many distinct values the argument has: exact up
+    /// to a few hundred, then within about 2%.
+    ApproxDistinct,
+    /// The value at this fraction of the argument's sorted values,
+    /// interpolated between the two nearest: `median` is 0.5.
+    Percentile(f64),
+}
+
+impl AggregateKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            AggregateKind::Count => "count",
+            AggregateKind::Sum => "sum",
+            AggregateKind::Min => "min",
+            AggregateKind::Max => "max",
+            AggregateKind::Avg => "avg",
+            AggregateKind::ApproxDistinct => "approx_distinct",
+            AggregateKind::Percentile(_) => "percentile_cont",
+        }
+    }
 }
 
 /// Steps on one source stream's batches, one batch at a time. On a
 /// changelog stream, deletes pass without the filters.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RowWise {
     /// The source stream it reads.
     pub input: String,
@@ -152,6 +269,29 @@ impl RowWise {
     /// through filters, projections that pass them, and `UNNEST`, which
     /// repeats a row's values on each row it gives.
     pub fn passes(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (name, from) in self.origins() {
+            if let Some(from) = from
+                && !out.iter().any(|(f, _)| *f == from)
+            {
+                out.push((from, name));
+            }
+        }
+        out
+    }
+
+    /// The input's column that the output's column `name` holds unchanged,
+    /// if it's one.
+    pub fn origin(&self, name: &str) -> Option<String> {
+        self.origins()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, from)| from)
+    }
+
+    /// Each of the output's columns, with the input's column it holds
+    /// unchanged, if it's one.
+    fn origins(&self) -> Vec<(String, Option<String>)> {
         // Each column of a step's batch, with the input column it holds.
         let mut cols: Vec<(String, Option<String>)> = self
             .reads
@@ -188,15 +328,7 @@ impl RowWise {
                     .collect(),
             };
         }
-        let mut out: Vec<(String, String)> = Vec::new();
-        for (name, from) in cols {
-            if let Some(from) = from
-                && !out.iter().any(|(f, _)| *f == from)
-            {
-                out.push((from, name));
-            }
-        }
-        out
+        cols
     }
 
     /// A batch of the input's columns that the first step reads, from a
@@ -222,7 +354,7 @@ impl RowWise {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Step {
     /// Keeps the rows where the predicate is true.
     Filter(Expr),
@@ -230,7 +362,7 @@ pub enum Step {
     Unnest(Unnest),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Projection {
     pub columns: Vec<Column>,
     /// What it gives.
@@ -248,7 +380,7 @@ impl Projection {
 }
 
 /// A named expression.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Column {
     pub name: String,
     pub expr: Expr,
@@ -257,7 +389,7 @@ pub struct Column {
 /// Each row's lists flattened into a row per element. With several lists, a
 /// row gives as many rows as its longest list, and the shorter ones give
 /// nulls past their ends.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Unnest {
     /// The input's columns that are lists to flatten, by index.
     pub lists: Vec<usize>,

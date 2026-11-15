@@ -19,6 +19,7 @@ fn customers(schema: Vec<Field>) -> Catalog {
             schema: Arc::new(Schema::new(schema)),
             key: vec!["id".into()],
             changelog: false,
+            event_time: None,
         },
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -40,8 +41,10 @@ fn plan_one(sql: &str, catalog: &Catalog) -> Statement {
 }
 
 fn row_wise(s: &Statement) -> &RowWise {
-    let Operator::RowWise(op) = &s.operator;
-    op
+    match &s.operator {
+        Operator::RowWise(op) => op,
+        Operator::GroupWindow(_) => panic!("a group window"),
+    }
 }
 
 /// Runs a statement's steps on a batch, keeping rows that pass each filter.
@@ -388,6 +391,7 @@ fn events() -> (Catalog, RecordBatch) {
             schema: schema.clone(),
             key: vec!["id".into()],
             changelog: false,
+            event_time: None,
         },
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -553,6 +557,7 @@ fn a_wide_stream_plans() {
             schema: Arc::new(Schema::new(fields)),
             key: Vec::new(),
             changelog: false,
+            event_time: None,
         },
     )
     .unwrap_or_else(|e| panic!("{e}"));
@@ -567,6 +572,7 @@ fn the_catalog_refuses_a_name_twice_and_a_key_it_lacks() {
         schema: Arc::new(Schema::new(fields())),
         key: vec![key.into()],
         changelog: false,
+        event_time: None,
     };
     let e = c.insert("customers", stream("id")).err();
     assert_eq!(e.map(|e| e.kind), Some(ErrorKind::Catalog));
@@ -607,6 +613,7 @@ fn list_events() -> Catalog {
             ])),
             key: Vec::new(),
             changelog: false,
+            event_time: None,
         },
     )
     .unwrap_or_else(|e| panic!("{e}"));
