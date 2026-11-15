@@ -182,9 +182,10 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			Deletes:              deletes,
 			AllowTypeChanges:     plan.TypeChanges(p, o.Spec),
 			Transformed:          true,
-			SplitsByKey:          s.SplitsByKey,
-			Table:                p.GetDestination().GetTables()[o.Name],
-			From:                 s.Name,
+			// Its stream's, past the statement.
+			Partitioning: plan.Place(s.Partitioning, plan.StatementOperator(st)).Out(),
+			Table:        p.GetDestination().GetTables()[o.Name],
+			From:         s.Name,
 		}
 		if plan.Holds(caps, o.Mode, len(o.PrimaryKey) > 0) {
 			out.Holds = streamHolds(o.Spec)
@@ -215,7 +216,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			Collapse:             s.Collapse,
 			Deletes:              deletes,
 			AllowTypeChanges:     plan.TypeChanges(p, in.Spec),
-			SplitsByKey:          s.SplitsByKey,
+			Partitioning:         s.Partitioning,
 			Table:                p.GetDestination().GetTables()[s.Name],
 			From:                 s.Name,
 		}

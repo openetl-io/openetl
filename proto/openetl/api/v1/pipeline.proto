@@ -941,7 +941,9 @@ message StatementPlan {
   // The output's primary key. Empty: it has none, and can only be appended.
   repeated string primary_key = 9;
   // The columns its rows are exchanged by, by key group, before its
-  // operator. Empty: none, and it runs in the lane that read them.
+  // operator: what its operator needs, where the partitioning of the stream
+  // it reads doesn't meet it. Empty: none, and it runs in the lane that read
+  // them.
   repeated string exchange = 10;
   // Its stateful operator's ID; empty for a row-wise statement.
   string operator = 11;
@@ -1008,6 +1010,64 @@ message StreamPlan {
   // Its entry in destination.tables; empty: its name, through
   // destination.naming.
   string table = 9;
+  // How its source spreads its rows over lanes as it reads them; for a
+  // statement's output, the source of the stream the statement reads.
+  Partitioning partitioning = 10;
+  // The operators its rows pass on their way to the destination, in order,
+  // ending with the writer. An exchange sits only before an operator whose
+  // need the edge that feeds it doesn't meet.
+  repeated PlanOperator operators = 11;
+}
+
+// Partitioning is how an edge of a job's dataflow spreads its rows over the
+// lanes of the operator it feeds. A partitioning by columns K meets an
+// operator's need for columns J when K is a subset of J.
+message Partitioning {
+  PartitioningKind kind = 1;
+  // With splits and key_group: rows with equal values of these columns are
+  // on one lane.
+  repeated string columns = 2;
+}
+
+enum PartitioningKind {
+  PARTITIONING_KIND_UNSPECIFIED = 0;
+  // Rows with equal values may be on any lane.
+  PARTITIONING_KIND_NONE = 1;
+  // The source's splits partition the stream by the columns, and each
+  // split's rows stay on one lane.
+  PARTITIONING_KIND_SPLITS = 2;
+  // Each lane owns a contiguous range of the key groups of the columns'
+  // values, and an exchange sent it their rows.
+  PARTITIONING_KIND_KEY_GROUP = 3;
+  // Every row is on one lane: the lanes merge into an operator that runs on
+  // one, such as the writer of a destination with one writer lane.
+  PARTITIONING_KIND_ONE_LANE = 4;
+}
+
+// PlanOperator is an operator a stream's rows pass on their way to the
+// destination, and the edge that feeds it.
+message PlanOperator {
+  PlanOperatorKind kind = 1;
+  // A statement's place in transform.sql, counting from 1.
+  uint32 line = 2;
+  uint32 column = 3;
+  // What it needs of the edge: that rows with equal values of these
+  // columns are on one of its lanes. Empty: nothing. A writer needs a keyed
+  // stream's primary key.
+  repeated string needs = 4;
+  // The rows are exchanged by key group on needs before it, since the
+  // edge's partitioning doesn't meet them.
+  bool exchange = 5;
+  // The edge's, after the exchange if there is one.
+  Partitioning partitioning = 6;
+}
+
+enum PlanOperatorKind {
+  PLAN_OPERATOR_KIND_UNSPECIFIED = 0;
+  // A statement of transform.sql.
+  PLAN_OPERATOR_KIND_STATEMENT = 1;
+  // The destination's writer.
+  PLAN_OPERATOR_KIND_WRITER = 2;
 }
 
 // StreamSchema is a version of a stream's schema, as the destination has it.

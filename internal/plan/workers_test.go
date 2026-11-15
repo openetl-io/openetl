@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
@@ -39,6 +40,7 @@ func TestWorkers(t *testing.T) {
 		workers   int
 		onePod    string
 		oneWorker []string
+		sql       *sqlplan.Answer
 	}{
 		{name: "one asked", spec: spec(1, nil), cat: cat, caps: lanes},
 		{name: "spread", spec: spec(4, nil), cat: cat, caps: lanes, workers: 4, oneWorker: []string{
@@ -65,12 +67,27 @@ func TestWorkers(t *testing.T) {
 			`changes: each attempt reads it on one of its 2 workers: the changes to each key must reach one writer lane in order`,
 			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
 		}},
-		{name: "sql", spec: spec(2, func(p *apiv1.PipelineSpec) {
+		{name: "sql passing streams through", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
-		}), cat: cat, caps: held, workers: 2, oneWorker: []string{
+		}), cat: cat, caps: held, sql: &sqlplan.Answer{}, workers: 2, oneWorker: []string{
 			`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
 			`changes: each attempt reads it on one of its 2 workers: the changes to each key must reach one writer lane in order`,
 			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
+		}},
+		{name: "sql not planned", spec: spec(2, func(p *apiv1.PipelineSpec) {
+			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
+		}), cat: cat, caps: held, workers: 2},
+		// An output whose path has an exchange is read on one worker: a key
+		// renamed through a statement keeps its split, and an output without
+		// a key needs none.
+		{name: "sql statements", spec: spec(2, func(p *apiv1.PipelineSpec) {
+			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "…", Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}}
+		}), cat: cat, caps: held, workers: 2, sql: &sqlplan.Answer{Statements: []sqlplan.Statement{
+			{At: sqlplan.Position{Line: 1, Column: 1}, Output: "r", Class: "row_wise", Inputs: []string{"ranged"}, Key: []string{"rid"}, Passes: map[string]string{"id": "rid"}},
+			{At: sqlplan.Position{Line: 2, Column: 1}, Output: "h", Class: "row_wise", Inputs: []string{"hashed"}},
+			{At: sqlplan.Position{Line: 3, Column: 1}, Output: "c", Class: "row_wise", Inputs: []string{"changes"}, Key: []string{"id"}, Passes: map[string]string{"id": "id"}},
+		}}, oneWorker: []string{
+			`changes: each attempt reads it on one of its 2 workers: the changes to each key must reach one writer lane in order`,
 		}},
 		{name: "spark", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Spark{Spark: &apiv1.SparkTransform{}}}
@@ -78,7 +95,7 @@ func TestWorkers(t *testing.T) {
 			onePod: "a Spark or Flink transform runs on one pod"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			workers, onePod, oneWorker := Workers(tc.spec, tc.cat, tc.caps, tc.engine)
+			workers, onePod, oneWorker := Workers(tc.spec, tc.cat, tc.caps, tc.engine, tc.sql)
 			var got []string
 			for _, w := range oneWorker {
 				got = append(got, w.GetStream()+": "+w.GetMessage())

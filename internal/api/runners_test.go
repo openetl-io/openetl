@@ -31,7 +31,7 @@ func TestPlanWorkers(t *testing.T) {
 		"no catalog":           {nil, lanes, true, 3, "the source hasn't been discovered"},
 	} {
 		out := &apiv1.PipelinePlan{}
-		got := planWorkers(sp, tc.cat, tc.caps, tc.known, false, out)
+		got := planWorkers(sp, tc.cat, nil, tc.caps, tc.known, false, out)
 		var said []string
 		for _, w := range out.GetWarnings() {
 			said = append(said, cmp.Or(w.GetStream()+": ", "")+w.GetMessage())
@@ -41,7 +41,7 @@ func TestPlanWorkers(t *testing.T) {
 			t.Errorf("%s: %d workers, and said %q; want %d, and %q", name, got, said, tc.workers, tc.has)
 		}
 	}
-	if got := planWorkers(&apiv1.PipelineSpec{}, cat, lanes, true, false, &apiv1.PipelinePlan{}); got != 0 {
+	if got := planWorkers(&apiv1.PipelineSpec{}, cat, nil, lanes, true, false, &apiv1.PipelinePlan{}); got != 0 {
 		t.Errorf("%d workers for a job that asks for none", got)
 	}
 }

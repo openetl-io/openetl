@@ -761,7 +761,7 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 	refs := slices.SortedFunc(maps.Keys(e.splitLanes), func(a, b checkpoint.SplitRef) int {
 		return cmpRefs(a, b)
 	})
-	writers, local := len(p.ws), p.job.Destination.Capabilities().LaneCommits
+	layout, local := plan.laidOut(), p.job.Destination.Capabilities().LaneCommits
 	keys := map[string][]string{}
 	for _, st := range p.job.sinkStreams() {
 		keys[st.Name] = st.PrimaryKey
@@ -773,11 +773,11 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 			lane := read.lane
 			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from, Rows: read.rows}
 			switch {
-			case plan.KeyGrouped[ref.Stream]:
-				first, last := writerKeyGroups(plan, k)
-				r.KeyGroups, r.Key = attempt.KeyGroups(first, last), keys[ref.Stream]
+			case plan.Exchanges[ref.Stream] != nil && k < len(layout.Writers):
+				kg := layout.Writers[k]
+				r.KeyGroups, r.Key = attempt.KeyGroups(kg.First, kg.Last), keys[ref.Stream]
 			case lane == laneAll:
-			case lane < 0 || lane%writers != k:
+			case lane < 0 || lane >= len(layout.WriterOf) || layout.WriterOf[lane] != k:
 				continue
 			}
 			c.Splits = append(c.Splits, r)
@@ -792,15 +792,6 @@ func cmpRefs(a, b checkpoint.SplitRef) int {
 		return c
 	}
 	return strings.Compare(a.ID, b.ID)
-}
-
-// writerKeyGroups are the key groups writer lane w of plan owns.
-func writerKeyGroups(plan Plan, w int) (first, last int) {
-	groups, writers := max(plan.KeyGroups, 1), plan.writerLanes()
-	if plan.KeyGroups == 0 {
-		groups = checkpoint.KeyGroups
-	}
-	return (w*groups + writers - 1) / writers, ((w+1)*groups+writers-1)/writers - 1
 }
 
 // schemaRelay is a worker's way to its streams' schema owner, the

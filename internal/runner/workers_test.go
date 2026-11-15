@@ -18,6 +18,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/attempt"
@@ -918,7 +919,8 @@ func TestHoldsOnWorkers(t *testing.T) {
 	}
 	p.change = func(j *runner.Job) {
 		j.HeldURL = "file:///held"
-		j.Streams[0].PrimaryKey, j.Streams[0].SplitsByKey, j.Streams[0].Holds = []string{"id"}, true, &runner.StreamHolds{}
+		j.Streams[0].PrimaryKey, j.Streams[0].Holds = []string{"id"}, &runner.StreamHolds{}
+		j.Streams[0].Partitioning = plan.SourcePartitioning([]string{"id"}, true, false)
 	}
 	flow := holdingFlow{mu: &sync.Mutex{}, plans: map[int]*runner.HoldPlan{}, heard: map[int]bool{}}
 	p.flow = flow
@@ -953,7 +955,8 @@ func TestHoldsOnWorkers(t *testing.T) {
 	clear(flow.plans)
 	p.change = func(j *runner.Job) {
 		j.HeldURL = "file:///held"
-		j.Streams[0].PrimaryKey, j.Streams[0].SplitsByKey, j.Streams[0].Holds = []string{"id"}, true, &runner.StreamHolds{}
+		j.Streams[0].PrimaryKey, j.Streams[0].Holds = []string{"id"}, &runner.StreamHolds{}
+		j.Streams[0].Partitioning = plan.SourcePartitioning([]string{"id"}, true, false)
 		j.Releases = []runner.Release{{Stream: "s", Column: "x", Since: h.Columns[0].Since}}
 	}
 	if _, err := runner.RunAttempt(ctx, p.workers("a2", 2)); err != nil {

@@ -106,6 +106,9 @@ workspaces/default/pipelines/faker-to-parquet (version known after apply)
   streams:
     users      append  exactly_once  exact replay
     purchases  append  exactly_once  exact replay
+  partitioning:
+    users      unpartitioned -> exchange by key group on id -> writer, needs id
+    purchases  unpartitioned -> exchange by key group on id -> writer, needs id
 ```
 
 The plan has two parts:
@@ -116,6 +119,7 @@ The plan has two parts:
   - `job size`: how much CPU and memory its jobs get, what set that, and the pool of runners it runs in.
   - `transform.sql`: for a pipeline with a SQL transform, each statement and its output. [A SQL transform in the plan](#a-sql-transform-in-the-plan) explains it.
   - `streams`: each stream's write mode, its [delivery guarantee](../get-started/concepts.md#delivery-guarantees), and the reason for that guarantee.
+  - `partitioning`: how each stream's rows are spread over the job's lanes on their way to the destination, and where they are exchanged between lanes. [Partitioning in the plan](#partitioning-in-the-plan) explains it.
   - `problems`: what stops the pipeline from running. `plan` exits with an error, and `apply` refuses the whole file.
   - `warnings`: what's allowed but worth a second look.
   - `notes`: what the plan couldn't check, and why.
@@ -133,6 +137,9 @@ workspaces/default/pipelines/faker-to-parquet (version known after apply)
   streams:
     users      append  exactly_once  exact replay
     purchases  append  exactly_once  exact replay
+  partitioning:
+    users      unpartitioned -> exchange by key group on id -> writer, needs id
+    purchases  unpartitioned -> exchange by key group on id -> writer, needs id
   problems:
     stream "users" is read with full_refresh, whose reads end, and a continuous pipeline needs streams read with cdc or stream
     stream "purchases" is read with full_refresh, whose reads end, and a continuous pipeline needs streams read with cdc or stream
@@ -143,7 +150,7 @@ openetl: the plan has problems, so apply would refuse it
 
 The control plane does not plan SQL itself. For a pipeline with `transform.sql`, it sends the statements and the schemas of the streams they name to a runner of the pipeline's data plane. The runner's `openetl-engine` plans them and returns the result. The schemas come from the source's catalog. If the catalog declares no columns for a stream, they come from the schemas that the pipeline's earlier syncs recorded. Each sync plans the statements again when it starts, in the same way, against the columns the source declares and those the pipeline's last checkpoint recorded.
 
-This pipeline reads a source named `shop` whose catalog declares the columns of `customers` and `orders`:
+This pipeline reads a source named `shop` whose catalog declares the columns of `customers` and `orders`. The source does not split either stream by key:
 
 ```yaml
 apiVersion: openetl.io/v1alpha1
@@ -182,11 +189,15 @@ workspaces/default/pipelines/shop-to-parquet (version known after apply)
     orders                         append  exactly_once  exact replay
     customers                      append  exactly_once  a transform's output over exact inputs
     contacts -> customer_contacts  append  exactly_once  a transform's output over exact inputs
+  partitioning:
+    orders     unpartitioned -> exchange by key group on id -> writer, needs id
+    customers  unpartitioned -> statement 1:1 -> exchange by key group on id -> writer, needs id
+    contacts   unpartitioned -> statement 5:1 -> exchange by key group on customer_id -> writer, needs customer_id
 ```
 
 The `transform.sql` section has:
 
-- **A line per statement:** where its `INSERT` is in the SQL, as line and column; the output it writes; its class; its output's primary key; whether its rows are exchanged between lanes; and the streams and views it reads. Only `row_wise` statements plan; a statement of another class is a problem. An output without a primary key cannot be written with `merge`.
+- **A line per statement:** where its `INSERT` is in the SQL, as line and column; the output it writes; its class; its output's primary key; whether its rows are exchanged between lanes before it; and the streams and views it reads. A `row_wise` statement runs on the lane that read its rows, so it has no exchange. Only `row_wise` statements plan; a statement of another class is a problem. An output without a primary key cannot be written with `merge`.
 - **The columns of each output,** with their types.
 - **The streams that pass through:** the source's streams that no statement writes. They reach the destination as they would without a transform.
 - **The streams that are not delivered,** when `transform.passthrough` is `none`.
@@ -212,6 +223,25 @@ If the statements cannot be planned, a note that starts with `transform.sql wasn
 - No runner of the pipeline's data plane takes the request within 30 seconds.
 - The source has not been discovered.
 - The catalog declares no columns for a stream that the SQL names, and no sync has recorded its schema yet.
+
+### Partitioning in the plan
+
+A job reads, transforms and writes its streams in parallel **lanes**. The `partitioning` section has a line for each stream that the destination gets. The line shows how the stream's rows are spread over the lanes on the way to the destination, and where they move from one lane to another.
+
+A line starts with what the source gives:
+
+- `split by COLUMNS`: the source splits the stream by these columns. All rows with the same values are in one split, and a split's rows stay on one lane. The catalog says whether a source splits a stream by its primary key. A stream read with `cdc` is never split by key.
+- `unpartitioned`: rows with the same values can be on any lane.
+
+Then come the operators that the rows pass, in order. Each statement of `transform.sql` that writes the stream is shown by its line and column, and the destination's **writer** comes last. `needs COLUMNS` says that an operator needs all rows with the same values of these columns on one of its lanes. The writer of a stream with a primary key needs its key, so that one writer lane writes each key's rows, in order. A `row_wise` statement needs nothing.
+
+If the rows do not meet an operator's need, an **exchange by key group** comes before the operator. The exchange sends each row to the lane that owns the row's key group, a hash of its values of the needed columns. The plan places an exchange only there. Rows spread by columns `K` meet a need for columns `J` if each column of `K` is in `J`. For example, rows split by `id` meet the writer's need for `id`, so the stream needs no exchange.
+
+The line shows a new partitioning before an operator where it changes. A statement keeps a partitioning while its columns pass through unchanged, with their new names. In [Write a SQL transform](./sql-transforms.md#plan-it), `split by order_id` follows a statement that renames `id` to `order_id`. A statement that computes or drops one of the columns ends the partitioning. An exchange then comes before the writer only if the writer has a need: an output without a primary key needs nothing. `on one lane` means that the destination takes one writer lane, so every lane's rows go to it. This meets every need without an exchange.
+
+Lanes go to writer lanes by key group. Each writer lane owns a range of the pipeline's key groups, and each lane a part of one writer lane's range, so a lane always writes to the same writer lane.
+
+### Apply the plan
 
 When the plan is what you want, apply the same files:
 

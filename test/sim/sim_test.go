@@ -37,6 +37,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -343,10 +344,10 @@ func (w *world) job(attempt int) runner.Job {
 		j.Dataflow = runner.Passthrough{Convert: toArrow, Stage: st.stage}
 	}
 	for _, s := range w.cfg.streams {
-		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse, Holds: s.holds.streamHolds(),
-			SplitsByKey: s.byKey && s.resplit == 0}
+		st := runner.Stream{Name: s.name, Replay: s.replay, Mode: w.cfg.mode, Require: s.require, Collapse: s.collapse, Holds: s.holds.streamHolds()}
 		if s.keyed {
 			st.PrimaryKey = []string{"key"}
+			st.Partitioning = plan.SourcePartitioning(st.PrimaryKey, s.byKey && s.resplit == 0, false)
 		}
 		j.Streams = append(j.Streams, st)
 		if s.transformed {

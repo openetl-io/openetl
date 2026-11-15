@@ -418,8 +418,8 @@ func streamPlan(plan runner.Plan, s runner.Stream, restored []byte, sink bool) *
 		sp.SoftDeletes = s.Mode == destination.Merge && s.Deletes != destination.HardDelete
 		sp.Holds = holdPlan(plan.Holds[s.Name])
 		sp.Table = s.Table
-		if plan.KeyGrouped[s.Name] {
-			sp.Routing = enginev1.Routing_ROUTING_KEY_GROUP
+		if cols := plan.Exchanges[s.Name]; cols != nil {
+			sp.Exchange = &enginev1.Exchange{Columns: cols}
 		}
 		if r, ok := plan.KeyGroupRanges[s.Name]; ok {
 			sp.KeyGroups = &enginev1.KeyGroupRange{First: ints.Uint32(r.First), Last: ints.Uint32(r.Last)}

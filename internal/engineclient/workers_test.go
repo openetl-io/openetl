@@ -18,6 +18,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	partition "github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/internal/sqlplan"
@@ -556,7 +557,7 @@ func TestHoldsOnWorkersThroughTheEngine(t *testing.T) {
 			return runner.Job{
 				Pipeline: "p", Owner: owner, Log: log, Source: src, HeldURL: heldURL, SchemaPolicy: runner.Block,
 				Streams: []runner.Stream{{
-					Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, SplitsByKey: true,
+					Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Partitioning: partition.SourcePartitioning([]string{"id"}, true, false),
 					Holds: &runner.StreamHolds{},
 				}},
 				Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 2,

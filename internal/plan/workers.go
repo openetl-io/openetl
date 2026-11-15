@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
@@ -40,26 +41,49 @@ func OnePod(j WorkerJob) string {
 	return ""
 }
 
+// Why an attempt on workers reads all of a stream's splits on one worker.
+const (
+	whyOverwrite = "an overwrite's read ends on one worker"
+	whyChanges   = "the changes to each key must reach one writer lane in order"
+	whySplits    = "the source's splits don't partition it by key, and the rows of each key must meet on one writer lane"
+)
+
 // OneWorker says why an attempt on workers reads all of a stream's splits on
-// one worker; empty if it spreads them. With a SQL transform, it's said of
-// each stream a statement reads, whose output keeps its key or has none.
+// one worker; empty if it spreads them.
 func OneWorker(mode destination.WriteMode, keyed, splitsByKey bool, read apiv1.SyncMode) string {
 	switch {
 	case mode == destination.Overwrite:
-		return "an overwrite's read ends on one worker"
+		return whyOverwrite
 	case keyed && read == apiv1.SyncMode_SYNC_MODE_CDC:
-		return "the changes to each key must reach one writer lane in order"
+		return whyChanges
 	case keyed && !splitsByKey:
-		return "the source's splits don't partition it by key, and the rows of each key must meet on one writer lane"
+		return whySplits
 	}
 	return ""
 }
 
+// oneWorkerOn says why an attempt on workers reads all of a stream's splits
+// on one worker, where a statement writes path's output from it in mode:
+// the output is an overwrite, or its path has an exchange, which runs
+// inside one engine. Empty if it spreads them.
+func oneWorkerOn(mode destination.WriteMode, path Path, read apiv1.SyncMode) string {
+	switch {
+	case mode == destination.Overwrite:
+		return whyOverwrite
+	case len(path.Exchanges()) == 0:
+		return ""
+	case read == apiv1.SyncMode_SYNC_MODE_CDC:
+		return whyChanges
+	}
+	return whySplits
+}
+
 // Workers plans a job's workers: how many each attempt runs on (0: one pod),
 // why it runs on one pod although its spec asks for more, and a warning for
-// each stream an attempt reads on one worker. Without a catalog, it can't
-// tell which streams stay on one worker.
-func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, engineWritten bool) (int, string, []*apiv1.PlanWarning) {
+// each stream an attempt reads on one worker. Without a catalog it can't
+// tell which streams one worker reads, nor with a SQL transform without
+// the statements' plan, a.
+func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, engineWritten bool, a *sqlplan.Answer) (int, string, []*apiv1.PlanWarning) {
 	asked := int(spec.GetResources().GetWorkers())
 	if asked <= 1 {
 		return 0, "", nil
@@ -68,12 +92,41 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 	if why := OnePod(j); why != "" {
 		return 0, why, nil
 	}
-	var oneWorker []*apiv1.PlanWarning
+	sql := spec.GetTransform().GetSql() != nil
+	if sql && a == nil {
+		return asked, "", nil
+	}
+	whys := map[string]string{}
+	var inputs []Input
 	for _, s := range selected(spec, cat) {
+		name := s.cs.GetName()
 		keyed := len(s.cs.GetPrimaryKey()) > 0
 		read := ReadMode(spec, s.cs.GetSyncModes(), s.ps)
-		mode := StreamMode(spec, caps, read, keyed)
-		if why := OneWorker(mode, keyed, s.cs.GetSplitsByKey(), read); why != "" {
+		if sql {
+			inputs = append(inputs, Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read), Spec: s.ps})
+			if !Lands(spec, a, name) {
+				continue
+			}
+		}
+		whys[name] = OneWorker(StreamMode(spec, caps, read, keyed), keyed, s.cs.GetSplitsByKey(), read)
+	}
+	if sql {
+		outs, _ := SQLOutputs(spec, caps, a, inputs)
+		for i, st := range a.Statements {
+			if len(st.Inputs) != 1 || whys[st.Inputs[0]] != "" {
+				continue
+			}
+			for _, in := range inputs {
+				if in.Name == st.Inputs[0] {
+					path := StatementPath(statementSource(spec, cat, st), st, outs[i].PrimaryKey, false)
+					whys[in.Name] = oneWorkerOn(outs[i].Mode, path, in.Read)
+				}
+			}
+		}
+	}
+	var oneWorker []*apiv1.PlanWarning
+	for _, s := range selected(spec, cat) {
+		if why := whys[s.cs.GetName()]; why != "" {
 			oneWorker = append(oneWorker, &apiv1.PlanWarning{Stream: s.cs.GetName(), Message: fmt.Sprintf(
 				"each attempt reads it on one of its %d workers: %s", asked, why)})
 		}

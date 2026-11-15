@@ -128,7 +128,7 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 			Require:              plan.Level(ps.GetRequire()),
 			Deletes:              deletes,
 			AllowTypeChanges:     plan.TypeChanges(p, ps),
-			SplitsByKey:          cs.SplitsByKey,
+			Partitioning:         plan.SourcePartitioning(cs.PrimaryKey, cs.SplitsByKey, read == apiv1.SyncMode_SYNC_MODE_CDC),
 			Table:                p.GetDestination().GetTables()[cs.Name],
 		}
 		if ps != nil {

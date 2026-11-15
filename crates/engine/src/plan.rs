@@ -5,11 +5,12 @@ use openetl_normalize::hold::{ColumnHold, HoldConfig, Limits, Show, Why};
 use openetl_normalize::naming::{Namer, Naming, RESERVED_TABLES, TABLE_KEY};
 use openetl_normalize::{Identity, Infinity, Policy, TypeOptions};
 use openetl_proto::engine::v1::{
-    EdgeDirection, Held, HeldMode, Routing, SchemaPolicy, StartJobRequest, StreamPlan, sink_plan,
+    EdgeDirection, Held, HeldMode, SchemaPolicy, StartJobRequest, StreamPlan, sink_plan,
 };
 
 use crate::error::JobError;
 use crate::ipc;
+use crate::layout::Layout;
 use crate::quarantine::Quarantine;
 use crate::remote::Remote;
 use crate::transform::{Input, Route, Transform};
@@ -44,9 +45,13 @@ pub struct Plan {
     pub sink: Sink,
     pub writer_lanes: usize,
     pub key_groups: u32,
-    /// Each stream's: rows go to the writer lane owning their key's group,
-    /// not straight from their lane.
-    pub routed: Vec<bool>,
+    /// The key groups the lanes and writer lanes own, and so which writer
+    /// lane each lane feeds.
+    pub layout: Layout,
+    /// Each stream's exchange before the writer, if it has one: its rows go
+    /// to the writer lanes owning their key groups, not from their lane to
+    /// its writer lane.
+    pub exchanges: Vec<Option<Exchange>>,
     /// Each stream's: only rows whose key's group is in this range, first to
     /// last, pass, for a redo of one writer lane's part of an epoch.
     pub keep: Vec<Option<(u32, u32)>>,
@@ -202,6 +207,53 @@ pub enum Sink {
     Discard,
 }
 
+/// An exchange by key group before a stream's writer, which needs every row
+/// of a primary key on one writer lane: a partitioning by some of the key's
+/// columns meets that need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exchange {
+    /// The columns whose values' key group sends a row, as indexes into the
+    /// stream's primary key.
+    pub key: Vec<usize>,
+}
+
+impl Exchange {
+    /// Checks a stream's exchange against its key: the columns are some of
+    /// the key's, each once.
+    fn of(s: &StreamPlan) -> Result<Option<Self>, JobError> {
+        let Some(e) = &s.exchange else {
+            return Ok(None);
+        };
+        let mut key = Vec::with_capacity(e.columns.len());
+        for c in &e.columns {
+            match s.primary_key.iter().position(|k| k == c) {
+                Some(i) if !key.contains(&i) => key.push(i),
+                _ => {
+                    return Err(JobError::config(format!(
+                        "stream {} is exchanged by {:?}, which aren't columns of its primary key {:?}, each once",
+                        s.name, e.columns, s.primary_key
+                    )));
+                }
+            }
+        }
+        if key.is_empty() {
+            return Err(JobError::config(format!(
+                "stream {} is exchanged by no columns",
+                s.name
+            )));
+        }
+        Ok(Some(Exchange { key }))
+    }
+
+    /// Its columns, of a stream's key columns as its batches name them.
+    pub fn columns(&self, key: &[String]) -> Vec<String> {
+        self.key
+            .iter()
+            .filter_map(|&i| key.get(i).cloned())
+            .collect()
+    }
+}
+
 #[derive(Debug)]
 pub struct EdgePlan {
     pub id: String,
@@ -235,6 +287,11 @@ impl Plan {
                 req.key_groups
             )));
         }
+        let key_groups = match req.key_groups {
+            0 => 256,
+            n => n,
+        };
+        let layout = Layout::new(key_groups, lanes, writer_lanes).map_err(JobError::config)?;
         if req.passthrough && req.transform.is_some() {
             return Err(JobError::config(
                 "a passthrough job leaves batches as they came, and can't transform them",
@@ -248,6 +305,7 @@ impl Plan {
         let mut index = HashMap::new();
         let mut restored = Vec::with_capacity(sinks.len());
         let mut declared = Vec::with_capacity(sinks.len());
+        let mut exchanges = Vec::with_capacity(sinks.len());
         for (i, s) in sinks.iter().enumerate() {
             if s.name.is_empty() || index.insert(s.name.as_str(), i).is_some() {
                 return Err(JobError::config(format!(
@@ -255,23 +313,14 @@ impl Plan {
                     s.name
                 )));
             }
-            if s.routing() == Routing::KeyGroup && s.primary_key.is_empty() {
+            exchanges.push(Exchange::of(s)?);
+            if let Some(r) = &s.key_groups
+                && (s.primary_key.is_empty() || r.first > r.last || r.last >= key_groups)
+            {
                 return Err(JobError::config(format!(
-                    "stream {} is routed by key group, and has no primary key",
-                    s.name
+                    "stream {} keeps key groups {} to {} of {key_groups}, which needs a primary key and a range within them",
+                    s.name, r.first, r.last
                 )));
-            }
-            if let Some(r) = &s.key_groups {
-                let groups = match req.key_groups {
-                    0 => 256,
-                    n => n,
-                };
-                if s.primary_key.is_empty() || r.first > r.last || r.last >= groups {
-                    return Err(JobError::config(format!(
-                        "stream {} keeps key groups {} to {} of {groups}, which needs a primary key and a range within them",
-                        s.name, r.first, r.last
-                    )));
-                }
             }
             declared.push(if s.arrow_schema.is_empty() {
                 None
@@ -560,14 +609,9 @@ impl Plan {
             inbound,
             sink,
             writer_lanes,
-            key_groups: match req.key_groups {
-                0 => 256,
-                n => n,
-            },
-            routed: sinks
-                .iter()
-                .map(|s| s.routing() == Routing::KeyGroup)
-                .collect(),
+            key_groups,
+            layout,
+            exchanges,
             keep: sinks
                 .iter()
                 .map(|s| s.key_groups.as_ref().map(|r| (r.first, r.last)))
@@ -669,7 +713,7 @@ fn check_transform(req: &StartJobRequest) -> Result<Option<Transform>, JobError>
         return Err(JobError::config("the transform has no SQL"));
     }
     for s in &req.streams {
-        if s.soft_deletes || s.holds.is_some() || s.routing != 0 || !s.table.is_empty() {
+        if s.soft_deletes || s.holds.is_some() || s.exchange.is_some() || !s.table.is_empty() {
             return Err(JobError::config(format!(
                 "stream {} is a transform's input, and has the destination's settings, \
                  which are its outputs'",
@@ -776,6 +820,13 @@ pub(crate) mod tests {
         StateSnapshot, StreamPlan, Transform,
     };
     use prost::Message as _;
+
+    /// An exchange by these columns before the writer.
+    pub(crate) fn exchange_by(columns: &[&str]) -> Option<openetl_proto::engine::v1::Exchange> {
+        Some(openetl_proto::engine::v1::Exchange {
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+        })
+    }
 
     fn edge(id: &str, dir: EdgeDirection, streams: &[&str]) -> Edge {
         Edge {
@@ -1189,7 +1240,7 @@ pub(crate) mod tests {
             ),
             (
                 "stream b is a transform's input",
-                Box::new(|r| r.streams[1].routing = Routing::KeyGroup as i32),
+                Box::new(|r| r.streams[1].exchange = exchange_by(&["id"])),
             ),
             (
                 "expected output \"d\" isn't an output",
@@ -1289,6 +1340,28 @@ pub(crate) mod tests {
         }
     }
 
+    /// An exchange before the writer is by columns of the stream's primary
+    /// key, which meet the writer's need for all of them.
+    #[test]
+    fn an_exchange_is_by_columns_of_the_primary_key() {
+        let mut req = request(&["a"]);
+        req.streams[0].primary_key = vec!["id".into(), "at".into()];
+        req.streams[0].exchange = exchange_by(&["at"]);
+        let p = Plan::from_request(req.clone()).unwrap();
+        assert_eq!(p.exchanges, [Some(Exchange { key: vec![1] })]);
+        assert_eq!(
+            p.exchanges[0]
+                .as_ref()
+                .unwrap()
+                .columns(&["ID".into(), "AT".into()]),
+            ["AT"]
+        );
+        for columns in [&[][..], &["x"], &["id", "id"]] {
+            req.streams[0].exchange = exchange_by(columns);
+            assert!(Plan::from_request(req.clone()).is_err(), "{columns:?}");
+        }
+    }
+
     /// A request from a runner that predates outputs: the streams are what
     /// the destination gets, as before.
     #[test]
@@ -1339,8 +1412,15 @@ pub(crate) mod tests {
             ),
             ("an edge on lane 1", Box::new(|r| r.edges[0].lane = 1)),
             (
-                "routed by key group without a key",
-                Box::new(|r| r.streams[0].routing = Routing::KeyGroup as i32),
+                "exchanged by key group without a key",
+                Box::new(|r| r.streams[0].exchange = exchange_by(&["id"])),
+            ),
+            (
+                "more lanes than key groups",
+                Box::new(|r| {
+                    *r = lanes_request(&["a", "b"], 4, 2);
+                    r.key_groups = 2;
+                }),
             ),
             (
                 "restored snapshot",

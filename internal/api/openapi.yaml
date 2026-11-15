@@ -4548,6 +4548,29 @@ components:
             description: |-
                 A line of a sync's log, from the runner, the engine, the connectors or
                  dbt.
+        Partitioning:
+            type: object
+            properties:
+                kind:
+                    enum:
+                        - PARTITIONING_KIND_UNSPECIFIED
+                        - PARTITIONING_KIND_NONE
+                        - PARTITIONING_KIND_SPLITS
+                        - PARTITIONING_KIND_KEY_GROUP
+                        - PARTITIONING_KIND_ONE_LANE
+                    type: string
+                    format: enum
+                columns:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        With splits and key_group: rows with equal values of these columns are
+                         on one lane.
+            description: |-
+                Partitioning is how an edge of a job's dataflow spreads its rows over the
+                 lanes of the operator it feeds. A partitioning by columns K meets an
+                 operator's need for columns J when K is a subset of J.
         PausePipelineRequest:
             type: object
             properties:
@@ -5036,6 +5059,43 @@ components:
                          where the field is unset.
                 after:
                     type: string
+        PlanOperator:
+            type: object
+            properties:
+                kind:
+                    enum:
+                        - PLAN_OPERATOR_KIND_UNSPECIFIED
+                        - PLAN_OPERATOR_KIND_STATEMENT
+                        - PLAN_OPERATOR_KIND_WRITER
+                    type: string
+                    format: enum
+                line:
+                    type: integer
+                    description: A statement's place in transform.sql, counting from 1.
+                    format: uint32
+                column:
+                    type: integer
+                    format: uint32
+                needs:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        What it needs of the edge: that rows with equal values of these
+                         columns are on one of its lanes. Empty: nothing. A writer needs a keyed
+                         stream's primary key.
+                exchange:
+                    type: boolean
+                    description: |-
+                        The rows are exchanged by key group on needs before it, since the
+                         edge's partitioning doesn't meet them.
+                partitioning:
+                    allOf:
+                        - $ref: '#/components/schemas/Partitioning'
+                    description: The edge's, after the exchange if there is one.
+            description: |-
+                PlanOperator is an operator a stream's rows pass on their way to the
+                 destination, and the edge that feeds it.
         PlanWarning:
             type: object
             properties:
@@ -5631,7 +5691,9 @@ components:
                         type: string
                     description: |-
                         The columns its rows are exchanged by, by key group, before its
-                         operator. Empty: none, and it runs in the lane that read them.
+                         operator: what its operator needs, where the partitioning of the stream
+                         it reads doesn't meet it. Empty: none, and it runs in the lane that read
+                         them.
                 operator:
                     type: string
                     description: Its stateful operator's ID; empty for a row-wise statement.
@@ -5700,6 +5762,20 @@ components:
                     description: |-
                         Its entry in destination.tables; empty: its name, through
                          destination.naming.
+                partitioning:
+                    allOf:
+                        - $ref: '#/components/schemas/Partitioning'
+                    description: |-
+                        How its source spreads its rows over lanes as it reads them; for a
+                         statement's output, the source of the stream the statement reads.
+                operators:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PlanOperator'
+                    description: |-
+                        The operators its rows pass on their way to the destination, in order,
+                         ending with the writer. An exchange sits only before an operator whose
+                         need the edge that feeds it doesn't meet.
         StreamSchema:
             type: object
             properties:

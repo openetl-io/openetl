@@ -252,9 +252,12 @@ workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
   streams:
     customers  merge  exactly_once      exact replay
     orders     merge  effectively_once  superset replay, written with merge
+  partitioning:
+    customers  split by id -> writer, needs id
+    orders     split by id -> writer, needs id
 ```
 
-The plan leaves the source and destination unchanged and creates the pipeline. It lists each stream's write mode, [delivery guarantee](./delivery.md) and reason. A guarantee below `delivery.require` appears under `problems`. Such a problem prevents `openetl apply` from applying the file.
+The plan leaves the source and destination unchanged and creates the pipeline. It lists each stream's write mode, [delivery guarantee](./delivery.md) and reason. The `partitioning` section shows that the source splits both tables by their primary key, so no rows move between lanes on the way to the destination. [Partitioning in the plan](./index.md#partitioning-in-the-plan) explains it. A guarantee below `delivery.require` appears under `problems`. Such a problem prevents `openetl apply` from applying the file.
 
 ## 8. Apply
 

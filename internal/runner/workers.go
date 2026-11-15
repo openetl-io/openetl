@@ -994,11 +994,11 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 	return a, nil
 }
 
-// oneWorker says one worker reads all of s's splits: the destination's
-// stream it becomes, itself or a SQL transform's output from it, is an
-// overwrite, whose read one pump ends, or keyed by a key its splits don't
-// keep together, whose rows must meet on one writer lane. An output's key
-// is its stream's, as its statement keeps it, or none.
+// oneWorker says one worker reads all of s's splits: a destination's stream
+// it becomes, itself or a SQL transform's output from it, is an overwrite,
+// whose read one pump ends, or has an exchange before its writer, which
+// runs inside one engine. An output's partitioning is its stream's past
+// the statement.
 func (j *Job) oneWorker(s Stream) bool {
 	if j.SQL == nil {
 		return s.Mode == destination.Overwrite || j.keyGrouped(s)
@@ -1008,7 +1008,7 @@ func (j *Job) oneWorker(s Stream) bool {
 			return true
 		}
 	}
-	return j.keyGrouped(s)
+	return false
 }
 
 // runFleet runs the attempt's epochs on its workers.
