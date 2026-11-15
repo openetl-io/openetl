@@ -148,6 +148,6 @@ Held values:
 Quarantined rows:
 
 - The **Quarantined** counts on a pipeline's **Overview**, its **Syncs** and **Checkpoints** tabs, and a sync's page give the rows that OpenETL did not write.
-- The rows are in the data plane's object storage, under `_quarantine/` next to the pipeline's checkpoints. Each stream has one file of JSON lines for each commit that quarantined its rows. Each line has the stream, the reason and the record. OpenETL keeps the files of every commit and deletes the files of commits that failed.
+- The rows are in the data plane's object storage, under `_quarantine/` next to the pipeline's checkpoints, in files of JSON lines. A commit has a file for each of the job's lanes (the parts of the job that read in parallel) that quarantined rows of a stream: `STREAM.jsonl` from the first lane, and `STREAM.N.jsonl` from lane `N`. Read all of a commit's files for the stream. Each line has the stream, the reason and the record. OpenETL keeps the files of every commit and deletes the files of commits that failed.
 - If a stream quarantines a large share of its rows, the **Quarantine** incident opens, and its **Next steps** name the newest file.
 - The `openetl.job.rows.quarantined` metric counts quarantined rows.
