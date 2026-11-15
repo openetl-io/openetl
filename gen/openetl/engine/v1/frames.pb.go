@@ -51,11 +51,16 @@ const (
 	// From the engine only: a BATCH of patches, as
 	// openetl.connector.v1.WriteBatch.patch describes.
 	FrameKind_FRAME_KIND_PATCH FrameKind = 8
+	// To the engine only, for a stream with event time (StreamPlan.event_time).
+	FrameKind_FRAME_KIND_SPLIT FrameKind = 9
+	// Between a lane and the lanes it sends to, in one engine or another's: a
+	// sender's watermark of the stream, in order with what it sends.
+	FrameKind_FRAME_KIND_WATERMARK FrameKind = 10
 	// Between engines only: the first frame each way on a connection.
-	FrameKind_FRAME_KIND_MESH_HELLO FrameKind = 9
+	FrameKind_FRAME_KIND_MESH_HELLO FrameKind = 11
 	// Between engines only: where the frames after it go, until the next
 	// ROUTE.
-	FrameKind_FRAME_KIND_ROUTE FrameKind = 10
+	FrameKind_FRAME_KIND_ROUTE FrameKind = 12
 )
 
 // Enum value maps for FrameKind.
@@ -69,8 +74,10 @@ var (
 		5:  "FRAME_KIND_SCHEMA_CHANGE",
 		7:  "FRAME_KIND_END_OF_STREAM",
 		8:  "FRAME_KIND_PATCH",
-		9:  "FRAME_KIND_MESH_HELLO",
-		10: "FRAME_KIND_ROUTE",
+		9:  "FRAME_KIND_SPLIT",
+		10: "FRAME_KIND_WATERMARK",
+		11: "FRAME_KIND_MESH_HELLO",
+		12: "FRAME_KIND_ROUTE",
 	}
 	FrameKind_value = map[string]int32{
 		"FRAME_KIND_UNSPECIFIED":   0,
@@ -81,8 +88,10 @@ var (
 		"FRAME_KIND_SCHEMA_CHANGE": 5,
 		"FRAME_KIND_END_OF_STREAM": 7,
 		"FRAME_KIND_PATCH":         8,
-		"FRAME_KIND_MESH_HELLO":    9,
-		"FRAME_KIND_ROUTE":         10,
+		"FRAME_KIND_SPLIT":         9,
+		"FRAME_KIND_WATERMARK":     10,
+		"FRAME_KIND_MESH_HELLO":    11,
+		"FRAME_KIND_ROUTE":         12,
 	}
 )
 
@@ -329,6 +338,116 @@ func (*EndOfStream) Descriptor() ([]byte, []int) {
 	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{4}
 }
 
+// Split is about one of the stream's splits on the edge. The stream's ROWS
+// and BATCH frames after it on the edge are the split's, until the next
+// Split of the stream. The first Split of a split on the edge joins it to the
+// lane; the edge carries every split of the lane's from the start of the
+// read, and a split it adds after it joins the lane of the split it came
+// from.
+type Split struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// The split's watermark from here is at least this, in microseconds since
+	// the Unix epoch: as the restored record has it, on its first Split, or
+	// an advance the runner makes, as when it's idle. The largest int64 is
+	// the end of its input. Unset: unchanged.
+	Watermark     *int64 `protobuf:"varint,2,opt,name=watermark,proto3,oneof" json:"watermark,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Split) Reset() {
+	*x = Split{}
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Split) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Split) ProtoMessage() {}
+
+func (x *Split) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Split.ProtoReflect.Descriptor instead.
+func (*Split) Descriptor() ([]byte, []int) {
+	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Split) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Split) GetWatermark() int64 {
+	if x != nil && x.Watermark != nil {
+		return *x.Watermark
+	}
+	return 0
+}
+
+// Watermark says no row of the stream the sender sends after it is earlier
+// than micros, but a late one. A sender's never goes back.
+type Watermark struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Microseconds since the Unix epoch; the largest int64 is the end of its
+	// input.
+	Micros        int64 `protobuf:"varint,1,opt,name=micros,proto3" json:"micros,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Watermark) Reset() {
+	*x = Watermark{}
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Watermark) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Watermark) ProtoMessage() {}
+
+func (x *Watermark) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Watermark.ProtoReflect.Descriptor instead.
+func (*Watermark) Descriptor() ([]byte, []int) {
+	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *Watermark) GetMicros() int64 {
+	if x != nil {
+		return x.Micros
+	}
+	return 0
+}
+
 // MeshHello opens a connection from one engine of an attempt to another,
 // which carries the dialing engine's lanes' frames to the other's writer
 // lanes. The dialer's says which engine it is and carries the attempt's
@@ -352,7 +471,7 @@ type MeshHello struct {
 
 func (x *MeshHello) Reset() {
 	*x = MeshHello{}
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[5]
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -364,7 +483,7 @@ func (x *MeshHello) String() string {
 func (*MeshHello) ProtoMessage() {}
 
 func (x *MeshHello) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[5]
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -377,7 +496,7 @@ func (x *MeshHello) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MeshHello.ProtoReflect.Descriptor instead.
 func (*MeshHello) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{5}
+	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *MeshHello) GetAttempt() string {
@@ -419,7 +538,7 @@ func (x *MeshHello) GetRefused() string {
 // from one of the dialer's lanes to one of the listener's writer lanes,
 // each by its index in the attempt. Only frames of streams with an exchange
 // follow, their stream an index into the destination's streams: BATCH,
-// SCHEMA_CHANGE, BARRIER and END_OF_STREAM. The dialer closes the
+// SCHEMA_CHANGE, BARRIER, WATERMARK and END_OF_STREAM. The dialer closes the
 // connection once each of its lanes has ended every such stream on each of
 // the listener's writer lanes; closed before, it fails the job.
 type Route struct {
@@ -432,7 +551,7 @@ type Route struct {
 
 func (x *Route) Reset() {
 	*x = Route{}
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[6]
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +563,7 @@ func (x *Route) String() string {
 func (*Route) ProtoMessage() {}
 
 func (x *Route) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_frames_proto_msgTypes[6]
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +576,7 @@ func (x *Route) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Route.ProtoReflect.Descriptor instead.
 func (*Route) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{6}
+	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Route) GetLane() uint32 {
@@ -487,7 +606,14 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\"1\n" +
 	"\fSchemaChange\x12!\n" +
 	"\farrow_schema\x18\x01 \x01(\fR\varrowSchema\"\r\n" +
-	"\vEndOfStream\"\x8f\x01\n" +
+	"\vEndOfStream\"H\n" +
+	"\x05Split\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
+	"\twatermark\x18\x02 \x01(\x03H\x00R\twatermark\x88\x01\x01B\f\n" +
+	"\n" +
+	"_watermark\"#\n" +
+	"\tWatermark\x12\x16\n" +
+	"\x06micros\x18\x01 \x01(\x03R\x06micros\"\x8f\x01\n" +
 	"\tMeshHello\x12\x18\n" +
 	"\aattempt\x18\x01 \x01(\tR\aattempt\x12\x1e\n" +
 	"\n" +
@@ -499,7 +625,7 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x05Route\x12\x12\n" +
 	"\x04lane\x18\x01 \x01(\rR\x04lane\x12\x1f\n" +
 	"\vwriter_lane\x18\x02 \x01(\rR\n" +
-	"writerLane*\xa2\x02\n" +
+	"writerLane*\xd2\x02\n" +
 	"\tFrameKind\x12\x1a\n" +
 	"\x16FRAME_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10FRAME_KIND_HELLO\x10\x01\x12\x14\n" +
@@ -508,10 +634,12 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x12FRAME_KIND_BARRIER\x10\x04\x12\x1c\n" +
 	"\x18FRAME_KIND_SCHEMA_CHANGE\x10\x05\x12\x1c\n" +
 	"\x18FRAME_KIND_END_OF_STREAM\x10\a\x12\x14\n" +
-	"\x10FRAME_KIND_PATCH\x10\b\x12\x19\n" +
-	"\x15FRAME_KIND_MESH_HELLO\x10\t\x12\x14\n" +
-	"\x10FRAME_KIND_ROUTE\x10\n" +
-	"\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
+	"\x10FRAME_KIND_PATCH\x10\b\x12\x14\n" +
+	"\x10FRAME_KIND_SPLIT\x10\t\x12\x18\n" +
+	"\x14FRAME_KIND_WATERMARK\x10\n" +
+	"\x12\x19\n" +
+	"\x15FRAME_KIND_MESH_HELLO\x10\v\x12\x14\n" +
+	"\x10FRAME_KIND_ROUTE\x10\f\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_openetl_engine_v1_frames_proto_rawDescOnce sync.Once
@@ -526,7 +654,7 @@ func file_openetl_engine_v1_frames_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_engine_v1_frames_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_openetl_engine_v1_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_openetl_engine_v1_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_openetl_engine_v1_frames_proto_goTypes = []any{
 	(FrameKind)(0),       // 0: openetl.engine.v1.FrameKind
 	(*Hello)(nil),        // 1: openetl.engine.v1.Hello
@@ -534,17 +662,19 @@ var file_openetl_engine_v1_frames_proto_goTypes = []any{
 	(*Barrier)(nil),      // 3: openetl.engine.v1.Barrier
 	(*SchemaChange)(nil), // 4: openetl.engine.v1.SchemaChange
 	(*EndOfStream)(nil),  // 5: openetl.engine.v1.EndOfStream
-	(*MeshHello)(nil),    // 6: openetl.engine.v1.MeshHello
-	(*Route)(nil),        // 7: openetl.engine.v1.Route
-	(*v1.Epoch)(nil),     // 8: openetl.connector.v1.Epoch
+	(*Split)(nil),        // 6: openetl.engine.v1.Split
+	(*Watermark)(nil),    // 7: openetl.engine.v1.Watermark
+	(*MeshHello)(nil),    // 8: openetl.engine.v1.MeshHello
+	(*Route)(nil),        // 9: openetl.engine.v1.Route
+	(*v1.Epoch)(nil),     // 10: openetl.connector.v1.Epoch
 }
 var file_openetl_engine_v1_frames_proto_depIdxs = []int32{
-	8, // 0: openetl.engine.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	10, // 0: openetl.engine.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
+	1,  // [1:1] is the sub-list for method output_type
+	1,  // [1:1] is the sub-list for method input_type
+	1,  // [1:1] is the sub-list for extension type_name
+	1,  // [1:1] is the sub-list for extension extendee
+	0,  // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_frames_proto_init() }
@@ -552,13 +682,14 @@ func file_openetl_engine_v1_frames_proto_init() {
 	if File_openetl_engine_v1_frames_proto != nil {
 		return
 	}
+	file_openetl_engine_v1_frames_proto_msgTypes[5].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_engine_v1_frames_proto_rawDesc), len(file_openetl_engine_v1_frames_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

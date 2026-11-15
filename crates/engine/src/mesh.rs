@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use openetl_proto::connector::v1::ErrorCode;
-use openetl_proto::engine::v1::{Barrier, FrameKind, MeshHello, Route, StartJobRequest};
+use openetl_proto::engine::v1::{Barrier, FrameKind, MeshHello, Route, StartJobRequest, Watermark};
 use prost::Message;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
@@ -234,6 +234,11 @@ pub fn wire(out: Out) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
             index(s)?,
             Barrier { epoch: Some(e) }.encode_to_vec(),
         ),
+        Out::Watermark(s, micros) => (
+            FrameKind::Watermark,
+            index(s)?,
+            Watermark { micros }.encode_to_vec(),
+        ),
         Out::End(s) => (FrameKind::EndOfStream, index(s)?, Vec::new()),
         Out::Held(..) | Out::Patch(..) => {
             return Err(JobError::internal(
@@ -265,6 +270,12 @@ pub fn unwire(f: frame::Frame, generation: u64) -> Result<Out, String> {
             }
             Ok(Out::Barrier(s, e))
         }
+        FrameKind::Watermark => Ok(Out::Watermark(
+            s,
+            Watermark::decode(f.payload.as_slice())
+                .map_err(|e| e.to_string())?
+                .micros,
+        )),
         FrameKind::EndOfStream => Ok(Out::End(s)),
         k => Err(format!("a {} frame", k.as_str_name())),
     }

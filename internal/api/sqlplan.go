@@ -39,6 +39,7 @@ func (s *Server) planSQL(ctx context.Context, q *db.Queries, p *planned, cat *ap
 		out.Notes = append(out.Notes, fmt.Sprintf("transform.sql wasn't planned: source %q hasn't been discovered, so its streams' schemas aren't known", p.v.spec.GetSource().GetRef()))
 		return nil, nil
 	}
+	out.Notes = append(out.Notes, plan.EventTimes(p.v.spec, cat)...)
 	history, err := s.inputSchemas(ctx, q, p.id)
 	if err != nil {
 		return nil, err

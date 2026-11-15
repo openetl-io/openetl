@@ -28,6 +28,9 @@ const (
 	emitResume
 	emitComplete
 	emitDone // Read returned without error
+	// Of a stream with event time: the split has had nothing to read for
+	// its idle time, at at.
+	emitIdle
 )
 
 type emit struct {
@@ -39,6 +42,7 @@ type emit struct {
 	encoded arrowipc.Encoded // an emitBatch without batch
 	state   []byte
 	added   []source.Split
+	at      time.Time // emitIdle's
 }
 
 // splitPos is where one of a stream's splits is in the read.
@@ -71,6 +75,21 @@ type splitPos struct {
 	// When it first emitted, and whether the source refused to split it.
 	started time.Time
 	unsplit bool
+	// A stream with event time: the lane it's read on, which it joins as
+	// the read starts or as it's added; -1 otherwise. Its watermark as the
+	// attempt starts it, and when it last emitted rows.
+	home     int
+	mark     *int64
+	lastRead time.Time
+}
+
+// laneOf is the lane the split is on, or will be read on; -1 if neither is
+// known yet.
+func (sp *splitPos) laneOf() int {
+	if sp.lane >= 0 {
+		return sp.lane
+	}
+	return sp.home
 }
 
 type streamPos struct {
@@ -91,6 +110,8 @@ type streamPos struct {
 	// on every lane at once.
 	inTurn bool
 	turn   int
+	// Nil: it has no event time.
+	timed *EventTime
 }
 
 type laneHold struct {
@@ -200,6 +221,9 @@ type sourcePump struct {
 	done          bool
 	forceTimer    *time.Timer
 	forceC        <-chan time.Time
+	// Which lane the next split with event time is read on.
+	homes      int
+	continuous bool
 	// Counts what the source emitted, for the coordinator to skip epochs
 	// that would hold nothing.
 	emitted atomic.Uint64
@@ -244,6 +268,7 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits m
 		known:      make(map[string]bool, len(job.Streams)),
 		meter:      job.Meter,
 		forceAfter: job.Settings.ResumePointTimeout,
+		continuous: job.Continuous,
 		progress:   job.Progress,
 		log:        job.Logger,
 	}
@@ -256,9 +281,13 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits m
 	p.maxBytes.Store(job.Settings.CommitMaxBytes)
 	for _, s := range job.Streams {
 		p.order = append(p.order, s.Name)
-		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes), adding: map[string]int{}, inTurn: job.inTurn(s)}
+		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes), adding: map[string]int{}, inTurn: job.inTurn(s), timed: s.EventTime}
 		for _, sp := range splits[s.Name] {
-			pos := &splitPos{id: sp.ID, lane: st.firstLane(), resume: sp.State, from: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced}
+			pos := &splitPos{id: sp.ID, lane: st.firstLane(), resume: sp.State, from: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced, home: -1, mark: sp.Watermark, lastRead: time.Now()}
+			if st.timed != nil && !sp.Complete && !st.ended {
+				pos.home = p.homes % p.lanes
+				p.homes++
+			}
 			st.splits = append(st.splits, pos)
 			st.byID[sp.ID] = pos
 		}
@@ -366,6 +395,15 @@ func (p *sourcePump) run() error {
 		defer t.Stop()
 		resplit = t.C
 	}
+	if err := p.join(); err != nil {
+		return err
+	}
+	var idle <-chan time.Time
+	if every := p.idleEvery(); every > 0 {
+		t := time.NewTicker(every)
+		defer t.Stop()
+		idle = t.C
+	}
 	for {
 		// Barrier requests first, so ready requests and emits keep one order.
 		select {
@@ -391,6 +429,10 @@ func (p *sourcePump) run() error {
 			}
 		case <-resplit:
 			p.resplit()
+		case now := <-idle:
+			if err := p.idle(now); err != nil {
+				return err
+			}
 		case a := <-p.resplitting:
 			p.resplitting = nil
 			a.sp.unsplit = !a.accepted
@@ -413,6 +455,12 @@ func (p *sourcePump) handle(e emit) error {
 			return err
 		}
 	}
+	// A split reads when its rows come, though they may wait at a barrier.
+	if st := p.streams[e.stream]; st != nil && st.timed != nil && (e.kind == emitRows || e.kind == emitBatch) {
+		if sp := st.byID[e.split]; sp != nil {
+			sp.lastRead = time.Now()
+		}
+	}
 	return p.route(e)
 }
 
@@ -423,9 +471,13 @@ func (st *streamPos) firstLane() int {
 	return -1
 }
 
-// assign gives a split that's starting to emit the lane emitting the least.
+// assign gives a split that's starting to emit the lane emitting the least,
+// or the lane a split with event time joined.
 func (p *sourcePump) assign(sp *splitPos) {
-	sp.lane = slices.Index(p.load, slices.Min(p.load))
+	sp.lane = sp.home
+	if sp.lane < 0 {
+		sp.lane = slices.Index(p.load, slices.Min(p.load))
+	}
 	p.load[sp.lane]++
 	sp.started = time.Now()
 }
@@ -494,8 +546,8 @@ func (p *sourcePump) route(e emit) error {
 		if sp.lane < 0 && !sp.complete && (e.kind == emitRows || e.kind == emitBatch) {
 			p.assign(sp)
 		}
-		if p.pending != 0 && sp.placed && sp.lane >= 0 && !st.lanes[sp.lane].placed {
-			lane = sp.lane
+		if l := sp.laneOf(); p.pending != 0 && sp.placed && l >= 0 && !st.lanes[l].placed {
+			lane = l
 		}
 	}
 	if lane < 0 {
@@ -509,6 +561,14 @@ func (p *sourcePump) route(e emit) error {
 }
 
 func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) error {
+	if e.kind == emitIdle {
+		// A row the split read since it was found idle, which waited at a
+		// barrier with it, ends its idle time.
+		if sp.complete || e.at.Sub(sp.lastRead) < st.timed.idle() {
+			return nil
+		}
+		return p.mark(name, st, sp, st.timed.idleAt(e.at))
+	}
 	if sp.complete {
 		return fmt.Errorf("runner: source emitted on %s after completing it", splitName(name, sp.id))
 	}
@@ -519,15 +579,19 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 			lane = st.turn % p.lanes
 			st.turn++
 		}
-		f := Frame{Kind: FrameRows, Lane: lane, Stream: name, Rows: e.rows}
+		var split string
+		if st.timed != nil {
+			split = sp.id
+		}
+		f := Frame{Kind: FrameRows, Lane: lane, Stream: name, Split: split, Rows: e.rows}
 		rows, bytes := int64(len(e.rows)), int64(0)
 		switch {
 		case e.batch != nil:
-			f = Frame{Kind: FrameBatch, Lane: lane, Stream: name, Batch: e.batch}
+			f = Frame{Kind: FrameBatch, Lane: lane, Stream: name, Split: split, Batch: e.batch}
 			rows += e.batch.NumRows()
 			bytes += util.TotalRecordSize(e.batch)
 		case e.kind == emitBatch:
-			f = Frame{Kind: FrameBatch, Lane: lane, Stream: name, IPC: e.encoded.Bytes}
+			f = Frame{Kind: FrameBatch, Lane: lane, Stream: name, Split: split, IPC: e.encoded.Bytes}
 			rows += e.encoded.Rows
 			bytes += e.encoded.Size
 		}
@@ -556,9 +620,16 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 	// A resume point, which completion also is.
 	before := sp.placed
 	sp.resume, sp.dirty, sp.forced, sp.rereading, sp.active = e.state, false, false, false, true
-	added, err := p.add(name, st, e.added, p.pending != 0 && before)
+	added, err := p.add(name, st, sp, e.added, p.pending != 0 && before)
 	if err != nil {
 		return err
+	}
+	// A split that completes moves on as an idle one does, its read in
+	// this sync over, once the splits it adds have joined its lane.
+	if e.kind == emitComplete && st.timed != nil {
+		if err := p.mark(name, st, sp, st.timed.idleAt(time.Now())); err != nil {
+			return err
+		}
 	}
 	if p.pending == 0 {
 		return nil
@@ -579,14 +650,22 @@ func (p *sourcePump) apply(name string, st *streamPos, sp *splitPos, e emit) err
 	return nil
 }
 
-// add adds splits to a stream. later: they join after the pending barrier.
-func (p *sourcePump) add(name string, st *streamPos, splits []source.Split, later bool) ([]*splitPos, error) {
+// add adds splits to a stream, from split from. later: they join after the
+// pending barrier. A stream with event time reads them on from's lane,
+// which they join at once.
+func (p *sourcePump) add(name string, st *streamPos, from *splitPos, splits []source.Split, later bool) ([]*splitPos, error) {
 	var out []*splitPos
 	for _, s := range splits {
 		if st.byID[s.ID] != nil {
 			return nil, fmt.Errorf("runner: source added %s, which the stream already has", splitName(name, s.ID))
 		}
-		pos := &splitPos{id: s.ID, lane: st.firstLane(), resume: s.State, from: s.State, placed: later, later: later}
+		pos := &splitPos{id: s.ID, lane: st.firstLane(), resume: s.State, from: s.State, placed: later, later: later, home: -1, lastRead: time.Now()}
+		if st.timed != nil {
+			pos.home = from.laneOf()
+			if err := p.forward(Frame{Kind: FrameSplit, Lane: pos.home, Stream: name, Split: s.ID}); err != nil {
+				return nil, err
+			}
+		}
 		st.splits = append(st.splits, pos)
 		st.byID[s.ID] = pos
 		delete(st.adding, s.ID)
@@ -744,7 +823,7 @@ func (p *sourcePump) place(name string, sp *splitPos, forced bool) error {
 	st := p.streams[name]
 	sp.placed, sp.active = true, false
 	sp.forced = sp.forced || forced
-	p.splits[name] = append(p.splits[name], checkpoint.SplitState{ID: sp.id, State: sp.resume, Complete: sp.complete && !sp.forced, Forced: sp.forced, Reread: sp.reread})
+	p.splits[name] = append(p.splits[name], checkpoint.SplitState{ID: sp.id, State: sp.resume, Complete: sp.complete && !sp.forced, Forced: sp.forced, Reread: sp.reread, Watermark: sp.mark})
 	p.rows[name] += sp.rows
 	if p.worker && sp.rows > 0 {
 		lane := sp.lane
@@ -828,6 +907,86 @@ func (p *sourcePump) placeLane(name string, lane int) error {
 		}
 	}
 	return nil
+}
+
+// join has every split of a stream with event time join the lane it's read
+// on, with the watermark the attempt starts it at, before anything else of
+// its stream goes to the dataflow.
+func (p *sourcePump) join() error {
+	for _, name := range p.order {
+		for _, sp := range p.streams[name].splits {
+			if sp.home < 0 {
+				continue
+			}
+			if err := p.forward(Frame{Kind: FrameSplit, Lane: sp.home, Stream: name, Split: sp.id, Watermark: sp.mark}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// idleEvery is how often a continuous read's splits are checked for being
+// idle: a quarter of the least idle time of its streams read in the order
+// of their time; 0 for never, as without such streams.
+func (p *sourcePump) idleEvery() time.Duration {
+	if !p.continuous {
+		return 0
+	}
+	var every time.Duration
+	for _, st := range p.streams {
+		if st.timed == nil || st.timed.Held {
+			continue
+		}
+		if d := st.timed.idle() / 4; every == 0 || d < every {
+			every = d
+		}
+	}
+	if every == 0 {
+		return 0
+	}
+	return max(every, time.Millisecond)
+}
+
+// idle moves on each split of a stream read in the order of its time that
+// has had nothing to read for the stream's idle time, as an event of the
+// split: one waiting at a barrier is moved after it. Moves count as what
+// the source emitted, so an epoch records them.
+func (p *sourcePump) idle(now time.Time) error {
+	moved := false
+	for _, name := range p.order {
+		st := p.streams[name]
+		if st.timed == nil || st.timed.Held || st.ended {
+			continue
+		}
+		for _, sp := range slices.Clone(st.splits) {
+			if sp.complete || sp.laneOf() < 0 || now.Sub(sp.lastRead) < st.timed.idle() {
+				continue
+			}
+			if err := p.route(emit{kind: emitIdle, stream: name, split: sp.id, at: now}); err != nil {
+				return err
+			}
+			moved = true
+		}
+	}
+	if !moved {
+		return nil
+	}
+	p.emitted.Add(1)
+	if p.worker && !p.emitTold {
+		p.emitTold = true
+		return p.notify(event{kind: evEmitted, epoch: p.requested})
+	}
+	return nil
+}
+
+// mark raises a split's watermark to wm on its lane.
+func (p *sourcePump) mark(name string, st *streamPos, sp *splitPos, wm int64) error {
+	lane := sp.laneOf()
+	if st.timed == nil || lane < 0 {
+		return nil
+	}
+	return p.forward(Frame{Kind: FrameSplit, Lane: lane, Stream: name, Split: sp.id, Watermark: &wm})
 }
 
 func (p *sourcePump) forward(f Frame) error {

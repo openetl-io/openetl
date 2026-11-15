@@ -136,9 +136,9 @@ When the control plane cannot check the destination's capabilities or the source
 | `source.streams[].heldValue` | any value | Yes with `held: value` | None | With `held: value`, what held cells show; with `held: last`, what they show in rows the destination doesn't have yet. A value of the column's delivered type. Set alone, it means `held: value`. `held: null` takes none. |
 | `source.streams[].groups` | list of lists of column names | No | None | Columns held together, by their source names: holding one holds the rest. Each group has two columns or more. |
 | `source.streams[].typeChanges` | `refuse` or `allow` | No | `destination.typeChanges` | `destination.typeChanges` for this stream alone. With a SQL transform, for the stream as the destination gets it ([Settings and holds of outputs](#settings-and-holds-of-outputs)). |
-| `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it | The column that holds a row's event time, for a SQL transform's statements. It needs `transform.sql`. A column that the source's latest catalog doesn't list for the stream is a problem in the plan. |
+| `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it, and the stream has no watermark | The column that holds a row's event time, for a SQL transform's statements, and that the stream's watermark follows ([Event time and watermarks](#event-time-and-watermarks)). Its values are timestamps or dates. It needs `transform.sql`. A column that the source's latest catalog doesn't list for the stream is a problem in the plan. |
 | `source.streams[].watermark` | object | No | `delay: 0s` | How far behind the latest event time the stream's watermark stays. It needs `eventTime`. |
-| `source.streams[].watermark.delay` | duration, 0 or more | No | `0s` | The watermark trails the latest event time read from the stream by this much. |
+| `source.streams[].watermark.delay` | duration, 0 or more | No | `0s` | Each of the stream's splits has a watermark that trails the latest event time the split has read by this much. |
 | `source.streams[].columns` | map of column names to objects | No | None | Settings for single columns, by their source names |
 | `source.streams[].columns.NAME` | object | No | None | One column's settings. It sets a `type`, a `held` or a `heldValue`, or more than one. |
 | `source.streams[].columns.NAME.type` | `string` or `float64` | No | The decimal | For a column the source declares as a decimal: `string` delivers the source's text for the value, NaN included; `float64` delivers a double, which can lose digits, and keeps NaN and infinities. Setting it on any other column is a problem in the plan. |
@@ -397,6 +397,20 @@ On a changelog stream, such as one read with `cdc`:
 The engine quarantines a row that a statement cannot evaluate, such as a value that a cast cannot convert or arithmetic whose result does not fit its type, as one of the output's records, under `_quarantine/_outputs/` next to the pipeline's checkpoints, as it quarantines a row whose value does not fit its type. It writes the rest of the batch.
 
 Each output row keeps the `_openetl_id` of the row it comes from. Each row that `UNNEST` gives gets an `_openetl_id` of its own.
+
+### Event time and watermarks
+
+A stream with `eventTime` has a watermark: a time before which no more of the stream's rows are expected, except late ones. The engine keeps a watermark for each of the stream's splits, such as a partition or a key range.
+
+- A split's watermark is the latest event time that the split has read, less `watermark.delay`. It never goes back. A row with a null event time does not move it.
+- The engine moves the watermark this way only if the stream is read in the order of its event time: with `cdc` or `stream`, or with `incremental` and `cursor` set to the `eventTime` column. A stream read in another order, such as with `full_refresh`, holds each split's watermark until the split's read ends. The watermark is then the end of input. The next read of such a stream starts with no watermark.
+- In a continuous pipeline, a split that has read no rows for 1 minute is idle. Its watermark moves to the current time, less the delay, and keeps moving while the split is idle. If the split waits for a checkpoint's barrier, the move comes after the barrier.
+- When a split of a stream read in event-time order completes its read, its watermark moves to the current time, less the delay.
+- The stream's watermark in each of the job's lanes is the least of the watermarks of the splits that the lane reads. A lane without splits of the stream does not hold it back. The watermark of a statement's output is the least of the watermarks of the streams the statement reads.
+- Each checkpoint records each split's watermark. A job that restores a checkpoint starts each split at the recorded watermark. The next sync's read starts each split at the watermark its read ended with, and a split the source adds at the least of those watermarks.
+- If the `eventTime` column holds values other than timestamps or dates, the sync fails with `CONFIG_INVALID`.
+
+`openetl plan` has a note for each stream with event time. The note names the column and says how the stream's watermark moves. The `openetl.job.watermark` metric gives each stream's watermark ([Monitoring](../../self-host/monitoring.md#pipeline-signals)).
 
 ### Settings and holds of outputs
 

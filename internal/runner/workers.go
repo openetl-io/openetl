@@ -384,6 +384,15 @@ func mergeReady(r *Ready, s *attemptv1.Share) error {
 	first(&r.Schemas, got.Schemas)
 	first(&r.OutputSchemas, got.OutputSchemas)
 	first(&r.Delivered, got.Delivered)
+	for name, w := range got.Watermarks {
+		if r.Watermarks == nil {
+			r.Watermarks = map[string]map[string]int64{}
+		}
+		if r.Watermarks[name] == nil {
+			r.Watermarks[name] = map[string]int64{}
+		}
+		maps.Copy(r.Watermarks[name], w)
+	}
 	for name, h := range got.Holds {
 		if r.Holds == nil {
 			r.Holds = map[string]*ReadyHolds{}
@@ -442,11 +451,11 @@ func usageOf(m *resources.Meter) *attemptv1.Usage {
 }
 
 func positionOf(stream string, sp checkpoint.SplitState) *attemptv1.SplitPosition {
-	return &attemptv1.SplitPosition{Stream: stream, Split: &protocolv1.Split{Id: sp.ID, State: sp.State}, Complete: sp.Complete, Forced: sp.Forced, Reread: sp.Reread}
+	return &attemptv1.SplitPosition{Stream: stream, Split: &protocolv1.Split{Id: sp.ID, State: sp.State}, Complete: sp.Complete, Forced: sp.Forced, Reread: sp.Reread, Watermark: sp.Watermark}
 }
 
 func splitStateOf(p *attemptv1.SplitPosition) checkpoint.SplitState {
-	return checkpoint.SplitState{ID: p.GetSplit().GetId(), State: p.GetSplit().GetState(), Complete: p.GetComplete(), Forced: p.GetForced(), Reread: p.GetReread()}
+	return checkpoint.SplitState{ID: p.GetSplit().GetId(), State: p.GetSplit().GetState(), Complete: p.GetComplete(), Forced: p.GetForced(), Reread: p.GetReread(), Watermark: p.Watermark}
 }
 
 func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
@@ -964,6 +973,11 @@ func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, don
 		}
 		for _, sp := range splits {
 			out[er.GetStream()] = append(out[er.GetStream()], checkpoint.SplitState{ID: sp.ID, State: sp.State})
+		}
+	}
+	for _, s := range f.job.Streams {
+		if _, starts := f.job.startsRead(restored, done, s); starts && restored != nil {
+			out[s.Name] = carryMarks(s.EventTime, restored.Splits(s.Name), out[s.Name])
 		}
 	}
 	return out, got.GetResplits(), nil

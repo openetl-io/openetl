@@ -686,6 +686,159 @@ async fn a_listen_address_without_a_host_binds_every_address() {
     assert!(l.local_addr().unwrap().ip().is_unspecified());
 }
 
+/// A watermark crosses engines as it goes, and back as it came.
+#[test]
+fn a_watermark_crosses_as_its_frame() {
+    let frame = wire(Out::Watermark(1, 1234)).unwrap();
+    assert_eq!((frame.0, frame.1), (FrameKind::Watermark, 1));
+    let f = Frame {
+        kind: frame.0,
+        stream: frame.1,
+        payload: frame.2,
+    };
+    assert!(matches!(unwire(f, 1), Ok(Out::Watermark(1, 1234))));
+}
+
+/// Engine `me` of a mesh of two, a lane and a writer lane each, of stream
+/// e with event time from `floor`, whose statement writes c, exchanged by
+/// id.
+fn timed_mesh(me: usize, addrs: &[String], floor: Option<i64>) -> StartJobRequest {
+    let mut req = crate::dataflow::tests::timed_request(1, 1, false, floor);
+    let mesh = request(&[(1, 1), (1, 1)], me, addrs);
+    req.outputs[0].exchange = exchange_by(&["id"]);
+    req.first_lane = mesh.first_lane;
+    req.first_writer_lane = mesh.first_writer_lane;
+    req.attempt_writer_lanes = mesh.attempt_writer_lanes;
+    req.mesh = mesh.mesh;
+    req
+}
+
+/// The writer lane's watermark of `stream` in each Metrics event, with the
+/// epoch last ready before it.
+fn writer_marks(
+    events: &mut mpsc::Receiver<Result<EventsResponse, Status>>,
+    stream: &str,
+) -> Vec<(u64, Option<i64>)> {
+    let (mut n, mut out) = (0, Vec::new());
+    while let Ok(Ok(ev)) = events.try_recv() {
+        match ev.event {
+            Some(events_response::Event::EpochReady(r)) => n = r.epoch.unwrap().n,
+            Some(events_response::Event::Metrics(m)) => out.push((
+                n,
+                m.streams
+                    .iter()
+                    .find(|s| s.stream == stream)
+                    .and_then(|s| s.watermark),
+            )),
+            None => {}
+        }
+    }
+    out
+}
+
+/// Runs a mesh of two timed engines, each lane's frames as `feed` gives
+/// them, and returns each engine's writer lane's watermarks of c.
+async fn timed_run(
+    floor: Option<i64>,
+    feed: [Vec<(FrameKind, Vec<u8>)>; 2],
+) -> Vec<Vec<(u64, Option<i64>)>> {
+    let (ls, addrs) = listeners(2).await;
+    let mut es: Vec<Engine> = ls
+        .into_iter()
+        .enumerate()
+        .map(|(me, l)| start(timed_mesh(me, &addrs, floor), l, Duration::from_secs(10)))
+        .collect();
+    let drains: Vec<_> = es
+        .iter_mut()
+        .map(|e| drain(std::mem::take(&mut e.outs)))
+        .collect();
+    for (e, frames) in es.iter_mut().zip(feed) {
+        for (kind, payload) in frames {
+            put(&mut e.ins[0], kind, payload).await;
+        }
+        end(&mut e.ins[0]).await;
+    }
+    let mut out = Vec::new();
+    for (e, drains) in es.into_iter().zip(drains) {
+        for d in drains {
+            d.await.unwrap();
+        }
+        e.job.await.unwrap().unwrap();
+        let mut events = e.events;
+        out.push(writer_marks(&mut events, "c"));
+    }
+    out
+}
+
+/// A writer lane's watermark is the least of every lane of the attempt's,
+/// local and remote, aligned with their barriers: engine 0's lane says 200
+/// only past its barrier, which waits for engine 1's lane at 250, so at
+/// epoch 1 each writer lane is at 60, and past it at 200, never back.
+#[tokio::test]
+async fn a_watermark_crossing_engines_is_the_least_aligned_with_barriers() {
+    use crate::dataflow::tests::split;
+    use FrameKind as K;
+    let marks = timed_run(
+        Some(20),
+        [
+            vec![
+                (K::Split, split("a", Some(60))),
+                (K::Barrier, barrier(1, 1)),
+                (K::Split, split("a", Some(200))),
+                (K::Barrier, barrier(1, 2)),
+            ],
+            vec![
+                (K::Split, split("b", Some(250))),
+                (K::Barrier, barrier(1, 1)),
+                (K::Barrier, barrier(1, 2)),
+            ],
+        ],
+    )
+    .await;
+    for (engine, m) in marks.iter().enumerate() {
+        let at_1 = m.iter().find(|(n, _)| *n == 1).map(|(_, w)| *w);
+        assert_eq!(at_1, Some(Some(60)), "engine {engine}: {m:?}");
+        assert_eq!(
+            m.last().map(|(_, w)| *w),
+            Some(Some(200)),
+            "engine {engine}: {m:?}"
+        );
+        let ws: Vec<i64> = m.iter().filter_map(|(_, w)| *w).collect();
+        assert!(
+            ws.windows(2).all(|p| p[0] <= p[1]),
+            "engine {engine} went back: {m:?}"
+        );
+    }
+}
+
+/// A restored attempt's writer lanes start at the floor, and a lane of
+/// either engine below it holds none of them under it.
+#[tokio::test]
+async fn a_restore_keeps_the_floor_across_engines() {
+    use crate::dataflow::tests::split;
+    use FrameKind as K;
+    let marks = timed_run(
+        Some(100),
+        [
+            vec![
+                (K::Split, split("a", Some(60))),
+                (K::Barrier, barrier(1, 1)),
+            ],
+            vec![
+                (K::Split, split("b", Some(250))),
+                (K::Barrier, barrier(1, 1)),
+            ],
+        ],
+    )
+    .await;
+    for (engine, m) in marks.iter().enumerate() {
+        assert!(!m.is_empty(), "engine {engine} reported nothing");
+        for (_, w) in m {
+            assert_eq!(*w, Some(100), "engine {engine}: {m:?}");
+        }
+    }
+}
+
 /// An engine lost by another fails it with that engine's index in a
 /// PeerLost detail.
 #[tokio::test]

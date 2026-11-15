@@ -35,11 +35,16 @@ enum FrameKind {
   // From the engine only: a BATCH of patches, as
   // openetl.connector.v1.WriteBatch.patch describes.
   FRAME_KIND_PATCH = 8;
+  // To the engine only, for a stream with event time (StreamPlan.event_time).
+  FRAME_KIND_SPLIT = 9;
+  // Between a lane and the lanes it sends to, in one engine or another's: a
+  // sender's watermark of the stream, in order with what it sends.
+  FRAME_KIND_WATERMARK = 10;
   // Between engines only: the first frame each way on a connection.
-  FRAME_KIND_MESH_HELLO = 9;
+  FRAME_KIND_MESH_HELLO = 11;
   // Between engines only: where the frames after it go, until the next
   // ROUTE.
-  FRAME_KIND_ROUTE = 10;
+  FRAME_KIND_ROUTE = 12;
 }
 
 message Hello {
@@ -64,6 +69,29 @@ message SchemaChange {
 
 message EndOfStream {}
 
+// Split is about one of the stream's splits on the edge. The stream's ROWS
+// and BATCH frames after it on the edge are the split's, until the next
+// Split of the stream. The first Split of a split on the edge joins it to the
+// lane; the edge carries every split of the lane's from the start of the
+// read, and a split it adds after it joins the lane of the split it came
+// from.
+message Split {
+  string id = 1;
+  // The split's watermark from here is at least this, in microseconds since
+  // the Unix epoch: as the restored record has it, on its first Split, or
+  // an advance the runner makes, as when it's idle. The largest int64 is
+  // the end of its input. Unset: unchanged.
+  optional int64 watermark = 2;
+}
+
+// Watermark says no row of the stream the sender sends after it is earlier
+// than micros, but a late one. A sender's never goes back.
+message Watermark {
+  // Microseconds since the Unix epoch; the largest int64 is the end of its
+  // input.
+  int64 micros = 1;
+}
+
 // MeshHello opens a connection from one engine of an attempt to another,
 // which carries the dialing engine's lanes' frames to the other's writer
 // lanes. The dialer's says which engine it is and carries the attempt's
@@ -86,7 +114,7 @@ message MeshHello {
 // from one of the dialer's lanes to one of the listener's writer lanes,
 // each by its index in the attempt. Only frames of streams with an exchange
 // follow, their stream an index into the destination's streams: BATCH,
-// SCHEMA_CHANGE, BARRIER and END_OF_STREAM. The dialer closes the
+// SCHEMA_CHANGE, BARRIER, WATERMARK and END_OF_STREAM. The dialer closes the
 // connection once each of its lanes has ended every such stream on each of
 // the listener's writer lanes; closed before, it fails the job.
 message Route {

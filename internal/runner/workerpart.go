@@ -453,10 +453,11 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 	if len(lanes) == 0 || len(p.global) == 0 || p.t.Worker == 0 && p.global[0] != 0 {
 		return errs.New(errs.Internal, "runner: worker %d's assignment has %d lanes and writer lanes %v", p.t.Worker, len(lanes), p.global)
 	}
-	splits := map[string][]checkpoint.SplitState{}
+	splits, all := map[string][]checkpoint.SplitState{}, map[string][]checkpoint.SplitState{}
 	readers := map[string]map[uint32]bool{}
 	for _, s := range a.GetSplits() {
 		name := s.GetSplit().GetStream()
+		all[name] = append(all[name], splitStateOf(s.GetSplit()))
 		if readers[name] == nil {
 			readers[name] = map[uint32]bool{}
 		}
@@ -531,6 +532,7 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 	if x := a.GetExchange(); x != nil {
 		plan.Mesh, plan.Exchanges = p.mesh(a, x), job.exchanges(len(a.GetWriterLanes()))
 	}
+	plan.Floors = floors(job.Streams, all)
 
 	g, gctx := errgroup.WithContext(ctx)
 	events := make(chan event, 64)
@@ -781,7 +783,7 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 	r := e.ready
 	s := &attemptv1.Share{Epoch: epoch, Rows: e.rows, Ready: attempt.Ready{
 		Schemas: r.Schemas, Snapshots: r.Snapshots, Quarantine: r.Quarantine,
-		OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: r.Holds,
+		OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: r.Holds, Watermarks: r.Watermarks,
 	}.EpochReady(epoch)}
 	for _, name := range slices.Sorted(maps.Keys(e.splits)) {
 		for _, sp := range e.splits[name] {

@@ -374,6 +374,12 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		}
 		sp := streamPlan(plan, s, plan.Schemas[s.Name], !sql)
 		sp.ArrowSchema, sp.CursorField, sp.ReadStartMicros = declared, s.CursorField, plan.ReadStarts[s.Name]
+		if e := s.EventTime; e != nil {
+			sp.EventTime = &enginev1.EventTime{Column: e.Column, DelayMicros: e.Delay.Microseconds(), Held: e.Held}
+			if f, ok := plan.Floors[s.Name]; ok {
+				sp.EventTime.Floor = &f
+			}
+		}
 		req.Streams = append(req.Streams, sp)
 	}
 	sinkNames = names
@@ -488,6 +494,7 @@ func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
 	}
 	ready.Delivered = r.GetDelivered()
 	ready.Holds = attempt.HoldsOf(r.GetHolds())
+	ready.Watermarks = attempt.WatermarksOf(r.GetWatermarks())
 	return ready, nil
 }
 
@@ -654,6 +661,9 @@ func writeEdge(ctx context.Context, conn *net.UnixConn, lane int, gen uint64, na
 	fw := newFrameWriter(conn)
 	var buf bytes.Buffer
 	var err error
+	// By stream with event time: the split the engine takes its next batch
+	// to be of.
+	current := map[string]string{}
 	for {
 		var f runner.Frame
 		var ok bool
@@ -673,6 +683,18 @@ func writeEdge(ctx context.Context, conn *net.UnixConn, lane int, gen uint64, na
 			break
 		}
 		i, known := index[f.Stream]
+		if s, ok := current[f.Stream]; known && f.Kind != runner.FrameSplit && f.Kind != runner.FrameBarrier && f.Split != "" && (!ok || s != f.Split) {
+			b, err := proto.Marshal(&enginev1.Split{Id: f.Split})
+			if err != nil {
+				return err
+			}
+			if err := fw.write(enginev1.FrameKind_FRAME_KIND_SPLIT, i, b); err != nil {
+				return fmt.Errorf("engineclient: write edge %s: %w", edge, err)
+			}
+		}
+		if f.Split != "" {
+			current[f.Stream] = f.Split
+		}
 		var kind enginev1.FrameKind
 		var payload []byte
 		if known {
@@ -728,6 +750,9 @@ func encode(f runner.Frame, gen uint64, alloc memory.Allocator, buf *bytes.Buffe
 	case runner.FrameBarrier:
 		b, err := proto.Marshal(&enginev1.Barrier{Epoch: &protocolv1.Epoch{Generation: gen, N: f.Epoch}})
 		return enginev1.FrameKind_FRAME_KIND_BARRIER, b, err
+	case runner.FrameSplit:
+		b, err := proto.Marshal(&enginev1.Split{Id: f.Split, Watermark: f.Watermark})
+		return enginev1.FrameKind_FRAME_KIND_SPLIT, b, err
 	default:
 		return 0, nil, fmt.Errorf("engineclient: unexpected frame kind %d", f.Kind)
 	}
