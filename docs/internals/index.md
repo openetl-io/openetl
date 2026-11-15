@@ -63,7 +63,7 @@ An attempt ([`internal/runner`](../../internal/runner)) hosts connectors, drives
 The runner sits between the connectors and the engine. Its source pump is the source connector's emitter, and sends what the source reads to the engine's inbound edges. On each lane, the engine:
 
 - turns raw rows into Arrow, inferring each stream's schema from what it sees and only ever widening it, and coerces values to the types a source declares ([`crates/normalize`](../../crates/normalize));
-- sets aside the records it cannot take, with a reason and its code, as JSON lines under the pipeline's `_quarantine/` in object storage ([format](../reference/quarantine-files.md)), and counts them by cause in each epoch's report;
+- sets aside the records it cannot take, each with a reason and its code. They are JSON lines under the pipeline's `_quarantine/` in object storage ([format](../reference/quarantine-files.md)). It counts them by cause in each epoch's report;
 - applies the pipeline's schema policy, gives tables and columns their destination names, which never change once given, and adds the metadata columns, `_openetl_id` among them;
 - holds back the columns and cells the destination can't take, and keeps their values for a later release;
 - hands the rows to writer lanes, which write to the runner, with barriers in band, or stage Parquet files, for a destination that loads them and for the built-in `parquet` destination.

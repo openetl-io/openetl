@@ -73,7 +73,7 @@ Choose thresholds from each pipeline's schedule, commit interval and delivery de
 
 Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/index.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
 
-If the quarantine rate rises, run `openetl quarantine PIPELINE --since 1h`. It lists the files of quarantined rows, and adds up their rows by stream, column and code. A webhook for `stream.quarantined` gets the same files and counts after each commit. The metric and the event never carry the values of a row. The files stay in the runners' `--checkpoints` store until the pipeline's `quarantine.retention` deletes them. [Quarantine files](../reference/quarantine-files.md) gives their format, and an object store rule that deletes them.
+If the quarantine rate rises, run `openetl quarantine --since 1h PIPELINE`. It lists the files of quarantined rows, and adds up their rows by stream, column and code. A webhook for `stream.quarantined` gets the same files and counts after each commit. The metric and the event never carry the values of a row. The files stay in the runners' `--checkpoints` store until the pipeline's `quarantine.retention` deletes them. [Quarantine files](../reference/quarantine-files.md) gives their format, and an object store rule that deletes them.
 
 ## Follow a failure
 

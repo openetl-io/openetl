@@ -966,9 +966,9 @@ type CheckpointOutput struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// As CheckpointStream's.
-	Holds           []*CheckpointHold `protobuf:"bytes,2,rep,name=holds,proto3" json:"holds,omitempty"`
-	HeldCells       uint64            `protobuf:"varint,3,opt,name=held_cells,json=heldCells,proto3" json:"held_cells,omitempty"`
-	QuarantineFiles []*QuarantineFile `protobuf:"bytes,4,rep,name=quarantine_files,json=quarantineFiles,proto3" json:"quarantine_files,omitempty"`
+	Holds           []*CheckpointHold           `protobuf:"bytes,2,rep,name=holds,proto3" json:"holds,omitempty"`
+	HeldCells       uint64                      `protobuf:"varint,3,opt,name=held_cells,json=heldCells,proto3" json:"held_cells,omitempty"`
+	QuarantineFiles []*CheckpointQuarantineFile `protobuf:"bytes,4,rep,name=quarantine_files,json=quarantineFiles,proto3" json:"quarantine_files,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1024,16 +1024,16 @@ func (x *CheckpointOutput) GetHeldCells() uint64 {
 	return 0
 }
 
-func (x *CheckpointOutput) GetQuarantineFiles() []*QuarantineFile {
+func (x *CheckpointOutput) GetQuarantineFiles() []*CheckpointQuarantineFile {
 	if x != nil {
 		return x.QuarantineFiles
 	}
 	return nil
 }
 
-// QuarantineFile is one of an epoch's quarantine files: where it is, and
+// CheckpointQuarantineFile is one of an epoch's quarantine files: where it is, and
 // how many of its rows each cause quarantined. It never holds a value.
-type QuarantineFile struct {
+type CheckpointQuarantineFile struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Below the pipeline's _quarantine directory: {g}/{N}/{stream}.jsonl, or
 	// {g}/{N}/{stream}.{k}.jsonl from the attempt's lane k, with a
@@ -1047,20 +1047,20 @@ type QuarantineFile struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *QuarantineFile) Reset() {
-	*x = QuarantineFile{}
+func (x *CheckpointQuarantineFile) Reset() {
+	*x = CheckpointQuarantineFile{}
 	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *QuarantineFile) String() string {
+func (x *CheckpointQuarantineFile) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*QuarantineFile) ProtoMessage() {}
+func (*CheckpointQuarantineFile) ProtoMessage() {}
 
-func (x *QuarantineFile) ProtoReflect() protoreflect.Message {
+func (x *CheckpointQuarantineFile) ProtoReflect() protoreflect.Message {
 	mi := &file_openetl_dataplane_v1_dataplane_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1072,33 +1072,33 @@ func (x *QuarantineFile) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use QuarantineFile.ProtoReflect.Descriptor instead.
-func (*QuarantineFile) Descriptor() ([]byte, []int) {
+// Deprecated: Use CheckpointQuarantineFile.ProtoReflect.Descriptor instead.
+func (*CheckpointQuarantineFile) Descriptor() ([]byte, []int) {
 	return file_openetl_dataplane_v1_dataplane_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *QuarantineFile) GetPath() string {
+func (x *CheckpointQuarantineFile) GetPath() string {
 	if x != nil {
 		return x.Path
 	}
 	return ""
 }
 
-func (x *QuarantineFile) GetUrl() string {
+func (x *CheckpointQuarantineFile) GetUrl() string {
 	if x != nil {
 		return x.Url
 	}
 	return ""
 }
 
-func (x *QuarantineFile) GetRows() uint64 {
+func (x *CheckpointQuarantineFile) GetRows() uint64 {
 	if x != nil {
 		return x.Rows
 	}
 	return 0
 }
 
-func (x *QuarantineFile) GetCauses() []*v1.QuarantineCause {
+func (x *CheckpointQuarantineFile) GetCauses() []*v1.QuarantineCause {
 	if x != nil {
 		return x.Causes
 	}
@@ -1192,7 +1192,7 @@ type CheckpointStream struct {
 	SyncRows *uint64 `protobuf:"varint,15,opt,name=sync_rows,json=syncRows,proto3,oneof" json:"sync_rows,omitempty"`
 	// The epoch's quarantine files of the stream; none if it quarantined
 	// nothing.
-	QuarantineFiles []*QuarantineFile `protobuf:"bytes,16,rep,name=quarantine_files,json=quarantineFiles,proto3" json:"quarantine_files,omitempty"`
+	QuarantineFiles []*CheckpointQuarantineFile `protobuf:"bytes,16,rep,name=quarantine_files,json=quarantineFiles,proto3" json:"quarantine_files,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1325,7 +1325,7 @@ func (x *CheckpointStream) GetSyncRows() uint64 {
 	return 0
 }
 
-func (x *CheckpointStream) GetQuarantineFiles() []*QuarantineFile {
+func (x *CheckpointStream) GetQuarantineFiles() []*CheckpointQuarantineFile {
 	if x != nil {
 		return x.QuarantineFiles
 	}
@@ -3814,14 +3814,14 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
 	"last_reset\x18\n" +
 	" \x01(\tR\tlastReset\x12@\n" +
-	"\aoutputs\x18\v \x03(\v2&.openetl.dataplane.v1.CheckpointOutputR\aoutputs\"\xd2\x01\n" +
+	"\aoutputs\x18\v \x03(\v2&.openetl.dataplane.v1.CheckpointOutputR\aoutputs\"\xdc\x01\n" +
 	"\x10CheckpointOutput\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12:\n" +
 	"\x05holds\x18\x02 \x03(\v2$.openetl.dataplane.v1.CheckpointHoldR\x05holds\x12\x1d\n" +
 	"\n" +
-	"held_cells\x18\x03 \x01(\x04R\theldCells\x12O\n" +
-	"\x10quarantine_files\x18\x04 \x03(\v2$.openetl.dataplane.v1.QuarantineFileR\x0fquarantineFiles\"\x83\x01\n" +
-	"\x0eQuarantineFile\x12\x12\n" +
+	"held_cells\x18\x03 \x01(\x04R\theldCells\x12Y\n" +
+	"\x10quarantine_files\x18\x04 \x03(\v2..openetl.dataplane.v1.CheckpointQuarantineFileR\x0fquarantineFiles\"\x8d\x01\n" +
+	"\x18CheckpointQuarantineFile\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x10\n" +
 	"\x03url\x18\x02 \x01(\tR\x03url\x12\x12\n" +
 	"\x04rows\x18\x03 \x01(\x04R\x04rows\x127\n" +
@@ -3830,7 +3830,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
 	"generation\x18\x01 \x01(\x04R\n" +
 	"generation\x12\x14\n" +
-	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\"\x97\x05\n" +
+	"\x05epoch\x18\x02 \x01(\x04R\x05epoch\"\xa1\x05\n" +
 	"\x10CheckpointStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04rows\x18\x02 \x01(\x04R\x04rows\x12)\n" +
@@ -3847,8 +3847,8 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\rplanned_level\x18\v \x01(\x0e2\x1d.openetl.api.v1.DeliveryLevelR\fplannedLevel\x12,\n" +
 	"\x04read\x18\f \x01(\x0e2\x18.openetl.api.v1.SyncModeR\x04read\x12\x16\n" +
 	"\x06paused\x18\r \x01(\bR\x06paused\x12 \n" +
-	"\tsync_rows\x18\x0f \x01(\x04H\x00R\bsyncRows\x88\x01\x01\x12O\n" +
-	"\x10quarantine_files\x18\x10 \x03(\v2$.openetl.dataplane.v1.QuarantineFileR\x0fquarantineFilesB\f\n" +
+	"\tsync_rows\x18\x0f \x01(\x04H\x00R\bsyncRows\x88\x01\x01\x12Y\n" +
+	"\x10quarantine_files\x18\x10 \x03(\v2..openetl.dataplane.v1.CheckpointQuarantineFileR\x0fquarantineFilesB\f\n" +
 	"\n" +
 	"_sync_rowsJ\x04\b\x0e\x10\x0fR\x0fquarantine_file\"\xaf\x03\n" +
 	"\x0eCheckpointHold\x12\x16\n" +
@@ -4086,7 +4086,7 @@ var file_openetl_dataplane_v1_dataplane_proto_goTypes = []any{
 	(*ReportSchemasResponse)(nil),        // 8: openetl.dataplane.v1.ReportSchemasResponse
 	(*ReportCheckpointRequest)(nil),      // 9: openetl.dataplane.v1.ReportCheckpointRequest
 	(*CheckpointOutput)(nil),             // 10: openetl.dataplane.v1.CheckpointOutput
-	(*QuarantineFile)(nil),               // 11: openetl.dataplane.v1.QuarantineFile
+	(*CheckpointQuarantineFile)(nil),     // 11: openetl.dataplane.v1.CheckpointQuarantineFile
 	(*CheckpointRef)(nil),                // 12: openetl.dataplane.v1.CheckpointRef
 	(*CheckpointStream)(nil),             // 13: openetl.dataplane.v1.CheckpointStream
 	(*CheckpointHold)(nil),               // 14: openetl.dataplane.v1.CheckpointHold
@@ -4171,13 +4171,13 @@ var file_openetl_dataplane_v1_dataplane_proto_depIdxs = []int32{
 	58, // 24: openetl.dataplane.v1.ReportCheckpointRequest.usage:type_name -> openetl.api.v1.Usage
 	10, // 25: openetl.dataplane.v1.ReportCheckpointRequest.outputs:type_name -> openetl.dataplane.v1.CheckpointOutput
 	14, // 26: openetl.dataplane.v1.CheckpointOutput.holds:type_name -> openetl.dataplane.v1.CheckpointHold
-	11, // 27: openetl.dataplane.v1.CheckpointOutput.quarantine_files:type_name -> openetl.dataplane.v1.QuarantineFile
-	59, // 28: openetl.dataplane.v1.QuarantineFile.causes:type_name -> openetl.api.v1.QuarantineCause
+	11, // 27: openetl.dataplane.v1.CheckpointOutput.quarantine_files:type_name -> openetl.dataplane.v1.CheckpointQuarantineFile
+	59, // 28: openetl.dataplane.v1.CheckpointQuarantineFile.causes:type_name -> openetl.api.v1.QuarantineCause
 	14, // 29: openetl.dataplane.v1.CheckpointStream.holds:type_name -> openetl.dataplane.v1.CheckpointHold
 	60, // 30: openetl.dataplane.v1.CheckpointStream.level:type_name -> openetl.api.v1.DeliveryLevel
 	60, // 31: openetl.dataplane.v1.CheckpointStream.planned_level:type_name -> openetl.api.v1.DeliveryLevel
 	61, // 32: openetl.dataplane.v1.CheckpointStream.read:type_name -> openetl.api.v1.SyncMode
-	11, // 33: openetl.dataplane.v1.CheckpointStream.quarantine_files:type_name -> openetl.dataplane.v1.QuarantineFile
+	11, // 33: openetl.dataplane.v1.CheckpointStream.quarantine_files:type_name -> openetl.dataplane.v1.CheckpointQuarantineFile
 	12, // 34: openetl.dataplane.v1.CheckpointHold.since:type_name -> openetl.dataplane.v1.CheckpointRef
 	56, // 35: openetl.dataplane.v1.CheckpointHold.start_time:type_name -> google.protobuf.Timestamp
 	62, // 36: openetl.dataplane.v1.CheckpointHold.cause:type_name -> openetl.api.v1.HoldCause

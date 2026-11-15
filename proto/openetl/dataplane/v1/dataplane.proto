@@ -232,12 +232,12 @@ message CheckpointOutput {
   // As CheckpointStream's.
   repeated CheckpointHold holds = 2;
   uint64 held_cells = 3;
-  repeated QuarantineFile quarantine_files = 4;
+  repeated CheckpointQuarantineFile quarantine_files = 4;
 }
 
-// QuarantineFile is one of an epoch's quarantine files: where it is, and
+// CheckpointQuarantineFile is one of an epoch's quarantine files: where it is, and
 // how many of its rows each cause quarantined. It never holds a value.
-message QuarantineFile {
+message CheckpointQuarantineFile {
   // Below the pipeline's _quarantine directory: {g}/{N}/{stream}.jsonl, or
   // {g}/{N}/{stream}.{k}.jsonl from the attempt's lane k, with a
   // transform's outputs' below _outputs/.
@@ -289,7 +289,7 @@ message CheckpointStream {
   optional uint64 sync_rows = 15;
   // The epoch's quarantine files of the stream; none if it quarantined
   // nothing.
-  repeated QuarantineFile quarantine_files = 16;
+  repeated CheckpointQuarantineFile quarantine_files = 16;
 }
 
 message CheckpointHold {

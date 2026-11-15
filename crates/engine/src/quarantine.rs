@@ -8,7 +8,10 @@
 //! `notHeld`, where the stream holds cells, why this record's value wasn't
 //! held ([`openetl_normalize::NotHeld`]); `reason`, a sentence; and
 //! `record`, the record as received as a JSON string: a raw record's text,
-//! or a typed one rendered as a JSON object. Only `record` holds values.
+//! or a typed one rendered as a JSON object. `record` holds values, and so
+//! can a `statement` reason, which is the evaluation's message; no other
+//! field does. None of it leaves the data plane: the checkpoint's causes
+//! carry only codes, columns and notHeld.
 
 use std::sync::Arc;
 

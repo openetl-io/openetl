@@ -45,7 +45,7 @@ A value does not fit when its column's type cannot keep it. Each held cell and e
 | `precision` | Has more digits or decimal places than the column keeps |
 | `nan` | Is NaN, in a type that has no NaN |
 
-The reason names the column. It never contains the value. A quarantined row can also have a code that is not about one value. Examples are `object` for a record that is not a JSON object, and `statement` for a row that a SQL statement cannot evaluate. [Quarantine files](../reference/quarantine-files.md#codes) lists every code.
+For these codes, the reason names the column. It never contains the value. A quarantined row can also have a code that is not about one value. Examples are `object` for a record that is not a JSON object, and `statement` for a row that a SQL statement cannot evaluate. [Quarantine files](../reference/quarantine-files.md#codes) lists every code.
 
 The stream setting `unfitValues` chooses what such a value does:
 

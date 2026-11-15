@@ -170,7 +170,7 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 		}
 		req.Streams = append(req.Streams, cs)
 	}
-	outputs := map[string][]*dataplanev1.QuarantineFile{}
+	outputs := map[string][]*dataplanev1.CheckpointQuarantineFile{}
 	for _, q := range rec.Quarantine {
 		if q.Output {
 			outputs[q.Stream] = append(outputs[q.Stream], quarantineFile(q))
@@ -197,8 +197,8 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 
 // quarantineFile is q as the control plane's index keeps it: its path,
 // without the URL's query, and its rows by cause.
-func quarantineFile(q checkpoint.QuarantineFile) *dataplanev1.QuarantineFile {
-	f := &dataplanev1.QuarantineFile{Path: checkpoint.QuarantinePath(q.URL), Url: withoutQuery(q.URL), Rows: q.Rows}
+func quarantineFile(q checkpoint.QuarantineFile) *dataplanev1.CheckpointQuarantineFile {
+	f := &dataplanev1.CheckpointQuarantineFile{Path: checkpoint.QuarantinePath(q.URL), Url: withoutQuery(q.URL), Rows: q.Rows}
 	for _, c := range q.Causes {
 		f.Causes = append(f.Causes, &apiv1.QuarantineCause{Code: c.Code, Column: c.Column, NotHeld: c.NotHeld, Rows: c.Rows})
 	}

@@ -36,7 +36,7 @@ type indexedCause struct {
 type quarantined struct {
 	stream string
 	output bool
-	files  []*dataplanev1.QuarantineFile
+	files  []*dataplanev1.CheckpointQuarantineFile
 }
 
 func quarantinedIn(m *dataplanev1.ReportCheckpointRequest) []quarantined {
@@ -79,7 +79,7 @@ func (s *Server) indexQuarantine(ctx context.Context, pipeline uuid.UUID, m *dat
 	for i, g := range groups {
 		// A file the index can't name is left out of it, and the checkpoint
 		// is mirrored all the same.
-		groups[i].files = slices.DeleteFunc(g.files, func(f *dataplanev1.QuarantineFile) bool {
+		groups[i].files = slices.DeleteFunc(g.files, func(f *dataplanev1.CheckpointQuarantineFile) bool {
 			_, ok := ints.Int64(f.GetRows())
 			if !ok || !validQuarantinePath(f.GetPath()) {
 				s.log().Warn("leaving a quarantine file out of the index", "pipeline", pipeline, "stream", g.stream, "path", f.GetPath(), "url", f.GetUrl())
