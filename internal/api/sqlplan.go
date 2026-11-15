@@ -44,6 +44,12 @@ func (s *Server) planSQL(ctx context.Context, q *db.Queries, p *planned, cat *ap
 	if err != nil {
 		return nil, err
 	}
+	if p.applied, err = s.appliedSQLPlan(ctx, q, p); err != nil {
+		return nil, err
+	}
+	if p.read, err = s.readStreams(ctx, q, p); err != nil {
+		return nil, err
+	}
 	return s.planSQLWith(ctx, p, cat, history, out)
 }
 
@@ -90,8 +96,51 @@ func (s *Server) planSQLWith(ctx context.Context, p *planned, cat *apiv1.Catalog
 		return nil, nil
 	}
 	out.Transform = plan.Transform(spec, cat, &answer)
-	p.sqlPlan = plan.SQLPlan(&answer)
+	ops, warnings, notes := plan.Operators(spec, cat, &answer, p.applied, p.read)
+	out.Transform.Operators = ops
+	out.Warnings, out.Notes = append(out.Warnings, warnings...), append(out.Notes, notes...)
+	p.sqlPlan = plan.SQLPlan(&answer, p.applied)
 	return &answer, nil
+}
+
+// appliedSQLPlan is what planning transform.sql gave the pipeline's current
+// version, which a plan's stateful operators are compared with: the version
+// before the one planned, or for a pipeline's plan, its own. It's empty for
+// a new pipeline, and nil where the version has none.
+func (s *Server) appliedSQLPlan(ctx context.Context, q *db.Queries, p *planned) (*apiv1.SqlPlan, error) {
+	version := p.prev
+	if version == "" {
+		if p.action == apiv1.ApplyAction_APPLY_ACTION_CREATED {
+			return &apiv1.SqlPlan{}, nil
+		}
+		version = p.version
+	}
+	row, err := q.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: s.Tenant.Org, PipelineID: p.id, Version: version})
+	if err != nil {
+		return nil, err
+	}
+	return sqlPlanOf(row.SqlPlan)
+}
+
+// readStreams are the streams of the pipeline's newest mirrored checkpoint:
+// those it has read.
+func (s *Server) readStreams(ctx context.Context, q *db.Queries, p *planned) (map[string]bool, error) {
+	if p.action == apiv1.ApplyAction_APPLY_ACTION_CREATED {
+		return nil, nil
+	}
+	rows, err := q.ListCheckpoints(ctx, db.ListCheckpointsParams{OrgID: s.Tenant.Org, PipelineID: p.id, MaxRows: 1})
+	if err != nil || len(rows) == 0 {
+		return nil, err
+	}
+	var streams []mirroredStream
+	if err := json.Unmarshal(rows[0].Streams, &streams); err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, st := range streams {
+		out[st.Name] = true
+	}
+	return out, nil
 }
 
 // metadataColumns are the columns the engine adds to a stream. A source's

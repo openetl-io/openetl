@@ -186,6 +186,7 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 		if sqlT, outputs, err = sqlOutputs(ctx, p, caps, deletes, planner, streams, inputs); err != nil {
 			return job, err
 		}
+		sqlT.Dropped = spec.GetSqlPlan().GetDropped()
 	case transformed:
 		changelog := slices.ContainsFunc(inputs, func(in plan.Input) bool { return in.Read == apiv1.SyncMode_SYNC_MODE_CDC })
 		for _, o := range plan.Outputs(p, caps, inputs) {

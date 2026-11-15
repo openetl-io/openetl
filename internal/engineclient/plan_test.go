@@ -81,6 +81,10 @@ func TestPlanGroupWindow(t *testing.T) {
 		!maps.Equal(st.Passes, map[string]string{"region": "area"}) || !strings.HasPrefix(st.Operator, "window-") {
 		t.Errorf("%+v", st)
 	}
+	if s := st.State; s == nil || s.Window != "tumble" || s.SizeMicros != 60_000_000 || s.SlideMicros != 0 || s.EventTime != "at" ||
+		!slices.Equal(s.Keys, []string{"region"}) || !slices.Equal(s.Aggregates, []string{"sum(amount)"}) {
+		t.Errorf("state %+v", st.State)
+	}
 	orders.EventTime = ""
 	a, err = Plan(t.Context(), opts, sqlplan.Request{SQL: "INSERT INTO m SELECT window_start, count(*) AS n FROM orders GROUP BY tumble(at, INTERVAL '1 minute')", Streams: []sqlplan.Stream{orders}})
 	if err != nil || len(a.Errors) != 1 || !strings.Contains(a.Errors[0].Message, "orders has no event time") {

@@ -111,6 +111,11 @@ type planned struct {
 	// What planning its transform.sql gave; nil without transform.sql, or if
 	// the plan couldn't give it.
 	sqlPlan *apiv1.SqlPlan
+	// What planning gave the current version, which the plan's stateful
+	// operators are compared with, and the streams the pipeline has read;
+	// set by planSQL.
+	applied *apiv1.SqlPlan
+	read    map[string]bool
 }
 
 func (v *pinned) pins() plan.Version {

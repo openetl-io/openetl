@@ -88,6 +88,23 @@ type Statement struct {
 	Passes map[string]string `json:"passes"`
 	// Its stateful operator's ID; empty for none.
 	Operator string `json:"operator"`
+	// What that operator keeps; nil for none.
+	State *State `json:"state"`
+}
+
+// State is what a stateful operator keeps, by the stream's names.
+type State struct {
+	// tumble, hop or session.
+	Window string `json:"window"`
+	// A tumble's or hop's size, or a session's gap, in microseconds.
+	SizeMicros int64 `json:"size_us"`
+	// A hop's slide, in microseconds; 0 for the others.
+	SlideMicros int64  `json:"slide_us"`
+	EventTime   string `json:"event_time"`
+	// The columns it groups by, in the order its key groups take them.
+	Keys []string `json:"keys"`
+	// Its aggregates over the stream's columns, such as sum(amount).
+	Aggregates []string `json:"aggregates"`
 }
 
 // View is a CREATE VIEW, planned on its own.
