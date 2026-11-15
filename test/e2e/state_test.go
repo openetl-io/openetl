@@ -47,24 +47,30 @@ func stateRuns(rec *checkpoint.Record) []string {
 }
 
 // A continuous windowed count from Kafka into Postgres keeps its state
-// through the engine's death in the middle of a minute: the next attempt
-// restores the windows from the runs its checkpoint names, and the
-// minute's row counts each of its records once, those read before the
-// death and those after.
+// through the engine's death in the middle of a minute, once a checkpoint
+// names the minute's state: the next attempt restores the windows from the
+// runs its checkpoint names, and the minute's row counts each of its
+// records once, those read before the death and those after.
 func TestWindowStateOutlivesTheEngine(t *testing.T) {
 	r := startRunner(t)
 	name := unique("window-state")
 	topic, out := schema(name), schema(name)+"_out"
-	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), 1, 1, nil, topic); err != nil {
+	// A minute far enough ahead that an idle partition's watermark, which
+	// follows the clock, can't reach it while the test runs. Kafka 4
+	// refuses records more than an hour ahead of its clock by default; the
+	// topic takes a day, whatever the broker's default.
+	minute := time.Now().UTC().Truncate(time.Minute).Add(20 * time.Minute)
+	ahead := "86400000"
+	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), 1, 1, map[string]*string{"message.timestamp.after.max.ms": &ahead}, topic); err != nil {
 		t.Fatal(err)
 	}
-	// A minute far enough ahead that an idle partition's watermark, which
-	// follows the clock, can't reach it while the test runs.
-	minute := time.Now().UTC().Truncate(time.Minute).Add(time.Hour)
 	at := func(sec int) func(int) time.Time {
-		return func(i int) time.Time { return minute.Add(time.Duration(sec+i) * time.Second) }
+		return func(int) time.Time { return minute.Add(time.Duration(sec) * time.Second) }
 	}
-	produceAt(t, topic, []string{"a", "b"}, 30, at(1))
+	// A record of key a and one of key b, sec seconds into the minute.
+	pair := func(sec int) { produceAt(t, topic, []string{"a", "b"}, 2, at(sec)) }
+	pair(1)
+	fed := 1
 
 	sql, err := json.Marshal("INSERT INTO counts\nSELECT window_start, _kafka_key AS k, count(*) AS n\nFROM " + topic + "\nGROUP BY tumble(_kafka_timestamp, INTERVAL '1 minute'), _kafka_key")
 	if err != nil {
@@ -82,20 +88,30 @@ func TestWindowStateOutlivesTheEngine(t *testing.T) {
 		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
 	})
 
-	// The runner's engine dies once a checkpoint names the minute's state,
-	// with the minute open.
+	// Fed a pair a second of the minute, up to 40 seconds of it, until a
+	// checkpoint names the minute's state; then the runner's engine dies,
+	// with the minute open, as nothing reaches its end yet.
 	var killed *checkpoint.Record
-	eventually(t, 60*time.Second, "a checkpoint that names state", func() bool {
-		killed = latestRecord(t, name)
-		return len(stateRuns(killed)) > 0
+	eventually(t, 90*time.Second, "a checkpoint that names state", func() bool {
+		if killed = latestRecord(t, name); len(stateRuns(killed)) > 0 {
+			return true
+		}
+		if fed < 40 {
+			fed++
+			pair(fed)
+		}
+		return false
 	})
 	if err := syscall.Kill(r.engine(t, name), syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		t.Fatal(err)
 	}
-	// The rest of the minute, and a record of key c two minutes on, whose
-	// time moves the watermark past the minute's end.
-	produceAt(t, topic, []string{"a", "b"}, 20, at(31))
+	// Ten more pairs of the minute, and a record of key c three minutes on,
+	// whose time moves the watermark past the minute's end.
+	for sec := 45; sec < 55; sec++ {
+		pair(sec)
+	}
 	produceAt(t, topic, []string{"c"}, 1, at(180))
+	want := fmt.Sprintf("a=%d,b=%d", fed+10, fed+10)
 
 	counts := pgx.Identifier{out, "counts"}.Sanitize()
 	got := func() string {
@@ -105,11 +121,11 @@ func TestWindowStateOutlivesTheEngine(t *testing.T) {
 		}
 		return rows
 	}
-	eventually(t, 120*time.Second, "the minute's rows", func() bool { return got() != "" })
+	eventually(t, 180*time.Second, "the minute's rows", func() bool { return got() != "" })
 	// A merge writes the minute's row once per key; a moment more shows
 	// no other write follows.
 	time.Sleep(3 * time.Second)
-	if g, want := got(), "a=25,b=25"; g != want {
+	if g := got(); g != want {
 		t.Errorf("the minute's counts are %s, want %s", g, want)
 	}
 	if n := mustQuery[int](t, "SELECT count(*) FROM "+counts); n != 2 {
