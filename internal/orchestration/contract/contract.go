@@ -645,4 +645,19 @@ type ConnectorOpResult struct {
 	Message string
 	// The discovered catalog's digest (source_catalogs.digest).
 	Catalog string
+	// What a check looked at, item by item; none from a connector that
+	// reports only a result.
+	Checks []CheckItem `json:",omitempty"`
+}
+
+// CheckItem is one thing a connector's check looked at.
+type CheckItem struct {
+	Name, Title string
+	// passed, warning, failed or skipped.
+	Status  string
+	Message string `json:",omitempty"`
+	// A failed item's taxonomy code.
+	Code  string `json:",omitempty"`
+	Fix   string `json:",omitempty"`
+	Field string `json:",omitempty"`
 }

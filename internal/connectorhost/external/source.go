@@ -14,6 +14,7 @@ import (
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/preflight"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -61,15 +62,33 @@ func (c *instance) Close() error {
 }
 
 func (c *instance) check(ctx context.Context) error {
+	_, err := c.checkItems(ctx)
+	return err
+}
+
+// checkItems runs the connector's check: what it looked at, item by item,
+// none if it reports only a result, and the check's error.
+func (c *instance) checkItems(ctx context.Context) ([]preflight.Item, error) {
 	p, err := c.proc(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := protocolv1.NewConnectorServiceClient(p.conn).Check(ctx, &protocolv1.CheckRequest{Config: p.config})
 	if err != nil {
-		return p.failure(errs.FromStatus(err))
+		return nil, p.failure(errs.FromStatus(err))
 	}
-	return errs.FromProto(resp.GetError())
+	var items []preflight.Item
+	for _, it := range resp.GetItems() {
+		st := preflight.Status(it.GetStatus())
+		if st < preflight.Passed || st > preflight.Skipped {
+			st = preflight.Skipped
+		}
+		items = append(items, preflight.Item{
+			Name: it.GetName(), Title: it.GetTitle(), Status: st, Message: it.GetMessage(),
+			Err: errs.FromProto(it.GetError()), Fix: it.GetFix(), Field: it.GetField(),
+		})
+	}
+	return items, errs.FromProto(resp.GetError())
 }
 
 // Source is an external source. It acknowledges upstream only if its spec
@@ -91,6 +110,9 @@ func NewSource(exe string, config []byte, opts Options) *Source {
 }
 
 func (s *Source) Check(ctx context.Context) error { return s.check(ctx) }
+
+// CheckItems is Check, with what the check looked at, item by item.
+func (s *Source) CheckItems(ctx context.Context) ([]preflight.Item, error) { return s.checkItems(ctx) }
 
 // Setup and Teardown call the connector only when its spec sets setup, as
 // the protocol says.

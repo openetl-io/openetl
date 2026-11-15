@@ -770,9 +770,11 @@ func runCheck(ctx context.Context, args []string, out io.Writer) error {
 		res = r.Msg.GetResult()
 	}
 	if !res.GetOk() {
+		printCheckItems(out, "", apiCheckItems(res.GetItems()))
 		return fmt.Errorf("%s failed its check: %s: %s", name, res.GetCode(), res.GetMessage())
 	}
 	fmt.Fprintf(out, "%s passed its check (version %.12s)\n", name, res.GetVersion())
+	printCheckItems(out, "  ", apiCheckItems(res.GetItems()))
 	return nil
 }
 

@@ -313,6 +313,21 @@ func TestCheckPipeline(t *testing.T) {
 		t.Errorf("a failing check: %v, printed\n%s", err, out.String())
 	}
 
+	f.destination = &apiv1.CheckResult{Code: "PERMISSION_DENIED", Message: "no PutRecords", Items: []*apiv1.CheckItem{
+		{Name: "connect", Title: "Reach Kinesis", Status: "passed"},
+		{Name: "write", Title: "Write to clicks", Status: "failed", Code: "PERMISSION_DENIED", Message: "no PutRecords", Fix: "allow kinesis:PutRecords", Field: "streams"},
+	}}
+	out.Reset()
+	_ = run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out)
+	for _, line := range []string{
+		"  passed   Reach Kinesis\n",
+		"  failed   Write to clicks: PERMISSION_DENIED: no PutRecords\n           field: streams\n           fix: allow kinesis:PutRecords\n",
+	} {
+		if !strings.Contains(out.String(), line) {
+			t.Errorf("no %q in\n%s", line, out.String())
+		}
+	}
+
 	f.destination, f.problems = &apiv1.CheckResult{Ok: true}, []string{"a problem"}
 	if err := run(t.Context(), []string{"check", "--api-url", url, "pipeline", "shop-to-lake"}, &out); err == nil {
 		t.Error("a plan with problems passed")

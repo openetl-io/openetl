@@ -18,6 +18,7 @@ import (
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/preflight"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -42,6 +43,11 @@ func NewDestination(exe string, config []byte, opts Options) *Destination {
 }
 
 func (d *Destination) Check(ctx context.Context) error { return d.check(ctx) }
+
+// CheckItems is Check, with what the check looked at, item by item.
+func (d *Destination) CheckItems(ctx context.Context) ([]preflight.Item, error) {
+	return d.checkItems(ctx)
+}
 
 // SetStaging serves st's files and cursors to the destination's host
 // services, now and in any process started later.

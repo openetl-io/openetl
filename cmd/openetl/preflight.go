@@ -44,6 +44,8 @@ type checkOutcome struct {
 	target  checkTarget
 	streams int
 	err     error
+	// What the connector's check looked at.
+	items []checkItem
 }
 
 type checkClients struct {
@@ -87,7 +89,7 @@ func (c checkClients) check(ctx context.Context, t checkTarget) checkOutcome {
 			o.err = err
 			return o
 		}
-		o.err = checkFailure(r.Msg.GetResult())
+		o.err, o.items = checkFailure(r.Msg.GetResult()), apiCheckItems(r.Msg.GetResult().GetItems())
 		return o
 	}
 	r, err := c.sources.CheckSource(ctx, connect.NewRequest(&apiv1.CheckSourceRequest{Name: t.name, DataPlane: t.dataPlane}))
@@ -95,6 +97,7 @@ func (c checkClients) check(ctx context.Context, t checkTarget) checkOutcome {
 		o.err = err
 		return o
 	}
+	o.items = apiCheckItems(r.Msg.GetResult().GetItems())
 	if o.err = checkFailure(r.Msg.GetResult()); o.err != nil {
 		return o
 	}
@@ -152,6 +155,7 @@ func checkPipeline(ctx context.Context, conn *api, workspace, dataPlane, pipelin
 		default:
 			fmt.Fprintf(out, "%s passed its check\n", o.target.label())
 		}
+		printCheckItems(out, "  ", o.items)
 	}
 	plan, err := c.pipelines.GetPipelinePlan(ctx, connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: name}))
 	if err != nil {
@@ -231,6 +235,11 @@ func checkApplied(ctx context.Context, conn *api, res *apiv1.ApplyResponse, out 
 	for _, o := range c.run(ctx, targets) {
 		if o.err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s: %v", o.target.label(), o.err))
+			for _, it := range o.items {
+				if it.status == "failed" && it.fix != "" {
+					warnings = append(warnings, fmt.Sprintf("  %s: %s", it.title, it.fix))
+				}
+			}
 			continue
 		}
 		passed = append(passed, o.target.label())

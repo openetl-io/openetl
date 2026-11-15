@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/openetl-io/openetl/sdk/go/configschema"
 	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
@@ -136,6 +138,14 @@ func (c *common) checkSpec(t T) {
 	} else if sch, err := compileSchema(spec.GetConfigSchema()); err != nil {
 		t.Errorf("the config schema doesn't compile: %v", err)
 	} else {
+		for _, p := range configschema.Lint(spec.GetConfigSchema()) {
+			t.Errorf("%v", p)
+		}
+		if form, err := configschema.ReadForm(spec.GetConfigSchema()); err == nil {
+			if u := configschema.Undescribed(form); len(u) > 0 {
+				flagf(t, "config fields without a description or title, which a form can only show by name: %s", strings.Join(u, ", "))
+			}
+		}
 		for _, cfg := range []struct {
 			name string
 			b    []byte
@@ -183,6 +193,38 @@ func (c *common) checkCheck(t T) {
 	if e := resp.GetError(); e != nil {
 		t.Errorf("Check failed with the good config: %s: %s", e.GetCode(), e.GetMessage())
 	}
+	checkItems(t, resp)
+}
+
+// checkItems: a pre-flight's items have unique names, titles and statuses,
+// a failed one has an error, and the response fails with the first failed
+// item's.
+func checkItems(t T, resp *protocolv1.CheckResponse) {
+	t.Helper()
+	names := map[string]bool{}
+	var failed *protocolv1.CheckItem
+	for _, it := range resp.GetItems() {
+		switch {
+		case it.GetName() == "" || it.GetTitle() == "":
+			t.Errorf("check item %q has no name or no title", it.GetName()+it.GetTitle())
+		case names[it.GetName()]:
+			t.Errorf("check item %s is there twice", it.GetName())
+		case it.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_UNSPECIFIED:
+			t.Errorf("check item %s has no status", it.GetName())
+		case it.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_FAILED && it.GetError() == nil:
+			t.Errorf("check item %s failed without an error", it.GetName())
+		}
+		names[it.GetName()] = true
+		if failed == nil && it.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_FAILED {
+			failed = it
+		}
+	}
+	if failed != nil && resp.GetError().GetCode() != failed.GetError().GetCode() {
+		t.Errorf("Check failed with %s, but its first failed item, %s, with %s", resp.GetError().GetCode(), failed.GetName(), failed.GetError().GetCode())
+	}
+	if failed == nil && len(resp.GetItems()) > 0 && resp.GetError() != nil {
+		t.Errorf("Check failed with %s, but none of its items failed", resp.GetError().GetCode())
+	}
 }
 
 // Errors: bad credentials are AUTH_INVALID and an upstream that doesn't
@@ -211,6 +253,11 @@ func (c *common) checkErrors(t T) {
 			t.Errorf("with %s, Check failed as an RPC, not in its response: %v", tc.name, rpcerr.FromStatus(err))
 		case resp.GetError() == nil:
 			t.Errorf("with %s, Check passed", tc.name)
+		default:
+			checkItems(t, resp)
+		}
+		switch {
+		case err != nil || resp.GetError() == nil:
 		case !slices.Contains(tc.codes, resp.GetError().GetCode()):
 			t.Errorf("with %s, Check failed with %s, not %v: %s", tc.name, resp.GetError().GetCode(), tc.codes, resp.GetError().GetMessage())
 		}

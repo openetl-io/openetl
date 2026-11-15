@@ -23,6 +23,7 @@ import (
 	"github.com/openetl-io/openetl/internal/pkgcatalog"
 	"github.com/openetl-io/openetl/internal/spec"
 	"github.com/openetl-io/openetl/internal/store/db"
+	"github.com/openetl-io/openetl/sdk/go/configschema"
 )
 
 // PackageOptions are how the control plane reaches registries and GitHub,
@@ -273,7 +274,9 @@ func (s *Server) manualCatalogPackage(ctx context.Context, name string) (*connec
 		if err != nil {
 			return nil, fmt.Errorf("%s %s's %s: %w", name, manual[i].GetVersion(), r.Role, err)
 		}
-		out.Roles = append(out.Roles, &apiv1.CatalogRole{Role: r.Role, Config: configFields(v.Roles[r.Role].Role)})
+		role := configForm(v.Roles[r.Role].Role)
+		role.Role = r.Role
+		out.Roles = append(out.Roles, role)
 	}
 	return connect.NewResponse(out), nil
 }
@@ -303,66 +306,67 @@ func (s *Server) GetCatalogPackage(ctx context.Context, req *connect.Request[api
 		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("%s's descriptor: %w", r.Reference, err))
 	}
 	for _, role := range doc.Descriptor.Kinds() {
-		out.Roles = append(out.Roles, &apiv1.CatalogRole{Role: role, Config: configFields(doc.Descriptor.Roles[role])})
+		r := configForm(doc.Descriptor.Roles[role])
+		r.Role = role
+		out.Roles = append(out.Roles, r)
 	}
 	return connect.NewResponse(out), nil
 }
 
-// configFields are a role's config's top-level fields, from its JSON Schema.
-func configFields(r *spec.Role) []*apiv1.ConfigField {
+// configForm is a role's config form, from its JSON Schema: its top-level
+// fields, in the schema's order, and its groups.
+func configForm(r *spec.Role) *apiv1.CatalogRole {
 	schema := r.Spec.GetConfigSchema()
 	if r.Manifest != nil {
 		var m struct {
 			Config json.RawMessage `json:"config"`
 		}
 		if json.Unmarshal(r.Manifest, &m) != nil {
-			return nil
+			return &apiv1.CatalogRole{}
 		}
 		schema = m.Config
 	}
-	var s struct {
-		Properties map[string]struct {
-			Type        any    `json:"type"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Secret      bool   `json:"x-secret"`
-		} `json:"properties"`
-		Required []string `json:"required"`
-	}
-	if json.Unmarshal(schema, &s) != nil {
-		return nil
+	form, err := configschema.ReadForm(schema)
+	if err != nil {
+		return &apiv1.CatalogRole{}
 	}
 	secret := map[string]bool{}
-	if names, err := external.SecretProperties(schema); err == nil {
-		for _, n := range names {
-			secret[n] = true
+	if paths, err := external.SecretProperties(schema); err == nil {
+		for _, p := range paths {
+			secret[p] = true
 		}
 	}
+	out := &apiv1.CatalogRole{Config: configFields(form.Fields, secret)}
+	for _, g := range form.Groups {
+		out.Groups = append(out.Groups, &apiv1.ConfigGroup{Id: g.ID, Title: g.Title, Description: g.Description})
+	}
+	return out
+}
+
+func configFields(fs []configschema.Field, secret map[string]bool) []*apiv1.ConfigField {
 	var out []*apiv1.ConfigField
-	for name, p := range s.Properties {
-		f := &apiv1.ConfigField{Name: name, Title: p.Title, Description: p.Description, Required: slices.Contains(s.Required, name), Secret: p.Secret || secret[name]}
-		switch t := p.Type.(type) {
-		case string:
-			f.Type = t
-		case []any:
-			for _, v := range t {
-				if v, ok := v.(string); ok && v != "null" {
-					f.Type = v
-					break
-				}
-			}
+	for _, f := range fs {
+		c := &apiv1.ConfigField{
+			Name: f.Name, Path: f.Path, Type: f.Type, Title: f.Title, Description: f.Description, Required: f.Required,
+			Secret: f.Secret || secret[f.Path], Default: string(f.Default), Group: f.Group, Advanced: f.Advanced, Deprecated: f.Deprecated,
+			Format: f.Format, Minimum: f.Minimum, Maximum: f.Maximum, Pattern: f.Pattern, Items: f.Items,
+			Fields: configFields(f.Fields, secret),
 		}
-		out = append(out, f)
+		for _, o := range f.Options {
+			c.Options = append(c.Options, &apiv1.ConfigOption{Value: string(o.Value), Title: o.Title, Description: o.Description})
+		}
+		for _, w := range f.When {
+			cond := &apiv1.ConfigCondition{Field: w.Field}
+			for _, v := range w.Values {
+				cond.Values = append(cond.Values, string(v))
+			}
+			c.When = append(c.When, cond)
+		}
+		for _, e := range f.Examples {
+			c.Examples = append(c.Examples, string(e))
+		}
+		out = append(out, c)
 	}
-	slices.SortFunc(out, func(a, b *apiv1.ConfigField) int {
-		if a.Required != b.Required {
-			if a.Required {
-				return -1
-			}
-			return 1
-		}
-		return strings.Compare(a.Name, b.Name)
-	})
 	return out
 }
 

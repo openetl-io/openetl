@@ -22,7 +22,7 @@ import (
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/secretstore"
 	"github.com/openetl-io/openetl/internal/streamschema"
-	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/preflight"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
@@ -59,11 +59,19 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 	if err == nil {
 		err = readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets())
 	}
+	var items []preflight.Item
 	if err == nil {
-		err = check(ctx, in, cfg.GetConfig(), env)
+		items, err = check(ctx, in, cfg.GetConfig(), env)
 	}
 	if err != nil {
 		res.Code, res.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
+	}
+	for _, it := range items {
+		c := contract.CheckItem{Name: it.Name, Title: it.Title, Status: it.Status.String(), Message: it.Message, Fix: it.Fix, Field: it.Field}
+		if it.Err != nil {
+			c.Code, c.Message = errs.CodeOf(it.Err).String(), errs.ToProto(it.Err).GetMessage()
+		}
+		res.Checks = append(res.Checks, c)
 	}
 	return res, nil
 }
@@ -93,32 +101,45 @@ func opDigests(in contract.ConnectorOpInput, digest string) (source, destination
 	return "", digest
 }
 
-func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) error {
+// check runs a source's or destination's check: its items, if it says what
+// it looked at, and its error.
+func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) ([]preflight.Item, error) {
 	raw, err := protojson.Marshal(cfg.GetConfig())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	name, _ := connectorhost.SplitRef(cfg.GetConnector())
+	var c any
 	if in.SourceID != "" {
 		src, err := connectorhost.NewSource(name, raw, env)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer connectorhost.Close(src)
-		if c, ok := src.(source.Checker); ok {
-			return c.Check(ctx)
+		c = src
+	} else {
+		dst, err := connectorhost.NewDestination(name, raw, env)
+		if err != nil {
+			return nil, err
 		}
-		return nil
+		defer connectorhost.Close(dst)
+		c = dst
 	}
-	dst, err := connectorhost.NewDestination(name, raw, env)
-	if err != nil {
-		return err
+	switch c := c.(type) {
+	case interface {
+		CheckItems(context.Context) ([]preflight.Item, error)
+	}:
+		return c.CheckItems(ctx)
+	case interface {
+		Preflight(context.Context, *preflight.Report)
+	}:
+		var r preflight.Report
+		c.Preflight(ctx, &r)
+		return r.Items(), r.Err()
+	case interface{ Check(context.Context) error }:
+		return nil, c.Check(ctx)
 	}
-	defer connectorhost.Close(dst)
-	if c, ok := dst.(destination.Checker); ok {
-		return c.Check(ctx)
-	}
-	return nil
+	return nil, nil
 }
 
 // DiscoverSource discovers a source's catalog and reports it to the API,

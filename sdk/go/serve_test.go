@@ -2,11 +2,13 @@ package sdk
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/sdk/go/preflight"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -52,6 +54,40 @@ func TestSetupAndTeardown(t *testing.T) {
 	}
 }
 
+type preflightedDestination struct{ destination.Destination }
+
+func (preflightedDestination) Preflight(_ context.Context, r *preflight.Report) {
+	r.Pass("connect", "Reach it", "")
+	r.Fail("write", "Write", WithCode(protocolv1.ErrorCode_ERROR_CODE_PERMISSION_DENIED, preflight.Fix(errors.New("denied"), "grant it")), preflight.Field("role"))
+}
+
+func TestCheckReportsPreflightItems(t *testing.T) {
+	b, err := newBase(Connector{
+		Destination: func([]byte, host.Host) (destination.Destination, error) { return preflightedDestination{}, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := b.Check(t.Context(), &protocolv1.CheckRequest{Config: []byte("{}")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetError().GetCode() != protocolv1.ErrorCode_ERROR_CODE_PERMISSION_DENIED {
+		t.Errorf("error %v, want the failed item's", resp.GetError())
+	}
+	items := resp.GetItems()
+	if len(items) != 2 {
+		t.Fatalf("items %v", items)
+	}
+	w := items[1]
+	if w.GetStatus() != protocolv1.CheckStatus_CHECK_STATUS_FAILED || w.GetFix() != "grant it" || w.GetField() != "role" || w.GetError().GetCode() != protocolv1.ErrorCode_ERROR_CODE_PERMISSION_DENIED {
+		t.Errorf("failed item %v", w)
+	}
+	if items[0].GetStatus() != protocolv1.CheckStatus_CHECK_STATUS_PASSED || items[0].GetError() != nil {
+		t.Errorf("passed item %v", items[0])
+	}
+}
+
 // Serve and the runner convert these by number.
 func TestNumbersMatchTheProtocol(t *testing.T) {
 	pairs := []struct {
@@ -76,6 +112,10 @@ func TestNumbersMatchTheProtocol(t *testing.T) {
 		{"applied", int32(destination.Applied), int32(protocolv1.Recovery_RECOVERY_APPLIED)},
 		{"redone", int32(destination.Redone), int32(protocolv1.Recovery_RECOVERY_REDONE)},
 		{"lost", int32(destination.Lost), int32(protocolv1.Recovery_RECOVERY_LOST)},
+		{"passed", int32(preflight.Passed), int32(protocolv1.CheckStatus_CHECK_STATUS_PASSED)},
+		{"warning", int32(preflight.Warning), int32(protocolv1.CheckStatus_CHECK_STATUS_WARNING)},
+		{"failed", int32(preflight.Failed), int32(protocolv1.CheckStatus_CHECK_STATUS_FAILED)},
+		{"skipped", int32(preflight.Skipped), int32(protocolv1.CheckStatus_CHECK_STATUS_SKIPPED)},
 		{"host tier", int32(EgressHost), int32(protocolv1.EgressTier_EGRESS_TIER_HOST)},
 		{"proxy tier", int32(EgressProxy), int32(protocolv1.EgressTier_EGRESS_TIER_PROXY)},
 		{"raw tier", int32(EgressRaw), int32(protocolv1.EgressTier_EGRESS_TIER_RAW)},
