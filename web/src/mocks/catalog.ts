@@ -1,10 +1,11 @@
-import { create } from "@bufbuild/protobuf";
+import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { timestampFromMs } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
 import {
   CatalogPackageSchema,
   CatalogRoleSchema,
   ConfigFieldSchema,
+  ConfigGroupSchema,
   ConnectorSourceSchema,
   type CatalogPackage,
   type CatalogRole,
@@ -114,8 +115,59 @@ catalogPackages.push(
   }),
 );
 
-const field = (name: string, type: string, o: { required?: boolean; secret?: boolean; title?: string; description?: string } = {}) =>
-  create(ConfigFieldSchema, { name, type, ...o });
+type FieldInit = MessageInitShape<typeof ConfigFieldSchema>;
+const field = (name: string, type: string, o: FieldInit = {}) => create(ConfigFieldSchema, { name, path: name, type, ...o });
+const opt = (value: string, title: string, description = "") => ({ value: JSON.stringify(value), title, description });
+
+// The Kinesis source's form, as the API reads it from the schema's x- keywords.
+const kinesisGroups = [
+  create(ConfigGroupSchema, { id: "connection", title: "Connection", description: "Where the streams are, and the credentials to reach them." }),
+  create(ConfigGroupSchema, { id: "streams", title: "Streams", description: "Which Kinesis streams to offer, and where a first read starts." }),
+  create(ConfigGroupSchema, { id: "reading", title: "Reading", description: "How shards are read." }),
+];
+const kinesisSource = [
+  field("region", "string", { group: "connection", description: "The streams' AWS region. Unset: the AWS default config's.", examples: ['"eu-west-1"'] }),
+  field("accessKeyId", "string", { group: "connection", secret: true, description: "An AWS access key. Without one, the role the runner gives." }),
+  field("secretAccessKey", "string", { group: "connection", secret: true, description: "The access key's secret." }),
+  field("endpoint", "string", { group: "connection", advanced: true, format: "uri", description: "A VPC endpoint, or an emulator's." }),
+  field("streams", "array", { group: "streams", items: "string", description: "The streams to offer. Empty: every stream the credentials can list." }),
+  field("startPosition", "string", {
+    group: "streams",
+    default: '"earliest"',
+    description: "Where a stream's first read starts.",
+    options: [opt("earliest", "Earliest", "Each shard's oldest record."), opt("latest", "Latest"), opt("timestamp", "At a time")],
+  }),
+  field("startTimestamp", "string", {
+    group: "streams",
+    format: "date-time",
+    description: "The first read starts at records that arrived at or after this.",
+    when: [{ field: "startPosition", values: ['"timestamp"'] }],
+  }),
+  field("consumer", "object", {
+    group: "reading",
+    description: "How shards are read.",
+    fields: [
+      field("type", "string", {
+        path: "consumer.type",
+        group: "reading",
+        default: '"polling"',
+        description: "Polling shares each shard's 2 MB/s; enhanced fan-out gives this pipeline its own.",
+        options: [opt("polling", "Polling"), opt("efo", "Enhanced fan-out")],
+      }),
+      field("name", "string", { path: "consumer.name", group: "reading", description: "The consumer's name. Default: openetl- and the pipeline's.", when: [{ field: "consumer.type", values: ['"efo"'] }] }),
+    ],
+  }),
+  field("polling", "object", {
+    group: "reading",
+    advanced: true,
+    description: "How often each shard is polled.",
+    when: [{ field: "consumer.type", values: ['"polling"'] }],
+    fields: [
+      field("interval", "string", { path: "polling.interval", group: "reading", format: "duration", default: '"200ms"', description: "Between GetRecords calls on a shard." }),
+      field("maxRecords", "integer", { path: "polling.maxRecords", group: "reading", minimum: 1, maximum: 10000, default: "10000", description: "Records a call returns at most." }),
+    ],
+  }),
+];
 
 const configs: Record<string, ReturnType<typeof field>[]> = {
   postgres: [
@@ -144,6 +196,7 @@ const configs: Record<string, ReturnType<typeof field>[]> = {
 const roles = (p: CatalogPackage): CatalogRole[] => {
   const short = p.package.split("/")[1] ?? "";
   const fields = configs[short] ?? [field("endpoint", "string", { required: true }), field("credentials", "string", { secret: true }), field("options", "object")];
+  if (short === "kinesis") return p.roles.map((role) => create(CatalogRoleSchema, { role, config: kinesisSource, groups: kinesisGroups }));
   return p.roles.map((role) => create(CatalogRoleSchema, { role, config: fields }));
 };
 

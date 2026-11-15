@@ -17,7 +17,7 @@ import { DescriptionItem, DescriptionList, Section } from "@/components/detail-h
 import { ErrorNote } from "@/components/empty";
 import { QueryError } from "@/components/query-error";
 import { RelativeTime } from "@/components/relative-time";
-import { type CatalogPackage, type CatalogRole, ConnectorService, type ConnectorSource } from "@/gen/openetl/api/v1/connector_pb";
+import { type CatalogPackage, type CatalogRole, type ConfigField, ConnectorService, type ConnectorSource } from "@/gen/openetl/api/v1/connector_pb";
 import { appliedState, applyCommand, manualLabel, roleLabel, sourceLabel } from "@/lib/catalog";
 import { dateOf, relative } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -155,9 +155,38 @@ function OutLink({ href }: { href: string }) {
   );
 }
 
-/** A role's config fields, from its JSON Schema: required ones first. */
-export function ConfigFields({ role }: { role: CatalogRole }) {
-  if (role.config.length === 0) return <p className="text-sm text-muted-foreground">Its config takes no fields.</p>;
+/** A JSON value as a form shows it: a string without its quotes. */
+function jsonText(v: string): string {
+  try {
+    const x: unknown = JSON.parse(v);
+    return typeof x === "string" ? x : JSON.stringify(x);
+  } catch {
+    return v;
+  }
+}
+
+/** What a field takes beyond its type: its default, values, range, format and when it applies. */
+function fieldFacts(f: ConfigField): string[] {
+  const facts: string[] = [];
+  if (f.options.length > 0) facts.push(`One of: ${f.options.map((o) => (o.title ? `${jsonText(o.value)} (${o.title})` : jsonText(o.value))).join(", ")}`);
+  if (f.default) facts.push(`Default: ${jsonText(f.default)}`);
+  if (f.minimum !== undefined || f.maximum !== undefined) facts.push(`Range: ${f.minimum ?? "…"} to ${f.maximum ?? "…"}`);
+  if (f.format) facts.push(`Format: ${f.format}`);
+  if (f.examples.length > 0) facts.push(`For example ${f.examples.map(jsonText).join(", ")}`);
+  for (const w of f.when) facts.push(`Only when ${w.field} is ${w.values.map(jsonText).join(" or ")}`);
+  return facts;
+}
+
+/** A field and its object's fields beneath it, the advanced ones last. */
+function flatten(fields: ConfigField[], depth = 0): { field: ConfigField; depth: number }[] {
+  const ordered = [...fields.filter((f) => !f.advanced), ...fields.filter((f) => f.advanced)];
+  return ordered.flatMap((field) => [{ field, depth }, ...flatten(field.fields, depth + 1)]);
+}
+
+/** A nested field's indent, by depth. */
+const indents = ["", "pl-7", "pl-12", "pl-16"];
+
+function ConfigFieldsTable({ fields }: { fields: ConfigField[] }) {
   return (
     <div className="overflow-hidden rounded-lg border contain-inline-size">
       <Table>
@@ -169,32 +198,79 @@ export function ConfigFields({ role }: { role: CatalogRole }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {role.config.map((f) => (
-            <TableRow key={f.name}>
-              <TableCell className="align-top whitespace-normal">
-                <span className="inline-flex items-center gap-1.5 font-mono text-[0.8125rem]">
-                  {f.name}
-                  {f.secret && (
-                    <Badge variant="outline" className="font-sans font-normal">
-                      <KeyRound aria-hidden />
-                      Secret
-                    </Badge>
-                  )}
-                </span>
-                {(f.title || f.description) && (
-                  <span className="mt-0.5 block text-xs text-muted-foreground">
-                    {f.title && f.title !== f.name && <span className="text-foreground">{f.title}. </span>}
-                    {f.description}
+          {flatten(fields).map(({ field: f, depth }) => {
+            const type = f.items ? `${f.type} of ${f.items}` : f.type || "any";
+            const facts = fieldFacts(f);
+            return (
+              <TableRow key={f.path || f.name}>
+                <TableCell className={cn("align-top whitespace-normal", indents[Math.min(depth, indents.length - 1)])}>
+                  <span className="inline-flex flex-wrap items-center gap-1.5 font-mono text-[0.8125rem]">
+                    {f.name}
+                    {f.secret && (
+                      <Badge variant="outline" className="font-sans font-normal">
+                        <KeyRound aria-hidden />
+                        Secret
+                      </Badge>
+                    )}
+                    {f.advanced && (
+                      <Badge variant="secondary" className="font-sans font-normal">
+                        Advanced
+                      </Badge>
+                    )}
+                    {f.deprecated && (
+                      <Badge variant="outline" className="font-sans font-normal text-muted-foreground">
+                        Deprecated
+                      </Badge>
+                    )}
                   </span>
-                )}
-                <span className="mt-0.5 block font-mono text-xs text-muted-foreground sm:hidden">{f.type || "any"}</span>
-              </TableCell>
-              <TableCell className="hidden align-top font-mono text-[0.8125rem] text-muted-foreground sm:table-cell">{f.type || "any"}</TableCell>
-              <TableCell className="align-top">{f.required ? "Yes" : <span className="text-muted-foreground">No</span>}</TableCell>
-            </TableRow>
-          ))}
+                  {(f.title || f.description) && (
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {f.title && f.title !== f.name && <span className="text-foreground">{f.title}. </span>}
+                      {f.description}
+                    </span>
+                  )}
+                  {facts.length > 0 && (
+                    <ul className="mt-1 grid gap-0.5 text-xs text-muted-foreground">
+                      {facts.map((x) => (
+                        <li key={x} className="break-words">{x}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <span className="mt-0.5 block font-mono text-xs text-muted-foreground sm:hidden">{type}</span>
+                </TableCell>
+                <TableCell className="hidden align-top font-mono text-[0.8125rem] text-muted-foreground sm:table-cell">{type}</TableCell>
+                <TableCell className="align-top">{f.required ? "Yes" : <span className="text-muted-foreground">No</span>}</TableCell>
+              </TableRow>
+            );
+          })}
         </TableBody>
       </Table>
+    </div>
+  );
+}
+
+/** A role's config fields, from its JSON Schema, in the schema's order and under its groups. */
+export function ConfigFields({ role }: { role: CatalogRole }) {
+  if (role.config.length === 0) return <p className="text-sm text-muted-foreground">Its config takes no fields.</p>;
+  const known = new Set(role.groups.map((g) => g.id));
+  const sections = [
+    { id: "", title: "", description: "", fields: role.config.filter((f) => !f.group || !known.has(f.group)) },
+    ...role.groups.map((g) => ({ ...g, fields: role.config.filter((f) => f.group === g.id) })),
+  ].filter((s) => s.fields.length > 0);
+  if (sections.length === 1 && !sections[0]?.id) return <ConfigFieldsTable fields={role.config} />;
+  return (
+    <div className="grid gap-5">
+      {sections.map((s) => (
+        <div key={s.id || "_"} className="grid gap-2">
+          {s.id && (
+            <div>
+              <h4 className="text-sm font-medium">{s.title || s.id}</h4>
+              {s.description && <p className="text-xs text-muted-foreground">{s.description}</p>}
+            </div>
+          )}
+          <ConfigFieldsTable fields={s.fields} />
+        </div>
+      ))}
     </div>
   );
 }

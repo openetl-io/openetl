@@ -21,6 +21,7 @@ import {
   type QuarantineFile,
   type StreamSchema,
 } from "@/gen/openetl/api/v1/pipeline_pb";
+import { CheckItemSchema, CheckResultSchema, type CheckResult } from "@/gen/openetl/api/v1/connection_pb";
 import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, syncs } from "./fixtures";
 import { flinkClusters, sparkClusters } from "./workspace";
@@ -325,4 +326,32 @@ export function quarantineLines(parent: string, path: string, limit: number) {
   }
   const n = Math.min(limit || 20, 100);
   return { lines: lines.slice(0, n), more: Number(f.rows) > n };
+}
+
+/** A check's result: Kinesis says what it looked at, and one of its streams can't be read; the others report only a result. */
+export function checkResult(connector: string): CheckResult {
+  if (connector !== "kinesis") return create(CheckResultSchema, { ok: true, version: "0.2.0" });
+  const item = (name: string, title: string, status: string, o: { message?: string; code?: string; fix?: string; field?: string } = {}) =>
+    create(CheckItemSchema, { name, title, status, ...o });
+  return create(CheckResultSchema, {
+    ok: false,
+    code: "PERMISSION_DENIED",
+    message: "kinesis: clickstream-prod: GetRecords: AccessDeniedException",
+    version: "0.2.0",
+    items: [
+      item("connect", "Reach Kinesis in eu-west-1", "passed", { message: "Listed 14 streams." }),
+      item("stream.clickstream-prod.describe", "Describe clickstream-prod", "passed", { message: "Active, 4 open shards, 24 hours' retention, KMS encrypted." }),
+      item("stream.clickstream-prod.read", "Read clickstream-prod", "failed", {
+        code: "PERMISSION_DENIED",
+        message: "GetRecords: AccessDeniedException",
+        fix: "Allow kinesis:GetShardIterator and kinesis:GetRecords on arn:aws:kinesis:eu-west-1:*:stream/clickstream-prod.",
+        field: "streams",
+      }),
+      item("stream.clickstream-prod.retention", "Retention of clickstream-prod", "warning", {
+        message: "24 hours: a scheduled read more than a day apart loses records.",
+        fix: "Raise the stream's retention, or schedule reads more often than daily.",
+      }),
+      item("consumer", "Enhanced fan-out consumer", "skipped", { message: "consumer.type is polling." }),
+    ],
+  });
 }
