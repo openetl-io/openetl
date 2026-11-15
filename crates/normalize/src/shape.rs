@@ -682,20 +682,20 @@ impl Shaper {
         }
         for c in cells {
             let dest = self.namer.get(&c.column).unwrap_or(&c.column);
-            by_row[c.row].push(dest.to_owned());
-        }
-        let mut b = ListBuilder::new(StringBuilder::new());
-        for list in by_row {
-            if list.is_empty() {
-                b.append_null();
-                continue;
+            if !by_row[c.row].iter().any(|d| d == dest) {
+                by_row[c.row].push(dest.to_owned());
             }
-            for d in list {
-                b.values().append_value(d);
-            }
-            b.append(true);
         }
-        Some(Arc::new(b.finish()))
+        Some(list_array(by_row))
+    }
+
+    /// Each row's held cells, by destination name.
+    fn cell_lists(&self, n: usize, cells: &[HeldCell]) -> Vec<Vec<String>> {
+        let mut by_row: Vec<Vec<String>> = vec![Vec::new(); n];
+        for c in cells {
+            by_row[c.row].push(self.namer.get(&c.column).unwrap_or(&c.column).to_owned());
+        }
+        by_row
     }
 
     /// Splits the held values off a shaped batch: held columns go to the
@@ -712,10 +712,20 @@ impl Shaper {
         let n = batch.num_rows();
         let schema = batch.schema();
         let lists = batch.column(schema.index_of(HELD_COLUMN)?).clone();
+        let by_row = self.cell_lists(n, cells);
         let mut held = Vec::new();
         let whole: Vec<(&String, &Holding)> =
             h.columns.iter().filter(|(_, c)| !c.discarded).collect();
         if !whole.is_empty() && n > 0 {
+            // Where a row holds a cell of a column held whole, its value
+            // there is the cell's, not the column's.
+            let lists = list_array(string_lists(&lists).into_iter().zip(&by_row).map(
+                |(list, cells)| {
+                    let mut list = list.unwrap_or_default();
+                    list.retain(|d| !cells.contains(d));
+                    list
+                },
+            ));
             let cols = whole.iter().map(|(_, c)| {
                 let a = batch.column(schema.index_of(&c.dest)?).clone();
                 let f = schema.field_with_name(&c.dest)?.clone();
@@ -742,6 +752,8 @@ impl Shaper {
                     (f, Arc::new(StringArray::from(v.clone())) as ArrayRef)
                 })
                 .collect();
+            // A row is in the cell batch for its own cells only.
+            let lists = list_array(by_row);
             if let Some(b) = self.held_batch(&batch, &lists, &names, cols)? {
                 held.push(b);
             }
@@ -874,6 +886,22 @@ impl Shaper {
                 .as_ref()
                 .is_some_and(|l| l.iter().any(|d| d == name))
         };
+        // Older held files put a row that held a cell of a column held whole
+        // in both batches, listing the column twice: the column's batch has
+        // no value for it, and the cell batch has every row of the column,
+        // null where a row held no cell.
+        let twice = |row: usize, name: &str| {
+            lists[row]
+                .as_ref()
+                .is_some_and(|l| l.iter().filter(|d| *d == name).count() > 1)
+        };
+        let holds = |row: usize, name: &str, k: &str, col: &ArrayRef| {
+            listed(row, name)
+                && match k {
+                    CELL => !col.is_null(row),
+                    _ => !twice(row, name),
+                }
+        };
         let mut still = 0u64;
         let mut filled: Vec<(Field, ArrayRef, Vec<bool>)> = Vec::new();
         for (f, col) in schema.fields().iter().zip(held.columns()) {
@@ -896,7 +924,7 @@ impl Shaper {
                     .any(|c| c.dest == *f.name() || c.dest == into)
             }) {
                 if k == CELL {
-                    still += (0..n).filter(|r| listed(*r, f.name())).count() as u64;
+                    still += (0..n).filter(|r| holds(*r, f.name(), k, col)).count() as u64;
                 }
                 continue;
             }
@@ -916,7 +944,7 @@ impl Shaper {
                 .with_metadata(HashMap::new());
             let (arr, failed): (ArrayRef, HashSet<usize>) = if k == CELL {
                 let Some(t) = Target::of(&target).filter(|t| *t != Target::TypedOnly) else {
-                    still += (0..n).filter(|r| listed(*r, f.name())).count() as u64;
+                    still += (0..n).filter(|r| holds(*r, f.name(), k, col)).count() as u64;
                     continue;
                 };
                 match coerce::text_column(&target, t, col, Default::default()) {
@@ -937,10 +965,10 @@ impl Shaper {
                 (a, failed)
             };
             let mask: Vec<bool> = (0..n)
-                .map(|r| listed(r, f.name()) && !failed.contains(&r))
+                .map(|r| holds(r, f.name(), k, col) && !failed.contains(&r))
                 .collect();
             still += (0..n)
-                .filter(|&r| listed(r, f.name()) && failed.contains(&r))
+                .filter(|&r| holds(r, f.name(), k, col) && failed.contains(&r))
                 .count() as u64;
             let target = match version {
                 Some(_) => {
@@ -1198,6 +1226,22 @@ fn string_lists(a: &ArrayRef) -> Vec<Option<Vec<String>>> {
             })
         })
         .collect()
+}
+
+/// A list-of-strings column of `rows`, null where a row's is empty.
+fn list_array(rows: impl IntoIterator<Item = Vec<String>>) -> ArrayRef {
+    let mut b = ListBuilder::new(StringBuilder::new());
+    for list in rows {
+        if list.is_empty() {
+            b.append_null();
+            continue;
+        }
+        for d in list {
+            b.values().append_value(d);
+        }
+        b.append(true);
+    }
+    Arc::new(b.finish())
 }
 
 fn held_type() -> DataType {
@@ -2437,5 +2481,176 @@ mod tests {
             .unwrap();
         assert_eq!(held_lists(&n.batch), [Some(vec!["doc".into()]), None]);
         assert_eq!(n.held[0].num_rows(), 1);
+    }
+
+    fn decimals(precision: u8) -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("price", DataType::Decimal128(precision, 2), true),
+        ]))
+    }
+
+    fn priced(prices: Vec<Option<&str>>) -> RecordBatch {
+        let ids: Vec<i64> = (1..).take(prices.len()).collect();
+        typed(vec![
+            ("id", Arc::new(Int64Array::from(ids)) as ArrayRef),
+            ("price", Arc::new(StringArray::from(prices))),
+        ])
+    }
+
+    /// The patches of `held` once `released` is: each patch row's id and
+    /// the value it fills `column` with, in the order they go out, and how
+    /// many cells still don't fit.
+    fn patched(
+        s: &Shaper,
+        held: &[RecordBatch],
+        released: &str,
+        column: &str,
+    ) -> (Vec<(i64, Option<i128>)>, u64) {
+        let released = HashSet::from([released.to_owned()]);
+        let (mut out, mut still) = (Vec::new(), 0);
+        for h in held {
+            let (p, n) = s.patch(h, &released).unwrap();
+            still += n;
+            let Some(p) = p else { continue };
+            let ids = p
+                .column_by_name("id")
+                .unwrap()
+                .as_primitive::<arrow_array::types::Int64Type>();
+            let v = p
+                .column_by_name(column)
+                .unwrap()
+                .as_primitive::<arrow_array::types::Decimal128Type>();
+            out.extend(ids.iter().map(Option::unwrap).zip(v.iter()));
+        }
+        (out, still)
+    }
+
+    #[test]
+    fn a_column_held_whole_and_its_cells_each_patch_their_own_rows() {
+        // The destination refused price's widening from decimal(10, 2) to
+        // decimal(12, 2), so price is held whole; a NaN and a value too wide
+        // for decimal(12, 2) hold their cells as well.
+        let mut first = keyed(Policy::AllowAll, None, Some(decimals(10)));
+        first.batch(&priced(vec![Some("1.5")])).unwrap();
+        let refused = ColumnHold {
+            column: "price".into(),
+            delivered: Some(Field::new("price", DataType::Decimal128(10, 2), true)),
+            reason: "refused".into(),
+            why: Why::Refused,
+            source: String::new(),
+        };
+        let mut s = keyed(Policy::AllowAll, first.schema(), Some(decimals(12)))
+            .with_holds(HoldConfig {
+                cells: true,
+                holding: vec![refused],
+                ..Default::default()
+            })
+            .unwrap();
+        let n = s
+            .batch(&priced(vec![
+                Some("1.5"),
+                Some("NaN"),
+                Some("2.25"),
+                None,
+                Some("12345678901.5"),
+            ]))
+            .unwrap();
+        assert_eq!(n.cells.len(), 2);
+
+        // The source widened price again, to decimal(20, 2); the user
+        // changed the destination's column and released price.
+        let mut r = keyed(Policy::AllowAll, s.schema(), Some(decimals(20)))
+            .with_holds(HoldConfig {
+                cells: true,
+                ..Default::default()
+            })
+            .unwrap();
+        r.version(&[]).unwrap();
+        r.declare().unwrap();
+        let (patches, still) = patched(&r, &n.held, "price", "price");
+        assert_eq!(still, 1, "the NaN stays held");
+        // A guarded destination fills a held cell from the first patch of
+        // its version, so a row must get one patch: the column's value, or
+        // its cell's, never a null for a cell it didn't hold.
+        assert_eq!(
+            patches,
+            [
+                (1, Some(150)),
+                (3, Some(225)),
+                (4, None),
+                (5, Some(1_234_567_890_150))
+            ]
+        );
+        assert_eq!(
+            held_lists(&n.batch),
+            vec![Some(vec!["price".to_owned()]); 5],
+            "a row lists a held column once"
+        );
+    }
+
+    #[test]
+    fn older_held_files_that_list_a_cell_twice_patch_the_same() {
+        // Older held files put every row of a column held whole in both
+        // batches: rows 2 and 5 hold cells of price, and list it twice.
+        let lists = [1, 2, 1, 1, 2].map(|k| vec!["price".to_owned(); k]);
+        let batch = |f: Field, a: ArrayRef| {
+            let mut b = ListBuilder::new(StringBuilder::new());
+            for l in &lists {
+                for d in l {
+                    b.values().append_value(d);
+                }
+                b.append(true);
+            }
+            let schema = Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new(HELD_COLUMN, held_type(), true),
+                f,
+            ]);
+            let columns: Vec<ArrayRef> = vec![
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
+                Arc::new(b.finish()),
+                a,
+            ];
+            RecordBatch::try_new(Arc::new(schema), columns).unwrap()
+        };
+        let column = batch(
+            Field::new("price", DataType::Decimal128(12, 2), true).with_metadata(kind(COLUMN)),
+            Arc::new(
+                arrow_array::Decimal128Array::from(vec![Some(150), None, Some(225), None, None])
+                    .with_precision_and_scale(12, 2)
+                    .unwrap(),
+            ),
+        );
+        let cell = batch(
+            Field::new("price", DataType::Utf8, true).with_metadata(kind(CELL)),
+            Arc::new(StringArray::from(vec![
+                None,
+                Some("NaN"),
+                None,
+                None,
+                Some("12345678901.5"),
+            ])),
+        );
+        let mut first = keyed(Policy::AllowAll, None, Some(decimals(10)));
+        first.batch(&priced(vec![Some("1.5")])).unwrap();
+        let mut r = keyed(Policy::AllowAll, first.schema(), Some(decimals(20)))
+            .with_holds(HoldConfig {
+                cells: true,
+                ..Default::default()
+            })
+            .unwrap();
+        r.declare().unwrap();
+        let (patches, still) = patched(&r, &[column, cell], "price", "price");
+        assert_eq!(still, 1, "the NaN stays held");
+        assert_eq!(
+            patches,
+            [
+                (1, Some(150)),
+                (3, Some(225)),
+                (4, None),
+                (5, Some(1_234_567_890_150))
+            ]
+        );
     }
 }
