@@ -379,6 +379,20 @@ impl RunStores {
                         r.name, b.size, r.size
                     )));
                 }
+                // Every run is a barrier's, holding that epoch's changes of
+                // its lane's key groups. A run a merge writes will need a
+                // name of its own, and a relation of its own here.
+                let name = RunName::parse(&r.name)
+                    .ok_or_else(|| Error::Snapshot(format!("{} isn't a run's name", r.name)))?;
+                let lying = r.sections.iter().find(|sec| {
+                    sec.epoch != name.epoch || intersect(sec.groups, name.range) != Some(sec.groups)
+                });
+                if let Some(sec) = lying {
+                    return Err(Error::Snapshot(format!(
+                        "run {} named with a {:?} section of epoch {} for key groups {} to {}",
+                        r.name, sec.kind, sec.epoch, sec.groups.first, sec.groups.last
+                    )));
+                }
                 for sec in r.sections {
                     let Some(groups) =
                         intersect(sec.groups, s.range).and_then(|g| intersect(g, range))
@@ -616,7 +630,8 @@ impl RunStore {
                 .ok()
                 .and_then(|len| tail.get(at..at.checked_add(len)?))
                 .ok_or_else(|| Error::Corrupt(format!("run {}: a section's meta", run.name)))?;
-            let (info, open) = format::open_section(chunk, &run.keep[named.kind.index()])?;
+            let keep = &run.keep[named.kind.index()];
+            let (info, open) = format::open_section(chunk, offset, keep)?;
             if info.kind != named.kind || info.entries != named.entries {
                 return Err(Error::Corrupt(format!(
                     "run {}'s {:?} section isn't what its snapshot says",

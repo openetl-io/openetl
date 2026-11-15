@@ -100,6 +100,13 @@ impl<'a> Reader<'a> {
         let mut v = 0u64;
         for shift in (0..64).step_by(7) {
             let byte = self.u8()?;
+            // The tenth byte holds the 64th bit only.
+            if shift == 63 && byte > 1 {
+                return Err(Error::Corrupt(format!(
+                    "{}: a varint past 64 bits",
+                    self.what
+                )));
+            }
             v |= u64::from(byte & 0x7f) << shift;
             if byte & 0x80 == 0 {
                 return Ok(v);
@@ -126,5 +133,38 @@ impl<'a> Reader<'a> {
     pub fn bytes(&mut self) -> Result<&'a [u8]> {
         let n = self.count()?;
         self.take(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read(b: &[u8]) -> Result<u64> {
+        let mut r = Reader::new(b, "a varint");
+        let v = r.varint()?;
+        assert!(r.is_empty());
+        Ok(v)
+    }
+
+    #[test]
+    fn varints_round_trip_to_64_bits_and_no_further() {
+        for v in [0, 1, 127, 128, 300, 1 << 63, (1 << 63) - 1, u64::MAX] {
+            let mut b = BytesMut::new();
+            put_varint(&mut b, v);
+            assert!(b.len() <= 10);
+            assert_eq!(read(&b).ok(), Some(v), "{v}");
+        }
+        let mut max = vec![0xff; 9];
+        max.push(0x01);
+        assert_eq!(read(&max).ok(), Some(u64::MAX));
+        for tenth in [0x02, 0x7f, 0x81] {
+            let mut over = vec![0x80; 9];
+            over.push(tenth);
+            assert!(matches!(read(&over), Err(Error::Corrupt(_))), "{tenth:#x}");
+        }
+        let eleven = [0x80; 11];
+        assert!(matches!(read(&eleven), Err(Error::Corrupt(_))));
+        assert!(matches!(read(&[0x80, 0x80]), Err(Error::Corrupt(_))));
     }
 }

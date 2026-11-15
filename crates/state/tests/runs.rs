@@ -588,6 +588,21 @@ async fn a_restore_refuses_what_it_cant_read() {
     let mut layout = all.clone();
     layout[0].layout = LAYOUT + 1;
     assert!(matches!(open(layout).await, Some(Error::Snapshot(_))));
+    // A run's sections hold its epoch's changes of its key groups, and its
+    // name says which.
+    let lies: [fn(&mut openetl_state::runs::RunRef); 4] = [
+        |r| r.sections[0].epoch = 2,
+        |r| r.sections[0].groups = KeyGroupRange::new(0, 64),
+        |r| r.name = "g1/e2/kg0-63.run".into(),
+        |r| r.name = "state.run".into(),
+    ];
+    for lie in lies {
+        let mut named = openetl_state::runs::runs(&all[0]).unwrap();
+        lie(&mut named[0]);
+        let mut lying = all.clone();
+        lying[0].data = openetl_state::runs::encode(&named);
+        assert!(matches!(open(lying).await, Some(Error::Snapshot(_))));
+    }
 }
 
 /// Where the recorded runs of each format are, under this crate.

@@ -414,9 +414,14 @@ pub fn footer(tail: &[u8]) -> Result<Vec<(SectionKind, u64, u64)>> {
     Ok(out)
 }
 
-/// A section's meta, as [`SectionWriter::finish`] wrote it, keeping the
-/// blocks and filters of the key groups in `keep`.
-pub fn open_section(meta: &[u8], keep: &[KeyGroupRange]) -> Result<(SectionInfo, OpenSection)> {
+/// A section's meta, as [`SectionWriter::finish`] wrote it at `at` in its
+/// run, keeping the blocks and filters of the key groups in `keep`. Its
+/// blocks must end by `at`: every block of a run precedes its metas.
+pub fn open_section(
+    meta: &[u8],
+    at: u64,
+    keep: &[KeyGroupRange],
+) -> Result<(SectionInfo, OpenSection)> {
     let mut r = Reader::sealed(meta, "a section's meta")?;
     let kind = SectionKind::from_code(r.u8()?)
         .ok_or_else(|| Error::Corrupt("a section's meta: its kind".into()))?;
@@ -442,6 +447,14 @@ pub fn open_section(meta: &[u8], keep: &[KeyGroupRange]) -> Result<(SectionInfo,
         let n = narrow(r.varint()?)?;
         let first = r.bytes()?;
         let last = r.bytes()?;
+        if offset
+            .checked_add(u64::from(stored))
+            .is_none_or(|end| end > at)
+        {
+            return Err(Error::Corrupt(format!(
+                "a block of {stored} bytes at {offset}, past its section's meta at {at}"
+            )));
+        }
         stored_bytes += u64::from(stored);
         let (from, to) = (group(first)?, group(last)?);
         // Timers sort by time first, so any block may hold any group's.
@@ -625,7 +638,7 @@ mod tests {
             let mut all = Vec::new();
             for (s, (kind, off, len)) in built.sections.iter().zip(&listed) {
                 assert_eq!((s.info.kind, s.info.meta), (*kind, (*off, *len)));
-                let (info, open) = open_section(meta(&run, (*off, *len)), &[ALL]).unwrap();
+                let (info, open) = open_section(meta(&run, (*off, *len)), *off, &[ALL]).unwrap();
                 let want = SectionInfo {
                     meta: (0, *len),
                     ..s.info.clone()
@@ -673,7 +686,7 @@ mod tests {
         let run = built.bytes;
         let keep = [KeyGroupRange::new(10, 14), KeyGroupRange::new(30, 30)];
         for s in &built.sections {
-            let (_, open) = open_section(meta(&run, s.info.meta), &keep).unwrap();
+            let (_, open) = open_section(meta(&run, s.info.meta), s.info.meta.0, &keep).unwrap();
             assert!(open.memory_bytes() < s.open.memory_bytes());
             for (k, v) in &changes {
                 if layout::section_of(k) != Some(s.info.kind) {
@@ -690,6 +703,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A meta whose checksum holds but whose blocks reach past it, or past
+    /// the end of numbers, is refused.
+    #[test]
+    fn a_section_refuses_blocks_past_its_meta() {
+        let built = build(&changes(), &config(4096)).unwrap();
+        let s = &built.sections[0];
+        let at = s.info.meta.0;
+        let good = meta(&built.bytes, s.info.meta);
+        assert!(open_section(good, at, &[ALL]).is_ok());
+        assert!(matches!(
+            open_section(good, s.open.blocks[0].end() - 1, &[ALL]),
+            Err(Error::Corrupt(_))
+        ));
+        // The same section, its first block moved to the last offset.
+        let mut lying = BytesMut::new();
+        lying.put_u8(s.info.kind.code());
+        for v in [s.info.entries, s.info.raw_bytes, 0, 39] {
+            put_varint(&mut lying, v);
+        }
+        lying.put_u8(0);
+        put_varint(&mut lying, 1);
+        for v in [u64::MAX, 9, 9, 1] {
+            put_varint(&mut lying, v);
+        }
+        let k = layout::value(0, OP, b"k");
+        put_bytes(&mut lying, &k);
+        put_bytes(&mut lying, &k);
+        lying.put_u8(0);
+        seal(&mut lying, 0);
+        let got = open_section(&lying, at, &[ALL]);
+        assert!(matches!(got, Err(Error::Corrupt(_))), "{got:?}");
     }
 
     #[test]
@@ -719,7 +765,7 @@ mod tests {
             let run = Bytes::from(std::fs::read(dir.join(name)).unwrap());
             for (kind, off, len) in footer(&run).unwrap() {
                 kinds.insert(kind);
-                let (_, open) = open_section(meta(&run, (off, len)), &[ALL]).unwrap();
+                let (_, open) = open_section(meta(&run, (off, len)), off, &[ALL]).unwrap();
                 for b in &open.blocks {
                     codecs.insert(run[b.end() as usize - 9]);
                 }
