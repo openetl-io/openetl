@@ -55,7 +55,7 @@ func TestReadQuarantineFile(t *testing.T) {
 	e := newHoldsEnv(t, func(s *api.Server) { s.Dispatch = &dispatch.Dispatcher{Store: s.Store} })
 	_, err := e.runner.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
 		PipelineId: e.pipeline.String(), RunId: "run1", Generation: 2, Epoch: 5, CreateTime: timestamppb.Now(),
-		Streams: []*dataplanev1.CheckpointStream{{Name: "orders", Rows: 10, QuarantinedRows: 3, QuarantineFiles: []*dataplanev1.QuarantineFile{
+		Streams: []*dataplanev1.CheckpointStream{{Name: "orders", Rows: 10, QuarantinedRows: 3, QuarantineFiles: []*dataplanev1.CheckpointQuarantineFile{
 			{Path: "2/5/orders.jsonl", Url: "s3://lake/o/p/_quarantine/2/5/orders.jsonl", Rows: 3},
 		}}},
 	}))
