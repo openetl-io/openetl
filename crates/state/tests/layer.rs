@@ -165,6 +165,36 @@ async fn a_rescale_moves_state_by_key_group() {
     }
 }
 
+/// A lane of every key group the layer takes drains rows and timers in
+/// group order, and an empty drain reads each group once.
+#[tokio::test]
+async fn a_lane_of_every_key_group_drains() {
+    let bucket = MemoryBucket::new();
+    let range = KeyGroupRange::new(0, u32::from(u16::MAX));
+    let mut l = Layer::open(&bucket, 1, 1, range, &[]).await.unwrap();
+    for g in [65_535, 0, 40_000] {
+        let k = KeyRef::new(g, b"k");
+        l.append(OP, k, 1, b(&format!("r{g}")));
+        l.set_timer(OP, k, 1);
+    }
+    let record = l.barrier(1).await.unwrap();
+    let mut l = Layer::open(&bucket, 2, 2, range, &record).await.unwrap();
+    let due = l.take_rows(OP, i64::MAX, usize::MAX).await.unwrap();
+    let groups: Vec<u32> = due.iter().map(|r| r.group).collect();
+    assert_eq!(groups, [0, 40_000, 65_535]);
+    assert!(
+        l.take_rows(OP, i64::MAX, usize::MAX)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let fired = l.fire(OP, 1, usize::MAX).await.unwrap();
+    assert_eq!(
+        fired.iter().map(|t| t.group).collect::<Vec<_>>(),
+        [0, 40_000, 65_535]
+    );
+}
+
 #[tokio::test]
 async fn a_failed_epoch_is_discarded() {
     let bucket = MemoryBucket::new();

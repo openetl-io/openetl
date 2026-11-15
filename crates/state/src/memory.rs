@@ -160,6 +160,22 @@ impl MemoryStore {
         usize::try_from(g - self.range.first).ok()
     }
 
+    /// The groups a scan of `[start, end)` reads: for keyed state, those
+    /// from its start's group to its end's, which bound every key between
+    /// them; for timers, which are in every group, all of them.
+    fn span(&self, start: &[u8], end: &[u8]) -> &[Group] {
+        let (Some(a), Some(b)) = (layout::keyed_group(start), layout::keyed_group(end)) else {
+            return &self.groups;
+        };
+        let a = u32::from(a).max(self.range.first);
+        let b = u32::from(b).min(self.range.last);
+        let at = |g: u32| usize::try_from(g - self.range.first).unwrap_or(usize::MAX);
+        match a <= b {
+            true => self.groups.get(at(a)..=at(b)).unwrap_or(&[]),
+            false => &[],
+        }
+    }
+
     fn apply(&mut self, epoch: u64, changes: Vec<Change>) -> Result<Vec<Snapshot>> {
         let name = format!(
             "g{}/e{epoch}/kg{}-{}",
@@ -249,17 +265,8 @@ impl Store for MemoryStore {
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<(Bytes, Bytes)>>> {
         let mut out: Vec<(Bytes, Bytes)> = Vec::new();
-        // Keyed state's key groups are ranges of keys; timers are in every
-        // group.
-        let (lo, hi) = match (layout::keyed_group(start), layout::keyed_group(end)) {
-            (Some(a), Some(b)) => (u32::from(a), u32::from(b)),
-            _ => (self.range.first, self.range.last),
-        };
         if start < end {
-            for (n, g) in (self.range.first..).zip(&self.groups) {
-                if n < lo || n > hi {
-                    continue;
-                }
+            for g in self.span(start, end) {
                 let range = (Bound::Included(start), Bound::Excluded(end));
                 out.extend(
                     g.map
@@ -398,6 +405,34 @@ mod tests {
         .unwrap();
         assert!(s.groups[0].map.contains_key(&ids[2]));
         assert!(!s.groups[0].map.contains_key(&ids[1]));
+    }
+
+    /// A keyed scan reads the groups its bounds select, so draining every
+    /// group of a lane reads each once, not every group per group.
+    #[test]
+    fn a_scan_reads_only_the_groups_its_bounds_select() {
+        let bucket = MemoryBucket::new();
+        let all = bucket
+            .open_store(1, KeyGroupRange::new(0, u32::from(u16::MAX)), &[])
+            .unwrap();
+        let reads = |s: &MemoryStore, (start, end): (Bytes, Bytes)| s.span(&start, &end).len();
+        let mut visits = 0;
+        for g in 0..=u16::MAX {
+            visits += reads(&all, layout::rows_due(g, OP, 5));
+        }
+        assert_eq!(visits, 1 << 16);
+        assert_eq!(reads(&all, layout::rows_due(u16::MAX, OP, i64::MAX)), 1);
+        assert_eq!(reads(&all, layout::set_range(9, OP)), 1);
+        assert_eq!(reads(&all, layout::timers_due(OP, 5)), 1 << 16);
+        let part = bucket
+            .open_store(1, KeyGroupRange::new(100, 199), &[])
+            .unwrap();
+        assert_eq!(reads(&part, layout::rows_due(150, OP, 5)), 1);
+        assert_eq!(reads(&part, layout::rows_due(99, OP, 5)), 0);
+        assert_eq!(reads(&part, layout::rows_due(200, OP, 5)), 0);
+        let wide = (layout::set_range(50, OP).0, layout::set_range(150, OP).1);
+        assert_eq!(reads(&part, wide), 51);
+        assert_eq!(reads(&part, layout::timers_due(OP, i64::MAX)), 100);
     }
 
     #[test]
