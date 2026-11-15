@@ -944,7 +944,7 @@ impl Shaper {
                     still += (0..n).filter(|r| holds(*r, f.name(), k, col)).count() as u64;
                     continue;
                 };
-                match coerce::text_column(&target, t, col, Default::default()) {
+                match coerce::text_column(&target, t, col, self.types.infinity) {
                     Some((a, rows)) => (a, rows.into_iter().map(|(r, _)| r).collect()),
                     None => (new_null_array(target.data_type(), n), (0..n).collect()),
                 }
@@ -2825,5 +2825,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some(150), Some(0)]
         );
+    }
+
+    #[test]
+    fn an_infinite_cell_stays_held_on_release_with_infinity_unfit() {
+        let types = TypeOptions {
+            infinity: crate::Infinity::Unfit,
+            ..Default::default()
+        };
+        let shaper = |restored: Option<SchemaRef>| {
+            let declared = Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new(
+                    "at",
+                    DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+                    true,
+                ),
+            ]));
+            Shaper::new(
+                Naming::default(),
+                "t".into(),
+                Identity {
+                    stream: "t".into(),
+                    key: vec!["id".into()],
+                    ..Default::default()
+                },
+                Policy::AllowAll,
+                restored,
+                Some(declared),
+                types,
+            )
+            .unwrap()
+            .with_holds(HoldConfig {
+                cells: true,
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let text: ArrayRef = Arc::new(StringArray::from(vec!["2020-01-01T00:00:00Z", "infinity"]));
+        let typed_at: ArrayRef =
+            Arc::new(TimestampMicrosecondArray::from(vec![0, i64::MAX]).with_timezone("UTC"));
+        for (what, at) in [("text", text), ("typed", typed_at)] {
+            let mut s = shaper(None);
+            let n = s
+                .batch(&typed(vec![
+                    ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+                    ("at", at),
+                ]))
+                .unwrap();
+            assert_eq!(n.cells.len(), 1, "{what}: {:?}", n.cells);
+            let (patch, still) = shaper(s.schema())
+                .patch(&n.held[0], &HashSet::from(["at".to_owned()]))
+                .unwrap();
+            assert!(patch.is_none(), "{what}: {patch:?}");
+            assert_eq!(still, 1, "{what}");
+        }
     }
 }
