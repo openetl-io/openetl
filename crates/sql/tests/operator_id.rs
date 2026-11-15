@@ -344,6 +344,9 @@ fn each_unnest_counts() {
     let apart = "CREATE VIEW a AS SELECT unnest(xs) AS x, ys, region, at FROM events;\n\
                  CREATE VIEW b AS SELECT x, unnest(ys) AS y, region, at FROM a;\n";
     assert_ne!(count(together, "a"), count(apart, "b"));
+    let swapped =
+        "CREATE VIEW a AS SELECT unnest(ys) AS y, unnest(xs) AS x, region, at FROM events;\n";
+    assert_eq!(count(together, "a"), count(swapped, "a"));
 }
 
 /// The deepest chain of views, each reading a column of the one before

@@ -188,12 +188,13 @@ impl Canon {
                 }
                 LogicalPlan::Unnest(u) => {
                     // One entry per step: lists unnested together give a row
-                    // per element of the longest, and steps one after
-                    // another multiply.
+                    // per element of the longest, whatever their order, and
+                    // steps one after another multiply.
                     let mut lists = Vec::with_capacity(u.list_type_columns.len());
                     for (j, _) in &u.list_type_columns {
                         lists.push(self.below(&u.input, *j)?);
                     }
+                    lists.sort();
                     out.push(format!(
                         "unnest step {}",
                         unnested(&lists.join(", "), u.options.null_handling)
