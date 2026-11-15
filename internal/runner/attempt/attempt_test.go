@@ -617,6 +617,58 @@ func TestAWorkersFailureFailsTheAttempt(t *testing.T) {
 	})
 }
 
+// A worker whose engine lost another's doesn't say why the attempt failed
+// when the other worker's own failure follows within the grace: that one
+// does, though it came second.
+func TestALostPeerDefersToAWorkersOwnFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, ws := start2(t, Options{PeerLostGrace: 3 * time.Second})
+		ws[0].Fail(fmt.Errorf("engine: %w", &PeerLost{Err: errs.New(errs.Transient, "engine 1 at w1:7720 was lost")}))
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case <-c.Done():
+			t.Fatalf("the attempt failed at once with %v", c.Err())
+		default:
+		}
+		ws[1].Fail(errs.New(errs.SchemaDrift, "column v changed type"))
+		within(t, c.Done(), time.Second, "the attempt's failure")
+		if err := c.Err(); errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "worker 1 failed: SCHEMA_DRIFT") {
+			t.Fatalf("attempt: %v", err)
+		}
+		if err := c.End(t.Context(), nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range ws {
+			_ = w.Close()
+		}
+	})
+}
+
+// With no other failure within the grace, a lost peer fails the attempt
+// as it says, transient.
+func TestALostPeerAloneFailsTheAttemptAfterTheGrace(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, ws := start2(t, Options{PeerLostGrace: 3 * time.Second})
+		start := time.Now()
+		ws[0].Fail(&PeerLost{Err: errs.New(errs.Transient, "engine 1 at w1:7720 was lost")})
+		within(t, c.Done(), 10*time.Second, "the attempt's failure")
+		if waited := time.Since(start); waited < 3*time.Second {
+			t.Errorf("the attempt failed after %s, before the grace", waited)
+		}
+		if err := c.Err(); errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "worker 0 failed: TRANSIENT: engine 1 at w1:7720 was lost") {
+			t.Fatalf("attempt: %v", err)
+		}
+		within(t, ws[1].Done(), time.Second, "worker 1's end")
+		if err := c.End(t.Context(), nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range ws {
+			_ = w.Close()
+		}
+	})
+}
+
 func TestEndWithACause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		c, ws := start2(t, Options{})

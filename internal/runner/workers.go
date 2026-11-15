@@ -806,11 +806,8 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 		if a.Exchange, err = attempt.NewExchange(); err != nil {
 			return res, err
 		}
-		f.crossing = map[string][]string{}
-		for _, s := range j.sinkStreams() {
-			if j.keyGrouped(s) {
-				f.crossing[s.Name] = s.PrimaryKey
-			}
+		if f.crossing, err = j.crossing(); err != nil {
+			return res, err
 		}
 	}
 	for i, s := range a.GetSplits() {
@@ -1106,6 +1103,29 @@ func capLanes(groups int, lanes, writers []int) error {
 		first += writers[i]
 	}
 	return nil
+}
+
+// crossing is, for an attempt whose workers' engines exchange rows, the
+// primary key of each stream whose rows they exchange, by the name its
+// committables' coverage gives its splits. A SQL transform's coverage names
+// the splits of the streams it reads, not of the outputs its exchange
+// sends, so it has none: only a destination whose writer lanes commit on
+// their own reads coverage, to redo a lane, and plan.OnePod keeps a SQL
+// transform into one on one pod.
+func (j *Job) crossing() (map[string][]string, error) {
+	if j.SQL != nil {
+		if j.Destination.Capabilities().LaneCommits {
+			return nil, errs.New(errs.Internal, "runner: a SQL transform on workers into a destination whose writer lanes commit on their own, whose redo couldn't find what its exchange sent")
+		}
+		return nil, nil
+	}
+	out := map[string][]string{}
+	for _, s := range j.Streams {
+		if j.keyGrouped(s) {
+			out[s.Name] = s.PrimaryKey
+		}
+	}
+	return out, nil
 }
 
 // meshed says an attempt on n workers has their engines exchange rows

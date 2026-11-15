@@ -589,12 +589,24 @@ func fromStatus(err error) error {
 	if !ok {
 		return nil
 	}
+	var cause error
+	peerLost := false
 	for _, d := range st.Details() {
-		if pe, ok := d.(*protocolv1.Error); ok {
-			return fmt.Errorf("engine: %w", errs.FromProto(pe))
+		switch d := d.(type) {
+		case *protocolv1.Error:
+			cause = errs.FromProto(d)
+		case *enginev1.PeerLost:
+			peerLost = true
 		}
 	}
-	return nil
+	switch {
+	case cause == nil:
+		return nil
+	case peerLost:
+		// Another worker's engine was lost, whose own failure says why.
+		return fmt.Errorf("engine: %w", &attempt.PeerLost{Err: cause})
+	}
+	return fmt.Errorf("engine: %w", cause)
 }
 
 func inEdge(lane int) string { return fmt.Sprintf("in-%d", lane) }

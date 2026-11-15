@@ -56,6 +56,9 @@ type coordinator struct {
 	over      bool
 	err       error
 	done      chan struct{}
+	// A worker's PeerLost, which fails the attempt only if no other
+	// failure does within the grace.
+	peerLost *time.Timer
 }
 
 type pendingCall struct {
@@ -76,6 +79,8 @@ type member struct {
 	commits map[string]*commitState
 	// Closed when its call ends.
 	ended chan struct{}
+	// It reported PeerLost, its last message.
+	peerLost bool
 }
 
 type commitState struct {
@@ -168,6 +173,9 @@ func (c *coordinator) finish(err error) {
 	}
 	c.over, c.err = true, err
 	close(c.done)
+	if c.peerLost != nil {
+		c.peerLost.Stop()
+	}
 	end := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_End{End: &attemptv1.End{Error: errs.ToProto(err)}}}
 	for _, m := range c.members {
 		if m != nil {
@@ -290,7 +298,7 @@ func (c *coordinator) serve(st coordinatorStream) error {
 		case r := <-in:
 			switch {
 			case r.err == nil:
-			case errors.Is(r.err, io.EOF) && c.isOver():
+			case errors.Is(r.err, io.EOF) && (c.isOver() || c.lostAPeer(m)):
 				return quit(nil)
 			case errors.Is(r.err, io.EOF):
 				err := outOfProtocol("%s ended its call before the attempt ended", who)
@@ -337,6 +345,13 @@ func (c *coordinator) isOver() bool {
 	return c.over
 }
 
+// lostAPeer says m reported PeerLost, after which it ends its call.
+func (c *coordinator) lostAPeer(m *member) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return m.peerLost
+}
+
 // handle takes a message from a worker that joined, and returns why it
 // fails the attempt, if it does.
 func (c *coordinator) handle(m *member, msg *attemptv1.AttendRequest) error {
@@ -367,6 +382,15 @@ func (c *coordinator) handle(m *member, msg *attemptv1.AttendRequest) error {
 	case *attemptv1.AttendRequest_Failure:
 		cause := reported(x.Failure)
 		return classedAs(cause, fmt.Errorf("attempt: %s failed: %w", who, cause))
+	case *attemptv1.AttendRequest_PeerLost:
+		// The worker whose engine was lost fails, or is lost, with why.
+		cause := reported(x.PeerLost)
+		err := classedAs(cause, fmt.Errorf("attempt: %s failed: %w", who, cause))
+		m.peerLost = true
+		if c.peerLost == nil {
+			c.peerLost = time.AfterFunc(c.opts.peerLostGrace(), func() { c.finish(err) })
+		}
+		return nil
 	case *attemptv1.AttendRequest_Answer:
 		p := c.calls[x.Answer.GetId()]
 		if p == nil || p.worker != m.index {

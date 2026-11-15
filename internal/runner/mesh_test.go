@@ -158,6 +158,38 @@ func TestCoverageCrossesWorkers(t *testing.T) {
 	}
 }
 
+// The streams whose coverage crosses workers are those whose committables
+// name their splits: a SQL transform's name its inputs', so it has none,
+// and into a destination whose lanes commit on their own, which reads
+// coverage, it never runs on workers.
+func TestWhatCrossesIsWhatCoverageNames(t *testing.T) {
+	j := meshJob(meshingFlow{})
+	got, err := j.crossing()
+	if err != nil || len(got) != 2 || !slices.Equal(got["items"], []string{"id"}) || !slices.Equal(got["changes"], []string{"id"}) {
+		t.Errorf("crossing %v, %v; want items and changes by id", got, err)
+	}
+	j.SQL = &SQLTransform{SQL: "INSERT INTO out SELECT * FROM items"}
+	j.Outputs = []Stream{{Name: "out", Mode: destination.Merge, PrimaryKey: []string{"id"}, From: "items", Transformed: true}}
+	if got, err := j.crossing(); err != nil || got != nil {
+		t.Errorf("a SQL transform's crossing %v, %v; want none", got, err)
+	}
+	j.Destination = laneCommits{lanesDest{8}}
+	if _, err := j.crossing(); err == nil {
+		t.Error("a SQL transform into lane commits crossed workers")
+	}
+	if err := j.OnWorkers(2); err == nil {
+		t.Error("a SQL transform into lane commits may run on workers")
+	}
+}
+
+type laneCommits struct{ lanesDest }
+
+func (d laneCommits) Capabilities() destination.Capabilities {
+	c := d.lanesDest.Capabilities()
+	c.Class, c.LaneCommits = destination.TransactionalStream, true
+	return c
+}
+
 // A worker's engine takes its part of the attempt's layout, and the
 // others' lanes, writer lanes and addresses.
 func TestAWorkersMeshIsItsAssignments(t *testing.T) {
