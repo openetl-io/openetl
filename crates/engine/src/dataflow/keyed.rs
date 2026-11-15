@@ -473,6 +473,12 @@ impl Keyed {
         let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
             JobError::internal(format!("a group window's state at epoch {}: {err}", e.n))
         })?;
+        // The store's versions live in this engine's memory, which no other
+        // engine restores from, so this one keeps only the newest two.
+        self.layer
+            .release(e.n.saturating_sub(1))
+            .await
+            .map_err(|err| JobError::internal(format!("a group window's state: {err}")))?;
         let id = plan
             .transform
             .as_ref()

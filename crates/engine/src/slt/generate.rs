@@ -144,13 +144,19 @@ struct Query {
     duckdb: String,
 }
 
-/// The mismatches of a file's queries over each seed's rows: one string
-/// each, and the exceptions of [`DIFFERS`] that a mismatch used.
-pub(super) fn compare(
-    file: &Path,
-    bin: &Path,
-    seeds: &[u64],
-) -> Result<(Vec<String>, Vec<usize>), String> {
+/// What comparing a file's queries over generated rows gave.
+pub(super) struct Compared {
+    /// One string each.
+    pub mismatches: Vec<String>,
+    /// The exceptions of [`DIFFERS`] that a mismatch used.
+    pub used: Vec<usize>,
+    /// The queries compared as translated pairs: ours, then DuckDB's SQL
+    /// for the same query.
+    pub pairs: usize,
+}
+
+/// The mismatches of a file's queries over each seed's rows.
+pub(super) fn compare(file: &Path, bin: &Path, seeds: &[u64]) -> Result<Compared, String> {
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -165,12 +171,17 @@ pub(super) fn compare(
     let mut queries: Vec<Query> = Vec::new();
     // Ours of a translated pair, until DuckDB's follows it.
     let mut pending: Option<Query> = None;
+    let mut pairs = 0;
     let only = |conditions: &[sqllogictest::Condition], engine: &str| {
         conditions
             .iter()
             .any(|c| matches!(c, sqllogictest::Condition::OnlyIf { label } if label == engine))
     };
     for r in records {
+        // A comment or a condition between a pair's records keeps it.
+        if !matches!(r, Record::Statement { .. } | Record::Query { .. }) {
+            continue;
+        }
         let held = pending.take();
         match r {
             Record::Statement {
@@ -195,11 +206,24 @@ pub(super) fn compare(
                 conditions,
                 sql,
                 expected: QueryExpect::Results { .. },
+                loc,
                 ..
-            } if only(&conditions, "duckdb") && held.is_some() => {
-                if let Some(mut q) = held {
-                    q.duckdb = statement(&sql).to_owned();
-                    queries.push(q);
+            } if only(&conditions, "duckdb") => {
+                let sql = statement(&sql).to_owned();
+                match held {
+                    // The same SQL under each engine differs on purpose.
+                    Some(q) if q.sql == sql => {}
+                    Some(mut q) => {
+                        q.duckdb = sql;
+                        queries.push(q);
+                        pairs += 1;
+                    }
+                    None => {
+                        return Err(format!(
+                            "{name}:{}: a query only DuckDB runs follows no query only ours runs, so nothing compares it",
+                            loc.line()
+                        ));
+                    }
                 }
             }
             Record::Statement {
@@ -298,7 +322,11 @@ pub(super) fn compare(
             }
         }
     }
-    Ok((mismatches, used))
+    Ok(Compared {
+        mismatches,
+        used,
+        pairs,
+    })
 }
 
 /// The string literals of a file.

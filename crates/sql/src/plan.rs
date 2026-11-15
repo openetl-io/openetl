@@ -190,7 +190,7 @@ pub enum Window {
     /// Windows of `size`, one after another from the Unix epoch.
     Tumble { size: i64 },
     /// Windows of `size` that start every `slide`, from the Unix epoch: a
-    /// row is in `size / slide` of them, rounded up.
+    /// row is in at most `size / slide` of them, rounded up.
     Hop { slide: i64, size: i64 },
     /// A key's rows with no more than `gap` between one and the next. A
     /// session ends `gap` after its last row.

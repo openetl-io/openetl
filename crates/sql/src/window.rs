@@ -927,8 +927,8 @@ fn through(name: &str, steps: &[Step]) -> Option<String> {
 }
 
 /// A hash of what the operator keeps: the output it feeds, its window,
-/// time and keys as the stream names them, its aggregates and its state's
-/// layout.
+/// the stream it reads and the row-wise steps before it, its time and keys
+/// as the stream names them, its aggregates and its state's layout.
 fn operator_id(
     output: &str,
     window: &Window,
@@ -937,7 +937,11 @@ fn operator_id(
     keys: &[GroupKey],
     aggregates: &[Aggregate],
 ) -> String {
-    let mut d = format!("group_window {STATE}\n{output}\n{window:?}\n");
+    let mut d = format!(
+        "group_window {STATE}\n{output}\n{window:?}\n{}\n{}",
+        rows.input,
+        described(&rows.steps)
+    );
     let origin = |i: usize| {
         let out = match rows.steps.iter().rev().find_map(|s| match s {
             Step::Project(p) => Some(p.schema.clone()),
@@ -962,4 +966,27 @@ fn operator_id(
         d.push_str(&format!("{:?}({arg}) [{filter}] {}\n", a.kind, a.data_type));
     }
     format!("window-{:016x}", XxHash3_64::oneshot(d.as_bytes()))
+}
+
+/// Row-wise steps as an operator's ID takes them: a line each.
+fn described(steps: &[Step]) -> String {
+    let mut d = String::new();
+    for s in steps {
+        match s {
+            Step::Filter(e) => d.push_str(&format!("filter {e}\n")),
+            Step::Project(p) => {
+                let columns: Vec<String> = p
+                    .columns
+                    .iter()
+                    .map(|c| format!("{} := {}", c.name, c.expr))
+                    .collect();
+                d.push_str(&format!("project {}\n", columns.join(", ")));
+            }
+            Step::Unnest(u) => d.push_str(&format!(
+                "unnest {:?} {:?} {}\n",
+                u.lists, u.sources, u.outer
+            )),
+        }
+    }
+    d
 }

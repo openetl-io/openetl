@@ -331,70 +331,86 @@ impl Operator {
         Ok(out)
     }
 
-    /// Each aggregate's argument and filter on `rows`; where they fail on
-    /// the batch, row by row, with the rows that fail.
+    /// Each aggregate's filter on `rows`, then its argument on the rows
+    /// its filter admits: a row an aggregate's filter leaves out never
+    /// evaluates its argument. Where one fails on the batch, it's evaluated
+    /// row by row, and a row it fails on is given with why: no aggregate
+    /// takes it.
     fn arguments(&self, rows: &RecordBatch) -> Result<(Arguments, Vec<(usize, String)>), JobError> {
-        let eval = |batch: &RecordBatch| -> Result<Arguments, openetl_sql::Error> {
-            let mut args = Vec::with_capacity(self.plan.aggregates.len());
-            let mut filters = Vec::with_capacity(self.plan.aggregates.len());
-            for a in &self.plan.aggregates {
-                args.push(a.arg.as_ref().map(|e| e.eval(batch)).transpose()?);
-                filters.push(
-                    a.filter
-                        .as_ref()
-                        .map(|e| e.eval_predicate(batch))
-                        .transpose()?,
-                );
-            }
-            Ok((args, filters))
-        };
-        if let Ok((a, f)) = eval(rows) {
-            return Ok(((a, f), Vec::new()));
+        let n = rows.num_rows();
+        let all: Vec<usize> = (0..n).collect();
+        let mut bad = BTreeMap::new();
+        let mut args = Vec::with_capacity(self.plan.aggregates.len());
+        let mut filters = Vec::with_capacity(self.plan.aggregates.len());
+        for a in &self.plan.aggregates {
+            let filter = match &a.filter {
+                None => None,
+                Some(e) => {
+                    let got = self.each(
+                        rows,
+                        &all,
+                        |b| e.eval_predicate(b).map(|p| Arc::new(p) as ArrayRef),
+                        &mut bad,
+                    )?;
+                    Some(arrow_array::cast::AsArray::as_boolean(got.as_ref()).clone())
+                }
+            };
+            let arg = match &a.arg {
+                None => None,
+                Some(e) => {
+                    let admitted: Vec<usize> =
+                        (0..n).filter(|&r| passes(filter.as_ref(), r)).collect();
+                    Some(self.each(rows, &admitted, |b| e.eval(b), &mut bad)?)
+                }
+            };
+            filters.push(filter);
+            args.push(arg);
         }
-        let mut bad = Vec::new();
-        for r in 0..rows.num_rows() {
-            if let Err(e) = eval(&rows.slice(r, 1)) {
-                bad.push((r, self.reason(&e.message)));
+        Ok(((args, filters), bad.into_iter().collect()))
+    }
+
+    /// `f` on the rows `at` of `rows`, as a column of all of them: null at
+    /// the others, and at a row it fails on, which `bad` gets with why.
+    fn each(
+        &self,
+        rows: &RecordBatch,
+        at: &[usize],
+        f: impl Fn(&RecordBatch) -> Result<ArrayRef, openetl_sql::Error>,
+        bad: &mut BTreeMap<usize, String>,
+    ) -> Result<ArrayRef, JobError> {
+        let internal = |e: openetl_sql::Error| JobError::internal(e.message);
+        let some = steps::take(rows, at).map_err(internal)?;
+        let (got, ok) = match f(&some) {
+            Ok(a) => (a, at.to_vec()),
+            Err(_) => {
+                let mut ok = Vec::with_capacity(at.len());
+                for (i, &r) in at.iter().enumerate() {
+                    match f(&some.slice(i, 1)) {
+                        Ok(_) => ok.push(r),
+                        Err(e) => {
+                            bad.entry(r).or_insert_with(|| self.reason(&e.message));
+                        }
+                    }
+                }
+                let kept = steps::take(rows, &ok).map_err(internal)?;
+                let got = f(&kept).map_err(|e| {
+                    JobError::new(
+                        ErrorCode::DataInvalid,
+                        self.reason(&format!(
+                            "rows that it evaluates one at a time fail together ({})",
+                            e.kind.code()
+                        )),
+                    )
+                })?;
+                (got, ok)
             }
-        }
-        // The rows that fail are skipped; the rest evaluate as a batch, with
-        // the failing rows' values replaced by nulls that nothing reads.
-        let ok: Vec<usize> = (0..rows.num_rows())
-            .filter(|r| !bad.iter().any(|(b, _)| b == r))
-            .collect();
-        let kept = steps::take(rows, &ok).map_err(|e| JobError::internal(e.message))?;
-        let (args, filters) = eval(&kept).map_err(|e| {
-            JobError::new(
-                ErrorCode::DataInvalid,
-                self.reason(&format!(
-                    "rows that it evaluates one at a time fail together ({})",
-                    e.kind.code()
-                )),
-            )
-        })?;
-        let spread = |a: ArrayRef| -> Result<ArrayRef, JobError> {
-            let mut at = vec![None; rows.num_rows()];
-            for (i, &r) in ok.iter().enumerate() {
-                at[r] = Some(i as u64);
-            }
-            arrow_select::take::take(a.as_ref(), &arrow_array::UInt64Array::from(at), None)
-                .map_err(|e| JobError::internal(e.to_string()))
         };
-        let args = args
-            .into_iter()
-            .map(|a| a.map(spread).transpose())
-            .collect::<Result<_, _>>()?;
-        let filters = filters
-            .into_iter()
-            .map(|f| {
-                f.map(|f| {
-                    spread(Arc::new(f) as ArrayRef)
-                        .map(|a| arrow_array::cast::AsArray::as_boolean(a.as_ref()).clone())
-                })
-                .transpose()
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(((args, filters), bad))
+        let mut index = vec![None; rows.num_rows()];
+        for (i, &r) in ok.iter().enumerate() {
+            index[r] = Some(i as u64);
+        }
+        arrow_select::take::take(got.as_ref(), &arrow_array::UInt64Array::from(index), None)
+            .map_err(|e| JobError::internal(e.to_string()))
     }
 
     /// The starts of a tumbling or hopping window that `t` falls in.
@@ -521,6 +537,7 @@ impl Operator {
                     start: s,
                     end,
                     state: st,
+                    merged: false,
                 }),
                 false => state.put(self.id, KeyRef::new(g, &name), self.encode_state(&st)),
             }
@@ -642,6 +659,7 @@ impl Operator {
                             visible: true,
                             accs: Vec::new(),
                         },
+                        merged: true,
                     });
                 }
             }
@@ -675,6 +693,7 @@ impl Operator {
                         start: s.start,
                         end: s.end,
                         state: s.state.clone(),
+                        merged: false,
                     });
                 }
             }
@@ -760,19 +779,17 @@ impl Operator {
                     start: *s,
                     end,
                     state: st,
+                    merged: false,
                 });
             }
         }
-        let keep: Vec<bool> = closing
-            .iter()
-            .map(|e| !gone.contains(&slot_key(&e.key, e.start)))
-            .collect();
         let (out, states) = self.emit_states(closing)?;
-        for (e, k) in states.into_iter().zip(keep) {
-            if k {
+        for e in states {
+            let name = slot_key(&e.key, e.start);
+            if !gone.contains(&name) {
                 state.put(
                     self.id,
-                    KeyRef::new(e.group, &slot_key(&e.key, e.start)),
+                    KeyRef::new(e.group, &name),
                     self.encode_state(&e.state),
                 );
             }
@@ -822,6 +839,7 @@ impl Operator {
                 start: s.start,
                 end: s.end,
                 state: s.state.clone(),
+                merged: false,
             })
             .collect();
         let (out, states) = self.emit_states(emits)?;
@@ -850,7 +868,7 @@ impl Operator {
         let mut gone = Vec::new();
         let mut live = Vec::new();
         for e in windows {
-            match e.state.accs.is_empty() {
+            match e.merged {
                 true => gone.push(e),
                 false => live.push(e),
             }
@@ -1105,14 +1123,15 @@ type Keys = (u32, Vec<u8>);
 /// A timer that fired: its key group, and what it does to which window.
 type Fired = (u32, (u8, Vec<u8>, i64));
 
-/// A window whose row is given, or a session merged away (no
-/// accumulators).
+/// A window whose row is given, or a session merged away.
 struct Emit {
     group: u32,
     key: Vec<u8>,
     start: i64,
     end: i64,
     state: State,
+    /// A session merged into another: its row is deleted.
+    merged: bool,
 }
 
 /// A window's state's key: its group keys, then its start.

@@ -295,6 +295,78 @@ async fn a_window_given_again_that_fails_having_is_deleted() {
     assert!(run.table.0.keys().next().unwrap().contains("us"));
 }
 
+/// A row an aggregate's FILTER leaves out never evaluates its argument,
+/// so it still counts for the others.
+#[tokio::test]
+async fn a_filter_keeps_rows_it_leaves_out_from_its_argument() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, region, sum(10 / amount) FILTER (WHERE amount <> 0) AS s, count(*) AS n \
+               FROM orders GROUP BY tumble(at, INTERVAL '1 minute'), region";
+    let mut run = Run::new(sql, 0, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 0, 1), ("eu", 2, 2)]).await;
+    run.advance(i64::MAX).await;
+    assert_eq!(run.rejected, 0);
+    let v = run.table.0.values().next().unwrap();
+    assert!(v.ends_with("s=5 n=2"), "{v}");
+}
+
+/// A window with no aggregates gives its row as any other does.
+#[tokio::test]
+async fn a_window_without_aggregates_gives_its_rows() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, region FROM orders \
+               GROUP BY tumble(at, INTERVAL '1 minute'), region";
+    let mut run = Run::new(sql, 0, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 1), ("us", 1, 2), ("eu", 1, MIN)])
+        .await;
+    run.advance(i64::MAX).await;
+    assert_eq!(run.table.0.len(), 3, "{:?}", run.table);
+}
+
+/// Windows that close together keep or drop their state each by its own
+/// lateness, even when one's row can't be given: the other's is written
+/// back, so a late row gives it again as an update.
+#[tokio::test]
+async fn windows_closing_together_keep_their_own_state() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, region, sum(amount) AS total FROM orders \
+               GROUP BY tumble(at, INTERVAL '1 minute'), region";
+    let mut run = Run::new(sql, MIN, &bucket, 1, 1, 1, &[]).await;
+    // Window A, at minute 0, overflows; window B is at minute 1.
+    run.rows(&[("eu", i64::MAX, 1), ("eu", i64::MAX, 2), ("us", 5, MIN + 1)])
+        .await;
+    // A is past its lateness now, and B within it.
+    let out = run.ops[0]
+        .advance(&mut run.layers[0], 2 * MIN + 1)
+        .await
+        .unwrap();
+    assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
+    let late = batch(&run.ops[0], &[("us", 1, MIN + 2)]);
+    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    let t = out.rows.unwrap();
+    let ops: Vec<Option<&str>> = t
+        .control
+        .op
+        .as_ref()
+        .unwrap()
+        .as_string::<i32>()
+        .iter()
+        .collect();
+    assert_eq!(ops, [Some("update")]);
+    let total = t.batch.column(t.batch.schema().index_of("total").unwrap());
+    assert_eq!(
+        arrow_cast::display::array_value_to_string(total, 0).unwrap(),
+        "6"
+    );
+    // A was forgotten, and past the end of input so is B.
+    run.ops[0]
+        .advance(&mut run.layers[0], i64::MAX)
+        .await
+        .unwrap();
+    run.layers[0].barrier(1).await.unwrap();
+    assert_eq!(run.layers[0].memory().store, 0);
+}
+
 const SESSION: &str = "INSERT INTO o SELECT window_start, window_end, region, sum(amount) AS total \
      FROM orders GROUP BY session(at, INTERVAL '30 seconds'), region";
 const SEC: i64 = 1_000_000;

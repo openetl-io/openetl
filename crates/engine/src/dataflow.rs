@@ -5257,4 +5257,25 @@ mod tests {
         assert_eq!(ready.len(), 1);
         assert!(ready[0].snapshots.is_empty());
     }
+
+    /// A keyed lane keeps only its newest versions of state, however many
+    /// barriers pass.
+    #[tokio::test]
+    async fn a_window_keeps_only_its_newest_state() {
+        let req = window_request("released", MINUTES, 2, 1, 1);
+        let operator = req.transform.as_ref().unwrap().operators[0].clone();
+        let mut h = start_lanes(req);
+        for w in &mut h.ins {
+            for n in 1..=10 {
+                put(w, FrameKind::Rows, 0, rows(&[&timed(n as i64, "x", 10)])).await;
+                put(w, FrameKind::Barrier, 0, barrier_of(1, n, false)).await;
+                put(w, FrameKind::Barrier, 1, barrier_of(1, n, false)).await;
+            }
+        }
+        h.end_all(2).await;
+        let (_, ready) = h.finish().await;
+        assert_eq!(ready.len(), 10);
+        let held = crate::state::versions("released", &operator);
+        assert!(held <= 4, "{held} versions for 2 lanes");
+    }
 }

@@ -132,7 +132,7 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 | Window | Rows it groups |
 |---|---|
 | `tumble(TIME, SIZE)` | Windows of `SIZE`, one after another from the Unix epoch, 1970-01-01 00:00 UTC. Each row is in one window. |
-| `hop(TIME, SLIDE, SIZE)` | Windows of `SIZE` that start every `SLIDE`, from the Unix epoch. Each row is in each window that holds its time: `SIZE / SLIDE` of them, rounded up. |
+| `hop(TIME, SLIDE, SIZE)` | Windows of `SIZE` that start every `SLIDE`, from the Unix epoch. Each row is in each window that holds its time: at most `SIZE / SLIDE` of them, rounded up. |
 | `session(TIME, GAP)` | A key's rows with no more than `GAP` between one and the next. A session starts at its first row's time and ends `GAP` after its last row's time. |
 
 - A window holds the times from its start up to, but not including, its end. A session holds its end too.
@@ -182,7 +182,7 @@ A window's row is written when the stream's read ends. At the last checkpoint of
 A group window keeps each window's aggregates as state, by key group, until its row is written. `openetl plan` shows the statement's operator, which keeps the state:
 
 ```text
-    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-92aacf1701a6097c
+    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-b20660707787f280
 ```
 
 - The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.

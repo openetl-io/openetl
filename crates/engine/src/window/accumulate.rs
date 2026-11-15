@@ -350,14 +350,14 @@ fn percentile(m: &BTreeMap<Ordered, u64>, p: f64, out: &DataType) -> Result<Opti
         (Ordered::Decimal(a), Ordered::Decimal(b), DataType::Decimal128(..)) => {
             Value::Decimal(match lo == hi {
                 true => a,
-                false => a + (b - a) / 2,
+                false => (a & b) + ((a ^ b) >> 1),
             })
         }
         (a, b, _) => {
             let (a, b) = (a.float(), b.float());
             Value::Float(match lo == hi {
                 true => a,
-                false => a + frac * (b - a),
+                false => a * (1.0 - frac) + b * frac,
             })
         }
     }))
@@ -757,5 +757,23 @@ mod tests {
             assert_eq!(Ordered::of_float(f).float(), codec::canonical(f));
         }
         assert!(Ordered::of_float(-1.0) < Ordered::of_float(0.5));
+    }
+
+    /// A decimal median is the floor of the middle two's mean, at the
+    /// type's extremes too.
+    #[test]
+    fn a_decimal_median_rounds_down_without_overflowing() {
+        let median = |values: &[i128]| {
+            let mut m = BTreeMap::new();
+            for &v in values {
+                *m.entry(Ordered::Decimal(v)).or_default() += 1;
+            }
+            percentile(&m, 0.5, &DataType::Decimal128(38, 0)).unwrap()
+        };
+        let big = 9 * 10i128.pow(37);
+        assert_eq!(median(&[-big, big]), Some(Value::Decimal(0)));
+        assert_eq!(median(&[big - 1, big]), Some(Value::Decimal(big - 1)));
+        assert_eq!(median(&[-2, -1]), Some(Value::Decimal(-2)));
+        assert_eq!(median(&[1, 4]), Some(Value::Decimal(2)));
     }
 }

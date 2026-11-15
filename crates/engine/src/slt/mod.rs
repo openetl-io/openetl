@@ -185,13 +185,20 @@ fn queries_over_generated_rows_give_what_duckdb_gives() {
     });
     let mut mismatches = Vec::new();
     let mut used = vec![false; generate::DIFFERS.len()];
+    let mut pairs = 0;
     for r in results {
-        let (m, u) = r.unwrap_or_else(|e| panic!("{e}"));
-        mismatches.extend(m);
-        for i in u {
+        let c = r.unwrap_or_else(|e| panic!("{e}"));
+        mismatches.extend(c.mismatches);
+        pairs += c.pairs;
+        for i in c.used {
             used[i] = true;
         }
     }
+    eprintln!("{pairs} translated pairs compared over generated rows");
+    assert!(
+        pairs > 0,
+        "no translated pair was compared over generated rows"
+    );
     for (i, (file, part, why)) in generate::DIFFERS.iter().enumerate() {
         if !used[i] && n >= 3 {
             mismatches.push(format!(

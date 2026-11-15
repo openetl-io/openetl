@@ -27,6 +27,15 @@ pub fn stores(pipeline: &str, operator: &str) -> Arc<dyn Stores> {
     Arc::new(bucket.clone())
 }
 
+/// How many versions a pipeline's operator's store holds.
+#[cfg(test)]
+pub fn versions(pipeline: &str, operator: &str) -> usize {
+    let buckets = BUCKETS.lock().unwrap_or_else(PoisonError::into_inner);
+    buckets
+        .get(&(pipeline.to_owned(), operator.to_owned()))
+        .map_or(0, MemoryBucket::len)
+}
+
 /// A memory store's snapshot's URL: `memory:LAYOUT/NAME`.
 const MEMORY: &str = "memory:";
 

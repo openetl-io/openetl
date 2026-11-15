@@ -136,3 +136,42 @@ fn a_group_window_needs_its_keys_and_passes_them() {
     assert_eq!(s.need(), Some(&[][..]));
     assert!(s.passes().is_empty());
 }
+
+/// A group window's operator is another where it reads another stream, or
+/// its rows go through other steps first, so it never restores another's
+/// state.
+#[test]
+fn a_group_windows_operator_is_its_inputs() {
+    let mut c = Catalog::new();
+    for name in ["a", "b"] {
+        c.insert(
+            name,
+            Stream {
+                schema: Arc::new(Schema::new(vec![
+                    Field::new("k", DataType::Utf8, true),
+                    Field::new("n", DataType::Int64, true),
+                    Field::new(
+                        "at",
+                        DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+                        true,
+                    ),
+                ])),
+                key: Vec::new(),
+                changelog: false,
+                event_time: Some("at".into()),
+            },
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+    }
+    let id = |from: &str, filter: &str| {
+        let sql = format!(
+            "INSERT INTO o SELECT window_start, k, sum(n) AS total FROM {from} AS s {filter} \
+             GROUP BY tumble(at, INTERVAL '1 minute'), k"
+        );
+        let plan = openetl_sql::plan(&sql, &c).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        plan.statements[0].operator_id().map(str::to_owned)
+    };
+    assert_eq!(id("a", ""), id("a", ""));
+    assert_ne!(id("a", ""), id("b", ""));
+    assert_ne!(id("a", ""), id("a", "WHERE n > 0"));
+}
