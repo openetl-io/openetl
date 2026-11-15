@@ -38,7 +38,7 @@ use std::sync::Arc;
 use arrow_array::{
     ArrayRef, BooleanArray, FixedSizeBinaryArray, Int64Array, RecordBatch, StringArray,
 };
-use arrow_schema::{DataType, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
 use openetl_normalize::{Control, Typed, key_groups, render_row};
 use openetl_proto::connector::v1::ErrorCode;
@@ -252,16 +252,39 @@ impl Operator {
             return Ok(out);
         }
         let n = rows.num_rows();
-        let groups = key_groups(&rows, &self.key_names, self.key_groups)
+        // Equal JSON is one key, whatever its spaces or its objects' order,
+        // and in one key group, as the exchange before the window has it.
+        let key_columns: Vec<ArrayRef> = plan
+            .keys
+            .iter()
+            .map(|g| {
+                let c = rows.column(g.column).clone();
+                let json = is_json(rows.schema().field(g.column))
+                    || input.schema().field_with_name(&g.stream).is_ok_and(is_json);
+                match json {
+                    true => canonical_json(&c),
+                    false => c,
+                }
+            })
+            .collect();
+        let key_batch = RecordBatch::try_new_with_options(
+            Arc::new(Schema::new(
+                plan.keys
+                    .iter()
+                    .map(|g| rows.schema().field(g.column).clone())
+                    .collect::<Vec<_>>(),
+            )),
+            key_columns.clone(),
+            &arrow_array::RecordBatchOptions::new().with_row_count(Some(n)),
+        )
+        .map_err(|e| JobError::internal(self.reason(&e.to_string())))?;
+        let groups = key_groups(&key_batch, &self.key_names, self.key_groups)
             .map_err(|e| JobError::internal(self.reason(&e.to_string())))?;
         let keys: Vec<Vec<u8>> = (0..n)
             .map(|r| {
                 let mut k = Vec::new();
-                for g in &plan.keys {
-                    codec::encode(
-                        Value::read(rows.column(g.column).as_ref(), r).as_ref(),
-                        &mut k,
-                    );
+                for c in &key_columns {
+                    codec::encode(Value::read(c.as_ref(), r).as_ref(), &mut k);
                 }
                 k
             })
@@ -1160,6 +1183,30 @@ fn parse_timer(k: &[u8]) -> Result<(u8, Vec<u8>, i64), JobError> {
     let (key, start) = rest.split_at(rest.len() - 8);
     let start = i64::from_be_bytes(start.try_into().map_err(|_| bad())?);
     Ok((kind, key.to_vec(), start))
+}
+
+fn is_json(f: &Field) -> bool {
+    f.metadata()
+        .get(openetl_normalize::EXTENSION_NAME_KEY)
+        .map(String::as_str)
+        == Some(openetl_normalize::JSON_EXTENSION)
+}
+
+/// A JSON column's values as keys take them: one text for equal JSON.
+fn canonical_json(a: &ArrayRef) -> ArrayRef {
+    let Some(s) = arrow_array::cast::AsArray::as_string_opt::<i32>(a.as_ref()) else {
+        return a.clone();
+    };
+    let out: StringArray = s
+        .iter()
+        .map(|v| {
+            v.map(|t| {
+                openetl_normalize::keygroup::canonical_json(t.as_bytes())
+                    .unwrap_or_else(|| t.to_owned())
+            })
+        })
+        .collect();
+    Arc::new(out)
 }
 
 /// The state layer's operator for a plan's operator ID.

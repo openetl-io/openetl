@@ -16,7 +16,7 @@ openetl reset --stream public.orders orders-to-warehouse
 
 A continuous pipeline restarts at a checkpoint to apply the reset. A paused pipeline applies it after you resume the pipeline. A separately paused stream applies it after you resume that stream.
 
-A reset also drops the state of each SQL [group window](../reference/sql.md#group-windows) that reads a reset stream, and any state that no statement keeps now, such as a changed statement's. The window builds its state again from the new read.
+A reset also drops the state of each SQL [group window](../reference/sql.md#group-windows) that reads a reset stream, and any state that no statement keeps now, such as a changed statement's. The window builds its state again only from the rows that the new read returns, so a read that starts partway through a window writes that window's row from part of its rows ([State](../reference/sql.md#state)).
 
 A reset does not directly delete destination data. The next write depends on the write mode:
 

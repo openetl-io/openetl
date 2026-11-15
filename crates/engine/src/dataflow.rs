@@ -5387,13 +5387,27 @@ pub(crate) mod tests {
         generation: u64,
         first_epoch: u64,
     ) -> openetl_proto::engine::v1::StartJobRequest {
+        let email = arrow_schema::Field::new("email", DataType::Utf8, true);
+        window_request_by(pipeline, sql, email, lanes, generation, first_epoch)
+    }
+
+    /// As window_request, with `key` in place of email, the column the
+    /// output is keyed by beside window_start.
+    fn window_request_by(
+        pipeline: &str,
+        sql: &str,
+        key: arrow_schema::Field,
+        lanes: u32,
+        generation: u64,
+        first_epoch: u64,
+    ) -> openetl_proto::engine::v1::StartJobRequest {
         let mut req = sql_request(
             sql,
-            &[("minutes", &["window_start", "email"]), ("b", &["id"])],
+            &[("minutes", &["window_start", key.name()]), ("b", &["id"])],
         );
         let declared = arrow_schema::Schema::new(vec![
             arrow_schema::Field::new("id", DataType::Int64, false),
-            arrow_schema::Field::new("email", DataType::Utf8, true),
+            key,
             arrow_schema::Field::new("v", DataType::Int64, true),
             arrow_schema::Field::new(
                 "at",
@@ -5845,6 +5859,70 @@ pub(crate) mod tests {
             "a holds the price"
         );
         assert_eq!(quarantined(&ready, "minutes"), 0);
+    }
+
+    /// JSON keys equal but for their spaces and their objects' order are one
+    /// key: they meet on one keyed lane, from any lane, and give one row,
+    /// whose key is JSON.
+    #[tokio::test]
+    async fn equal_json_keys_are_one_window_key() {
+        let json = arrow_schema::Field::new("j", DataType::Utf8, true).with_metadata(
+            [(
+                openetl_normalize::EXTENSION_NAME_KEY.to_owned(),
+                openetl_normalize::JSON_EXTENSION.to_owned(),
+            )]
+            .into(),
+        );
+        let sql = "INSERT INTO minutes SELECT window_start, j, count(*) AS n \
+                   FROM a GROUP BY tumble(at, INTERVAL '1 minute'), j";
+        let req = window_request_by("json", sql, json, 3, 1, 1);
+        let mut h = start_lanes(req);
+        let spellings = [
+            r#"{"a": 1, "b": {"y": 2, "x": [3, {"q": 4, "p": 5}]}}"#,
+            r#"{"b": {"x": [3, {"p": 5, "q": 4}], "y": 2}, "a": 1}"#,
+            r#"{ "b" : { "y" : 2 , "x" : [ 3 , { "q" : 4 , "p" : 5 } ] } , "a" : 1 }"#,
+        ];
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+            let row = format!(
+                r#"{{"id": {l}, "j": {}, "v": 1, "at": "1970-01-01T00:00:1{l}Z"}}"#,
+                spellings[l]
+            );
+            put(w, FrameKind::Rows, 0, rows(&[&row])).await;
+            put(
+                w,
+                FrameKind::Split,
+                0,
+                split(&format!("s{l}"), Some(watermark::END)),
+            )
+            .await;
+            barriers(w, 1, 1).await;
+        }
+        h.end_all(2).await;
+        let (outs, _) = h.finish().await;
+        let mut got = Vec::new();
+        for frames in &outs {
+            for b in batches(frames, 0) {
+                let f = b.schema().field_with_name("j").unwrap().clone();
+                assert_eq!(
+                    f.metadata()
+                        .get(openetl_normalize::EXTENSION_NAME_KEY)
+                        .map(String::as_str),
+                    Some(openetl_normalize::JSON_EXTENSION),
+                    "the output's key is JSON"
+                );
+                for (j, n) in column_strings(&b, "j")
+                    .into_iter()
+                    .zip(column_ints(&b, "n"))
+                {
+                    got.push((j.unwrap(), n.unwrap()));
+                }
+            }
+        }
+        assert_eq!(
+            got,
+            [(r#"{"a":1,"b":{"x":[3,{"p":5,"q":4}],"y":2}}"#.to_owned(), 3)]
+        );
     }
 
     /// A group window runs in one engine with every lane of the attempt, so

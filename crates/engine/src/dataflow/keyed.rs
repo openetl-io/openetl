@@ -140,6 +140,7 @@ fn reads(
     stream: &str,
 ) -> Result<RecordBatch, JobError> {
     let n = batch.num_rows();
+    let schema = batch.schema();
     let mut fields = Vec::with_capacity(st.op.reads.fields().len());
     let mut columns = Vec::with_capacity(fields.capacity());
     for f in st.op.reads.fields() {
@@ -160,7 +161,13 @@ fn reads(
             }
             None => new_null_array(f.data_type(), n),
         };
-        fields.push(Field::new(f.name(), f.data_type().clone(), true));
+        // A column keeps what its field says of it, as that it's JSON,
+        // which its key group goes by.
+        let mut metadata = f.metadata().clone();
+        if let Ok(b) = schema.field_with_name(f.name()) {
+            metadata.extend(b.metadata().clone());
+        }
+        fields.push(Field::new(f.name(), f.data_type().clone(), true).with_metadata(metadata));
         columns.push(column);
     }
     RecordBatch::try_new_with_options(
