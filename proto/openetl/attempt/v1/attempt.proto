@@ -95,7 +95,7 @@ message Join {
   // From 0 to the attempt's workers less one.
   uint32 worker = 3;
   // Where other workers' engines reach this worker's, as host:port; empty:
-  // nowhere.
+  // nowhere, which an attempt whose engines exchange rows refuses.
   string address = 4;
 }
 
@@ -114,9 +114,9 @@ message Assignment {
   uint32 key_groups = 3;
   // Every worker's address, worker i's at i, as it joined with.
   repeated string workers = 4;
-  // Every lane of the attempt, lane i at i. They're every sender an
-  // exchange has: a lane aligns barriers on, and takes its watermark over,
-  // each of them, connected yet or not.
+  // Every lane of the attempt, lane i at i, each worker's after the worker
+  // before it. They're every sender an exchange has: a lane aligns barriers
+  // on, and takes its watermark over, each of them, connected yet or not.
   repeated Lane lanes = 5;
   // Every writer lane of the attempt, writer lane w at w, whose committable
   // is the record's w-th.
@@ -142,12 +142,26 @@ message Assignment {
   // plans, which a coordinator and its workers share since they run one
   // image; empty: none holds. Only worker 0 patches in what's released.
   bytes holds = 12;
+  // Set where the workers' engines exchange rows between them
+  // (openetl.engine.v1.Mesh): what they share for it, made for this
+  // generation alone. Then every lane and writer lane has key_groups, and
+  // every worker joined with an address.
+  Exchange exchange = 13;
 }
 
 message Lane {
   uint32 worker = 1;
-  // Unset: all of them.
+  // Its key groups in the attempt's layout, where the workers' engines
+  // exchange rows; unset: they don't, and each worker lays out its own.
   openetl.engine.v1.KeyGroupRange key_groups = 2;
+}
+
+// Exchange is how the workers' engines reach each other, as
+// openetl.engine.v1.Mesh has it.
+message Exchange {
+  bytes certificate = 1;
+  bytes key = 2;
+  bytes secret = 3;
 }
 
 message SplitAssignment {

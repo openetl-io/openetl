@@ -100,6 +100,45 @@ message StartJobRequest {
   // attempt.
   uint32 first_writer_lane = 23;
   uint32 attempt_writer_lanes = 24;
+  // Where several engines run the attempt and their exchanges cross them.
+  // Unset: a stream's exchange stays inside the engine.
+  Mesh mesh = 25;
+}
+
+// Mesh is the attempt's engines, whose lanes send an exchanged stream's rows
+// to the writer lanes of any of them. The attempt's writer lane w owns the
+// w-th of attempt_writer_lanes contiguous ranges of key groups, and each
+// engine cuts its own writer lanes' ranges among its lanes as key_groups
+// says one engine does. A lane sends each row of a stream with an exchange
+// to the writer lane owning its key group, in whichever engine, and the
+// stream's schema changes, barriers and end to every writer lane of the
+// attempt, which aligns on every lane of the attempt, connected yet or
+// not. Each engine connects to every other once (frames.proto), and the job
+// fails, as transient, if an engine isn't reached or doesn't connect in
+// time, or a connection breaks before its streams end.
+message Mesh {
+  // This engine's index in engines. Its lanes and writer lanes are the
+  // request's, and first_lane, first_writer_lane and attempt_writer_lanes
+  // follow from the engines before it and from all of them.
+  uint32 engine = 1;
+  repeated MeshEngine engines = 2;
+  // Where this engine listens for the others, as host:port.
+  string listen = 3;
+  // The attempt's certificate, as DER, which every engine presents and is
+  // the only one each trusts, and its private key, as PKCS #8 DER.
+  bytes certificate = 4;
+  bytes key = 5;
+  // What each connection's first frame carries, the attempt's alone.
+  bytes secret = 6;
+}
+
+message MeshEngine {
+  // Where the others reach it, as host:port.
+  string address = 1;
+  // At least one each: its lanes, which follow those of the engines before
+  // it in the attempt's order, and likewise its writer lanes.
+  uint32 lanes = 2;
+  uint32 writer_lanes = 3;
 }
 
 // Transform is SQL between the normalizer's two halves. Its statements read
@@ -132,7 +171,8 @@ message ExpectedOutput {
 // group (openetl.kg.v1) of its values of columns, where the stream's
 // partitioning doesn't meet what the writer needs: every row of a primary
 // key on one writer lane, as for a keyed stream whose splits don't
-// partition it by key.
+// partition it by key. With a mesh, the writer lane may be another
+// engine's.
 message Exchange {
   // Of the stream's primary key, named as the stream names them: a
   // partitioning by a subset of the key meets the writer's need.

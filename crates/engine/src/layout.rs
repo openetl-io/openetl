@@ -6,8 +6,10 @@
 //! lane, and the others go one at a time to the writer lane with the most
 //! key groups per lane, the first of those that tie. A lane's range is so
 //! always inside its writer lane's, and more lanes feed fewer by merging
-//! ranges, never by hashing again. The runner's `plan.NewLayout` is the
-//! same.
+//! ranges, never by hashing again. Where several engines run an attempt,
+//! the attempt's writer lanes own the ranges, and each engine cuts its own
+//! writer lanes' among its lanes the same way. The runner's
+//! `plan.NewLayout` and `plan.NewWorkerLayout` are the same.
 
 use std::ops::RangeInclusive;
 
@@ -22,16 +24,34 @@ impl Layout {
     /// Lays `lanes` and `writers` out over `groups` key groups: at least one
     /// lane per writer lane, and at least one key group per lane.
     pub fn new(groups: u32, lanes: usize, writers: usize) -> Result<Self, String> {
-        if writers < 1 || lanes < writers || (groups as usize) < lanes {
-            return Err(format!(
-                "{lanes} lanes and {writers} writer lanes over {groups} key groups: \
-                 each writer lane needs a lane, and each lane a key group"
-            ));
+        Self::meshed(groups, &[(lanes, writers)], 0)
+    }
+
+    /// Engine `me`'s part of an attempt whose engines run `engines`' lanes
+    /// and writer lanes, in order: its writer lanes are the next of the
+    /// attempt's, which own their ranges of the `groups` key groups, and its
+    /// lanes cut those, at least one key group each. Indexes are the
+    /// engine's own.
+    pub fn meshed(groups: u32, engines: &[(usize, usize)], me: usize) -> Result<Self, String> {
+        let all: usize = engines.iter().map(|e| e.1).sum();
+        let bad = |why: &str| {
+            Err(format!(
+                "engine {me} of lanes and writer lanes {engines:?} over {groups} key groups: {why}"
+            ))
+        };
+        if me >= engines.len() || engines.iter().any(|&(l, w)| w < 1 || l < w) {
+            return bad("each engine needs a writer lane, and each writer lane a lane");
         }
-        let (g, n) = (u64::from(groups), writers as u64);
-        let ranges: Vec<(u64, u64)> = (0..n)
+        let (g, n) = (u64::from(groups), all as u64);
+        let first: usize = engines[..me].iter().map(|e| e.1).sum();
+        let (lanes, writers) = engines[me];
+        let ranges: Vec<(u64, u64)> = (first as u64..(first + writers) as u64)
             .map(|w| (ceil(w * g, n), ceil((w + 1) * g, n) - 1))
             .collect();
+        let owned: u64 = ranges.iter().map(|r| (r.1 + 1).saturating_sub(r.0)).sum();
+        if owned < lanes as u64 || ranges.iter().any(|r| r.1 < r.0) {
+            return bad("each lane needs a key group");
+        }
         let size = |w: usize| ranges[w].1 - ranges[w].0 + 1;
         let mut feeders = vec![1u64; writers];
         for _ in writers..lanes {
@@ -134,6 +154,66 @@ mod tests {
         assert!(Layout::new(4, 5, 1).is_err());
         assert!(Layout::new(256, 1, 2).is_err());
         assert!(Layout::new(256, 1, 0).is_err());
+    }
+
+    /// The same layouts as the runner's TestWorkerLayout: each engine's
+    /// part of the attempt's.
+    #[test]
+    fn engines_cut_the_attempts_writer_lanes_ranges() {
+        // Each engine's lanes' ranges, their writer lanes, and its writer
+        // lanes' ranges.
+        type Part = (
+            &'static [(u32, u32)],
+            &'static [usize],
+            &'static [(u32, u32)],
+        );
+        type Engines = &'static [(usize, usize)];
+        let cases: [(u32, Engines, &[Part]); 3] = [
+            (
+                256,
+                &[(2, 1), (2, 1)],
+                &[
+                    (&[(0, 63), (64, 127)], &[0, 0], &[(0, 127)]),
+                    (&[(128, 191), (192, 255)], &[0, 0], &[(128, 255)]),
+                ],
+            ),
+            (
+                256,
+                &[(1, 1), (3, 2)],
+                &[
+                    (&[(0, 85)], &[0], &[(0, 85)]),
+                    (
+                        &[(86, 128), (129, 170), (171, 255)],
+                        &[0, 0, 1],
+                        &[(86, 170), (171, 255)],
+                    ),
+                ],
+            ),
+            (
+                8,
+                &[(2, 1), (1, 1), (2, 2)],
+                &[
+                    (&[(0, 0), (1, 1)], &[0, 0], &[(0, 1)]),
+                    (&[(2, 3)], &[0], &[(2, 3)]),
+                    (&[(4, 5), (6, 7)], &[0, 1], &[(4, 5), (6, 7)]),
+                ],
+            ),
+        ];
+        for (groups, engines, parts) in cases {
+            for (me, &(lanes, of, writers)) in parts.iter().enumerate() {
+                let l = Layout::meshed(groups, engines, me).unwrap();
+                let w: Vec<(u32, u32)> = l.writers.iter().map(|r| (*r.start(), *r.end())).collect();
+                assert_eq!(
+                    (ranges(&l), w),
+                    ((lanes.to_vec(), of.to_vec()), writers.to_vec()),
+                    "{groups} {engines:?} {me}"
+                );
+            }
+        }
+        assert!(Layout::meshed(8, &[(3, 1), (1, 1), (2, 2)], 0).is_err());
+        assert!(Layout::meshed(256, &[(1, 1), (1, 2)], 0).is_err());
+        assert!(Layout::meshed(256, &[(1, 1)], 1).is_err());
+        assert_eq!(Layout::meshed(256, &[(4, 2)], 0), Layout::new(256, 4, 2));
     }
 
     /// The same layouts as the runner's TestLayout.

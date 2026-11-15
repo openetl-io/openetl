@@ -11,6 +11,7 @@ use openetl_proto::engine::v1::{
 use crate::error::JobError;
 use crate::ipc;
 use crate::layout::Layout;
+use crate::mesh::MeshPlan;
 use crate::quarantine::Quarantine;
 use crate::remote::Remote;
 use crate::transform::{Input, Route, Transform};
@@ -74,6 +75,11 @@ pub struct Plan {
     /// which name held files.
     pub first_writer_lane: usize,
     pub attempt_writer_lanes: usize,
+    /// The attempt.
+    pub job: String,
+    /// The attempt's engines, where several run it: their exchanges send
+    /// rows to the attempt's writer lanes, in whichever engine.
+    pub mesh: Option<MeshPlan>,
 }
 
 /// A job's SQL transform: the streams it reads, which the inbound edges
@@ -291,7 +297,12 @@ impl Plan {
             0 => 256,
             n => n,
         };
-        let layout = Layout::new(key_groups, lanes, writer_lanes).map_err(JobError::config)?;
+        let mesh = MeshPlan::of(&req, lanes, writer_lanes)?;
+        let layout = match &mesh {
+            Some(m) => Layout::meshed(key_groups, &m.parts(), m.engine),
+            None => Layout::new(key_groups, lanes, writer_lanes),
+        }
+        .map_err(JobError::config)?;
         if req.passthrough && req.transform.is_some() {
             return Err(JobError::config(
                 "a passthrough job leaves batches as they came, and can't transform them",
@@ -587,6 +598,8 @@ impl Plan {
         let inputs = transform.as_ref().map_or(0, |_| req.streams.len());
 
         let plan = Plan {
+            job: req.job.clone(),
+            mesh,
             remote: req
                 .remote_schemas
                 .then(|| std::sync::Arc::new(Remote::new(names.len(), inputs))),
@@ -651,6 +664,27 @@ impl Plan {
             }
         }
         Ok(plan)
+    }
+}
+
+impl Plan {
+    /// The writer lanes an exchange sends rows to: the attempt's, with a
+    /// mesh, or the engine's.
+    pub fn routed_writers(&self) -> usize {
+        match &self.mesh {
+            Some(_) => self.attempt_writer_lanes,
+            None => self.writer_lanes,
+        }
+    }
+
+    /// The lanes, by their index in the attempt, whose rows an exchange
+    /// sends to each writer lane: every lane of the attempt, with a mesh, or
+    /// the engine's.
+    pub fn senders(&self) -> std::ops::Range<usize> {
+        match &self.mesh {
+            Some(m) => 0..m.lanes,
+            None => self.first_lane..self.first_lane + self.inbound.len(),
+        }
     }
 }
 
@@ -878,6 +912,7 @@ pub(crate) mod tests {
             first_lane: 0,
             first_writer_lane: 0,
             attempt_writer_lanes: 0,
+            mesh: None,
         }
     }
 
