@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
@@ -137,20 +138,13 @@ func TestLanesStayWithinTheirKeyGroups(t *testing.T) {
 // their rows to any writer lane; other streams' splits stay where they were.
 func TestCoverageCrossesWorkers(t *testing.T) {
 	r0, r1 := attempt.KeyGroups(0, 127), attempt.KeyGroups(128, 255)
-	f := &fleet{writers: 2, ranges: []plan.KeyGroupRange{{First: 0, Last: 127}, {First: 128, Last: 255}}, crossing: map[string][]string{"items": {"id"}}}
+	f := &fleet{writers: 2, ranges: []plan.KeyGroupRange{{First: 0, Last: 127}, {First: 128, Last: 255}}, crossing: map[string][]crossed{"items": {{key: []string{"id"}}}}}
 	refs := [][]*attemptv1.SplitRef{
 		{{Stream: "items", Split: "a", KeyGroups: r0, Key: []string{"id"}, Rows: 5}, {Stream: "logs", Split: "x", Rows: 1}},
 		{{Stream: "items", Split: "b", KeyGroups: r1, Key: []string{"id"}, Rows: 7}},
 	}
 	f.cross(refs)
-	got := func(w int) []string {
-		var out []string
-		for _, r := range refs[w] {
-			out = append(out, r.GetStream()+"/"+r.GetSplit()+":"+strconv.Itoa(int(r.GetKeyGroups().GetFirst()))+":"+strconv.FormatUint(r.GetRows(), 10))
-		}
-		return out
-	}
-	if w0, w1 := got(0), got(1); !slices.Equal(w0, []string{"items/a:0:5", "logs/x:0:1", "items/b:0:7"}) || !slices.Equal(w1, []string{"items/b:128:7", "items/a:128:5"}) {
+	if w0, w1 := refNames(refs[0]), refNames(refs[1]); !slices.Equal(w0, []string{"items/a:0:5", "logs/x:0:1", "items/b:0:7"}) || !slices.Equal(w1, []string{"items/b:128:7", "items/a:128:5"}) {
 		t.Errorf("writer lane 0 holds %v, writer lane 1 %v", w0, w1)
 	}
 	if !slices.Equal(refs[1][1].GetKey(), []string{"id"}) {
@@ -158,27 +152,70 @@ func TestCoverageCrossesWorkers(t *testing.T) {
 	}
 }
 
-// The streams whose coverage crosses workers are those whose committables
-// name their splits: a SQL transform's name its inputs', so it has none,
-// and into a destination whose lanes commit on their own, which reads
-// coverage, it never runs on workers.
+// refNames are a committable's splits as "stream/split:first key group:rows",
+// with ">output" after an output's.
+func refNames(refs []*attemptv1.SplitRef) []string {
+	var out []string
+	for _, r := range refs {
+		s := r.GetStream() + "/" + r.GetSplit() + ":" + strconv.Itoa(int(r.GetKeyGroups().GetFirst())) + ":" + strconv.FormatUint(r.GetRows(), 10)
+		if r.GetOutput() != "" {
+			s += ">" + r.GetOutput()
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// With a SQL transform, a writer lane's committable names a split once for
+// each output whose rows of it it holds: all of an output's rows that the
+// split's lane wrote there, where the output has no exchange, and only its
+// key groups of an output exchanged by its key, of every worker's splits.
+func TestSQLCoverageCrossesWorkersByOutput(t *testing.T) {
+	r0, r1 := attempt.KeyGroups(0, 127), attempt.KeyGroups(128, 255)
+	f := &fleet{writers: 2, ranges: []plan.KeyGroupRange{{First: 0, Last: 127}, {First: 128, Last: 255}}, crossing: map[string][]crossed{
+		"items": {{output: "by_id", key: []string{"id"}}},
+	}}
+	refs := [][]*attemptv1.SplitRef{
+		{{Stream: "items", Split: "a", Output: "by_id", KeyGroups: r0, Key: []string{"id"}, Rows: 5}, {Stream: "items", Split: "a", Output: "names", Rows: 5}},
+		{{Stream: "items", Split: "b", Output: "by_id", KeyGroups: r1, Key: []string{"id"}, Rows: 7}, {Stream: "items", Split: "b", Output: "names", Rows: 7}},
+	}
+	f.cross(refs)
+	if w0, w1 := refNames(refs[0]), refNames(refs[1]); !slices.Equal(w0, []string{"items/a:0:5>by_id", "items/a:0:5>names", "items/b:0:7>by_id"}) ||
+		!slices.Equal(w1, []string{"items/b:128:7>by_id", "items/b:0:7>names", "items/a:128:5>by_id"}) {
+		t.Errorf("writer lane 0 holds %v, writer lane 1 %v", w0, w1)
+	}
+	got := coverageOf(refs[1])
+	if c := got.Splits[2]; c.Output != "by_id" || c.KeyGroups == nil || c.KeyGroups.First != 128 || !slices.Equal(c.Key, []string{"id"}) {
+		t.Errorf("the record's coverage of a split from another worker: %+v", c)
+	}
+}
+
+// The streams whose coverage crosses workers are those whose rows reach an
+// exchanged stream of the destination's: itself, or a SQL transform's
+// output, by the output's key.
 func TestWhatCrossesIsWhatCoverageNames(t *testing.T) {
 	j := meshJob(meshingFlow{})
-	got, err := j.crossing()
-	if err != nil || len(got) != 2 || !slices.Equal(got["items"], []string{"id"}) || !slices.Equal(got["changes"], []string{"id"}) {
-		t.Errorf("crossing %v, %v; want items and changes by id", got, err)
+	got := j.crossing()
+	want := map[string][]crossed{"items": {{key: []string{"id"}}}, "changes": {{key: []string{"id"}}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("crossing %v; want items and changes by id", got)
 	}
-	j.SQL = &SQLTransform{SQL: "INSERT INTO out SELECT * FROM items"}
-	j.Outputs = []Stream{{Name: "out", Mode: destination.Merge, PrimaryKey: []string{"id"}, From: "items", Transformed: true}}
-	if got, err := j.crossing(); err != nil || got != nil {
-		t.Errorf("a SQL transform's crossing %v, %v; want none", got, err)
+	j.SQL = &SQLTransform{SQL: "INSERT INTO out SELECT * FROM items; INSERT INTO names SELECT name FROM items"}
+	j.Outputs = []Stream{
+		{Name: "out", Mode: destination.Merge, PrimaryKey: []string{"id"}, From: "items", Transformed: true},
+		{Name: "names", Mode: destination.Append, From: "items", Transformed: true},
+		{Name: "logs", Mode: destination.Append, From: "logs"},
+	}
+	if got := j.crossing(); !reflect.DeepEqual(got, map[string][]crossed{"items": {{output: "out", key: []string{"id"}}}}) {
+		t.Errorf("a SQL transform's crossing %v; want items by out's id", got)
 	}
 	j.Destination = laneCommits{lanesDest{8}}
-	if _, err := j.crossing(); err == nil {
-		t.Error("a SQL transform into lane commits crossed workers")
+	if err := j.OnWorkers(2); err != nil {
+		t.Errorf("a SQL transform into lane commits: %v", err)
 	}
+	j.SQL.Operators = []string{"window-1"}
 	if err := j.OnWorkers(2); err == nil {
-		t.Error("a SQL transform into lane commits may run on workers")
+		t.Error("a SQL statement with state into lane commits may run on workers")
 	}
 }
 

@@ -794,25 +794,31 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 		return cmpRefs(a, b)
 	})
 	layout, local := plan.laidOut(), p.job.Destination.Capabilities().LaneCommits
-	keys := map[string][]string{}
-	for _, st := range p.job.sinkStreams() {
-		keys[st.Name] = st.PrimaryKey
-	}
 	for k, gw := range p.global {
 		c := &attemptv1.Committable{WriterLane: ints.Uint32(gw), Staged: e.descs[k], Local: local}
 		for _, ref := range refs {
 			read := e.splitLanes[ref]
 			lane := read.lane
-			r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from, Rows: read.rows}
-			switch {
-			case plan.Exchanges[ref.Stream] != nil && k < len(layout.Writers):
-				kg := layout.Writers[k]
-				r.KeyGroups, r.Key = attempt.KeyGroups(kg.First, kg.Last), keys[ref.Stream]
-			case lane == laneAll:
-			case lane < 0 || lane >= len(layout.WriterOf) || layout.WriterOf[lane] != k:
-				continue
+			// Its lane feeds this writer lane.
+			feeds := lane == laneAll || lane >= 0 && lane < len(layout.WriterOf) && layout.WriterOf[lane] == k
+			// Each of the destination's streams it reaches holds its rows:
+			// all of them from a lane that feeds the writer lane, and those
+			// of the writer lane's key groups from any lane, through an
+			// exchange.
+			for _, d := range p.job.fedBy(ref.Stream) {
+				r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from, Rows: read.rows}
+				if p.job.SQL != nil {
+					r.Output = d.Name
+				}
+				switch {
+				case plan.Exchanges[d.Name] != nil && k < len(layout.Writers):
+					kg := layout.Writers[k]
+					r.KeyGroups, r.Key = attempt.KeyGroups(kg.First, kg.Last), d.PrimaryKey
+				case !feeds:
+					continue
+				}
+				c.Splits = append(c.Splits, r)
 			}
-			c.Splits = append(c.Splits, r)
 		}
 		s.Committables = append(s.Committables, c)
 	}
