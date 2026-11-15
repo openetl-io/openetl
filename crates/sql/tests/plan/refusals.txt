@@ -26,20 +26,20 @@ stream log changelog
   id int64
   tags list<utf8>
 
-# Group windows: tier 2.
+# A group window goes by its stream's event time, which orders has none of.
 plan
 INSERT INTO revenue_by_minute
 SELECT window_start, region, sum(amount) AS revenue, count(*) AS orders
 FROM orders
 GROUP BY tumble(created_at, INTERVAL '1 minute'), region
 ----
-error later_tier group_window 4:10 a group window: transforms don't run group windows yet (tier 2)
+error unsupported 4:10 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
 plan
 INSERT INTO x SELECT count(*) AS n FROM orders
 GROUP BY hop(created_at, INTERVAL '1 minute', INTERVAL '5 minutes')
 ----
-error later_tier group_window 2:10 a group window: transforms don't run group windows yet (tier 2)
+error unsupported 2:10 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
 # Over: tier 3.
 plan
@@ -104,7 +104,6 @@ error later_tier updating 3:10 GROUP BY without a window: transforms don't run u
 plan
 INSERT INTO x SELECT count(*) AS n FROM orders GROUP BY tumble(now(), INTERVAL '1 minute')
 ----
-error later_tier group_window 1:57 a group window: transforms don't run group windows yet (tier 2)
 error not_deterministic 1:64 now() isn't deterministic, so it can't feed a group's key
 
 plan
@@ -117,7 +116,6 @@ plan
 CREATE VIEW stamped AS SELECT id, region, now() AS seen_at FROM orders;
 INSERT INTO x SELECT count(*) AS n FROM stamped GROUP BY tumble(seen_at, INTERVAL '1 minute')
 ----
-error later_tier group_window 2:58 a group window: transforms don't run group windows yet (tier 2)
 error not_deterministic 2:65 seen_at isn't deterministic, so it can't feed a group's key
 
 plan
@@ -390,7 +388,6 @@ plan
 INSERT INTO x SELECT count(*) AS n FROM (SELECT now() AS t FROM orders) AS s
 GROUP BY tumble(t, INTERVAL '1 minute')
 ----
-error later_tier group_window 2:10 a group window: transforms don't run group windows yet (tier 2)
 error not_deterministic 2:17 t isn't deterministic, so it can't feed a group's key
 
 plan

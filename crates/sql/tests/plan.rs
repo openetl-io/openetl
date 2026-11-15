@@ -31,7 +31,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use openetl_sql::{Catalog, ErrorKind, Errors, Operator, Plan, Step, Stream};
+use openetl_sql::{Catalog, ErrorKind, Errors, Operator, Plan, RowWise, Step, Stream};
 
 #[test]
 fn cases() {
@@ -125,16 +125,20 @@ fn run(text: &str) -> (String, Vec<String>) {
     (out, failures)
 }
 
-/// A `stream` directive: `stream NAME [key(A, B)] [changelog]`, then a line
-/// per column: `NAME TYPE [not null]`.
+/// A `stream` directive: `stream NAME [key(A, B)] [time(T)] [changelog]`,
+/// then a line per column: `NAME TYPE [not null]`. `time` names its
+/// event-time column.
 fn stream(catalog: &mut Catalog, lines: &[&str]) -> Result<(), String> {
     let head = lines[0].strip_prefix("stream ").unwrap_or_default();
     let (name, rest) = word(head);
     let mut key = Vec::new();
     let mut changelog = false;
+    let mut event_time = None;
     for w in split_outside_parens(rest) {
         if let Some(k) = w.strip_prefix("key(").and_then(|k| k.strip_suffix(')')) {
             key = k.split(',').map(|c| c.trim().to_owned()).collect();
+        } else if let Some(t) = w.strip_prefix("time(").and_then(|t| t.strip_suffix(')')) {
+            event_time = Some(t.trim().to_owned());
         } else if w == "changelog" {
             changelog = true;
         } else {
@@ -163,6 +167,7 @@ fn stream(catalog: &mut Catalog, lines: &[&str]) -> Result<(), String> {
                 schema,
                 key,
                 changelog,
+                event_time,
             },
         )
         .map_err(|e| e.to_string())
@@ -217,6 +222,8 @@ fn data_type(t: &str) -> Result<DataType, String> {
         "binary" => DataType::Binary,
         "date" => DataType::Date32,
         "timestamp" => DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        "timestamp_ns" => DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+        "float32" => DataType::Float32,
         _ => {
             if let Some(item) = t.strip_prefix("list<").and_then(|t| t.strip_suffix('>')) {
                 DataType::List(Arc::new(Field::new_list_field(data_type(item)?, true)))
@@ -290,35 +297,44 @@ fn render(p: &Plan) -> String {
         }
         let _ = writeln!(out, "  key {}", s.key.join(", "));
         let _ = writeln!(out, "  schema {}", schema(&s.schema));
-        let Operator::RowWise(op) = &s.operator;
-        let changelog = if op.changelog { " changelog" } else { "" };
-        let _ = writeln!(out, "  reads {}{changelog}: {}", op.input, names(&op.reads));
-        for step in &op.steps {
-            match step {
-                Step::Filter(e) => {
-                    let _ = writeln!(out, "  filter {e}");
-                }
-                Step::Project(p) => {
-                    let columns: Vec<String> = p
-                        .columns
-                        .iter()
-                        .map(|c| match c.expr.column() {
-                            Some(from) if from == c.name => c.name.clone(),
-                            _ => format!("{} := {}", c.name, c.expr),
-                        })
-                        .collect();
-                    let _ = writeln!(out, "  project {}", columns.join(", "));
-                }
-                Step::Unnest(u) => {
-                    let outer = if u.outer { " outer" } else { "" };
+        match &s.operator {
+            Operator::RowWise(op) => row_wise(&mut out, op),
+            Operator::GroupWindow(g) => {
+                row_wise(&mut out, &g.input);
+                let keys: Vec<&str> = g
+                    .keys
+                    .iter()
+                    .map(|k| g.rows.field(k.column).name().as_str())
+                    .collect();
+                let _ = writeln!(
+                    out,
+                    "  window {:?} by {} on {}",
+                    g.window,
+                    g.rows.field(g.time).name(),
+                    keys.join(", ")
+                );
+                for a in &g.aggregates {
+                    let arg = a.arg.as_ref().map(|e| e.to_string()).unwrap_or("*".into());
+                    let filter = match &a.filter {
+                        Some(f) => format!(" filter {f}"),
+                        None => String::new(),
+                    };
                     let _ = writeln!(
                         out,
-                        "  unnest{outer} lists {:?} sources {:?}: {}",
-                        u.lists,
-                        u.sources,
-                        names(&u.schema)
+                        "  aggregate {:?}({arg}){filter}: {}",
+                        a.kind, a.data_type
                     );
                 }
+                let _ = writeln!(out, "  grouped {}", names(&g.grouped));
+                steps(&mut out, &g.steps);
+                let _ = writeln!(out, "  need {}", g.need.join(", "));
+                let passes: Vec<String> = g
+                    .passes
+                    .iter()
+                    .map(|(a, b)| format!("{a} -> {b}"))
+                    .collect();
+                let _ = writeln!(out, "  passes {}", passes.join(", "));
+                let _ = writeln!(out, "  operator {}", g.id);
             }
         }
     }
@@ -326,6 +342,43 @@ fn render(p: &Plan) -> String {
         let _ = writeln!(out, "note {} {}", n.at, n.message);
     }
     out.trim_end().to_owned()
+}
+
+fn row_wise(out: &mut String, op: &RowWise) {
+    let changelog = if op.changelog { " changelog" } else { "" };
+    let _ = writeln!(out, "  reads {}{changelog}: {}", op.input, names(&op.reads));
+    steps(out, &op.steps);
+}
+
+fn steps(out: &mut String, steps: &[Step]) {
+    for step in steps {
+        match step {
+            Step::Filter(e) => {
+                let _ = writeln!(out, "  filter {e}");
+            }
+            Step::Project(p) => {
+                let columns: Vec<String> = p
+                    .columns
+                    .iter()
+                    .map(|c| match c.expr.column() {
+                        Some(from) if from == c.name => c.name.clone(),
+                        _ => format!("{} := {}", c.name, c.expr),
+                    })
+                    .collect();
+                let _ = writeln!(out, "  project {}", columns.join(", "));
+            }
+            Step::Unnest(u) => {
+                let outer = if u.outer { " outer" } else { "" };
+                let _ = writeln!(
+                    out,
+                    "  unnest{outer} lists {:?} sources {:?}: {}",
+                    u.lists,
+                    u.sources,
+                    names(&u.schema)
+                );
+            }
+        }
+    }
 }
 
 fn errors(e: &Errors) -> String {

@@ -6119,6 +6119,13 @@ components:
                     description: |-
                         The watermark trails the latest event time seen by this much. Unset:
                          zero.
+                lateness:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: |-
+                        How long after a group window closes a row may still come: it gives the
+                         window's row again, which a merge takes as an upsert. A row later than
+                         that is quarantined. Unset: zero.
             description: Watermark says how late a stream's rows may arrive in event time.
         Webhook:
             type: object

@@ -34,6 +34,11 @@ func TestTheSubsetRule(t *testing.T) {
 		{keyGroups("a", "b"), needs("b", "c", "a"), true},
 		{Partitioning{Kind: OneLane}, needs("id"), true},
 		{Partitioning{Kind: ByKeyGroup}, needs("id"), false},
+		// State by key group needs lanes that own key groups.
+		{splits("k"), Need{Columns: []string{"k"}, KeyGroups: true}, false},
+		{keyGroups("k"), Need{Columns: []string{"k", "x"}, KeyGroups: true}, true},
+		{keyGroups("k"), Need{KeyGroups: true}, false},
+		{Partitioning{Kind: OneLane}, Need{KeyGroups: true}, true},
 	} {
 		if got := tc.p.Meets(tc.n); got != tc.want {
 			t.Errorf("%v meets %v: %v, want %v", tc.p, tc.n.Columns, got, tc.want)
@@ -41,14 +46,14 @@ func TestTheSubsetRule(t *testing.T) {
 	}
 }
 
-// A stand-in for a group-window statement over its group keys k, whose
-// output, keyed by (window_start, k), passes k through.
+// A group-window statement over its group keys k, whose output, keyed by
+// (window_start, k), passes k through, as StatementOperator gives it.
 func aggregate(groupKeys ...string) Operator {
 	passes := map[string]string{}
 	for _, k := range groupKeys {
 		passes[k] = k
 	}
-	return Operator{Kind: OperatorStatement, At: sqlplan.Position{Line: 3, Column: 1}, Need: needs(groupKeys...), Passes: passes}
+	return StatementOperator(sqlplan.Statement{At: sqlplan.Position{Line: 3, Column: 1}, Need: groupKeys, Passes: passes, Operator: "window-1"})
 }
 
 func rowWise(passes map[string]string) Operator {
@@ -81,9 +86,12 @@ func TestPlace(t *testing.T) {
 		{name: "an aggregate reaches its writer with one exchange", source: Partitioning{},
 			ops:       []Operator{aggregate("k"), WriterOperator([]string{"window_start", "k"}, false)},
 			exchanges: []int{0}, in: []Partitioning{keyGroups("k"), keyGroups("k")}},
-		{name: "an aggregate over a stream split by its keys needs none", source: splits("k"),
-			ops: []Operator{aggregate("k"), WriterOperator([]string{"window_start", "k"}, false)},
-			in:  []Partitioning{splits("k"), splits("k")}},
+		{name: "an aggregate keeps state by key group, so splits by its keys don't meet it", source: splits("k"),
+			ops:       []Operator{aggregate("k"), WriterOperator([]string{"window_start", "k"}, false)},
+			exchanges: []int{0}, in: []Partitioning{keyGroups("k"), keyGroups("k")}},
+		{name: "an aggregate without keys runs on one lane", source: Partitioning{},
+			ops:       []Operator{aggregate(), WriterOperator([]string{"window_start"}, false)},
+			exchanges: []int{0}, in: []Partitioning{{Kind: OneLane}, {Kind: OneLane}}},
 		{name: "an aggregate over a stream split by more than its keys", source: splits("k", "x"),
 			ops:       []Operator{aggregate("k"), WriterOperator([]string{"window_start", "k"}, false)},
 			exchanges: []int{0}, in: []Partitioning{keyGroups("k"), keyGroups("k")}},

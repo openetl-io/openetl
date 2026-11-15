@@ -1,11 +1,14 @@
 package plan
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/sqlplan"
@@ -58,13 +61,13 @@ func otherAnswers() *sqlplan.Answer {
 // whose schema neither has.
 func TestSQLRequest(t *testing.T) {
 	spec := sqlSpec(twoStatements+";\nINSERT INTO e SELECT * FROM events", 0, nil,
-		&apiv1.PipelineStream{Name: "customers", Timestamps: apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND}, &apiv1.PipelineStream{Name: "events"}, &apiv1.PipelineStream{Name: "orders"})
+		&apiv1.PipelineStream{Name: "customers", Timestamps: apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND, EventTime: "created_at"}, &apiv1.PipelineStream{Name: "events"}, &apiv1.PipelineStream{Name: "orders"})
 	req, unknown := SQLRequest(spec, sqlCatalog, nil)
 	if req.SQL != spec.GetTransform().GetSql().GetSql() || len(req.Streams) != 1 || !slices.Equal(unknown, []string{"events"}) {
 		t.Fatalf("request %+v, unknown %v", req, unknown)
 	}
 	c := req.Streams[0]
-	if c.Name != "customers" || !c.Changelog || !c.Nanoseconds || !slices.Equal(c.Key, []string{"id"}) ||
+	if c.Name != "customers" || !c.Changelog || !c.Nanoseconds || c.EventTime != "created_at" || !slices.Equal(c.Key, []string{"id"}) ||
 		!slices.Equal(c.Columns, []sqlplan.Column{{Name: "id", Type: "int64"}, {Name: "email", Type: "utf8"}, {Name: "created_at", Type: "timestamp[us, tz=UTC]"}}) {
 		t.Errorf("customers: %+v", c)
 	}
@@ -192,6 +195,16 @@ func TestPipelineSQLSettings(t *testing.T) {
 			`stream "customers" sets how it holds cells or columns, and the destination doesn't patch merge streams`},
 		{"a stream passed through", sqlSpec(twoStatements, 0, nil, &apiv1.PipelineStream{Name: "events", Quarantine: apiv1.QuarantineScope_QUARANTINE_SCOPE_CELL}), holding, twoAnswers(),
 			`stream "events" sets how it holds cells or columns, and only a keyed stream holds them`},
+		{"lateness into an appended output", sqlSpec("INSERT INTO minutes SELECT window_start, count(*) AS n FROM events GROUP BY tumble(at, INTERVAL '1 minute')", 0, nil,
+			&apiv1.PipelineStream{Name: "events", EventTime: "at", Watermark: &apiv1.Watermark{Lateness: durationpb.New(time.Minute)}}), warehouse,
+			&sqlplan.Answer{Statements: []sqlplan.Statement{{At: sqlplan.Position{Line: 1, Column: 1}, Output: "minutes", Class: "group_window", Tier: 2,
+				Inputs: []string{"events"}, Key: []string{"window_start"}, Operator: "window-1"}}},
+			`stream "events" sets watermark.lateness, so a row that comes late gives its window's row again, and output "minutes" isn't merged`},
+		{"a window over a scheduled read in time order", sqlSpec("INSERT INTO minutes SELECT window_start, count(*) AS n FROM events GROUP BY tumble(at, INTERVAL '1 minute')", 0, nil,
+			&apiv1.PipelineStream{Name: "events", EventTime: "at"}), warehouse,
+			&sqlplan.Answer{Statements: []sqlplan.Statement{{At: sqlplan.Position{Line: 1, Column: 1}, Output: "minutes", Class: "group_window", Tier: 2,
+				Inputs: []string{"events"}, Key: []string{"window_start"}, Operator: "window-1"}}},
+			`the group window writing "minutes" reads stream "events" with incremental in a scheduled pipeline, so a window open at the end of a sync would go on in the next one`},
 	} {
 		if got := problemsOf(c.spec, c.caps, c.a); !strings.Contains(got, c.want) {
 			t.Errorf("%s: problems %q, want %q", c.name, got, c.want)
@@ -218,5 +231,38 @@ func TestSQLPlanKeepsOutputs(t *testing.T) {
 	if len(p.GetOutputs()) != 2 || p.GetOutputs()[0].GetName() != "customers" || string(p.GetOutputs()[0].GetArrowSchema()) != "schema" ||
 		!slices.Equal(p.GetOutputs()[0].GetPrimaryKey(), []string{"id"}) || p.GetOutputs()[1].GetColumns()[0].GetName() != "customer_id" || len(p.GetOperators()) != 0 {
 		t.Errorf("%v", p)
+	}
+}
+
+// A group window takes a stream read whole, or in the order of its event
+// time in a continuous pipeline, and no other read.
+func TestGroupWindowReads(t *testing.T) {
+	a := &sqlplan.Answer{Statements: []sqlplan.Statement{{Output: "minutes", Inputs: []string{"events"}, Operator: "window-1"}}}
+	scheduled, continuous := &apiv1.PipelineSpec{}, &apiv1.PipelineSpec{Mode: apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS}
+	for _, c := range []struct {
+		name   string
+		spec   *apiv1.PipelineSpec
+		read   apiv1.SyncMode
+		cursor string
+		want   string
+	}{
+		{"read whole", scheduled, apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, "", ""},
+		{"read by another cursor", scheduled, apiv1.SyncMode_SYNC_MODE_INCREMENTAL, "id",
+			`the group window writing "minutes" reads stream "events" with incremental by cursor "id", not by its eventTime "at", so each sync's windows would hold only the rows that sync reads: read it with full_refresh`},
+		{"read by its event time", scheduled, apiv1.SyncMode_SYNC_MODE_INCREMENTAL, "AT",
+			`the group window writing "minutes" reads stream "events" with incremental in a scheduled pipeline, so a window open at the end of a sync would go on in the next one; ` +
+				`each sync runs in an engine of its own, and a group window's state is in the engine's memory: read the stream with full_refresh, or run the pipeline with mode: continuous`},
+		{"changes in a scheduled pipeline", scheduled, apiv1.SyncMode_SYNC_MODE_CDC, "", `reads stream "events" with cdc in a scheduled pipeline`},
+		{"changes in a continuous pipeline", continuous, apiv1.SyncMode_SYNC_MODE_CDC, "", ""},
+		{"a stream in a continuous pipeline", continuous, apiv1.SyncMode_SYNC_MODE_STREAM, "", ""},
+	} {
+		in := Input{Name: "events", Read: c.read, Cursor: c.cursor, Spec: &apiv1.PipelineStream{Name: "events", EventTime: "at"}}
+		got := errors.Join(windowProblems(c.spec, a, []Input{in}, []Output{{Name: "minutes", Mode: destination.Merge}})...)
+		switch {
+		case c.want == "" && got != nil:
+			t.Errorf("%s: %v", c.name, got)
+		case c.want != "" && (got == nil || !strings.Contains(got.Error(), c.want)):
+			t.Errorf("%s: %v, want %q", c.name, got, c.want)
+		}
 	}
 }

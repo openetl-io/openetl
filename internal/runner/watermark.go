@@ -27,6 +27,9 @@ type EventTime struct {
 	Held bool
 	// Zero: plan.IdleAfter.
 	Idle time.Duration
+	// How long after a group window over the stream closes a row may still
+	// come.
+	Lateness time.Duration
 }
 
 func (e *EventTime) idle() time.Duration {

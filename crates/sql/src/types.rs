@@ -113,6 +113,7 @@ mod tests {
             schema: Arc::new(arrow_schema::Schema::new(fields)),
             key: Vec::new(),
             changelog: false,
+            event_time: None,
         };
         catalog
             .insert("s", stream)
@@ -153,6 +154,7 @@ mod tests {
             schema: Arc::new(schema),
             key: Vec::new(),
             changelog: false,
+            event_time: None,
         };
         catalog
             .insert("s", stream)

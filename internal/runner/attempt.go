@@ -768,7 +768,9 @@ func markForced(rec *checkpoint.Record, streams []Stream) {
 // its own dropped, as a copy, the newest reset it then carries, and those
 // streams. A stream keeps its schema and holds: the destination still has
 // them. A paused stream is reset too, so it carries no position and reads
-// from the start once it's resumed.
+// from the start once it's resumed. The state of a statement that reads one
+// goes too, so the statement builds it again from the new read, and so does
+// state no statement of the job keeps, which the engine wouldn't restore.
 func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []string) {
 	var taken string
 	if rec != nil {
@@ -811,6 +813,18 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 		cp.Forced = slices.DeleteFunc(cp.Forced, func(s string) bool { return s == name })
 		cp.Reread = slices.DeleteFunc(cp.Reread, func(s string) bool { return s == name })
 	}
+	kept := map[string]bool{}
+	if j.SQL != nil {
+		for _, op := range j.SQL.Operators {
+			kept[op] = true
+		}
+		for _, e := range j.SQL.Expected {
+			if e.Operator != "" && slices.Contains(streams, e.Input) {
+				kept[e.Operator] = false
+			}
+		}
+	}
+	cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return !kept[s.Operator] })
 	cp.Reset = newest
 	return &cp, newest, streams
 }
@@ -1449,6 +1463,10 @@ func exchange(s Stream, writers int) []string {
 	}
 	return p.Steps[0].Need.Columns
 }
+
+// stateful says the job's SQL transform has a statement with state, as a
+// group window.
+func (j *Job) stateful() bool { return j.SQL != nil && len(j.SQL.Operators) > 0 }
 
 // keyGrouped says a stream's rows meet the writer through an exchange by key
 // group when there is more than one writer lane.

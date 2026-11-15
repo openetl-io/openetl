@@ -22,7 +22,7 @@ use openetl_sql::{Catalog, ErrorKind, Errors, Stream};
 use sqllogictest::{DBOutput, DefaultColumnType};
 
 use super::rows::{self, Kind, Lit, Table, Tok};
-use crate::stage::Stage;
+use crate::stage::{Applied, Stage};
 use crate::transform::{Input, Transform};
 
 /// What a query gave: its rows, each value written by [`rows::cell`], and
@@ -83,6 +83,8 @@ pub(crate) struct Ours {
 
 struct Data {
     table: Table,
+    /// The column group windows go by.
+    event_time: Option<String>,
     batches: Vec<RecordBatch>,
     ops: Vec<Option<String>>,
     unsent: Vec<Option<Vec<String>>>,
@@ -104,6 +106,7 @@ impl sqllogictest::DB for Ours {
                 }
                 self.tables.push(Data {
                     table: t,
+                    event_time: None,
                     batches: Vec::new(),
                     ops: Vec::new(),
                     unsent: Vec::new(),
@@ -127,6 +130,15 @@ impl sqllogictest::DB for Ours {
             }
             Kind::Query => self.query(sql, true).map(Ran::output),
             Kind::Transform => self.query(sql, false).map(Ran::output),
+            Kind::EventTime => {
+                let (table, column) = rows::event_time(sql)?;
+                let data = self.data(&table)?;
+                if data.table.schema.field_with_name(&column).is_err() {
+                    return Err(Failure(format!("{table} has no column {column}")));
+                }
+                data.event_time = Some(column);
+                Ok(DBOutput::StatementComplete(0))
+            }
             Kind::Describe => {
                 let body = sql
                     .trim_start()
@@ -249,6 +261,7 @@ impl Ours {
                     schema: d.table.schema.clone(),
                     key: d.table.key.clone(),
                     changelog: d.table.changelog,
+                    event_time: d.event_time.clone(),
                 },
             )
             .map_err(|e| Failure(e.to_string()))?;
@@ -327,6 +340,8 @@ impl Ours {
                 schema: Some(d.table.schema.clone()),
                 key: d.table.key.clone(),
                 changelog: d.table.changelog,
+                event_time: d.event_time.clone(),
+                lateness: 0,
             })
             .collect();
         let t = Arc::new(
@@ -339,9 +354,12 @@ impl Ours {
             let data = &self.tables[st.input];
             let typed = data.typed()?;
             let pushed: Vec<usize> = (0..typed.batch.num_rows()).collect();
-            let applied = Stage::statement(&t, i)
-                .apply(&typed, &pushed, None)
-                .map_err(|e| Failure(format!("{:?} {}", e.code, e.message)))?;
+            let applied = match &st.window {
+                Some(_) => window(st, &typed)?,
+                None => Stage::statement(&t, i)
+                    .apply(&typed, &pushed, None)
+                    .map_err(|e| Failure(format!("{:?} {}", e.code, e.message)))?,
+            };
             let b = &applied.typed.batch;
             let n = b.num_rows();
             let ops: Vec<Option<String>> = match &applied.typed.control.op {
@@ -386,6 +404,77 @@ impl Ours {
         }
         Ok(ran)
     }
+}
+
+/// A group window's statement run on a table's rows, as one lane with
+/// every key group runs it, to the end of input: what it gives, and the
+/// rows it can't take.
+fn window(st: &crate::transform::Statement, typed: &Typed) -> Result<Applied, Failure> {
+    let Some((plan, id)) = &st.window else {
+        return Err(Failure("not a group window".into()));
+    };
+    let input = st.op.input(&typed.batch).map_err(|e| Failure(e.message))?;
+    // A thread of its own, as the suites may run inside a runtime.
+    let run = || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .map_err(|e| Failure(e.to_string()))?;
+        rt.block_on(windowed(st, plan, id, &input))
+    };
+    std::thread::scope(|s| s.spawn(run).join())
+        .map_err(|_| Failure("a group window's thread panicked".into()))?
+}
+
+async fn windowed(
+    st: &crate::transform::Statement,
+    plan: &Arc<openetl_sql::GroupWindow>,
+    id: &str,
+    input: &RecordBatch,
+) -> Result<Applied, Failure> {
+    let fail = |e: crate::error::JobError| Failure(format!("{:?} {}", e.code, e.message));
+    let groups = 256;
+    let bucket = openetl_state::MemoryBucket::new();
+    let range = openetl_state::KeyGroupRange::new(0, groups - 1);
+    let mut layer = openetl_state::Layer::open(&bucket, 1, 1, range, &[])
+        .await
+        .map_err(|e| Failure(e.to_string()))?;
+    let mut op = crate::window::Operator::new(
+        id,
+        st.at,
+        plan.clone(),
+        &st.output,
+        st.schema.clone(),
+        0,
+        groups,
+    )
+    .map_err(fail)?;
+    let mut out = op.rows(&mut layer, input).await.map_err(fail)?;
+    let closed = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
+    out.rejected.extend(closed.rejected);
+    let typed = match closed.rows {
+        Some(t) => t,
+        None => Typed {
+            batch: RecordBatch::new_empty(st.schema.clone()),
+            ids: FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+                std::iter::empty::<Option<[u8; 16]>>(),
+                16,
+            )
+            .map_err(|e| Failure(e.to_string()))?,
+            control: Control::default(),
+            cells: Vec::new(),
+            rejected: Vec::new(),
+            rows: None,
+        },
+    };
+    // The suites' tables aren't changelogs: rows show no op.
+    let typed = Typed {
+        control: Control::default(),
+        ..typed
+    };
+    Ok(Applied {
+        typed,
+        failed: out.rejected,
+    })
 }
 
 impl Data {

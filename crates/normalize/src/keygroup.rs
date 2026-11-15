@@ -10,8 +10,8 @@
 //!   integral value. Floats go through float64 first, so a float32 widened
 //!   to float64 keeps its text; an integer past 2^53 that float64 rounds
 //!   changes.
-//! - strings and binary as their bytes, JSON as its text with object keys
-//!   sorted;
+//! - strings and binary as their bytes, JSON as [`canonical_json`] gives
+//!   it: without spaces, and with every object's keys sorted;
 //! - booleans as `0` or `1`;
 //! - dates as days, and times and timestamps as microseconds, or
 //!   nanoseconds where the type keeps them.
@@ -267,11 +267,57 @@ fn json(f: &Field) -> bool {
     f.metadata().get(EXTENSION_NAME_KEY).map(String::as_str) == Some(JSON_EXTENSION)
 }
 
+/// A JSON value's text as a key takes it: without spaces, and its objects'
+/// keys sorted by their bytes, at any depth; None where `s` isn't JSON.
+/// Numbers keep their text, so `1.0` and `1` are two keys. Strings are
+/// their characters, escapes read: `\u00e9` is `é`, and `\/` is `/`. They're
+/// written with `"`, `\` and control characters escaped, as `\n` or
+/// `\u001f`, and everything else as UTF-8. testdata/key_groups.json pins
+/// it, for the engine and the runner's tests alike.
+pub fn canonical_json(s: &[u8]) -> Option<String> {
+    let v = serde_json::from_slice::<serde_json::Value>(s).ok()?;
+    let mut out = String::with_capacity(s.len());
+    sorted(&v, &mut out);
+    Some(out)
+}
+
+/// The workspace's serde_json keeps an object's keys in the order they
+/// came, so they're sorted here.
+fn sorted(v: &serde_json::Value, out: &mut String) {
+    use serde_json::Value as V;
+    match v {
+        V::Object(m) => {
+            let mut entries: Vec<_> = m.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            out.push('{');
+            for (i, (k, v)) in entries.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&V::String(k.clone()).to_string());
+                out.push(':');
+                sorted(v, out);
+            }
+            out.push('}');
+        }
+        V::Array(a) => {
+            out.push('[');
+            for (i, v) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                sorted(v, out);
+            }
+            out.push(']');
+        }
+        v => out.push_str(&v.to_string()),
+    }
+}
+
 fn json_part(buf: &mut Vec<u8>, s: &[u8]) {
-    match serde_json::from_slice::<serde_json::Value>(s) {
-        // serde_json's maps keep their keys sorted.
-        Ok(v) => part(buf, v.to_string().as_bytes()),
-        Err(_) => part(buf, s),
+    match canonical_json(s) {
+        Some(t) => part(buf, t.as_bytes()),
+        None => part(buf, s),
     }
 }
 
@@ -390,6 +436,85 @@ mod tests {
         .unwrap();
         let key: Vec<String> = cols.iter().map(|(n, _)| (*n).to_string()).collect();
         key_groups(&batch, &key, n).unwrap()
+    }
+
+    /// The vectors in testdata/key_groups.json, which internal/engineclient
+    /// asserts too, through the engine's key-group filter: each spelling of
+    /// a key gives its group, and a JSON spelling its canonical text.
+    #[test]
+    fn keys_give_the_shared_vectors_groups() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("../testdata/key_groups.json")).unwrap();
+        let groups = u32::try_from(doc["groups"].as_u64().unwrap()).unwrap();
+        let mut got = Vec::new();
+        let mut want = Vec::new();
+        for k in doc["keys"].as_array().unwrap() {
+            let spellings: Vec<&str> = k["spellings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap())
+                .collect();
+            let (a, f): (ArrayRef, Field) = match k["type"].as_str().unwrap() {
+                "json" => (
+                    Arc::new(StringArray::from(spellings.clone())),
+                    Field::new("k", DataType::Utf8, true).with_metadata(
+                        [(EXTENSION_NAME_KEY.to_owned(), JSON_EXTENSION.to_owned())].into(),
+                    ),
+                ),
+                "utf8" => (
+                    Arc::new(StringArray::from(spellings.clone())),
+                    Field::new("k", DataType::Utf8, true),
+                ),
+                "int64" => (
+                    Arc::new(Int64Array::from(
+                        spellings
+                            .iter()
+                            .map(|s| s.parse::<i64>().unwrap())
+                            .collect::<Vec<_>>(),
+                    )),
+                    Field::new("k", DataType::Int64, true),
+                ),
+                t => panic!("type {t}"),
+            };
+            if let Some(c) = k["canonical"].as_str() {
+                for s in &spellings {
+                    assert_eq!(canonical_json(s.as_bytes()).as_deref(), Some(c), "{s}");
+                }
+            }
+            let batch = RecordBatch::try_new(Arc::new(Schema::new(vec![f])), vec![a]).unwrap();
+            let g = key_groups(&batch, &["k".to_owned()], groups).unwrap();
+            assert!(g.iter().all(|x| *x == g[0]), "{spellings:?}: {g:?}");
+            got.push(i64::from(g[0]));
+            want.push(k["group"].as_i64().unwrap());
+        }
+        assert_eq!(got, want);
+    }
+
+    /// JSON keys that differ only in their object keys' order or their
+    /// spaces share a group, at any depth; other JSON doesn't.
+    #[test]
+    fn equal_json_shares_a_group() {
+        let json = |texts: &[&str]| -> Vec<u32> {
+            let a: ArrayRef = Arc::new(StringArray::from(texts.to_vec()));
+            let f = Field::new("j", DataType::Utf8, true)
+                .with_metadata([(EXTENSION_NAME_KEY.to_owned(), JSON_EXTENSION.to_owned())].into());
+            let batch = RecordBatch::try_new(Arc::new(Schema::new(vec![f])), vec![a]).unwrap();
+            key_groups(&batch, &["j".to_owned()], 1 << 16).unwrap()
+        };
+        let g = json(&[
+            r#"{"a": 1, "b": {"y": [1, {"q": 2, "p": 3}], "x": "s"}}"#,
+            r#"{"b":{"x":"s","y":[1,{"p":3,"q":2}]},"a":1}"#,
+        ]);
+        assert_eq!(g[0], g[1]);
+        let other = json(&[r#"{"a": 1}"#, r#"{"a": 2}"#, r#"[2, 1]"#, r#"[1, 2]"#]);
+        assert_ne!(other[0], other[1]);
+        assert_ne!(other[2], other[3], "an array keeps its order");
+        assert_eq!(
+            canonical_json(br#"{"b": [1, {"d": null, "c": "x"}], "a": true}"#).as_deref(),
+            Some(r#"{"a":true,"b":[1,{"c":"x","d":null}]}"#)
+        );
+        assert_eq!(canonical_json(b"{not json"), None);
     }
 
     #[test]

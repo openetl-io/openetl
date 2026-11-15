@@ -1248,9 +1248,13 @@ type EventTime struct {
 	// The least watermark of the stream's splits as the attempt starts, of
 	// every engine's, in microseconds since the Unix epoch: what a lane that
 	// takes the stream's outputs from others starts at. Unset: none.
-	Floor         *int64 `protobuf:"varint,4,opt,name=floor,proto3,oneof" json:"floor,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Floor *int64 `protobuf:"varint,4,opt,name=floor,proto3,oneof" json:"floor,omitempty"`
+	// How long after a group window over the stream closes a row may still
+	// come, giving the window's row again, in microseconds. A row later than
+	// that is quarantined.
+	LatenessMicros int64 `protobuf:"varint,5,opt,name=lateness_micros,json=latenessMicros,proto3" json:"lateness_micros,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *EventTime) Reset() {
@@ -1307,6 +1311,13 @@ func (x *EventTime) GetHeld() bool {
 func (x *EventTime) GetFloor() int64 {
 	if x != nil && x.Floor != nil {
 		return *x.Floor
+	}
+	return 0
+}
+
+func (x *EventTime) GetLatenessMicros() int64 {
+	if x != nil {
+		return x.LatenessMicros
 	}
 	return 0
 }
@@ -3729,12 +3740,13 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"key_groups\x18\x0e \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12;\n" +
 	"\n" +
-	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\"\x7f\n" +
+	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\"\xa8\x01\n" +
 	"\tEventTime\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12!\n" +
 	"\fdelay_micros\x18\x02 \x01(\x03R\vdelayMicros\x12\x12\n" +
 	"\x04held\x18\x03 \x01(\bR\x04held\x12\x19\n" +
-	"\x05floor\x18\x04 \x01(\x03H\x00R\x05floor\x88\x01\x01B\b\n" +
+	"\x05floor\x18\x04 \x01(\x03H\x00R\x05floor\x88\x01\x01\x12'\n" +
+	"\x0flateness_micros\x18\x05 \x01(\x03R\x0elatenessMicrosB\b\n" +
 	"\x06_floor\"\xe3\x03\n" +
 	"\bHoldPlan\x12\x14\n" +
 	"\x05cells\x18\x01 \x01(\bR\x05cells\x12+\n" +

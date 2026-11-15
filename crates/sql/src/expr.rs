@@ -15,6 +15,7 @@ use datafusion_physical_expr::expressions::{BinaryExpr, Literal, NegativeExpr};
 use crate::{Error, ErrorKind, Position};
 
 /// An expression over a step's input, ready to evaluate on its batches.
+#[derive(Clone)]
 pub struct Expr {
     display: String,
     data_type: DataType,

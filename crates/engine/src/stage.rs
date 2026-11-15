@@ -923,6 +923,8 @@ mod tests {
             ]))),
             key: vec!["id".into()],
             changelog,
+            event_time: None,
+            lateness: 0,
         }
     }
 
@@ -1575,6 +1577,8 @@ mod tests {
                     schema: Some(schema),
                     key: vec!["c0".into()],
                     changelog: false,
+                    event_time: None,
+                    lateness: 0,
                 }],
             )
             .unwrap(),

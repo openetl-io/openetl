@@ -9,7 +9,7 @@ use arrow_schema::{Field, Schema, SchemaRef};
 use openetl_normalize::VERSIONS_KEY;
 use openetl_normalize::naming::{METADATA_COLUMNS, TABLE_KEY, source_names};
 use openetl_proto::engine::v1::{StreamPlan, Transform as TransformPlan};
-use openetl_sql::{Catalog, Operator, Position, RowWise, Sql, Stream};
+use openetl_sql::{Catalog, GroupWindow, Operator, Position, RowWise, Sql, Stream};
 
 use crate::error::JobError;
 use crate::ipc;
@@ -23,6 +23,11 @@ pub struct Input {
     pub schema: Option<SchemaRef>,
     pub key: Vec<String>,
     pub changelog: bool,
+    /// The column of its rows' event time, which group windows go by.
+    pub event_time: Option<String>,
+    /// How long after a group window over it closes a row may still come,
+    /// in microseconds.
+    pub lateness: i64,
 }
 
 impl Input {
@@ -57,6 +62,12 @@ impl Input {
             schema: merged(restored, declared),
             key: s.primary_key.clone(),
             changelog: s.changelog,
+            event_time: s
+                .event_time
+                .as_ref()
+                .map(|e| e.column.clone())
+                .filter(|t| !t.is_empty()),
+            lateness: s.event_time.as_ref().map_or(0, |e| e.lateness_micros),
         })
     }
 }
@@ -138,7 +149,11 @@ pub struct Statement {
     pub schema: SchemaRef,
     /// The output's primary key; empty where it can only be appended.
     pub key: Vec<String>,
+    /// Its row-wise steps: a group window's, those before the window.
     pub op: Arc<RowWise>,
+    /// A group window, and its operator's ID; None for a row-wise
+    /// statement.
+    pub window: Option<(Arc<GroupWindow>, String)>,
 }
 
 /// How a stream reaches one of the outputs.
@@ -148,6 +163,9 @@ pub enum Route {
     Pass,
     /// A statement, by its index, writes that output from it.
     Statement(usize),
+    /// A group window's statement, by its index, writes that output from
+    /// it: its rows go by key group to the lanes that run it.
+    Window(usize),
 }
 
 /// A job's SQL, planned.
@@ -243,6 +261,13 @@ impl Transform {
         Ok(again)
     }
 
+    /// The stateful operators' IDs.
+    pub fn operators(&self) -> impl Iterator<Item = &str> {
+        self.statements
+            .iter()
+            .filter_map(|s| s.window.as_ref().map(|(_, id)| id.as_str()))
+    }
+
     /// Each stream's routes to the outputs, by output index: the statements
     /// that read it, and itself if it's an output.
     pub fn routes(&self, outputs: &[String]) -> Vec<Vec<(usize, Route)>> {
@@ -254,7 +279,11 @@ impl Transform {
         let mut routes = vec![Vec::new(); self.inputs.len()];
         for (i, s) in self.statements.iter().enumerate() {
             if let Some(&o) = index.get(s.output.as_str()) {
-                routes[s.input].push((o, Route::Statement(i)));
+                let route = match s.window {
+                    Some(_) => Route::Window(i),
+                    None => Route::Statement(i),
+                };
+                routes[s.input].push((o, route));
             }
         }
         for (i, input) in self.inputs.iter().enumerate() {
@@ -272,9 +301,13 @@ impl Transform {
     /// where the request has it, against this plan. Each output is a
     /// statement's or a stream no statement writes, under the key it has.
     pub fn check(&self, t: &TransformPlan, outputs: &[StreamPlan]) -> Result<(), JobError> {
-        if let Some(id) = t.operators.first() {
+        let want: BTreeSet<&str> = t.operators.iter().map(String::as_str).collect();
+        let got: BTreeSet<&str> = self.operators().collect();
+        if want != got {
             return Err(JobError::config(format!(
-                "transform.sql: the pipeline's version has stateful operator {id:?}, and its statements plan none now; plan and apply the pipeline again"
+                "transform.sql: the pipeline's version has stateful operators {}, and its statements plan {} now; plan and apply the pipeline again",
+                list(want),
+                list(got)
             )));
         }
         if !t.expected_outputs.is_empty() {
@@ -365,6 +398,10 @@ fn plan_statements(
             // Every column is nullable: a batch may lack one, and a
             // delete may have only its key.
             Some(schema) => Stream {
+                event_time: input
+                    .event_time
+                    .clone()
+                    .filter(|t| schema.field_with_name(t).is_ok()),
                 schema: Arc::new(Schema::new(
                     schema
                         .fields()
@@ -381,6 +418,7 @@ fn plan_statements(
                     schema: Arc::new(Schema::empty()),
                     key: Vec::new(),
                     changelog: input.changelog,
+                    event_time: None,
                 }
             }
         };
@@ -413,7 +451,13 @@ fn plan_statements(
         .collect();
     let mut out = Vec::with_capacity(plan.statements.len());
     for s in plan.statements {
-        let Operator::RowWise(op) = s.operator;
+        let (op, window) = match s.operator {
+            Operator::RowWise(op) => (op, None),
+            Operator::GroupWindow(g) => {
+                let id = g.id.clone();
+                (g.input.clone(), Some((Arc::new(*g), id)))
+            }
+        };
         let Some(&input) = index.get(op.input.as_str()) else {
             return Err(JobError::internal(format!(
                 "the statement at {} reads {}, which isn't a stream",
@@ -440,6 +484,7 @@ fn plan_statements(
             schema: s.schema,
             key: s.key,
             op: Arc::new(op),
+            window,
         });
     }
     Ok(out)
@@ -460,6 +505,8 @@ mod tests {
             ]))),
             key: key.iter().map(|k| k.to_string()).collect(),
             changelog,
+            event_time: None,
+            lateness: 0,
         }
     }
 
@@ -574,6 +621,8 @@ mod tests {
             schema: schema(t),
             key: vec!["id".into()],
             changelog: false,
+            event_time: None,
+            lateness: 0,
         };
         let t = Transform::plan(
             r#"INSERT INTO c SELECT id, lower("Email Address") AS e FROM a"#,

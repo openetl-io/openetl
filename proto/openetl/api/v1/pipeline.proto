@@ -577,6 +577,10 @@ message Watermark {
   // The watermark trails the latest event time seen by this much. Unset:
   // zero.
   google.protobuf.Duration delay = 1;
+  // How long after a group window closes a row may still come: it gives the
+  // window's row again, which a merge takes as an upsert. A row later than
+  // that is quarantined. Unset: zero.
+  google.protobuf.Duration lateness = 2;
 }
 
 // Whether a destination changes a column's type itself when the stream's

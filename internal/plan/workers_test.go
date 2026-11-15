@@ -71,6 +71,12 @@ func TestWorkers(t *testing.T) {
 			`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
 		}},
+		// Its exchange runs inside one engine, and its state restores where
+		// the record's lanes were.
+		{name: "a group window", spec: spec(2, func(p *apiv1.PipelineSpec) {
+			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
+		}), cat: cat, caps: held, sql: &sqlplan.Answer{Statements: []sqlplan.Statement{{Output: "m", Inputs: []string{"logs"}, Operator: "window-1"}}},
+			onePod: "a SQL statement with state, as a group window, runs on one pod"},
 		{name: "sql passing streams through", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: held, sql: &sqlplan.Answer{}, workers: 2, oneWorker: []string{

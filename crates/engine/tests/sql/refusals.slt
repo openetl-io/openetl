@@ -17,19 +17,19 @@ CREATE TABLE cdc2 (tenant TEXT NOT NULL, id BIGINT NOT NULL, name TEXT, PRIMARY 
 statement ok
 CREATE TABLE log (id BIGINT, tags TEXT[]) WITH (changelog)
 
-# Group windows: tier 2.
+# A group window goes by its stream's event time, which orders has none of.
 query error
 SELECT window_start, region, sum(amount) AS revenue
 FROM orders
 GROUP BY tumble(created_at, INTERVAL '1 minute'), region
 ----
-later_tier group_window 3:10 a group window: transforms don't run group windows yet (tier 2)
+unsupported 3:10 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
 
 query error
 SELECT count(*) AS n FROM orders GROUP BY hop(created_at, INTERVAL '1 minute', INTERVAL '5 minutes')
 ----
-later_tier group_window 1:43 a group window: transforms don't run group windows yet (tier 2)
+unsupported 1:43 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
 
 # Window functions: tier 3.
@@ -108,7 +108,6 @@ later_tier updating 2:10 GROUP BY without a window: transforms don't run updatin
 query error
 SELECT count(*) AS n FROM orders GROUP BY tumble(now(), INTERVAL '1 minute')
 ----
-later_tier group_window 1:43 a group window: transforms don't run group windows yet (tier 2)
 not_deterministic 1:50 now() isn't deterministic, so it can't feed a group's key
 
 
@@ -132,7 +131,6 @@ CREATE VIEW stamped AS SELECT id, region, now() AS seen_at FROM orders
 query error
 SELECT count(*) AS n FROM stamped GROUP BY tumble(seen_at, INTERVAL '1 minute')
 ----
-later_tier group_window 1:44 a group window: transforms don't run group windows yet (tier 2)
 not_deterministic 1:51 seen_at isn't deterministic, so it can't feed a group's key
 
 

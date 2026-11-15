@@ -38,6 +38,9 @@ pub(super) enum Kind {
     Describe,
     /// A transform's statements as they're written.
     Transform,
+    /// `ALTER TABLE t SET EVENT TIME column`: the column of the table's
+    /// rows' event time, which group windows go by. Ours only.
+    EventTime,
 }
 
 pub(super) fn kind(sql: &str) -> Kind {
@@ -51,6 +54,7 @@ pub(super) fn kind(sql: &str) -> Kind {
         ("CREATE", "TABLE") => Kind::Table,
         ("CREATE", "VIEW") => Kind::View,
         ("DESCRIBE", _) => Kind::Describe,
+        ("ALTER", "TABLE") => Kind::EventTime,
         ("SELECT" | "WITH" | "VALUES" | "(", _) => Kind::Query,
         ("INSERT", "INTO") if inserts_values(&t) => Kind::Values,
         _ => Kind::Transform,
@@ -314,6 +318,21 @@ impl Parser {
             self.expect_punct(',')?;
         }
     }
+}
+
+/// `ALTER TABLE name SET EVENT TIME column`: the table and the column.
+pub(super) fn event_time(sql: &str) -> Result<(String, String), String> {
+    let mut p = Parser {
+        t: tokens(sql)?,
+        i: 2,
+    };
+    let name = p.name()?;
+    for w in ["SET", "EVENT", "TIME"] {
+        p.expect_word(w)?;
+    }
+    let column = p.ident()?;
+    p.end()?;
+    Ok((name, column))
 }
 
 /// A table a suite creates: a stream, under its whole name.

@@ -19,6 +19,7 @@ Some work does not spread:
 
 - A stream that one worker reads is read no faster. [Streams that one worker reads](#streams-that-one-worker-reads) lists them.
 - A keyed stream that the source does not split by key sends rows between the workers. [The exchange between workers](#the-exchange-between-workers) says what that costs.
+- A pipeline whose SQL has a [group window](../reference/sql.md#group-windows) runs on one pod.
 - The first worker commits each checkpoint for all the workers, so a job whose time goes to commits gains little. A destination with lane commits is different: each worker commits its own part.
 - Each attempt starts more pods. The coordinator also starts the source and destination connectors to set them up before the workers start.
 
@@ -80,6 +81,7 @@ The pipeline still applies, and its jobs run on one pod. These are the reasons, 
 | `the destination takes N writer lanes, fewer than M workers` | Set `resources.workers` to `N` or fewer. |
 | `a transactional destination runs on one pod unless its writer lanes commit on their own` | Nothing today: a transactional destination runs on workers only if its connector declares lane commits. Its documentation says whether it does. |
 | `a SQL transform into a destination whose writer lanes commit on their own runs on one pod` | Nothing today: a pipeline with a [SQL transform](./sql-transforms.md) runs on one pod when its destination declares lane commits. |
+| `a SQL statement with state, as a group window, runs on one pod` | Nothing today: a pipeline whose SQL has a [group window](../reference/sql.md#group-windows) runs on one pod. |
 | `a destination that loads staged epochs runs on one pod` | Nothing today: a destination that loads files that OpenETL stages runs on one pod. |
 | `a destination the engine writes runs on one pod` | Nothing today: the built-in `parquet` destination runs on one pod. |
 | `no pod launcher of data plane "PLANE" and pool "POOL" has reported in the last ten minutes, and an attempt runs on workers only in pods` | Run the pipeline in a pool that has a pod launcher, or ask your operator to add one. |

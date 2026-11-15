@@ -136,19 +136,27 @@ fn sorted(rows: Vec<Vec<String>>) -> Vec<Vec<String>> {
     rows
 }
 
-/// A query both engines run, with where it's written.
+/// A query both engines run, with where it's written: the same SQL, or
+/// ours and DuckDB's of a translated pair.
 struct Query {
     line: u32,
     sql: String,
+    duckdb: String,
 }
 
-/// The mismatches of a file's queries over each seed's rows: one string
-/// each, and the exceptions of [`DIFFERS`] that a mismatch used.
-pub(super) fn compare(
-    file: &Path,
-    bin: &Path,
-    seeds: &[u64],
-) -> Result<(Vec<String>, Vec<usize>), String> {
+/// What comparing a file's queries over generated rows gave.
+pub(super) struct Compared {
+    /// One string each.
+    pub mismatches: Vec<String>,
+    /// The exceptions of [`DIFFERS`] that a mismatch used.
+    pub used: Vec<usize>,
+    /// The queries compared as translated pairs: ours, then DuckDB's SQL
+    /// for the same query.
+    pub pairs: usize,
+}
+
+/// The mismatches of a file's queries over each seed's rows.
+pub(super) fn compare(file: &Path, bin: &Path, seeds: &[u64]) -> Result<Compared, String> {
     let name = file
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -159,9 +167,65 @@ pub(super) fn compare(
     let words = strings(&text);
     // Tables and views, in order, and the queries.
     let mut setup = Vec::new();
-    let mut queries = Vec::new();
+    let mut ours_setup = Vec::new();
+    let mut queries: Vec<Query> = Vec::new();
+    // Ours of a translated pair, until DuckDB's follows it.
+    let mut pending: Option<Query> = None;
+    let mut pairs = 0;
+    let only = |conditions: &[sqllogictest::Condition], engine: &str| {
+        conditions
+            .iter()
+            .any(|c| matches!(c, sqllogictest::Condition::OnlyIf { label } if label == engine))
+    };
     for r in records {
+        // A comment or a condition between a pair's records keeps it.
+        if !matches!(r, Record::Statement { .. } | Record::Query { .. }) {
+            continue;
+        }
+        let held = pending.take();
         match r {
+            Record::Statement {
+                conditions, sql, ..
+            } if only(&conditions, "openetl") && rows::kind(statement(&sql)) == Kind::EventTime => {
+                ours_setup.push(statement(&sql).to_owned());
+            }
+            Record::Query {
+                conditions,
+                sql,
+                expected: QueryExpect::Results { .. },
+                loc,
+                ..
+            } if only(&conditions, "openetl") && rows::kind(statement(&sql)) == Kind::Query => {
+                pending = Some(Query {
+                    line: loc.line(),
+                    sql: statement(&sql).to_owned(),
+                    duckdb: String::new(),
+                });
+            }
+            Record::Query {
+                conditions,
+                sql,
+                expected: QueryExpect::Results { .. },
+                loc,
+                ..
+            } if only(&conditions, "duckdb") => {
+                let sql = statement(&sql).to_owned();
+                match held {
+                    // The same SQL under each engine differs on purpose.
+                    Some(q) if q.sql == sql => {}
+                    Some(mut q) => {
+                        q.duckdb = sql;
+                        queries.push(q);
+                        pairs += 1;
+                    }
+                    None => {
+                        return Err(format!(
+                            "{name}:{}: a query only DuckDB runs follows no query only ours runs, so nothing compares it",
+                            loc.line()
+                        ));
+                    }
+                }
+            }
             Record::Statement {
                 conditions,
                 sql,
@@ -184,6 +248,7 @@ pub(super) fn compare(
                 queries.push(Query {
                     line: loc.line(),
                     sql: statement(&sql).to_owned(),
+                    duckdb: statement(&sql).to_owned(),
                 });
             }
             _ => {}
@@ -209,6 +274,10 @@ pub(super) fn compare(
                     .map_err(|e| format!("{name}: {insert}: DuckDB: {e}"))?;
             }
         }
+        for sql in &ours_setup {
+            ours.run(sql)
+                .map_err(|e| format!("{name}: {sql}: ours: {e}"))?;
+        }
         let theirs: Vec<Got> = std::thread::scope(|s| {
             let duck = &duck;
             let handles: Vec<_> = queries
@@ -217,7 +286,7 @@ pub(super) fn compare(
                     s.spawn(move || {
                         chunk
                             .iter()
-                            .map(|q| match duck.query(&q.sql) {
+                            .map(|q| match duck.query(&q.duckdb) {
                                 Ok(rows) => Got::Rows(sorted(rows), 0),
                                 Err(e) => Got::Failed(e),
                             })
@@ -253,7 +322,11 @@ pub(super) fn compare(
             }
         }
     }
-    Ok((mismatches, used))
+    Ok(Compared {
+        mismatches,
+        used,
+        pairs,
+    })
 }
 
 /// The string literals of a file.
@@ -432,6 +505,9 @@ fn value(t: &arrow_schema::DataType, json: bool, rng: &mut Rng, words: &[String]
                 "2024-02-29 12:30:45.123456",
                 "2026-11-14 08:00:00",
                 "2024-01-02 03:04:05.5",
+                "2024-02-29 12:31:10",
+                "2024-02-29 12:30:59.999999",
+                "2024-02-29 13:00:00",
             ]);
             match tz {
                 Some(_) => quote(&format!("{at}+00:00")),

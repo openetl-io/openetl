@@ -59,18 +59,47 @@ func TestPlan(t *testing.T) {
 	}
 }
 
+// A group window needs its group keys and keeps state, under an operator's
+// ID; its output's key is window_start and the keys, which it passes.
+func TestPlanGroupWindow(t *testing.T) {
+	opts := planEngine(t)
+	orders := sqlplan.Stream{Name: "orders", EventTime: "at", Columns: []sqlplan.Column{
+		{Name: "region", Type: "utf8"}, {Name: "amount", Type: "decimal(12, 2)"}, {Name: "at", Type: "timestamp[us, tz=UTC]"},
+	}}
+	a, err := Plan(t.Context(), opts, sqlplan.Request{
+		SQL:     "INSERT INTO minutes\nSELECT window_start, region AS area, sum(amount) AS revenue FROM orders\nGROUP BY tumble(at, INTERVAL '1 minute'), region",
+		Streams: []sqlplan.Stream{orders},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Errors) != 0 || len(a.Statements) != 1 {
+		t.Fatalf("%+v", a)
+	}
+	st := a.Statements[0]
+	if st.Class != "group_window" || st.Tier != 2 || !slices.Equal(st.Key, []string{"window_start", "area"}) || !slices.Equal(st.Need, []string{"region"}) ||
+		!maps.Equal(st.Passes, map[string]string{"region": "area"}) || !strings.HasPrefix(st.Operator, "window-") {
+		t.Errorf("%+v", st)
+	}
+	orders.EventTime = ""
+	a, err = Plan(t.Context(), opts, sqlplan.Request{SQL: "INSERT INTO m SELECT window_start, count(*) AS n FROM orders GROUP BY tumble(at, INTERVAL '1 minute')", Streams: []sqlplan.Stream{orders}})
+	if err != nil || len(a.Errors) != 1 || !strings.Contains(a.Errors[0].Message, "orders has no event time") {
+		t.Errorf("without event time: %+v, %v", a, err)
+	}
+}
+
 // SQL with errors is an answer; a request the engine can't plan fails as
 // CONFIG_INVALID.
 func TestPlanErrors(t *testing.T) {
 	opts := planEngine(t)
 	a, err := Plan(t.Context(), opts, sqlplan.Request{
-		SQL:     "INSERT INTO hourly\nSELECT count(*) AS n FROM customers\nGROUP BY tumble(created_at, INTERVAL '1 hour')",
+		SQL:     "INSERT INTO ranked\nSELECT id,\nrank() OVER (ORDER BY created_at) AS r FROM customers",
 		Streams: []sqlplan.Stream{customers},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(a.Statements) != 0 || len(a.Errors) != 1 || a.Errors[0].Kind != "later_tier" || a.Errors[0].Tier != 2 || a.Errors[0].At == nil || a.Errors[0].At.Line != 3 {
+	if len(a.Statements) != 0 || len(a.Errors) != 1 || a.Errors[0].Kind != "later_tier" || a.Errors[0].Tier != 3 || a.Errors[0].At == nil || a.Errors[0].At.Line != 3 {
 		t.Errorf("%+v", a)
 	}
 	keyless := sqlplan.Stream{Name: "events", Changelog: true, Columns: []sqlplan.Column{{Name: "id", Type: "int64"}, {Name: "kind", Type: "utf8"}}}

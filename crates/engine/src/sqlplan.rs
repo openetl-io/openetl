@@ -9,7 +9,8 @@
 //! {"sql": "INSERT INTO …",
 //!  "streams": [{"name": "public.orders",
 //!               "columns": [{"name": "id", "type": "int64"}],
-//!               "key": ["id"], "changelog": true, "nanoseconds": false}]}
+//!               "key": ["id"], "changelog": true, "nanoseconds": false,
+//!               "event_time": "created_at"}]}
 //! ```
 //!
 //! A column's type is Arrow's, named as the catalog names it: `int64`,
@@ -17,7 +18,8 @@
 //! `list<item: int64, nullable>`, and `extension<arrow.uuid>` or
 //! `extension<arrow.json>` for those logical types. Statements see every
 //! column as nullable, as the engine's first half types them, and a stream
-//! with `nanoseconds` keeps its timestamps in nanoseconds.
+//! with `nanoseconds` keeps its timestamps in nanoseconds. `event_time`
+//! names the column group windows go by.
 //!
 //! A stream can have its columns as Arrow IPC streams holding only a
 //! schema, in base64, as a job's start has them: `declared_schema`, in place
@@ -49,7 +51,7 @@ use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
 use base64::Engine as _;
 use openetl_normalize::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY};
 use openetl_proto::engine::v1::StreamPlan;
-use openetl_sql::{Catalog, ErrorKind, Operator, Position, Statement, Stream};
+use openetl_sql::{Catalog, ErrorKind, Position, Statement, Stream};
 use serde::{Deserialize, Serialize};
 
 use crate::{ipc, transform};
@@ -84,6 +86,9 @@ pub struct RequestStream {
     /// The schema a sync recorded for it, in base64.
     #[serde(default)]
     pub restored_schema: Option<String>,
+    /// The column of its rows' event time, which group windows go by.
+    #[serde(default)]
+    pub event_time: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -253,6 +258,10 @@ fn stream(s: &RequestStream) -> Result<Stream, String> {
     let schema =
         transform::merged(read.schema, declared).unwrap_or_else(|| Arc::new(Schema::empty()));
     Ok(Stream {
+        event_time: s
+            .event_time
+            .clone()
+            .filter(|t| !t.is_empty() && schema.field_with_name(t).is_ok()),
         schema: Arc::new(Schema::new(
             schema
                 .fields()
@@ -281,15 +290,8 @@ fn statement(s: &Statement) -> Result<AnswerStatement, String> {
         key: s.key.clone(),
         need: s.need().map(<[String]>::to_vec),
         passes: s.passes().into_iter().collect(),
-        operator: operator_id(&s.operator),
+        operator: s.operator_id().map(str::to_owned),
     })
-}
-
-/// The operator's ID, which only stateful operators have.
-fn operator_id(op: &Operator) -> Option<String> {
-    match op {
-        Operator::RowWise(_) => None,
-    }
 }
 
 fn error(e: &openetl_sql::Error) -> AnswerError {
@@ -625,8 +627,8 @@ mod tests {
         assert_eq!(got["statements"], json!([]));
         let e = &got["errors"];
         assert_eq!(e[0]["kind"], "later_tier");
-        assert_eq!(e[0]["class"], "group_window");
-        assert_eq!(e[0]["tier"], 2);
+        assert_eq!(e[0]["class"], "updating");
+        assert_eq!(e[0]["tier"], 5);
         assert_eq!(e[0]["at"]["line"], 3);
         assert_eq!(e[1]["kind"], "bind");
         assert_eq!(e[1]["at"]["line"], 4);

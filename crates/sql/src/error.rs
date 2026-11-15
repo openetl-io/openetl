@@ -114,6 +114,18 @@ impl Error {
     /// A DataFusion error, at its own position if it has one, or else at
     /// `at`. Its internal errors are ours.
     pub(crate) fn datafusion(kind: ErrorKind, at: Position, e: &DataFusionError) -> Self {
+        let text = e.to_string();
+        if let Some(call) = text
+            .split_once("No function matches the given name and argument types '")
+            .and_then(|(_, rest)| rest.split_once('\''))
+            .map(|(call, _)| call)
+        {
+            return Self::at(
+                ErrorKind::Bind,
+                at,
+                format!("there's no {call}: CAST the argument to a type it takes"),
+            );
+        }
         let root = e.find_root();
         if matches!(root, DataFusionError::Internal(_)) {
             return Self::at(

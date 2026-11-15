@@ -93,8 +93,8 @@ impl ContextProvider for Provider<'_> {
         None
     }
 
-    fn get_aggregate_meta(&self, _name: &str) -> Option<Arc<AggregateUDF>> {
-        None
+    fn get_aggregate_meta(&self, name: &str) -> Option<Arc<AggregateUDF>> {
+        FUNCTIONS.aggregates.get(name).cloned()
     }
 
     fn get_window_meta(&self, _name: &str) -> Option<Arc<WindowUDF>> {
@@ -118,7 +118,7 @@ impl ContextProvider for Provider<'_> {
     }
 
     fn udaf_names(&self) -> Vec<String> {
-        Vec::new()
+        FUNCTIONS.aggregates.keys().cloned().collect()
     }
 
     fn udwf_names(&self) -> Vec<String> {

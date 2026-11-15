@@ -45,16 +45,25 @@ type Partitioning struct {
 
 // Need is what an operator needs of the edge that feeds it: that rows with
 // equal values of Columns are on one of its lanes. Without Columns it needs
-// nothing.
-type Need struct{ Columns []string }
+// nothing, unless KeyGroups.
+type Need struct {
+	Columns []string
+	// The operator keeps state by key group, so only lanes that own key
+	// groups of the columns' values meet it, not splits; without Columns,
+	// every row on one lane.
+	KeyGroups bool
+}
 
 // Meets reports whether p meets n: n needs nothing, every row is on one lane,
-// or p partitions by a subset of the columns n needs.
+// or p partitions by a subset of the columns n needs, by key group where n
+// keeps state by key group.
 func (p Partitioning) Meets(n Need) bool {
 	switch {
-	case len(n.Columns) == 0, p.Kind == OneLane:
+	case p.Kind == OneLane, len(n.Columns) == 0 && !n.KeyGroups:
 		return true
-	case p.Kind == Unpartitioned, len(p.Columns) == 0:
+	case p.Kind == Unpartitioned, len(p.Columns) == 0, len(n.Columns) == 0:
+		return false
+	case n.KeyGroups && p.Kind != ByKeyGroup:
 		return false
 	}
 	for _, c := range p.Columns {
@@ -121,7 +130,7 @@ func WriterOperator(key []string, oneLane bool) Operator {
 // StatementOperator is a SQL statement's operator, with the need and the
 // columns planning gave it.
 func StatementOperator(st sqlplan.Statement) Operator {
-	return Operator{Kind: OperatorStatement, At: st.At, Need: Need{Columns: slices.Clone(st.Need)}, Passes: st.Passes}
+	return Operator{Kind: OperatorStatement, At: st.At, Need: Need{Columns: slices.Clone(st.Need), KeyGroups: st.Operator != ""}, Passes: st.Passes}
 }
 
 // Path is a stream's way from its source to the destination, its exchanges
@@ -153,6 +162,10 @@ func Place(source Partitioning, ops ...Operator) Path {
 		st := Step{Operator: op}
 		switch {
 		case op.OneLane:
+			p = Partitioning{Kind: OneLane}
+		case !p.Meets(op.Need) && len(op.Need.Columns) == 0:
+			// Rows exchanged by no columns all go to one key group's lane.
+			st.Exchange = true
 			p = Partitioning{Kind: OneLane}
 		case !p.Meets(op.Need):
 			st.Exchange = true

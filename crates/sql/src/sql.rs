@@ -130,6 +130,7 @@ impl Sql {
                 Item::View { name, ident, query } => {
                     let at = pos(ident.span);
                     let mut check = Check::new(catalog, &views, &later, &output_names, at);
+                    check.view = true;
                     let mut query = query.clone();
                     let lineage = check.query(&mut query, true).nondeterministic;
                     notes.append(&mut check.notes);
@@ -142,7 +143,7 @@ impl Sql {
                         plan: None,
                     };
                     if check.errors.is_empty() && check.views_planned() {
-                        match check.lower(&query, at) {
+                        match check.lower_row_wise(&query, at) {
                             Ok((l, plan)) => {
                                 defined.key = l.key.clone();
                                 defined.plan = Some(plan);
@@ -168,8 +169,9 @@ impl Sql {
                     check.query(&mut query, true);
                     notes.append(&mut check.notes);
                     if check.errors.is_empty() && check.views_planned() {
-                        match check.lower(&query, *at) {
-                            Ok((l, _)) => {
+                        let name = output.as_ref().map_or("", |(o, _)| o.as_str());
+                        match check.lower(&query, *at, name) {
+                            Ok(Lowered::RowWise(l)) => {
                                 if l.operator.changelog
                                     && l.operator
                                         .steps
@@ -199,6 +201,25 @@ impl Sql {
                                         schema: l.schema,
                                         key: l.key,
                                         operator: Operator::RowWise(l.operator),
+                                    });
+                                }
+                            }
+                            Ok(Lowered::GroupWindow(g)) => {
+                                if let Some((output, replaces)) = output {
+                                    statements.push(Statement {
+                                        at: *at,
+                                        output,
+                                        replaces,
+                                        class: Class::GroupWindow,
+                                        inputs: check.inputs.clone(),
+                                        views: check
+                                            .views
+                                            .iter()
+                                            .map(|&v| views[v].name.clone())
+                                            .collect(),
+                                        schema: g.schema,
+                                        key: g.key,
+                                        operator: Operator::GroupWindow(Box::new(g.operator)),
                                     });
                                 }
                             }
@@ -558,6 +579,7 @@ const AGGREGATES: &[&str] = &[
     "median",
     "min",
     "percentile_cont",
+    "quantile_cont",
     "regr_avgx",
     "regr_avgy",
     "regr_count",
@@ -615,6 +637,16 @@ struct Check<'a> {
     /// has no alias of its own (empty otherwise), and what qualifies its
     /// columns, for the SELECT that reads it.
     qualified_as: Option<(Vec<ast::Ident>, ast::Ident)>,
+    /// It checks a view's query, which is row-wise.
+    view: bool,
+    /// Where the outermost SELECT's GROUP BY has its window.
+    window: Option<Position>,
+}
+
+/// A statement's query, lowered.
+enum Lowered {
+    RowWise(lower::Lowered),
+    GroupWindow(crate::window::Lowered),
 }
 
 struct Top {
@@ -646,6 +678,8 @@ impl<'a> Check<'a> {
             top: None,
             filter_at: None,
             qualified_as: None,
+            view: false,
+            window: None,
         }
     }
 
@@ -754,6 +788,19 @@ impl<'a> Check<'a> {
             let at = self.at(w.span());
             self.filter_at = Some(self.filter_at.map_or(at, |f| f.min(at)));
         }
+        // A window's bounds before names resolve, so that window_start and
+        // window_end are the window's, whatever columns FROM has.
+        if let Some((span, name)) = crate::window::stray(s) {
+            self.unsupported(
+                span,
+                format!(
+                    "{name} is a group window, which goes in GROUP BY: select window_start and window_end for its bounds"
+                ),
+            );
+        }
+        for (span, m) in crate::window::bounds_of(s) {
+            self.unsupported(span, m);
+        }
         let mut read = Read::default();
         match s.from.as_mut_slice() {
             [] => self.unsupported(
@@ -789,6 +836,7 @@ impl<'a> Check<'a> {
         // Aggregates, windows and subqueries, wherever they are.
         let before = self.later_tiers.len();
         let mut aggregate = None;
+        let mut unsupported_aggregate = None;
         let mut over_specs = Vec::new();
         let mut subquery = None;
         let mut window_only = None;
@@ -801,6 +849,9 @@ impl<'a> Check<'a> {
                             Some(w) => over_specs.push((f.span(), w.clone())),
                             None if AGGREGATES.contains(&name.as_str()) => {
                                 aggregate.get_or_insert(f.span());
+                                if !crate::window::AGGREGATES.contains(&name.as_str()) {
+                                    unsupported_aggregate.get_or_insert((f.span(), name));
+                                }
                             }
                             None if WINDOW_FUNCTIONS.contains(&name.as_str()) => {
                                 window_only.get_or_insert(f.span());
@@ -848,23 +899,77 @@ impl<'a> Check<'a> {
                 self.deterministic(&spec.partition_by, from, "a window's partition");
             }
         }
-        match &s.group_by {
+        match s.group_by.clone() {
             ast::GroupByExpr::All(_) => {
                 self.later_tier(Class::Updating, select_span, "GROUP BY ALL");
             }
-            ast::GroupByExpr::Expressions(exprs, _) if !exprs.is_empty() => {
-                let window = exprs.iter().find(|e| {
-                    matches!(e, ast::Expr::Function(f) if WINDOWS.contains(&function_name(f).as_str()))
-                });
-                match window {
-                    Some(w) => self.later_tier(Class::GroupWindow, w.span(), "a group window"),
-                    None => self.later_tier(
+            ast::GroupByExpr::Expressions(exprs, modifiers) if !exprs.is_empty() => {
+                let windows: Vec<&ast::Expr> = exprs
+                    .iter()
+                    .filter(|e| {
+                        matches!(e, ast::Expr::Function(f) if WINDOWS.contains(&function_name(f).as_str()))
+                    })
+                    .collect();
+                match windows.as_slice() {
+                    [] => self.later_tier(
                         Class::Updating,
                         exprs[0].span(),
                         "GROUP BY without a window",
                     ),
+                    [w] => {
+                        let at = self.at(w.span());
+                        if !modifiers.is_empty()
+                            || exprs.iter().any(|e| {
+                                matches!(
+                                    e,
+                                    ast::Expr::Rollup(_)
+                                        | ast::Expr::Cube(_)
+                                        | ast::Expr::GroupingSets(_)
+                                )
+                            })
+                        {
+                            self.unsupported(
+                                select_span,
+                                "a group window groups by its window and columns, without ROLLUP, CUBE or GROUPING SETS",
+                            );
+                        }
+                        if let Some((span, name)) = &unsupported_aggregate {
+                            let at = self.at(*span);
+                            self.errors.push(Error::at(
+                                ErrorKind::Unsupported,
+                                at,
+                                format!(
+                                    "{name} isn't an aggregate transforms run: a group window takes {}",
+                                    crate::window::NAMED
+                                ),
+                            ));
+                        }
+                        self.group_window(at, top);
+                    }
+                    [_, second, ..] => self.unsupported(
+                        second.span(),
+                        "a group window groups by one window: tumble, hop or session",
+                    ),
                 }
-                let exprs = exprs.clone();
+                let mut nested = None;
+                let _ = ast::visit_expressions(&exprs, |e| {
+                    if let ast::Expr::Function(f) = e
+                        && WINDOWS.contains(&function_name(f).as_str())
+                        && !exprs.contains(e)
+                    {
+                        nested = Some((e.span(), function_name(f)));
+                        return ControlFlow::Break(());
+                    }
+                    ControlFlow::Continue(())
+                });
+                if let Some((span, name)) = nested {
+                    self.unsupported(
+                        span,
+                        format!(
+                            "{name} is a group window, which GROUP BY takes as it is, beside the columns it groups by"
+                        ),
+                    );
+                }
                 self.deterministic(&exprs, from, "a group's key");
             }
             ast::GroupByExpr::Expressions(..) => {
@@ -1013,10 +1118,36 @@ impl<'a> Check<'a> {
         };
         let _ = ast::visit_expressions_mut(&mut s.projection, &mut visit);
         let _ = ast::visit_expressions_mut(&mut s.selection, &mut visit);
+        if let ast::GroupByExpr::Expressions(exprs, _) = &mut s.group_by {
+            let _ = ast::visit_expressions_mut(exprs, &mut visit);
+        }
+        let _ = ast::visit_expressions_mut(&mut s.having, &mut visit);
         for (span, m) in refused {
             let at = self.at(span);
             self.errors.push(Error::at(ErrorKind::Name, at, m));
         }
+    }
+
+    /// The outermost SELECT of an INSERT groups by a window, which is at
+    /// `at`. A view's SELECT and a subquery's are row-wise.
+    fn group_window(&mut self, at: Position, top: bool) {
+        if self.view {
+            self.errors.push(Error::at(
+                ErrorKind::Unsupported,
+                at,
+                "a view is row-wise, so it can't group by a window: group in the INSERT INTO … SELECT that reads the view",
+            ));
+            return;
+        }
+        if !top {
+            self.errors.push(Error::at(
+                ErrorKind::Unsupported,
+                at,
+                "a group window is in the statement's own SELECT, not in a subquery's",
+            ));
+            return;
+        }
+        self.window = Some(at);
     }
 
     /// Refuses a function that isn't deterministic in expressions that feed
@@ -1043,7 +1174,7 @@ impl<'a> Check<'a> {
                 ast::Expr::Function(f) if !FUNCTIONS.deterministic(&function_name(f)) => {
                     Some(format!("{}()", function_name(f)))
                 }
-                ast::Expr::Identifier(i) if from.contains(&lower(i)) => Some(i.to_string()),
+                ast::Expr::Identifier(i) if from.contains(&lower(i)) => Some(i.value.clone()),
                 ast::Expr::CompoundIdentifier(parts)
                     if parts.last().is_some_and(|l| from.contains(&lower(l))) =>
                 {
@@ -1262,14 +1393,27 @@ impl<'a> Check<'a> {
         }
     }
 
-    /// Binds the query with the views it reads inlined, lowers it, and
-    /// refuses it if it loses a changelog's key, or filters a changelog
-    /// without one.
-    fn lower(
-        &mut self,
-        query: &ast::Query,
-        at: Position,
-    ) -> Result<(lower::Lowered, LogicalPlan), Error> {
+    /// Binds a statement's query and lowers it: a group window where its
+    /// SELECT groups by one, which writes `output`, or else a row-wise
+    /// statement.
+    fn lower(&mut self, query: &ast::Query, at: Position, output: &str) -> Result<Lowered, Error> {
+        let Some(window) = self.window else {
+            return self
+                .lower_row_wise(query, at)
+                .map(|(l, _)| Lowered::RowWise(l));
+        };
+        let plan = self.bind(query, at)?;
+        let column = |name: &str| self.column(name).unwrap_or(at);
+        let at = crate::window::At {
+            statement: at,
+            window,
+            column: &column,
+        };
+        crate::window::lower(&plan, self.catalog, &at, output).map(Lowered::GroupWindow)
+    }
+
+    /// The query bound, with the views it reads inlined.
+    fn bind(&self, query: &ast::Query, at: Position) -> Result<LogicalPlan, Error> {
         let views: Vec<(&str, &LogicalPlan)> = self
             .views
             .iter()
@@ -1279,7 +1423,18 @@ impl<'a> Check<'a> {
             })
             .collect();
         let column = |name: &str| self.column(name).unwrap_or(at);
-        let plan = bind::plan(query, self.catalog, &views, at, &column)?;
+        bind::plan(query, self.catalog, &views, at, &column)
+    }
+
+    /// Binds the query with the views it reads inlined, lowers it, and
+    /// refuses it if it loses a changelog's key, or filters a changelog
+    /// without one.
+    fn lower_row_wise(
+        &mut self,
+        query: &ast::Query,
+        at: Position,
+    ) -> Result<(lower::Lowered, LogicalPlan), Error> {
+        let plan = self.bind(query, at)?;
         let lowered = lower::row_wise(&plan, self.catalog, at)?;
         if lowered.loses_changelog_key {
             return Err(self.changelog_key(&lowered));

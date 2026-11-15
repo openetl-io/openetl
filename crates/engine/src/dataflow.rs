@@ -9,7 +9,8 @@
 //! owning each row's key group. Each writer lane aligns the lanes
 //! feeding it, and writes to a runner sink, with barriers in band, or to a
 //! Parquet or staged sink, which stages each epoch and reports it in
-//! EpochReady.
+//! EpochReady. A group window's statement runs on keyed lanes, past an
+//! exchange of its own (see [`keyed`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -52,6 +53,8 @@ use crate::stage::{Applied, Stage, pushed_rows};
 use crate::staging::Staging;
 use crate::transform::Route;
 use crate::watermark::{self, Senders, Splits};
+
+mod keyed;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
 
@@ -720,7 +723,12 @@ impl Flow {
             event: Some(events_response::Event::Metrics(Metrics {
                 streams,
                 memory_bytes: crate::memory::held(),
-                lanes: self.lanes.iter().map(|l| l.metrics(self.start)).collect(),
+                lanes: self
+                    .lanes
+                    .iter()
+                    .take(self.plan.inbound.len())
+                    .map(|l| l.metrics(self.start))
+                    .collect(),
             })),
         }
     }
@@ -794,6 +802,15 @@ where
             return Err(e);
         }
     };
+    let windowed = plan
+        .transform
+        .as_ref()
+        .is_some_and(|t| t.sql.statements.iter().any(|s| s.window.is_some()));
+    // Keyed lanes have clocks of their own, after the lanes'.
+    let clocks = match windowed {
+        true => 2 * inbound.len(),
+        false => inbound.len(),
+    };
     let none = |n: usize| (0..n).map(|_| AtomicI64::new(watermark::NONE)).collect();
     let flow = Arc::new(Flow {
         counters: plan.streams.iter().map(|_| Counters::default()).collect(),
@@ -805,7 +822,7 @@ where
             .map(|_| none(plan.writer_lanes))
             .collect(),
         inputs,
-        lanes: inbound.iter().map(|_| LaneClock::new()).collect(),
+        lanes: (0..clocks).map(|_| LaneClock::new()).collect(),
         start: Instant::now(),
         owners,
         align: tokio::sync::Mutex::new(Alignment::new(
@@ -872,15 +889,34 @@ where
             return Err(e);
         }
     };
+    let mut keyed = Vec::new();
+    if windowed {
+        for lane in 0..inbound.len() {
+            let (tx, rx) = mpsc::channel(16);
+            keyed.push(tx);
+            let k = Lane {
+                flow: flow.clone(),
+                lane,
+                clock: inbound.len() + lane,
+                tx: senders.clone(),
+                keyed: Vec::new(),
+                mesh: None,
+            };
+            readers.spawn(keyed::run(flow.clone(), k, rx).in_current_span());
+        }
+    }
     for (lane, r) in inbound.into_iter().enumerate() {
         let lane = Lane {
             flow: flow.clone(),
             lane,
+            clock: lane,
             tx: senders.clone(),
+            keyed: keyed.clone(),
             mesh: mesh.clone(),
         };
         readers.spawn(read_edge(lane, r).in_current_span());
     }
+    drop(keyed);
     drop(senders);
     drop(mesh);
 
@@ -1048,23 +1084,35 @@ struct Transformed {
     seen: Option<SchemaRef>,
     /// The outputs it feeds.
     outputs: Vec<(Stage, LaneStream)>,
+    /// The group windows' statements that read it, which keyed lanes run.
+    windows: Vec<usize>,
     /// Its splits on the lane, where it has event time.
     marks: Option<Splits>,
 }
 
+impl Transformed {
+    /// It feeds nothing, so its rows are read and dropped.
+    fn feeds_nothing(&self) -> bool {
+        self.outputs.is_empty() && self.windows.is_empty()
+    }
+}
+
 /// A lane, with a sender to each of the engine's writer lanes, and where a
-/// mesh has them, links to the others'. It's the attempt's lane `first_lane
-/// + lane` to every writer lane.
+/// mesh has them, links to the others', and to each keyed lane. It's the
+/// attempt's lane `first_lane + lane` to every writer lane.
 struct Lane {
     flow: Arc<Flow>,
     lane: usize,
+    /// Its clock, among the job's.
+    clock: usize,
     tx: Vec<mpsc::Sender<(usize, Out)>>,
+    keyed: Vec<mpsc::Sender<(usize, keyed::In)>>,
     mesh: Option<Arc<Links>>,
 }
 
 impl Lane {
     fn enter(&self, doing: Doing) {
-        self.flow.lanes[self.lane].enter(self.flow.start, doing);
+        self.flow.lanes[self.clock].enter(self.flow.start, doing);
     }
 
     /// Sends to the engine's writer lane w.
@@ -1206,19 +1254,27 @@ where
                 seen: None,
                 outputs: t.routes[s]
                     .iter()
-                    .map(|&(o, route)| {
+                    .filter_map(|&(o, route)| {
                         let stage = match route {
                             Route::Pass => Stage::Identity,
                             Route::Statement(i) => Stage::statement(&t.sql, i),
+                            Route::Window(_) => return None,
                         };
                         #[cfg(test)]
                         let stage = match (&plan.probe, stage) {
                             (Some(p), Stage::Identity) => Stage::Probe(p.clone()),
                             (_, stage) => stage,
                         };
-                        Ok((stage, lane_stream(o)?))
+                        Some(lane_stream(o).map(|ls| (stage, ls)))
                     })
                     .collect::<Result<_, JobError>>()?,
+                windows: t.routes[s]
+                    .iter()
+                    .filter_map(|&(_, route)| match route {
+                        Route::Window(i) => Some(i),
+                        _ => None,
+                    })
+                    .collect(),
                 marks: t.inputs[s].event_time.as_ref().map(|_| Splits::default()),
             })),
         };
@@ -1298,7 +1354,7 @@ where
                         shaped(&lane, ls, n, c).await?;
                     }
                     // A stream that feeds no output is read, and dropped.
-                    Kind::Transformed(t) if t.outputs.is_empty() => {}
+                    Kind::Transformed(t) if t.feeds_nothing() => {}
                     Kind::Transformed(t) => {
                         let typed = span
                             .in_scope(|| t.typer.type_rows(rows.rows.iter().map(Vec::as_slice)))
@@ -1340,7 +1396,7 @@ where
                         hold(plan, name, &n.rejected, record, &mut ls.quarantined, c)?;
                         shaped(&lane, ls, n, c).await?;
                     }
-                    Kind::Transformed(t) if t.outputs.is_empty() => {}
+                    Kind::Transformed(t) if t.feeds_nothing() => {}
                     Kind::Transformed(t) => {
                         let typed = span
                             .in_scope(|| t.typer.type_batch(&batch))
@@ -1395,7 +1451,7 @@ where
                     }
                     // It has no part in an epoch: what's ready waits only
                     // on the outputs.
-                    Kind::Transformed(t) if t.outputs.is_empty() => {}
+                    Kind::Transformed(t) if t.feeds_nothing() => {}
                     Kind::Transformed(t) => {
                         let q = quarantine_file(
                             plan.quarantine.as_deref(),
@@ -1441,6 +1497,7 @@ where
                                 replay(&lane, ls).await?;
                             }
                         }
+                        keyed::all(&lane, &t.windows, |i| keyed::In::Barrier(i, epoch)).await?;
                     }
                 }
             }
@@ -1474,15 +1531,17 @@ where
                         flow.owners[input].end(plan, input)?;
                         lane.all(input, || Out::End(input)).await?;
                     }
-                    Kind::Transformed(t) if t.outputs.is_empty() => {}
+                    Kind::Transformed(t) if t.feeds_nothing() => {}
                     Kind::Transformed(t) => {
                         flow.inputs[input].end(plan.inbound.len());
                         let outputs: Vec<usize> =
                             t.outputs.iter().map(|(_, ls)| ls.stream).collect();
+                        let windows = t.windows.clone();
                         for s in outputs {
                             flow.owners[s].end(plan, s)?;
                             lane.all(s, || Out::End(s)).await?;
                         }
+                        keyed::all(&lane, &windows, keyed::In::End).await?;
                     }
                 }
             }
@@ -1500,7 +1559,7 @@ where
                 };
                 if let Some(wm) = marks.split(&sp.id, sp.watermark)
                     && let Kind::Transformed(t) = &mut li.kind
-                    && !t.outputs.is_empty()
+                    && !t.feeds_nothing()
                 {
                     advance(&lane, t, wm, &mut outs).await?;
                 }
@@ -1589,7 +1648,7 @@ async fn transform(
         let applied = stage.apply(&typed, &pushed, cursor)?;
         output(lane, stage, ls, applied, record).await?;
     }
-    Ok(())
+    keyed::rows(lane, &t.windows, &typed).await
 }
 
 /// Takes what a stage gave its output: what it couldn't evaluate is
@@ -1727,7 +1786,8 @@ impl OutputMarks {
 
 /// The stream's watermark on the lane advanced to `wm`: each output it
 /// feeds is told, in order with its batches, and an output whose watermark
-/// that advances sends it on to every writer lane it reaches.
+/// that advances sends it on to every writer lane it reaches. Each keyed
+/// lane of a group window over it is told, after the rows that moved it.
 async fn advance(
     lane: &Lane,
     t: &mut Transformed,
@@ -1735,6 +1795,7 @@ async fn advance(
     outs: &mut OutputMarks,
 ) -> Result<(), JobError> {
     lane.flow.input_marks[t.input][lane.lane].store(wm, Ordering::Relaxed);
+    keyed::all(lane, &t.windows, |i| keyed::In::Watermark(i, wm)).await?;
     for (stage, ls) in &mut t.outputs {
         if let Some(applied) = stage.watermark(wm)? {
             let batch = applied.typed.batch.clone();
@@ -2153,13 +2214,15 @@ impl Feed {
     }
 }
 
-/// What a writer lane staged in an epoch.
+/// What a writer lane staged in an epoch, and what keyed lanes kept.
 #[derive(Default)]
 struct Pieces {
     /// By writer lane.
     staged: BTreeMap<usize, Vec<u8>>,
     files: Vec<StagedStream>,
     held: Vec<StagedStream>,
+    /// Each keyed lane's state, and whether it holds nothing.
+    snapshots: Vec<(openetl_proto::engine::v1::StateSnapshot, bool)>,
 }
 
 /// Which epochs each writer lane has crossed or ended on each stream.
@@ -2273,6 +2336,7 @@ impl Flow {
             staged,
             files,
             held,
+            snapshots,
         } = align.pieces.remove(&n).unwrap_or_default();
         let mut by_stream: HashMap<String, Vec<_>> = HashMap::new();
         for s in held {
@@ -2322,7 +2386,7 @@ impl Flow {
                     n,
                 }),
                 staged: staged.into_values().collect(),
-                snapshots: Vec::new(),
+                snapshots: kept(snapshots),
                 schemas,
                 quarantine,
                 files,
@@ -2333,6 +2397,24 @@ impl Flow {
             })),
         })
     }
+}
+
+/// The snapshots an epoch's record names: an operator's on every lane, but
+/// none where every lane's is empty, so a record after every window closed
+/// names no state.
+fn kept(
+    snapshots: Vec<(openetl_proto::engine::v1::StateSnapshot, bool)>,
+) -> Vec<openetl_proto::engine::v1::StateSnapshot> {
+    let full: HashSet<String> = snapshots
+        .iter()
+        .filter(|(_, empty)| !empty)
+        .map(|(s, _)| s.operator.clone())
+        .collect();
+    snapshots
+        .into_iter()
+        .filter(|(s, _)| full.contains(&s.operator))
+        .map(|(s, _)| s)
+        .collect()
 }
 
 /// Returns false if the inbound edges closed before every stream ended.
@@ -5162,6 +5244,8 @@ pub(crate) mod tests {
             ]))),
             key: vec!["id".into()],
             changelog: false,
+            event_time: None,
+            lateness: 0,
         };
         let t = crate::transform::Transform::plan(
             "INSERT INTO c SELECT * FROM a",
@@ -5293,6 +5377,777 @@ pub(crate) mod tests {
         assert!(second[0].holds["a"].replayed.is_some());
     }
 
+    /// A job whose statement groups stream a by a window: a's rows have an
+    /// event time, `at`, its watermark trails them by `delay` seconds, and
+    /// `lanes` lanes and writer lanes read them. Stream b passes through.
+    fn window_request(
+        pipeline: &str,
+        sql: &str,
+        lanes: u32,
+        generation: u64,
+        first_epoch: u64,
+    ) -> openetl_proto::engine::v1::StartJobRequest {
+        let email = arrow_schema::Field::new("email", DataType::Utf8, true);
+        window_request_by(pipeline, sql, email, lanes, generation, first_epoch)
+    }
+
+    /// As window_request, with `key` in place of email, the column the
+    /// output is keyed by beside window_start.
+    fn window_request_by(
+        pipeline: &str,
+        sql: &str,
+        key: arrow_schema::Field,
+        lanes: u32,
+        generation: u64,
+        first_epoch: u64,
+    ) -> openetl_proto::engine::v1::StartJobRequest {
+        let mut req = sql_request(
+            sql,
+            &[("minutes", &["window_start", key.name()]), ("b", &["id"])],
+        );
+        let declared = arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int64, false),
+            key,
+            arrow_schema::Field::new("v", DataType::Int64, true),
+            arrow_schema::Field::new(
+                "at",
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+        ]);
+        req.streams[0].arrow_schema = ipc::encode_schema(&Arc::new(declared)).unwrap();
+        req.streams[0].event_time = Some(openetl_proto::engine::v1::EventTime {
+            column: "at".into(),
+            ..Default::default()
+        });
+        req.generation = generation;
+        req.first_epoch = first_epoch;
+        req.pipeline = pipeline.into();
+        let inputs: Vec<crate::transform::Input> = req
+            .streams
+            .iter()
+            .map(|s| crate::transform::Input::of(s).unwrap())
+            .collect();
+        let planned = crate::transform::Transform::plan(sql, inputs).unwrap();
+        req.transform.as_mut().unwrap().operators =
+            planned.operators().map(str::to_owned).collect();
+        req.lanes = lanes;
+        req.writer_lanes = lanes;
+        let out = req.edges.pop().unwrap();
+        let inbound = req.edges.pop().unwrap();
+        for l in 0..lanes {
+            let mut e = inbound.clone();
+            e.id = format!("in-{l}");
+            e.lane = l;
+            req.edges.push(e);
+            let mut e = out.clone();
+            e.id = format!("out-{l}");
+            e.lane = l;
+            req.edges.push(e);
+        }
+        req
+    }
+
+    fn event_time(
+        req: &mut openetl_proto::engine::v1::StartJobRequest,
+    ) -> &mut openetl_proto::engine::v1::EventTime {
+        req.streams[0].event_time.as_mut().unwrap()
+    }
+
+    const MINUTES: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
+                           FROM a GROUP BY tumble(at, INTERVAL '1 minute'), email";
+
+    const SEC: i64 = 1_000_000;
+
+    fn barrier_of(generation: u64, n: u64) -> Vec<u8> {
+        Barrier {
+            epoch: Some(Epoch { generation, n }),
+        }
+        .encode_to_vec()
+    }
+
+    /// A row of a at `second` seconds past the Unix epoch.
+    fn minute_row(id: i64, email: &str, second: i64) -> String {
+        format!(
+            r#"{{"id": {id}, "email": "{email}", "v": {id}, "at": "1970-01-01T{:02}:{:02}:{:02}Z"}}"#,
+            second / 3600,
+            second / 60 % 60,
+            second % 60
+        )
+    }
+
+    /// Barrier n of every stream, on lane w.
+    async fn barriers(w: &mut DuplexStream, generation: u64, n: u64) {
+        put(w, FrameKind::Barrier, 0, barrier_of(generation, n)).await;
+        put(w, FrameKind::Barrier, 1, barrier_of(generation, n)).await;
+    }
+
+    /// A window's row as a writer lane gave it: its start in seconds, its
+    /// key, its count, and the epoch it came in.
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    struct WindowRow {
+        start: i64,
+        email: String,
+        n: i64,
+        epoch: u64,
+    }
+
+    /// Each writer lane's window rows, in order. `first` is the epoch the
+    /// job starts at.
+    fn window_rows(outs: &[Vec<frame::Frame>], first: u64) -> Vec<Vec<WindowRow>> {
+        outs.iter()
+            .map(|frames| {
+                let mut epoch = first;
+                let mut got = Vec::new();
+                for f in frames {
+                    if f.kind == FrameKind::Barrier && f.stream == 0 {
+                        epoch += 1;
+                    }
+                    if f.kind != FrameKind::Batch || f.stream != 0 {
+                        continue;
+                    }
+                    let b = ipc::decode_batch(f.payload.clone()).unwrap();
+                    let starts = b
+                        .column_by_name("window_start")
+                        .unwrap()
+                        .as_primitive::<arrow_array::types::TimestampMicrosecondType>()
+                        .iter()
+                        .collect::<Vec<_>>();
+                    for ((s, e), n) in starts
+                        .iter()
+                        .zip(column_strings(&b, "email"))
+                        .zip(column_ints(&b, "n"))
+                    {
+                        got.push(WindowRow {
+                            start: s.unwrap() / SEC,
+                            email: e.unwrap(),
+                            n: n.unwrap(),
+                            epoch,
+                        });
+                    }
+                }
+                got
+            })
+            .collect()
+    }
+
+    fn all_rows(outs: &[Vec<frame::Frame>], first: u64) -> Vec<WindowRow> {
+        let mut all: Vec<WindowRow> = window_rows(outs, first).into_iter().flatten().collect();
+        all.sort();
+        all
+    }
+
+    fn row(start: i64, email: &str, n: i64, epoch: u64) -> WindowRow {
+        WindowRow {
+            start,
+            email: email.into(),
+            n,
+            epoch,
+        }
+    }
+
+    fn quarantined(ready: &[EpochReady], stream: &str) -> u64 {
+        ready
+            .iter()
+            .flat_map(|r| &r.quarantine)
+            .filter(|q| q.stream == stream)
+            .map(|q| q.rows)
+            .sum()
+    }
+
+    /// A window's statement runs past an exchange on its keys inside the
+    /// engine, and its rows reach the writer lane its keyed lane feeds with
+    /// no second exchange: each key on one writer lane. A window closes once
+    /// every lane's watermark has passed its end, in the epoch that happens
+    /// in, and the rest at the end of input. Each epoch names each keyed
+    /// lane's state while it holds any.
+    #[tokio::test]
+    async fn a_window_closes_once_every_lanes_watermark_passes_it() {
+        let req = window_request("closes", MINUTES, 2, 1, 1);
+        let mut h = start_lanes(req);
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            let l = i64::try_from(l).unwrap();
+            put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+            // Rows at 0, 20, ..., 100 seconds: x at 0 and 60, y at 20 and
+            // 80, z at 40 and 100.
+            let rs: Vec<String> = (0..6)
+                .map(|i| minute_row(l * 10 + i, ["x", "y", "z"][(i % 3) as usize], i * 20))
+                .collect();
+            let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+            put(w, FrameKind::Rows, 0, rows(&refs)).await;
+            barriers(w, 1, 1).await;
+            put(
+                w,
+                FrameKind::Split,
+                0,
+                split(&format!("s{l}"), Some(watermark::END)),
+            )
+            .await;
+            barriers(w, 1, 2).await;
+        }
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        // Both lanes are at 100 seconds by their first barrier, so the
+        // first minute closes in epoch 1, and the second at the end.
+        let per_lane = window_rows(&outs, 1);
+        assert_eq!(
+            all_rows(&outs, 1),
+            [
+                row(0, "x", 2, 1),
+                row(0, "y", 2, 1),
+                row(0, "z", 2, 1),
+                row(60, "x", 2, 2),
+                row(60, "y", 2, 2),
+                row(60, "z", 2, 2),
+            ]
+        );
+        for e in ["x", "y", "z"] {
+            let lanes = per_lane
+                .iter()
+                .filter(|r| r.iter().any(|w| w.email == e))
+                .count();
+            assert_eq!(lanes, 1, "{e} on {lanes} writer lanes");
+        }
+        assert_eq!(ready.len(), 2);
+        assert_eq!(ready[0].snapshots.len(), 2);
+        assert!(
+            ready[0]
+                .snapshots
+                .iter()
+                .all(|s| s.url.starts_with("memory:"))
+        );
+        assert!(ready[1].snapshots.is_empty());
+    }
+
+    /// A lane holds a window open until each of its splits' watermarks
+    /// passes it, and a split's Split frame, as the runner sends for an
+    /// idle one, moves it on.
+    #[tokio::test]
+    async fn a_quiet_split_holds_windows_until_it_moves_on() {
+        let req = window_request("quiet", MINUTES, 1, 1, 1);
+        let mut h = start_lanes(req);
+        let w = &mut h.ins[0];
+        put(w, FrameKind::Split, 0, split("busy", None)).await;
+        put(w, FrameKind::Split, 0, split("quiet", None)).await;
+        put(w, FrameKind::Split, 0, split("quiet", None)).await;
+        put(w, FrameKind::Rows, 0, rows(&[&minute_row(1, "x", 5)])).await;
+        put(w, FrameKind::Split, 0, split("busy", None)).await;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[&minute_row(2, "x", 10), &minute_row(3, "x", 150)]),
+        )
+        .await;
+        barriers(w, 1, 1).await;
+        put(w, FrameKind::Split, 0, split("quiet", Some(200 * SEC))).await;
+        barriers(w, 1, 2).await;
+        h.end_all(2).await;
+        let (outs, _) = h.finish().await;
+        // Quiet is at 5 seconds until its watermark moves to 200, by when
+        // busy is at 150: the first two minutes close in epoch 2, and the
+        // third never does.
+        assert_eq!(all_rows(&outs, 1), [row(0, "x", 2, 2)]);
+    }
+
+    /// A row of a window that closed comes again within the lateness as an
+    /// update of the window's row, and after it is quarantined.
+    #[tokio::test]
+    async fn a_late_row_updates_its_window_within_the_lateness() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = window_request("late", MINUTES, 1, 1, 1);
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        event_time(&mut req).lateness_micros = 30 * SEC;
+        let mut h = start_lanes(req);
+        let w = &mut h.ins[0];
+        put(w, FrameKind::Split, 0, split("s", None)).await;
+        for (id, second) in [(1, 10), (2, 70), (3, 20), (4, 100), (5, 25)] {
+            put(w, FrameKind::Rows, 0, rows(&[&minute_row(id, "x", second)])).await;
+        }
+        put(w, FrameKind::Split, 0, split("s", Some(watermark::END))).await;
+        barriers(w, 1, 1).await;
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        // At 70 the first minute closes; 20 is late, but within 30 seconds
+        // of its end; 100 is past them, so 25 is quarantined.
+        assert_eq!(
+            window_rows(&outs, 1)[0],
+            [row(0, "x", 1, 1), row(0, "x", 2, 1), row(60, "x", 2, 1)]
+        );
+        assert_eq!(quarantined(&ready, "minutes"), 1);
+    }
+
+    /// A restore resumes a window's state from the record's snapshots, on
+    /// another number of lanes, from the record's watermarks: a window that
+    /// closed before it stays closed, and a row of it is late.
+    #[tokio::test]
+    async fn a_restored_window_goes_on_and_a_closed_one_stays_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = window_request("resumes", MINUTES, 2, 1, 1);
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        let mut h = start_lanes(req);
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+            let later = match l {
+                0 => minute_row(2, "y", 70),
+                _ => minute_row(3, "z", 75),
+            };
+            put(
+                w,
+                FrameKind::Rows,
+                0,
+                rows(&[&minute_row(1, "x", 10), &later]),
+            )
+            .await;
+            barriers(w, 1, 1).await;
+        }
+        h.end_all(2).await;
+        let (outs, first) = h.finish().await;
+        assert_eq!(all_rows(&outs, 1), [row(0, "x", 2, 1)]);
+        let snapshots = first[0].snapshots.clone();
+        assert_eq!(snapshots.len(), 2);
+        let marks = split_marks(&first[0], "a");
+        assert_eq!(
+            marks,
+            [("s0".to_string(), 70 * SEC), ("s1".to_string(), 75 * SEC)]
+        );
+
+        // The next attempt, or the next read of a stream read in the order of
+        // its time, starts each split at its watermark, and the lanes past
+        // the exchange at the least of them.
+        let mut req = window_request("resumes", MINUTES, 3, 2, 2);
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        req.restored_snapshots = snapshots;
+        event_time(&mut req).floor = Some(70 * SEC);
+        let mut h = start_lanes(req);
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            let rs = match l {
+                0 => vec![minute_row(4, "x", 30), minute_row(5, "y", 80)],
+                1 => vec![minute_row(6, "z", 90)],
+                _ => vec![],
+            };
+            if let Some((id, wm)) = marks.get(l) {
+                put(w, FrameKind::Split, 0, split(id, Some(*wm))).await;
+                let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                put(w, FrameKind::Rows, 0, rows(&refs)).await;
+                put(w, FrameKind::Split, 0, split(id, Some(watermark::END))).await;
+            }
+            barriers(w, 2, 2).await;
+        }
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        assert_eq!(all_rows(&outs, 2), [row(60, "y", 2, 2), row(60, "z", 2, 2)]);
+        assert_eq!(quarantined(&ready, "minutes"), 1, "x at 30 is late");
+        assert!(ready[0].snapshots.is_empty());
+    }
+
+    /// A keyed lane keeps only its newest versions of state, however many
+    /// barriers pass.
+    #[tokio::test]
+    async fn a_window_keeps_only_its_newest_state() {
+        let req = window_request("released", MINUTES, 2, 1, 1);
+        let operator = req.transform.as_ref().unwrap().operators[0].clone();
+        let mut h = start_lanes(req);
+        for w in &mut h.ins {
+            put(w, FrameKind::Split, 0, split("s", None)).await;
+            for n in 1..=10 {
+                put(
+                    w,
+                    FrameKind::Rows,
+                    0,
+                    rows(&[&minute_row(n as i64, "x", 10)]),
+                )
+                .await;
+                barriers(w, 1, n).await;
+            }
+        }
+        h.end_all(2).await;
+        let (_, ready) = h.finish().await;
+        assert_eq!(ready.len(), 10);
+        let held = crate::state::versions("released", &operator);
+        assert!(held <= 4, "{held} versions for 2 lanes");
+    }
+
+    /// The state the record names is in the memory of the engine that
+    /// wrote it, so another engine can't restore it, and says what to do.
+    #[tokio::test]
+    async fn a_restore_of_state_another_engine_had_fails_and_says_what_to_do() {
+        let mut req = window_request("gone", MINUTES, 1, 2, 2);
+        let operator = req.transform.as_ref().unwrap().operators[0].clone();
+        req.restored_snapshots = vec![openetl_proto::engine::v1::StateSnapshot {
+            operator,
+            url: format!("memory:{}/g1/e1/kg0-255", openetl_state::LAYOUT),
+            key_groups: None,
+        }];
+        let mut h = start_lanes(req);
+        h.end_all(2).await;
+        let err = h.job.await.unwrap().unwrap_err();
+        assert_eq!(err.code, ErrorCode::ConfigInvalid);
+        assert!(
+            err.message.contains("can't restore its state")
+                && err.message.contains("openetl reset --stream a NAME"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// A cell the stream holds, in a column the window doesn't read, leaves
+    /// its row in the window: a's price passes through holding it, and the
+    /// window counts every row by email.
+    #[tokio::test]
+    async fn a_held_cell_the_window_doesnt_read_leaves_its_row_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = window_request("held", MINUTES, 1, 1, 1);
+        let declared = arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int64, false),
+            arrow_schema::Field::new("email", DataType::Utf8, true),
+            arrow_schema::Field::new("v", DataType::Int64, true),
+            arrow_schema::Field::new("price", DataType::Decimal128(10, 2), true),
+            arrow_schema::Field::new(
+                "at",
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+        ]);
+        req.streams[0].arrow_schema = ipc::encode_schema(&Arc::new(declared)).unwrap();
+        let inputs: Vec<crate::transform::Input> = req
+            .streams
+            .iter()
+            .map(|s| crate::transform::Input::of(s).unwrap())
+            .collect();
+        let planned = crate::transform::Transform::plan(MINUTES, inputs).unwrap();
+        req.transform.as_mut().unwrap().operators =
+            planned.operators().map(str::to_owned).collect();
+        req.outputs.push(openetl_proto::engine::v1::StreamPlan {
+            name: "a".into(),
+            primary_key: vec!["id".into()],
+            holds: Some(openetl_proto::engine::v1::HoldPlan {
+                cells: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        for e in &mut req.edges {
+            if e.direction() == openetl_proto::engine::v1::EdgeDirection::FromEngine {
+                e.streams.push("a".into());
+            }
+        }
+        req.held_url = format!("file://{}/held", dir.path().display());
+        req.quarantine_url = format!("file://{}/q", dir.path().display());
+        let mut h = start_lanes(req);
+        let w = &mut h.ins[0];
+        let priced = |id: i64, price: &str, second: i64| {
+            format!(
+                r#"{{"id": {id}, "email": "x", "v": {id}, "price": "{price}", "at": "1970-01-01T00:00:{second:02}Z"}}"#
+            )
+        };
+        put(w, FrameKind::Split, 0, split("s", None)).await;
+        put(
+            w,
+            FrameKind::Rows,
+            0,
+            rows(&[&priced(1, "1.5", 10), &priced(2, "12345678901.5", 20)]),
+        )
+        .await;
+        put(w, FrameKind::Split, 0, split("s", Some(watermark::END))).await;
+        barriers(w, 1, 1).await;
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        assert_eq!(all_rows(&outs, 1), [row(0, "x", 2, 1)]);
+        assert_eq!(
+            ready[0].holds["a"].cells["price"].cells, 1,
+            "a holds the price"
+        );
+        assert_eq!(quarantined(&ready, "minutes"), 0);
+    }
+
+    /// JSON keys equal but for their spaces and their objects' order are one
+    /// key: they meet on one keyed lane, from any lane, and give one row,
+    /// whose key is JSON.
+    #[tokio::test]
+    async fn equal_json_keys_are_one_window_key() {
+        let json = arrow_schema::Field::new("j", DataType::Utf8, true).with_metadata(
+            [(
+                openetl_normalize::EXTENSION_NAME_KEY.to_owned(),
+                openetl_normalize::JSON_EXTENSION.to_owned(),
+            )]
+            .into(),
+        );
+        let sql = "INSERT INTO minutes SELECT window_start, j, count(*) AS n \
+                   FROM a GROUP BY tumble(at, INTERVAL '1 minute'), j";
+        let req = window_request_by("json", sql, json, 3, 1, 1);
+        let mut h = start_lanes(req);
+        let spellings = [
+            r#"{"a": 1, "b": {"y": 2, "x": [3, {"q": 4, "p": 5}]}}"#,
+            r#"{"b": {"x": [3, {"p": 5, "q": 4}], "y": 2}, "a": 1}"#,
+            r#"{ "b" : { "y" : 2 , "x" : [ 3 , { "q" : 4 , "p" : 5 } ] } , "a" : 1 }"#,
+        ];
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+            let row = format!(
+                r#"{{"id": {l}, "j": {}, "v": 1, "at": "1970-01-01T00:00:1{l}Z"}}"#,
+                spellings[l]
+            );
+            put(w, FrameKind::Rows, 0, rows(&[&row])).await;
+            put(
+                w,
+                FrameKind::Split,
+                0,
+                split(&format!("s{l}"), Some(watermark::END)),
+            )
+            .await;
+            barriers(w, 1, 1).await;
+        }
+        h.end_all(2).await;
+        let (outs, _) = h.finish().await;
+        let mut got = Vec::new();
+        for frames in &outs {
+            for b in batches(frames, 0) {
+                let f = b.schema().field_with_name("j").unwrap().clone();
+                assert_eq!(
+                    f.metadata()
+                        .get(openetl_normalize::EXTENSION_NAME_KEY)
+                        .map(String::as_str),
+                    Some(openetl_normalize::JSON_EXTENSION),
+                    "the output's key is JSON"
+                );
+                for (j, n) in column_strings(&b, "j")
+                    .into_iter()
+                    .zip(column_ints(&b, "n"))
+                {
+                    got.push((j.unwrap(), n.unwrap()));
+                }
+            }
+        }
+        assert_eq!(
+            got,
+            [(r#"{"a":1,"b":{"x":[3,{"p":5,"q":4}],"y":2}}"#.to_owned(), 3)]
+        );
+    }
+
+    /// A group window runs in one engine with every lane of the attempt, so
+    /// an engine with a part of one is refused.
+    #[test]
+    fn a_group_window_runs_in_one_engine() {
+        type Change = Box<dyn Fn(&mut openetl_proto::engine::v1::StartJobRequest)>;
+        let refused: Vec<(&str, Change)> = vec![
+            ("a worker's part", Box::new(|r| r.attempt_writer_lanes = 2)),
+            (
+                "a mesh",
+                Box::new(|r| {
+                    r.attempt_writer_lanes = 2;
+                    r.mesh = Some(openetl_proto::engine::v1::Mesh {
+                        engine: 0,
+                        engines: (0..2)
+                            .map(|i| openetl_proto::engine::v1::MeshEngine {
+                                address: format!("127.0.0.1:{}", 7000 + i),
+                                lanes: 1,
+                                writer_lanes: 1,
+                            })
+                            .collect(),
+                        listen: "127.0.0.1:7000".into(),
+                        certificate: vec![1],
+                        key: vec![1],
+                        secret: vec![1],
+                    });
+                }),
+            ),
+        ];
+        assert!(Plan::from_request(window_request("one", MINUTES, 1, 1, 1)).is_ok());
+        for (name, change) in refused {
+            let mut req = window_request("one", MINUTES, 1, 1, 1);
+            change(&mut req);
+            let Err(e) = Plan::from_request(req) else {
+                panic!("{name}: planned");
+            };
+            assert!(
+                e.message.contains("runs in one engine"),
+                "{name}: {}",
+                e.message
+            );
+        }
+    }
+
+    /// State the checkpoint names of an operator no statement keeps, as
+    /// after the statement changed, is refused, saying how to drop it.
+    #[test]
+    fn a_restore_of_an_operator_no_statement_keeps_says_to_reset() {
+        let mut req = window_request("changed", MINUTES, 1, 2, 2);
+        req.restored_snapshots = vec![openetl_proto::engine::v1::StateSnapshot {
+            operator: "window-0123456789abcdef".into(),
+            url: format!("memory:{}/g1/e1/kg0-255", openetl_state::LAYOUT),
+            key_groups: None,
+        }];
+        let Err(e) = Plan::from_request(req) else {
+            panic!("planned");
+        };
+        assert!(
+            e.message.contains("no statement of transform.sql keeps")
+                && e.message.contains("openetl reset --stream STREAM NAME"),
+            "{}",
+            e.message
+        );
+    }
+
+    /// Splits spread over lanes, each lane's rows of its splits in an order
+    /// of its own and the lanes in any order against each other, with
+    /// barriers anywhere, and each split's rows within the delay of its
+    /// latest, so none is late: each window's row comes once, with every
+    /// row of it, whatever the window.
+    #[tokio::test]
+    async fn every_window_closes_once_with_all_its_rows_under_any_interleaving() {
+        let queries = [
+            "INSERT INTO minutes SELECT window_start, email, count(*) AS n, sum(v) AS total \
+             FROM a GROUP BY tumble(at, INTERVAL '10 seconds'), email",
+            "INSERT INTO minutes SELECT window_start, email, count(*) AS n, sum(v) AS total \
+             FROM a GROUP BY hop(at, INTERVAL '10 seconds', INTERVAL '30 seconds'), email",
+            "INSERT INTO minutes SELECT window_start, email, count(*) AS n, sum(v) AS total \
+             FROM a GROUP BY session(at, INTERVAL '4 seconds'), email",
+        ];
+        let mut rng = crate::watermark::tests::Rng(7);
+        for (q, sql) in queries.iter().enumerate() {
+            for seed in 0..8 {
+                let lanes = 1 + rng.below(3) as u32;
+                let splits = 1 + rng.below(5);
+                let delay = rng.below(6) as i64;
+                // Each split's rows: times that rise, but within the delay of
+                // the latest, each a key and a value.
+                let mut all: Vec<(i64, &str, i64)> = Vec::new();
+                let per: Vec<Vec<(i64, &str, i64)>> = (0..splits)
+                    .map(|_| {
+                        let mut top = delay + rng.below(20) as i64;
+                        (0..rng.below(40))
+                            .map(|_| {
+                                top += rng.below(4) as i64;
+                                let t = top - rng.below(delay as usize + 1) as i64;
+                                let r = (t, ["x", "y", "z"][rng.below(3)], rng.below(100) as i64);
+                                all.push(r);
+                                r
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let mut req = window_request(&format!("any-{q}-{seed}"), sql, lanes, 1, 1);
+                event_time(&mut req).delay_micros = delay * SEC;
+                let mut h = start_lanes(req);
+                let mut epochs = 0;
+                for (l, w) in h.ins.iter_mut().enumerate() {
+                    let mine: Vec<usize> =
+                        (0..splits).filter(|s| s % lanes as usize == l).collect();
+                    for s in &mine {
+                        put(w, FrameKind::Split, 0, split(&s.to_string(), None)).await;
+                    }
+                    let mut at = vec![0; splits];
+                    let mut n = 0;
+                    let mut lane_rng = crate::watermark::tests::Rng(seed * 31 + l as u64);
+                    while mine.iter().any(|&s| at[s] < per[s].len()) {
+                        let s = mine[lane_rng.below(mine.len())];
+                        if at[s] == per[s].len() {
+                            continue;
+                        }
+                        let k = (1 + lane_rng.below(4)).min(per[s].len() - at[s]);
+                        let rs: Vec<String> = per[s][at[s]..at[s] + k]
+                            .iter()
+                            .map(|&(t, e, v)| {
+                                format!(r#"{{"id": {v}, "email": "{e}", "v": {v}, "at": "1970-01-01T00:{:02}:{:02}Z"}}"#, t / 60, t % 60)
+                            })
+                            .collect();
+                        at[s] += k;
+                        put(w, FrameKind::Split, 0, split(&s.to_string(), None)).await;
+                        let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                        put(w, FrameKind::Rows, 0, rows(&refs)).await;
+                        // Every lane passes the same barriers: one after
+                        // every few batches of its own, up to its share.
+                        if n < 3 && lane_rng.below(4) == 0 {
+                            n += 1;
+                            barriers(w, 1, n).await;
+                        }
+                    }
+                    for s in &mine {
+                        put(
+                            w,
+                            FrameKind::Split,
+                            0,
+                            split(&s.to_string(), Some(watermark::END)),
+                        )
+                        .await;
+                    }
+                    while n < 4 {
+                        n += 1;
+                        barriers(w, 1, n).await;
+                    }
+                    epochs = n;
+                }
+                h.end_all(2).await;
+                let (outs, ready) = h.finish().await;
+                assert_eq!(ready.len() as u64, epochs);
+
+                // What a GROUP BY of every row gives.
+                let mut want: BTreeMap<(i64, String), (i64, i64)> = BTreeMap::new();
+                let mut add = |start: i64, e: &str, v: i64| {
+                    let w = want.entry((start, e.to_owned())).or_default();
+                    w.0 += 1;
+                    w.1 += v;
+                };
+                match q {
+                    0 => all
+                        .iter()
+                        .for_each(|&(t, e, v)| add(t.div_euclid(10) * 10, e, v)),
+                    1 => all.iter().for_each(|&(t, e, v)| {
+                        let mut s = t.div_euclid(10) * 10;
+                        while s > t - 30 {
+                            add(s, e, v);
+                            s -= 10;
+                        }
+                    }),
+                    _ => {
+                        for key in ["x", "y", "z"] {
+                            let mut mine: Vec<(i64, i64)> = all
+                                .iter()
+                                .filter(|r| r.1 == key)
+                                .map(|r| (r.0, r.2))
+                                .collect();
+                            mine.sort();
+                            let mut start = None;
+                            let mut last = i64::MIN;
+                            for (t, v) in mine {
+                                if start.is_none() || t > last + 4 {
+                                    start = Some(t);
+                                }
+                                last = t;
+                                add(start.unwrap(), key, v);
+                            }
+                        }
+                    }
+                }
+                let mut got: BTreeMap<(i64, String), (i64, i64)> = BTreeMap::new();
+                for frames in &outs {
+                    for b in batches(frames, 0) {
+                        let starts: Vec<i64> = b
+                            .column_by_name("window_start")
+                            .unwrap()
+                            .as_primitive::<arrow_array::types::TimestampMicrosecondType>()
+                            .iter()
+                            .map(|s| s.unwrap() / SEC)
+                            .collect();
+                        let keys = column_strings(&b, "email");
+                        let ns = column_ints(&b, "n");
+                        let totals = column_ints(&b, "total");
+                        for i in 0..b.num_rows() {
+                            let k = (starts[i], keys[i].clone().unwrap());
+                            let v = (ns[i].unwrap(), totals[i].unwrap());
+                            assert!(
+                                got.insert(k.clone(), v).is_none(),
+                                "{sql}, seed {seed}: {k:?} came twice"
+                            );
+                        }
+                    }
+                }
+                assert_eq!(got, want, "{sql}, seed {seed}");
+            }
+        }
+    }
+
     /// Stream e, keyed by id, whose time is its column at, with a delay of
     /// 10µs: it passes through, and a statement writes c from it, which is
     /// exchanged by id where there's more than one writer lane.
@@ -5320,6 +6175,7 @@ pub(crate) mod tests {
             delay_micros: 10,
             held,
             floor,
+            ..Default::default()
         });
         req.outputs = ["c", "e"]
             .iter()

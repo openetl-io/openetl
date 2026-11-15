@@ -260,7 +260,7 @@ impl Senders {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use arrow_array::{

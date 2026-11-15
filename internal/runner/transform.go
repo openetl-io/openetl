@@ -72,6 +72,9 @@ type ExpectedOutput struct {
 	PrimaryKey []string
 	// The stream the statement reads.
 	Input string
+	// The statement's stateful operator's ID, as in Operators; empty for
+	// none.
+	Operator string
 }
 
 // Metadata columns the second dataflow computes again, so it drops an

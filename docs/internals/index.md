@@ -90,7 +90,7 @@ On a lane, each advance reaches the statements that read the stream through `Sta
 
 ### Keyed state
 
-[`crates/state`](../../crates/state) is the state layer for stateful operators. No operator uses it.
+[`crates/state`](../../crates/state) is the state layer for stateful operators. The group window operator uses it ([Group windows](#group-windows)).
 
 Operators reach state through one trait, `StateBackend`, which has four primitives: a value per key, rows per key by the time they fall due, a set with expiry, and timers. Each call names the operator and the key's group. A lane opens one `Layer` for its range of key groups, and all operators of the lane share it.
 
@@ -98,7 +98,17 @@ The layer keeps the open epoch's changes in memory. At a barrier, it commits the
 
 Keys start with their key group, so a range of key groups is a range of keys. In each key group, rows sort by the time they fall due, so the rows that a watermark releases are one range. Timers sort by time across the lane's key groups, so a restore reads no timer before it is due.
 
-The only store keeps every version in the memory of the process. Tests use it to stop lanes and restore them. Nothing in it survives the process.
+The engine's only store keeps every version in the memory of the process ([`crates/engine/src/state.rs`](../../crates/engine/src/state.rs)), with a bucket for each operator of each pipeline. A record names its versions as `memory:` URLs. Nothing in it survives the process, and each attempt runs its own engine process, so a restore finds the state only within the process that wrote it. A keyed lane releases all but its newest two versions after each barrier.
+
+### Group windows
+
+A statement whose `GROUP BY` has a window plans as a `GroupWindow` ([`crates/sql/src/window.rs`](../../crates/sql/src/window.rs)): the row-wise steps before it, the window, the group keys, the aggregates, and the steps after it. Its operator ID hashes what its state means: the stream it reads, the steps, the window, the keys, the aggregates and the state's layout. A change to any of them gives a new ID, which restores no state.
+
+The statement runs on keyed lanes, past an exchange inside the engine ([`crates/engine/src/dataflow/keyed.rs`](../../crates/engine/src/dataflow/keyed.rs)). Each lane sends each row of the stream to the keyed lane that owns the key group of the row's group keys, by the layout's lane ranges. It sends its barriers, its watermark advances and its end to every keyed lane. A keyed lane aligns its senders at each barrier, as a writer lane does. Its range of key groups lies within one writer lane's range, so its output reaches that writer lane with no second exchange. A keyed lane opens a `Layer` for each group window it runs, on a store of the window's own.
+
+A keyed lane's watermark is the least of its senders' watermarks, through `Senders`, starting at the stream's floor. A lane's watermark advance comes after the rows that moved it. At open, a keyed lane advances its windows to the floor, so a window that closed before the checkpoint, or before the read that the floor carries over, stays closed. Each advance fires the timers it reaches: a window gives its row, and its state stays until the watermark passes its end plus the lateness. The keyed lane then sends the watermark to its writer lane as the output's.
+
+[`crates/engine/src/window`](../../crates/engine/src/window) is the operator. A window's state is its accumulators and how many times its row has been given, under its group keys and start. A session's state is every session of its keys. Each output row has an `_openetl_id` and a seq from its key and that count, so a replay gives the same rows.
 
 ## Checkpoints
 
@@ -160,7 +170,8 @@ These jobs run on one pod:
 - a job whose destination loads staged epochs or is written by the engine;
 - a job whose destination is transactional and does not have lane commits;
 - a job with a SQL transform whose destination has lane commits: a committable's coverage names the input splits on its own lanes, and a redo filters key groups by the destination's stream, so a lane's part of an exchanged output can't be written again from the source yet;
-- a job whose destination takes fewer writer lanes than there are workers.
+- a job whose destination takes fewer writer lanes than there are workers;
+- a job with a SQL statement that keeps state, as a group window: its keyed lanes take the stream from every lane of the attempt in one engine, which keeps the state in its memory. The engine refuses such a statement in a part of an attempt.
 
 `plan.OnePod` ([`internal/plan`](../../internal/plan)) is the one check behind these cases, for the plan, for `EnqueueWork` and for `Job.OnWorkers`. `EnqueueWork` works out an attempt's workers when it sizes the attempt, so the workflows and their histories do not change. The placer sends an attempt on workers only to a pod launcher of its pool, all of its pods or none, and the launcher's `--max-pods` and `--max-pod-cpu` count every pod. The launcher ([`internal/runner/pods`](../../internal/runner/pods)) makes the workers' pods, then the coordinator's.
 

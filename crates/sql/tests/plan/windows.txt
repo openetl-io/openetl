@@ -1,0 +1,268 @@
+# Group windows: tumble, hop and session in GROUP BY, their bounds, the
+# aggregates they run, and their keys.
+
+stream orders key(id) time(created_at)
+  id int64 not null
+  region utf8
+  amount decimal(12, 2)
+  qty int32
+  created_at timestamp
+
+plan
+INSERT INTO revenue_by_minute
+SELECT window_start, region, sum(amount) AS revenue, count(*) AS orders
+FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), region
+----
+statement 1:1 revenue_by_minute group_window
+  inputs orders
+  key window_start, region
+  schema window_start Timestamp(µs, "UTC"), region Utf8, revenue Decimal128(22, 2), orders Int64 not null
+  reads orders: region, amount, created_at
+  window Tumble { size: 60000000 } by created_at on region
+  aggregate Sum(orders.amount): Decimal128(22, 2)
+  aggregate Count(*): Int64
+  grouped __openetl_window_start, __openetl_window_end, region, sum(orders.amount), count(*)
+  project window_start := __openetl_window_start, region, revenue := sum(orders.amount), orders := count(*)
+  need region
+  passes region -> region
+  operator window-b20660707787f280
+
+plan
+INSERT INTO x SELECT window_start, window_end, avg(qty) AS a, min(amount) AS lo, max(region) AS hi, approx_distinct(id) AS n, median(qty) AS m, percentile_cont(0.9) WITHIN GROUP (ORDER BY qty) AS p90
+FROM orders
+WHERE amount > 0
+GROUP BY hop(created_at, INTERVAL '1 minute', INTERVAL '5 minutes')
+HAVING count(*) > 2
+----
+statement 1:1 x group_window
+  inputs orders
+  key window_start
+  schema window_start Timestamp(µs, "UTC"), window_end Timestamp(µs, "UTC"), a Float64, lo Decimal128(12, 2), hi Utf8, n Int64 not null, m Float64, p90 Float64
+  reads orders: id, region, amount, qty, created_at
+  filter orders.amount > Decimal128(0.00,12,2)
+  window Hop { slide: 60000000, size: 300000000 } by created_at on 
+  aggregate Avg(CAST(orders.qty AS Float64)): Float64
+  aggregate Min(orders.amount): Decimal128(12, 2)
+  aggregate Max(orders.region): Utf8
+  aggregate ApproxDistinct(orders.id): UInt64
+  aggregate Percentile(0.5)(CAST(orders.qty AS Float64)): Float64
+  aggregate Percentile(0.9)(CAST(orders.qty AS Float64)): Float64
+  aggregate Count(*): Int64
+  grouped __openetl_window_start, __openetl_window_end, avg(orders.qty), min(orders.amount), max(orders.region), approx_distinct(orders.id), median(orders.qty), percentile_cont(Float64(0.9)) WITHIN GROUP [orders.qty ASC NULLS LAST], count(*)
+  filter count(*) > Int64(2)
+  project window_start := __openetl_window_start, window_end := __openetl_window_end, a := avg(orders.qty), lo := min(orders.amount), hi := max(orders.region), n := CAST(approx_distinct(orders.id) AS Int64), m := median(orders.qty), p90 := percentile_cont(Float64(0.9)) WITHIN GROUP [orders.qty ASC NULLS LAST]
+  need 
+  passes 
+  operator window-7ce2bd02f60e0daa
+
+plan
+INSERT INTO s SELECT window_start, window_end, region AS r, count(qty) FILTER (WHERE qty > 1) AS n
+FROM orders
+GROUP BY session(created_at, INTERVAL '30 minutes'), region
+----
+statement 1:1 s group_window
+  inputs orders
+  key window_start, r
+  schema window_start Timestamp(µs, "UTC"), window_end Timestamp(µs, "UTC"), r Utf8, n Int64 not null
+  reads orders: region, qty, created_at
+  window Session { gap: 1800000000 } by created_at on region
+  aggregate Count(orders.qty) filter orders.qty > Int32(1): Int64
+  grouped __openetl_window_start, __openetl_window_end, region, count(orders.qty) FILTER (WHERE orders.qty > Int64(1))
+  project window_start := __openetl_window_start, window_end := __openetl_window_end, r := orders.region, n := count(orders.qty) FILTER (WHERE orders.qty > Int64(1))
+  need region
+  passes region -> r
+  operator window-3d2cbe860ca8f178
+
+# A view's rows, renamed, are grouped: the key follows the renames, and the
+# need is the stream's column.
+plan
+CREATE VIEW paid AS SELECT region AS area, amount, created_at AS at FROM orders WHERE amount > 0;
+INSERT INTO hourly SELECT window_start AS hour, area, sum(amount) AS revenue FROM paid
+GROUP BY tumble(at, INTERVAL '1 hour'), area
+HAVING window_end > TIMESTAMPTZ '2026-01-01 00:00:00Z'
+----
+view 1:13 paid
+  inputs orders
+  key 
+  schema area Utf8, amount Decimal128(12, 2), at Timestamp(µs, "UTC")
+statement 2:1 hourly group_window
+  inputs orders
+  views paid
+  key hour, area
+  schema hour Timestamp(µs, "UTC"), area Utf8, revenue Decimal128(22, 2)
+  reads orders: region, amount, created_at
+  filter orders.amount > Decimal128(0.00,12,2)
+  project area := orders.region, amount, at := orders.created_at
+  window Tumble { size: 3600000000 } by at on area
+  aggregate Sum(paid.amount): Decimal128(22, 2)
+  grouped __openetl_window_start, __openetl_window_end, area, sum(paid.amount)
+  filter __openetl_window_end > TimestampMicrosecond(1767225600000000, Some("UTC"))
+  project hour := __openetl_window_start, area, revenue := sum(paid.amount)
+  need region
+  passes region -> area
+  operator window-c777da57db8de31b
+
+stream ticks time(at)
+  sym utf8
+  price float64
+  at timestamp_ns
+
+# Nanosecond time: sizes in nanoseconds.
+plan
+INSERT INTO bars SELECT window_start, sym, min(price) AS lo, max(price) AS hi, sum(price) AS total FROM ticks
+GROUP BY tumble(at, INTERVAL '1 second'), sym
+----
+statement 1:1 bars group_window
+  inputs ticks
+  key window_start, sym
+  schema window_start Timestamp(ns, "UTC"), sym Utf8, lo Float64, hi Float64, total Float64
+  reads ticks: sym, price, at
+  window Tumble { size: 1000000000 } by at on sym
+  aggregate Min(ticks.price): Float64
+  aggregate Max(ticks.price): Float64
+  aggregate Sum(ticks.price): Float64
+  grouped __openetl_window_start, __openetl_window_end, sym, min(ticks.price), max(ticks.price), sum(ticks.price)
+  project window_start := __openetl_window_start, sym, lo := min(ticks.price), hi := max(ticks.price), total := sum(ticks.price)
+  need sym
+  passes sym -> sym
+  operator window-58e2101cf08e2533
+
+plan
+INSERT INTO x SELECT tumble(created_at, INTERVAL '1 minute') AS w, count(*) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 1:22 tumble is a group window, which goes in GROUP BY: select window_start and window_end for its bounds
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+WHERE window_start > TIMESTAMPTZ '2026-01-01 00:00:00Z'
+GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 2:7 window_start is a window's bound, and WHERE runs before rows are grouped: compare it in HAVING
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), hop(created_at, INTERVAL '1 minute', INTERVAL '2 minutes')
+----
+error unsupported 2:51 a group window groups by one window: tumble, hop or session
+
+plan
+INSERT INTO x SELECT window_start, lower(region) AS r, count(*) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), lower(region)
+----
+error unsupported 2:10 a group window groups by columns of orders, renamed or not, beside its window: lower(orders.region) is computed
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+GROUP BY tumble(id, INTERVAL '1 minute')
+----
+error bind 1:1 tumble's first argument is the stream's event time, a timestamp, not Int64
+
+stream logins key(id) time(at)
+  id int64 not null
+  at timestamp
+  seen timestamp
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM logins
+GROUP BY tumble(seen, INTERVAL '1 minute')
+----
+error unsupported 2:10 tumble goes by the event time of logins, at: write tumble("at", …)
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 month')
+----
+error unsupported 2:10 tumble's sizes are in days, hours, minutes or seconds, as a month's length varies
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '0 seconds')
+----
+error unsupported 2:10 tumble's sizes are more than zero, and under 290,000 years
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+GROUP BY hop(created_at, INTERVAL '10 minutes', INTERVAL '5 minutes')
+----
+error unsupported 2:10 hop's slide is at most its size, so every row is in a window: hop(time, slide, size)
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+GROUP BY hop(created_at, INTERVAL '1 second', INTERVAL '1 hour')
+----
+error unsupported 2:10 hop puts each row in at most 1000 windows: its size over its slide is more
+
+plan
+INSERT INTO x SELECT window_start, stddev(amount) AS s FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 1:36 stddev isn't an aggregate transforms run: a group window takes count, sum, min, max, avg, approx_distinct, median and percentile_cont
+
+plan
+INSERT INTO x SELECT window_start, count(DISTINCT region) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 1:1 count(DISTINCT …) isn't supported: approx_distinct(x) estimates how many distinct values x has
+
+plan
+INSERT INTO x SELECT window_start, sum(region) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error bind 1:1 there's no sum(Utf8): CAST the argument to a type it takes
+
+plan
+INSERT INTO x SELECT count(*) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 1:1 a group window's output keeps window_start, which with its group keys is its primary key: select window_start
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), region
+----
+error unsupported 1:1 a group window's output keeps its group keys, which with window_start are its primary key: select region
+
+plan
+INSERT INTO x SELECT window_start, region, count(*) AS n FROM orders
+GROUP BY ROLLUP (region), tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 1:15 a group window groups by its window and columns, without ROLLUP, CUBE or GROUPING SETS
+
+plan
+CREATE VIEW v AS SELECT window_start, count(*) AS n FROM orders GROUP BY tumble(created_at, INTERVAL '1 minute');
+INSERT INTO x SELECT * FROM v
+----
+error unsupported 1:74 a view is row-wise, so it can't group by a window: group in the INSERT INTO … SELECT that reads the view
+
+plan
+INSERT INTO x SELECT * FROM (SELECT window_start, count(*) AS n FROM orders GROUP BY tumble(created_at, INTERVAL '1 minute')) AS s
+----
+error unsupported 1:86 a group window is in the statement's own SELECT, not in a subquery's
+
+plan
+INSERT INTO x SELECT window_start, count(*) FROM orders
+GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 1:36 name this column: count(*) AS name
+
+stream changes key(id) time(at) changelog
+  id int64 not null
+  at timestamp
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n FROM changes
+GROUP BY tumble(at, INTERVAL '1 minute')
+----
+error later_tier updating 2:10 changes is a changelog, and a group window groups appended rows: transforms don't run updating statements yet (tier 5)
+
+stream tagged time(at)
+  tags list<utf8>
+  at timestamp
+
+plan
+INSERT INTO x SELECT window_start, tags, count(*) AS n FROM tagged
+GROUP BY tumble(at, INTERVAL '1 minute'), tags
+----
+error unsupported 2:10 a group window can't group by tags, of type List(Utf8)

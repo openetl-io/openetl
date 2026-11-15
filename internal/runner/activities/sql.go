@@ -63,6 +63,9 @@ func sqlRequest(sql string, streams []runner.Stream, restored map[string][]byte)
 			continue
 		}
 		st := sqlplan.Stream{Name: s.Name, Changelog: s.Read == source.CDC, Nanoseconds: s.NanosecondTimestamps, RestoredSchema: restored[s.Name]}
+		if s.EventTime != nil {
+			st.EventTime = s.EventTime.Column
+		}
 		if d := s.Declared(); d != nil {
 			if st.DeclaredSchema, err = arrowipc.EncodeSchema(d); err != nil {
 				return req, nil, fmt.Errorf("runner: stream %s's declared schema: %w", s.Name, err)
@@ -170,7 +173,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 		if err != nil {
 			return nil, nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("runner: output %s's schema", o.Name))
 		}
-		expected = append(expected, runner.ExpectedOutput{Name: o.Name, Schema: schema, PrimaryKey: o.PrimaryKey, Input: s.Name})
+		expected = append(expected, runner.ExpectedOutput{Name: o.Name, Schema: schema, PrimaryKey: o.PrimaryKey, Input: s.Name, Operator: st.Operator})
 		out := runner.Stream{
 			Name:                 o.Name,
 			Replay:               s.Replay,
@@ -233,5 +236,11 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 	if len(outputs) == 0 {
 		return nil, nil, errs.New(errs.ConfigInvalid, "transform.sql: the statements write nothing")
 	}
-	return &runner.SQLTransform{SQL: t.GetSql(), Expected: expected}, outputs, nil
+	var operators []string
+	for _, st := range a.Statements {
+		if st.Operator != "" {
+			operators = append(operators, st.Operator)
+		}
+	}
+	return &runner.SQLTransform{SQL: t.GetSql(), Expected: expected, Operators: operators}, outputs, nil
 }
