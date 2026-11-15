@@ -279,7 +279,8 @@ fn lists() -> Catalog {
         "events",
         Stream {
             schema: Arc::new(Schema::new(vec![
-                Field::new("xs", list, true),
+                Field::new("xs", list.clone(), true),
+                Field::new("ys", list, true),
                 Field::new("unnest(xs)", DataType::Int64, true),
                 Field::new("region", DataType::Utf8, true),
                 Field::new(
@@ -336,6 +337,13 @@ fn each_unnest_counts() {
         )
     };
     assert_ne!(count(once, "a"), count(twice, "b"));
+    // Two lists unnested together give a row per element of the longer;
+    // one after the other, a row per pair.
+    let together =
+        "CREATE VIEW a AS SELECT unnest(xs) AS x, unnest(ys) AS y, region, at FROM events;\n";
+    let apart = "CREATE VIEW a AS SELECT unnest(xs) AS x, ys, region, at FROM events;\n\
+                 CREATE VIEW b AS SELECT x, unnest(ys) AS y, region, at FROM a;\n";
+    assert_ne!(count(together, "a"), count(apart, "b"));
 }
 
 /// The deepest chain of views, each reading a column of the one before

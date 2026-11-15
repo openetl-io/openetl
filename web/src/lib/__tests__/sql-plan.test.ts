@@ -78,11 +78,14 @@ describe("operators", () => {
   it("says what applying does to its state", () => {
     expect(changeLabel[OperatorChange.CHANGED]).toBe("Changed");
     expect(changeText(op({ change: OperatorChange.CHANGED, replaces: "window-old" }))).toBe(
-      "Its state starts empty, in place of window-old, whose state is dropped.",
+      "Its state starts empty. It takes the place of window-old, whose state is dropped.",
     );
     expect(changeText(op({ change: OperatorChange.KEPT }))).toBe("Keeps its state.");
     expect(changeText(op({ change: OperatorChange.NEW }))).toBe("Its state starts empty.");
-    expect(changeText(op({ change: OperatorChange.NEW, earlier: true }))).toContain("the next sync restores that state");
+    expect(changeText(op({ change: OperatorChange.NEW, earlier: true }))).toContain("the next sync restores that state where it can be restored");
+    expect(changeText(op({ change: OperatorChange.CHANGED, earlier: true, replaces: "window-b" }))).toMatch(
+      /^An earlier version had it\..* It takes the place of window-b, whose state is dropped\.$/,
+    );
     expect(changeText(op({}))).toBe("The current version wasn't planned when it was applied.");
   });
 });

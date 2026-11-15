@@ -54,7 +54,7 @@ statement 1:1 x group_window
   project window_start := __openetl_window_start, window_end := __openetl_window_end, a := avg(orders.qty), lo := min(orders.amount), hi := max(orders.region), n := CAST(approx_distinct(orders.id) AS Int64), m := median(orders.qty), p90 := percentile_cont(Float64(0.9)) WITHIN GROUP [orders.qty ASC NULLS LAST]
   need 
   passes 
-  operator window-1985243f010ed7da
+  operator window-2ee95adef66590ec
 
 plan
 INSERT INTO s SELECT window_start, window_end, region AS r, count(qty) FILTER (WHERE qty > 1) AS n
@@ -101,7 +101,7 @@ statement 2:1 hourly group_window
   project hour := __openetl_window_start, area, revenue := sum(paid.amount)
   need region
   passes region -> area
-  operator window-149d6e3216b6ebb2
+  operator window-a50ca04ebac15600
 
 stream ticks time(at)
   sym utf8

@@ -247,8 +247,8 @@ The plan's warnings say the same for `orders_by_hour`, with the command for the 
 | What | Means | Its state |
 |---|---|---|
 | `kept` | The current version has the operator. | The next sync restores it, if the checkpoint's state can be restored: [State](#state) says when an attempt fails with `CONFIG_INVALID` instead, and how to recover. |
-| `new` | The current version has no operator that writes the output. | Starts empty. If an earlier version had the operator and the current version dropped it, the line says so: when no sync has run since, the checkpoint still holds that state, and the next sync restores it. |
-| `changed` | The current version's operator for the output computes or keeps something else. | Starts empty. The next sync drops the old operator's state. |
+| `new` | The current version has no operator that writes the output. | Starts empty. If an earlier version had the operator and the current version dropped it, the line says so. If no sync has run since, the checkpoint still holds that state, and the next sync restores it as for `kept`, failing as [State](#state) says where it cannot. |
+| `changed` | The current version's operator for the output computes or keeps something else. | Starts empty, or, if an earlier version had the operator, as for `new`. The next sync drops the old operator's state. |
 | `dropped` | No statement keeps the current version's operator. | The next sync drops it. |
 | `unknown` | The current version's statements were not planned when it was applied. | As for `kept` if the ID is the same, otherwise the next sync fails as below. |
 

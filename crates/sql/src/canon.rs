@@ -167,10 +167,10 @@ impl Canon {
     }
 
     /// What the steps from `input` down to its scan do to the rows, other
-    /// than computing columns: each conjunct of each filter, and each list
-    /// unnested, over the stream's columns, sorted. A conjunct written twice
-    /// filters as once does; an unnest written twice multiplies the rows
-    /// again, so each stays.
+    /// than computing columns: each conjunct of each filter, and each unnest
+    /// step with the lists it unnests together, over the stream's columns,
+    /// sorted. A conjunct written twice filters as once does; an unnest step
+    /// written twice multiplies the rows again, so each stays.
     pub(crate) fn rows(&mut self, input: &LogicalPlan) -> Result<Vec<String>, String> {
         let mut out = Vec::new();
         let mut node = input;
@@ -187,10 +187,17 @@ impl Canon {
                     }
                 }
                 LogicalPlan::Unnest(u) => {
+                    // One entry per step: lists unnested together give a row
+                    // per element of the longest, and steps one after
+                    // another multiply.
+                    let mut lists = Vec::with_capacity(u.list_type_columns.len());
                     for (j, _) in &u.list_type_columns {
-                        let list = self.below(&u.input, *j)?;
-                        out.push(unnested(&list, u.options.null_handling));
+                        lists.push(self.below(&u.input, *j)?);
                     }
+                    out.push(format!(
+                        "unnest step {}",
+                        unnested(&lists.join(", "), u.options.null_handling)
+                    ));
                 }
                 LogicalPlan::TableScan(_) => break,
                 _ => {}

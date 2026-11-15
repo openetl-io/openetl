@@ -117,7 +117,20 @@ func TestOperatorsSayAnEarlierOperatorMayRestore(t *testing.T) {
 	if len(ops) != 2 || ops[1].GetChange() != apiv1.OperatorChange_OPERATOR_CHANGE_NEW || !ops[1].GetEarlier() || ops[0].GetEarlier() {
 		t.Fatalf("%v", ops)
 	}
-	if len(warnings) != 1 || !strings.Contains(warnings[0].GetMessage(), "if no sync has run since, the next sync restores its state from then") {
+	if len(warnings) != 1 || !strings.Contains(warnings[0].GetMessage(), "if no sync has run since, the checkpoint still holds its state, and the next sync restores it if it can") {
+		t.Errorf("%v", warnings)
+	}
+
+	// A applied, then B in its place on the same output with no sync, then
+	// A again: A takes B's place, and its state may still be there.
+	b := &apiv1.SqlPlan{Outputs: []*apiv1.SqlOutput{{Name: "out", Operator: "window-b"}}, Operators: []string{"window-b"}, Dropped: []string{"window-a"}}
+	a = &sqlplan.Answer{Statements: []sqlplan.Statement{window(1, "out", "orders", "window-a")}}
+	ops, warnings, _ = Operators(windowSpec(0), windowCatalog, a, b, nil)
+	if len(ops) != 1 || ops[0].GetChange() != apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED || ops[0].GetReplaces() != "window-b" || !ops[0].GetEarlier() {
+		t.Fatalf("%v", ops)
+	}
+	if len(warnings) != 1 || strings.Contains(warnings[0].GetMessage(), ": its state starts empty") ||
+		!strings.Contains(warnings[0].GetMessage(), "in place of window-b: window-a is an operator an earlier version had") {
 		t.Errorf("%v", warnings)
 	}
 }

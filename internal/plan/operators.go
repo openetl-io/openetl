@@ -55,6 +55,7 @@ func Operators(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer, 
 			taken[st.Operator] = true
 		case before[st.Output] != "":
 			op.Change, op.Replaces = apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED, before[st.Output]
+			op.Earlier = slices.Contains(applied.GetDropped(), st.Operator)
 			taken[op.Replaces] = true
 		default:
 			op.Change = apiv1.OperatorChange_OPERATOR_CHANGE_NEW
@@ -112,14 +113,22 @@ func changeWarning(op *apiv1.OperatorPlan) string {
 		backfill = fmt.Sprintf(": from the next sync, its windows hold only rows read from then on, and a window open now loses the rows read before; "+
 			"openetl reset --stream %s, after applying, reads %s again from the start to build it (a backfill)", op.GetInput(), op.GetInput())
 	}
+	// An operator that an earlier version had: the current version dropped
+	// its state, but a sync may not have yet.
+	earlier := fmt.Sprintf("%s is an operator an earlier version had, which the current version dropped: if no sync has run since, "+
+		"the checkpoint still holds its state, and the next sync restores it if it can (State in the SQL reference says when it can't); "+
+		"otherwise its state starts empty", op.GetId())
 	switch op.GetChange() {
 	case apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED:
+		start := "its state starts empty"
+		if op.GetEarlier() {
+			start = earlier
+		}
 		return at + fmt.Sprintf("the group window writing %s computes or keeps something else now, so it's a new operator, %s, in place of %s: "+
-			"its state starts empty, and %s's is dropped%s", op.GetOutput(), op.GetId(), op.GetReplaces(), op.GetReplaces(), backfill)
+			"%s, and %s's state is dropped%s", op.GetOutput(), op.GetId(), op.GetReplaces(), start, op.GetReplaces(), backfill)
 	case apiv1.OperatorChange_OPERATOR_CHANGE_NEW:
 		if op.GetEarlier() {
-			return at + fmt.Sprintf("the group window writing %s is operator %s, which an earlier version had and the current version dropped: "+
-				"if no sync has run since, the next sync restores its state from then; otherwise its state starts empty%s", op.GetOutput(), op.GetId(), backfill)
+			return at + fmt.Sprintf("the group window writing %s is new to the current version: %s%s", op.GetOutput(), earlier, backfill)
 		}
 		if backfill == "" {
 			return ""

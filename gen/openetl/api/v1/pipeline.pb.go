@@ -5494,10 +5494,11 @@ type OperatorPlan struct {
 	// the next sync reads, as each sync reads the stream whole, or the
 	// pipeline hasn't read it.
 	Backfill []string `protobuf:"bytes,17,rep,name=backfill,proto3" json:"backfill,omitempty"`
-	// With OPERATOR_CHANGE_NEW: an earlier version had it, and the current
-	// version dropped it. If no sync of the current version has run since,
-	// the checkpoint still holds its state, and the next sync restores that
-	// state rather than starting empty.
+	// With OPERATOR_CHANGE_NEW or OPERATOR_CHANGE_CHANGED: an earlier version
+	// had it, and the current version dropped it. If no sync of the current
+	// version has run since, the checkpoint still holds its state, and the
+	// next sync restores that state, where it can be restored, rather than
+	// starting empty.
 	Earlier       bool `protobuf:"varint,18,opt,name=earlier,proto3" json:"earlier,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

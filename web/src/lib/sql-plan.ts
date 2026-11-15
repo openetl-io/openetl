@@ -81,17 +81,24 @@ export const changeLabel: Record<OperatorChange, string> = {
   [OperatorChange.DROPPED]: "Dropped",
 };
 
+/** For an operator an earlier version had: when its state comes back. Empty for another. */
+function earlierText(op: OperatorPlan) {
+  if (!op.earlier) return "";
+  return (
+    "An earlier version had it. If no sync has run since the current version, the next sync restores that state where it can be restored, " +
+    "and otherwise it starts empty. If the state can't be restored, the sync fails until you read the stream again with openetl reset --stream."
+  );
+}
+
 /** What happens to an operator's state, in a sentence. */
 export function changeText(op: OperatorPlan) {
   switch (op.change) {
     case OperatorChange.KEPT:
       return "Keeps its state.";
     case OperatorChange.NEW:
-      return op.earlier
-        ? "An earlier version had it. If no sync has run since the current version, the next sync restores that state; otherwise it starts empty."
-        : "Its state starts empty.";
+      return earlierText(op) || "Its state starts empty.";
     case OperatorChange.CHANGED:
-      return `Its state starts empty, in place of ${op.replaces}, whose state is dropped.`;
+      return `${earlierText(op) || "Its state starts empty."} It takes the place of ${op.replaces}, whose state is dropped.`;
     case OperatorChange.DROPPED:
       return "No statement keeps it now, so the next sync drops its state.";
   }

@@ -999,9 +999,9 @@ fn operator_id(k: &Kept) -> String {
             type_text(&a.data_type)
         ));
     }
+    // Quoted, so no entry's text can read as two.
     for b in k.before {
-        d.push_str(b);
-        d.push('\n');
+        d.push_str(&format!("{b:?}\n"));
     }
     format!("window-{:016x}", XxHash3_64::oneshot(d.as_bytes()))
 }

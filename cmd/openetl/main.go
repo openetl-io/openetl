@@ -594,15 +594,16 @@ func operatorText(op *apiv1.OperatorPlan) string {
 		what += ": " + strings.Join(op.GetAggregates(), ", ")
 		what += fmt.Sprintf("; keeps a window's state %s of event time (lateness %s)", op.GetRetention().AsDuration(), op.GetLateness().AsDuration())
 	}
+	start := "starts empty"
+	if op.GetEarlier() {
+		start = "an earlier version's, so it restores that state if the checkpoint still holds it and it can be restored, or starts empty"
+	}
 	var then string
 	switch op.GetChange() {
 	case apiv1.OperatorChange_OPERATOR_CHANGE_NEW:
-		then = "starts empty"
-		if op.GetEarlier() {
-			then = "an earlier version's, so it restores that state if the checkpoint still holds it, or starts empty"
-		}
+		then = start
 	case apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED:
-		then = "starts empty, in place of " + op.GetReplaces()
+		then = start + ", in place of " + op.GetReplaces()
 	case apiv1.OperatorChange_OPERATOR_CHANGE_DROPPED:
 		then = "its state is dropped"
 	}
