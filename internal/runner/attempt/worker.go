@@ -402,7 +402,7 @@ func (w *worker) assign(a *attemptv1.Assignment) error {
 		return outOfProtocol("the assignment: %v", err)
 	}
 	if w.t.Worker >= len(a.GetWorkers()) {
-		return outOfProtocol("the assignment has %d workers, without worker %d", len(a.GetWorkers()), w.t.Worker)
+		return outOfProtocol("the assignment has %d workers, without worker %d", len(a.GetWorkers()), w.t.Worker+1)
 	}
 	for i, l := range a.GetWriterLanes() {
 		if int(l.GetWorker()) == w.t.Worker {

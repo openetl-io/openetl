@@ -157,21 +157,24 @@ func wantCode(t *testing.T, err error, code connect.Code, what string) {
 	}
 }
 
-func schedulePaused(t *testing.T, pipeline string) bool {
+// waitSchedulePaused waits for the pipeline's schedule to be listed paused or
+// not. Temporal lists schedules from its visibility store, which a pause
+// reaches a moment after the call returns.
+func waitSchedulePaused(t *testing.T, pipeline string, paused bool) {
 	t.Helper()
 	id, err := query[string](t, `SELECT id::text FROM pipelines WHERE name = $1`, pipeline)
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := testBackend(t).ListSchedules(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	i := slices.IndexFunc(list, func(s orchestration.ScheduleState) bool { return s.ID == contract.ScheduleID(id) })
-	if i < 0 {
-		t.Fatalf("no schedule for %s", pipeline)
-	}
-	return list[i].Paused
+	b := testBackend(t)
+	eventually(t, 10*time.Second, fmt.Sprintf("the schedule to be listed with paused %v", paused), func() bool {
+		list, err := b.ListSchedules(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(list, func(s orchestration.ScheduleState) bool { return s.ID == contract.ScheduleID(id) })
+		return i >= 0 && list[i].Paused == paused
+	})
 }
 
 // Pausing pauses the schedule, applying again leaves it paused, and a paused
@@ -193,9 +196,10 @@ func TestPauseResumeAndSyncNow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Msg.GetPipeline().GetPaused() || !schedulePaused(t, name) {
-		t.Fatalf("paused %v, schedule paused %v", res.Msg.GetPipeline().GetPaused(), schedulePaused(t, name))
+	if !res.Msg.GetPipeline().GetPaused() {
+		t.Fatal("the pipeline isn't paused")
 	}
+	waitSchedulePaused(t, name, true)
 	_, err = pipelines().SyncPipeline(t.Context(), connect.NewRequest(&apiv1.SyncPipelineRequest{Name: full}))
 	wantCode(t, err, connect.CodeFailedPrecondition, "sync while paused")
 
@@ -208,16 +212,15 @@ func TestPauseResumeAndSyncNow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.Msg.GetPipeline().GetPaused() || !schedulePaused(t, name) {
-		t.Fatalf("after applying, paused %v, schedule paused %v", got.Msg.GetPipeline().GetPaused(), schedulePaused(t, name))
+	if !got.Msg.GetPipeline().GetPaused() {
+		t.Fatal("after applying, the pipeline isn't paused")
 	}
+	waitSchedulePaused(t, name, true)
 
 	if _, err := pipelines().ResumePipeline(t.Context(), connect.NewRequest(&apiv1.ResumePipelineRequest{Name: full})); err != nil {
 		t.Fatal(err)
 	}
-	if schedulePaused(t, name) {
-		t.Fatal("the schedule is still paused")
-	}
+	waitSchedulePaused(t, name, false)
 	if status, stats := syncNow(t, name); status != "succeeded" {
 		t.Fatalf("sync %s: %s", status, stats)
 	}

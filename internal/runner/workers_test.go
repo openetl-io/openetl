@@ -561,8 +561,8 @@ func TestAStoppedWorkerFailsTheAttemptAsTransient(t *testing.T) {
 	var once sync.Once
 	j.OnCommit = func(uint64) { once.Do(func() { p.kill("a1", 1) }) }
 	_, err := runner.RunAttempt(ctx, j)
-	if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "worker 1") {
-		t.Fatalf("the attempt failed with %v (%s), want worker 1 transient", err, errs.CodeOf(err))
+	if errs.CodeOf(err) != errs.Transient || !strings.Contains(fmt.Sprint(err), "worker 2") {
+		t.Fatalf("the attempt failed with %v (%s), want worker 2 transient", err, errs.CodeOf(err))
 	}
 	ended := p.wait("a1")
 	if !slices.ContainsFunc(ended, func(err error) bool {

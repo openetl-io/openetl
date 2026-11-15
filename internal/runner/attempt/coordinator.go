@@ -159,7 +159,7 @@ func (c *coordinator) joinDeadline() {
 	}
 	c.mu.Unlock()
 	if missing >= 0 {
-		c.finish(lost(fmt.Sprintf("worker %d", missing), fmt.Errorf("it didn't join within %s", c.opts.joinTimeout())))
+		c.finish(lost(fmt.Sprintf("worker %d", missing+1), fmt.Errorf("it didn't join within %s", c.opts.joinTimeout())))
 	}
 }
 
@@ -220,9 +220,9 @@ func (c *coordinator) admit(j *attemptv1.Join) (*member, error) {
 		c.mu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "attempt: the attempt is over")
 	case i >= len(c.members):
-		broken = outOfProtocol("worker %d joined, of %d", i, len(c.members))
+		broken = outOfProtocol("worker %d joined, of %d", i+1, len(c.members))
 	case c.members[i] != nil:
-		broken = outOfProtocol("worker %d joined twice", i)
+		broken = outOfProtocol("worker %d joined twice", i+1)
 	}
 	if broken != nil {
 		c.mu.Unlock()
@@ -266,7 +266,7 @@ func (c *coordinator) serve(st coordinatorStream) error {
 		return err
 	}
 	defer close(m.ended)
-	who := fmt.Sprintf("worker %d", m.index)
+	who := fmt.Sprintf("worker %d", m.index+1)
 
 	stopSend, senderDone := make(chan struct{}), make(chan struct{})
 	sent := make(chan error, 1)
@@ -360,7 +360,7 @@ func (c *coordinator) handle(m *member, msg *attemptv1.AttendRequest) error {
 	if c.over {
 		return nil
 	}
-	who := fmt.Sprintf("worker %d", m.index)
+	who := fmt.Sprintf("worker %d", m.index+1)
 	switch x := msg.GetMessage().(type) {
 	case *attemptv1.AttendRequest_Heartbeat:
 		return nil
@@ -432,7 +432,7 @@ func (c *coordinator) handle(m *member, msg *attemptv1.AttendRequest) error {
 
 // takeShare keeps a worker's share; c.mu is held.
 func (c *coordinator) takeShare(m *member, s *attemptv1.Share) error {
-	who := fmt.Sprintf("worker %d", m.index)
+	who := fmt.Sprintf("worker %d", m.index+1)
 	e := s.GetEpoch()
 	switch {
 	case c.assignment == nil:
@@ -495,7 +495,7 @@ func checkAssignment(a *attemptv1.Assignment, workers int) error {
 	check := func(what string, ls []*attemptv1.Lane) error {
 		for i, l := range ls {
 			if int(l.GetWorker()) >= workers {
-				return fmt.Errorf("%s %d is worker %d's, of %d", what, i, l.GetWorker(), workers)
+				return fmt.Errorf("%s %d is worker %d's, of %d", what, i, l.GetWorker()+1, workers)
 			}
 			if x != nil && l.GetKeyGroups() == nil {
 				return fmt.Errorf("%s %d has no key groups in an attempt whose engines exchange rows", what, i)
@@ -547,7 +547,7 @@ func (c *coordinator) Assign(ctx context.Context, a *attemptv1.Assignment) error
 	a.Workers = make([]string, len(c.members))
 	for i, m := range c.members {
 		if a.GetExchange() != nil && m.address == "" {
-			return errs.New(errs.ConfigInvalid, "attempt: the workers' engines exchange rows, and worker %d joined without an address for them", i)
+			return errs.New(errs.ConfigInvalid, "attempt: the workers' engines exchange rows, and worker %d joined without an address for them", i+1)
 		}
 	}
 	for i, m := range c.members {
@@ -647,7 +647,7 @@ func (c *coordinator) Acknowledge(p *attemptv1.Positions) error {
 	for _, m := range c.members {
 		for _, st := range m.commits {
 			if f := st.epoch; f.GetGeneration() < e.GetGeneration() || f.GetGeneration() == e.GetGeneration() && f.GetN() <= e.GetN() {
-				return fmt.Errorf("attempt: positions of epoch %d, before worker %d's commit of epoch %d succeeded", e.GetN(), m.index, f.GetN())
+				return fmt.Errorf("attempt: positions of epoch %d, before worker %d's commit of epoch %d succeeded", e.GetN(), m.index+1, f.GetN())
 			}
 		}
 	}
@@ -661,7 +661,7 @@ func (c *coordinator) Acknowledge(p *attemptv1.Positions) error {
 
 func (c *coordinator) Commit(ctx context.Context, worker int, req *attemptv1.Commit) (*protocolv1.WriteCommitted, error) {
 	if worker < 0 || worker >= len(c.members) {
-		return nil, fmt.Errorf("attempt: a commit for worker %d, of %d", worker, len(c.members))
+		return nil, fmt.Errorf("attempt: a commit for worker %d, of %d", worker+1, len(c.members))
 	}
 	if err := checkCommit(req); err != nil {
 		return nil, fmt.Errorf("attempt: %w", err)
@@ -714,7 +714,7 @@ func (c *coordinator) Commit(ctx context.Context, worker int, req *attemptv1.Com
 
 func (c *coordinator) Call(ctx context.Context, worker int, call *attemptv1.Call) (*attemptv1.Answer, error) {
 	if worker < 0 || worker >= len(c.members) {
-		return nil, fmt.Errorf("attempt: a call for worker %d, of %d", worker, len(c.members))
+		return nil, fmt.Errorf("attempt: a call for worker %d, of %d", worker+1, len(c.members))
 	}
 	if call.GetCall() == nil {
 		return nil, errors.New("attempt: an empty call")
@@ -758,7 +758,7 @@ func (c *coordinator) Schema(worker int, s *attemptv1.StreamSchema) error {
 	case c.assignment == nil:
 		return errors.New("attempt: a schema before the assignment")
 	case worker < -1 || worker >= len(c.members):
-		return fmt.Errorf("attempt: a schema for worker %d, of %d", worker, len(c.members))
+		return fmt.Errorf("attempt: a schema for worker %d, of %d", worker+1, len(c.members))
 	}
 	msg := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_Schema{Schema: s}}
 	for _, m := range c.members {

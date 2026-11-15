@@ -284,5 +284,6 @@ type Backend interface {
 	PauseSchedule(ctx context.Context, id string, paused bool) error
 	// TriggerSchedule starts its workflow now, or returns ErrRunning.
 	TriggerSchedule(ctx context.Context, id string) error
+	// ListSchedules may lag a little behind a pause or an update.
 	ListSchedules(ctx context.Context) ([]ScheduleState, error)
 }

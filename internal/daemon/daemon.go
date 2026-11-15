@@ -614,7 +614,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 			API: apiClient, ID: id, Attempt: dpworker.Attempt{ID: cfg.Attempt, Placement: ints.Int32(cfg.Placement)}, Worker: cfg.Worker - 1,
 			Run: sync.RunWorker, Logger: log,
 		}
-		log.Info("runner running one worker of an attempt", "id", id, "attempt", cfg.Attempt, "placement", cfg.Placement, "worker", cfg.Worker-1)
+		log.Info("runner running one worker of an attempt", "id", id, "attempt", cfg.Attempt, "placement", cfg.Placement, "worker", cfg.Worker)
 		return pod.Serve(ctx)
 	case cfg.Attempt != "":
 		w.Attempt = &dpworker.Attempt{ID: cfg.Attempt, Placement: ints.Int32(cfg.Placement)}
