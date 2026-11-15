@@ -2,6 +2,7 @@ package engineclient
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -41,9 +42,12 @@ func TestPlan(t *testing.T) {
 	}
 	first := a.Statements[0]
 	if first.Output != "customers" || !first.Replaces || first.Class != "row_wise" || first.Tier != 1 || first.At != (sqlplan.Position{Line: 1, Column: 1}) ||
-		!slices.Equal(first.Key, []string{"id"}) || first.Exchange != nil || first.Operator != "" ||
+		!slices.Equal(first.Key, []string{"id"}) || first.Need != nil || first.Operator != "" || !maps.Equal(first.Passes, map[string]string{"id": "id"}) ||
 		!slices.Equal(first.Columns, []sqlplan.Field{{Name: "id", Type: "int64", Nullable: true}, {Name: "email", Type: "utf8", Nullable: true}}) {
 		t.Errorf("first: %+v", first)
+	}
+	if second := a.Statements[1]; !maps.Equal(second.Passes, map[string]string{"id": "customer_id", "email": "contact_email"}) {
+		t.Errorf("second passes %v", second.Passes)
 	}
 	r, err := ipc.NewReader(strings.NewReader(string(a.Statements[1].ArrowSchema)))
 	if err != nil {

@@ -424,6 +424,7 @@ func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
 				strings.ToLower(strings.TrimPrefix(st.GetLevel().String(), "DELIVERY_LEVEL_")), reason)
 		}
 		_ = tw.Flush()
+		printPaths(out, p.GetStreams())
 	}
 	if len(p.GetOverrides()) > 0 {
 		fmt.Fprintln(out, "  heal's overrides:")
@@ -446,6 +447,58 @@ func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
 			}
 		}
 	}
+}
+
+// printPaths prints each stream's way to the destination: how its source
+// spreads its rows over lanes, then each operator with what it needs, where
+// rows are exchanged, and the partitioning where it changes.
+func printPaths(out io.Writer, streams []*apiv1.StreamPlan) {
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	headed := false
+	for _, st := range streams {
+		if len(st.GetOperators()) == 0 {
+			continue
+		}
+		if !headed {
+			fmt.Fprintln(out, "  partitioning:")
+			headed = true
+		}
+		prev := partitioningText(st.GetPartitioning())
+		steps := []string{prev}
+		for _, op := range st.GetOperators() {
+			edge := partitioningText(op.GetPartitioning())
+			switch {
+			case op.GetExchange():
+				steps = append(steps, "exchange by key group on "+strings.Join(op.GetNeeds(), ", "))
+			case edge != prev:
+				steps = append(steps, edge)
+			}
+			prev = edge
+			name := "writer"
+			if op.GetKind() == apiv1.PlanOperatorKind_PLAN_OPERATOR_KIND_STATEMENT {
+				name = fmt.Sprintf("statement %d:%d", op.GetLine(), op.GetColumn())
+			}
+			if len(op.GetNeeds()) > 0 {
+				name += ", needs " + strings.Join(op.GetNeeds(), ", ")
+			}
+			steps = append(steps, name)
+		}
+		fmt.Fprintf(tw, "    %s\t%s\n", st.GetName(), strings.Join(steps, " -> "))
+	}
+	_ = tw.Flush()
+}
+
+func partitioningText(p *apiv1.Partitioning) string {
+	cols := strings.Join(p.GetColumns(), ", ")
+	switch p.GetKind() {
+	case apiv1.PartitioningKind_PARTITIONING_KIND_SPLITS:
+		return "split by " + cols
+	case apiv1.PartitioningKind_PARTITIONING_KIND_KEY_GROUP:
+		return "by key group on " + cols
+	case apiv1.PartitioningKind_PARTITIONING_KIND_ONE_LANE:
+		return "on one lane"
+	}
+	return "unpartitioned"
 }
 
 // printTransform prints a SQL transform's plan: a line per statement, then

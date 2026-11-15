@@ -75,10 +75,14 @@ func SQLRequest(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, history map[string
 func Transform(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer) *apiv1.TransformPlan {
 	out := &apiv1.TransformPlan{}
 	for _, st := range a.Statements {
-		out.Statements = append(out.Statements, &apiv1.StatementPlan{
+		sp := &apiv1.StatementPlan{
 			Line: st.At.Line, Column: st.At.Column, Output: st.Output, Replaces: st.Replaces, Class: st.Class,
-			Inputs: st.Inputs, Views: st.Views, Columns: schemaColumns(st.Columns), PrimaryKey: st.Key, Exchange: st.Exchange, Operator: st.Operator,
-		})
+			Inputs: st.Inputs, Views: st.Views, Columns: schemaColumns(st.Columns), PrimaryKey: st.Key, Operator: st.Operator,
+		}
+		if p := Place(statementSource(spec, cat, st), StatementOperator(st)); p.Steps[0].Exchange {
+			sp.Exchange = st.Need
+		}
+		out.Statements = append(out.Statements, sp)
 	}
 	for _, v := range a.Views {
 		out.Views = append(out.Views, &apiv1.ViewPlan{
@@ -93,6 +97,33 @@ func Transform(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer) 
 		}
 	}
 	return out
+}
+
+// sourceOf is how the source of a stream the pipeline reads spreads its rows
+// over lanes.
+func sourceOf(spec *apiv1.PipelineSpec, cs *apiv1.CatalogStream, ps *apiv1.PipelineStream) Partitioning {
+	return SourcePartitioning(cs.GetPrimaryKey(), cs.GetSplitsByKey(), ReadMode(spec, cs.GetSyncModes(), ps) == apiv1.SyncMode_SYNC_MODE_CDC)
+}
+
+// statementSource is how the stream a statement reads arrives at it:
+// unpartitioned where it reads several, or one the catalog lacks.
+func statementSource(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, st sqlplan.Statement) Partitioning {
+	if len(st.Inputs) != 1 {
+		return Partitioning{}
+	}
+	for _, s := range selected(spec, cat) {
+		if s.cs.GetName() == st.Inputs[0] {
+			return sourceOf(spec, s.cs, s.ps)
+		}
+	}
+	return Partitioning{}
+}
+
+// StatementPath is the way of a statement's output, keyed by key, from the
+// source of the stream it reads to the destination's writer, which writes
+// on one writer lane with oneLane.
+func StatementPath(source Partitioning, st sqlplan.Statement, key []string, oneLane bool) Path {
+	return Place(source, StatementOperator(st), WriterOperator(key, oneLane))
 }
 
 // Lands reports whether the source's stream reaches the destination as it

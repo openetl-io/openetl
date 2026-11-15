@@ -4,8 +4,9 @@
 //! streams it reads are typed, and each of their batches goes through every
 //! statement that reads it, and to the output it is if it passes through,
 //! before each output's batch is named, given metadata columns and held. A
-//! lane hands what it shaped to a writer lane: its own, or for a stream
-//! routed by key group, the one owning each row's group. Each writer lane aligns the lanes
+//! lane hands what it shaped to a writer lane: the one whose key groups hold
+//! the lane's (see [`crate::layout`]), or past a stream's exchange, the one
+//! owning each row's key group. Each writer lane aligns the lanes
 //! feeding it, and writes to a runner sink, with barriers in band, or to a
 //! Parquet or staged sink, which stages each epoch and reports it in
 //! EpochReady.
@@ -42,7 +43,7 @@ use tracing::{Instrument as _, Span, debug_span, info_span};
 use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
-use crate::plan::{InputPlan, Plan, Sink};
+use crate::plan::{Exchange, InputPlan, Plan, Sink};
 use crate::replay::Replayer;
 use crate::stage::{Applied, Stage, pushed_rows};
 use crate::staging::Staging;
@@ -826,14 +827,21 @@ impl Lane {
 
     /// Sends to the lane's own writer lane.
     async fn send(&self, out: Out) -> Result<(), JobError> {
-        self.send_to(self.lane % self.tx.len(), out).await
+        self.send_to(self.flow.plan.layout.writer_of(self.lane), out)
+            .await
     }
 
-    fn routed(&self, stream: usize) -> bool {
-        self.flow.plan.routed[stream] && self.tx.len() > 1
+    /// The stream's exchange before the writer, where there's more than one
+    /// writer lane: one merges every lane without it.
+    fn exchange(&self, stream: usize) -> Option<&Exchange> {
+        self.flow.plan.exchanges[stream]
+            .as_ref()
+            .filter(|_| self.tx.len() > 1)
     }
 
     /// Sends a batch's rows to their writer lanes: those the stream keeps.
+    /// `key` is the stream's key columns, as the batch names them, where it
+    /// keeps some key groups or has an exchange.
     async fn rows(
         &self,
         stream: usize,
@@ -851,10 +859,13 @@ impl Lane {
                 }
             }
         };
-        if !self.routed(stream) {
+        let Some(exchange) = self.exchange(stream) else {
             return self.send(Out::Batch(stream, batch)).await;
-        }
-        let parts = by_key_group(&batch, key, self.flow.plan.key_groups, self.tx.len())
+        };
+        // Writer lane w owns the w-th of the writer lanes' ranges of key
+        // groups, as the layout has it.
+        let by = exchange.columns(key);
+        let parts = by_key_group(&batch, &by, self.flow.plan.key_groups, self.tx.len())
             .map_err(|e| shape_error(&self.flow.plan.streams[stream], NormalizeError::Arrow(e)))?;
         for (w, part) in parts.into_iter().enumerate() {
             if let Some(part) = part {
@@ -867,7 +878,7 @@ impl Lane {
     /// Sends a schema change, a barrier or an end to every writer lane the
     /// stream's rows on this lane can reach.
     async fn all(&self, stream: usize, out: impl Fn() -> Out) -> Result<(), JobError> {
-        if !self.routed(stream) {
+        if self.exchange(stream).is_none() {
             return self.send(out()).await;
         }
         for w in 0..self.tx.len() {
@@ -1379,7 +1390,7 @@ async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Re
         lane.send(Out::Held(stream, b)).await?;
     }
     if n.batch.num_rows() > 0 {
-        let key = match lane.routed(stream) || lane.flow.plan.keep[stream].is_some() {
+        let key = match lane.exchange(stream).is_some() || lane.flow.plan.keep[stream].is_some() {
             true => ls.shaper.key_columns(),
             false => Vec::new(),
         };
@@ -1527,11 +1538,11 @@ impl Feed {
         let lanes = plan.inbound.len();
         let streams = (0..plan.streams.len())
             .map(|s| {
-                let feeders: Vec<usize> = (0..lanes)
-                    .filter(|l| {
-                        plan.routed[s] && plan.writer_lanes > 1 || l % plan.writer_lanes == writer
-                    })
-                    .collect();
+                let feeders: Vec<usize> = match plan.exchanges[s].is_some() && plan.writer_lanes > 1
+                {
+                    true => (0..lanes).collect(),
+                    false => plan.layout.feeders(writer).collect(),
+                };
                 StreamFeed {
                     standing: vec![Standing::Open; feeders.len()],
                     waiting: feeders.iter().map(|_| VecDeque::new()).collect(),
@@ -2416,7 +2427,7 @@ mod tests {
     async fn rows_routed_by_key_group_meet_on_one_writer_lane() {
         let mut req = crate::plan::tests::lanes_request(&["a"], 2, 2);
         req.streams[0].primary_key = vec!["id".into()];
-        req.streams[0].routing = openetl_proto::engine::v1::Routing::KeyGroup as i32;
+        req.streams[0].exchange = crate::plan::tests::exchange_by(&["id"]);
         let mut h = start_lanes(req);
         let all: Vec<String> = (0..200).map(|i| format!(r#"{{"id": {i}}}"#)).collect();
         let all: Vec<&str> = all.iter().map(String::as_str).collect();
@@ -2455,7 +2466,7 @@ mod tests {
             let mut req = crate::plan::tests::lanes_request(&["a"], writers, writers);
             req.streams[0].primary_key = vec!["id".into()];
             if writers > 1 {
-                req.streams[0].routing = openetl_proto::engine::v1::Routing::KeyGroup as i32;
+                req.streams[0].exchange = crate::plan::tests::exchange_by(&["id"]);
             }
             req.streams[0].key_groups =
                 keep.map(|(first, last)| openetl_proto::engine::v1::KeyGroupRange { first, last });

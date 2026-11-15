@@ -397,6 +397,8 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 	var ds []delivery.Stream
 	var inputs []Input
 	merges := false
+	// Every lane merges into a destination's one writer lane.
+	oneLane := caps.Lanes() == 1
 	for _, s := range streams {
 		name := s.cs.GetName()
 		for _, column := range slices.Sorted(maps.Keys(s.ps.GetColumns())) {
@@ -442,8 +444,10 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		d := deliveryStream(s.cs, s.ps, read, mode)
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
-		plans = append(plans, &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
-			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]})
+		sp := &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
+			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]}
+		sp.Partitioning, sp.Operators = Place(sourceOf(spec, s.cs, s.ps), WriterOperator(s.cs.GetPrimaryKey(), oneLane)).API()
+		plans = append(plans, sp)
 	}
 	if ownCode(spec) {
 		for _, o := range Outputs(spec, caps, inputs) {
@@ -454,7 +458,10 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 			d := o.Delivery()
 			ds = append(ds, d)
 			p := delivery.PlanStream(caps, d, settings.Require)
-			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil)})
+			sp := &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, nil)}
+			// The user's code gives its outputs no partitioning.
+			sp.Partitioning, sp.Operators = Place(Partitioning{}, WriterOperator(o.PrimaryKey, oneLane)).API()
+			plans = append(plans, sp)
 		}
 	}
 	if sql && answer != nil {
@@ -467,8 +474,11 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 			d := o.Delivery()
 			ds = append(ds, d)
 			p := delivery.PlanStream(caps, d, settings.Require)
-			plans = append(plans, &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, o.Spec),
-				Table: spec.GetDestination().GetTables()[o.Name]})
+			sp := &apiv1.StreamPlan{Name: o.Name, Level: levels[p.Level], Reason: p.Why, Write: apiWriteMode(o.Mode), TypeChanges: TypeChanges(spec, o.Spec),
+				Table: spec.GetDestination().GetTables()[o.Name]}
+			st := answer.Statements[i]
+			sp.Partitioning, sp.Operators = StatementPath(statementSource(spec, cat, st), st, o.PrimaryKey, oneLane).API()
+			plans = append(plans, sp)
 		}
 		problems = append(problems, SQLSettingProblems(spec, caps, answer, inputs, outs)...)
 	}

@@ -25,6 +25,7 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
@@ -66,8 +67,10 @@ type Stream struct {
 	Transformed bool
 	// Nil: the stream holds nothing back.
 	Holds *StreamHolds
-	// Where the source splits it, every record of a key is in one split.
-	SplitsByKey bool
+	// How its rows are spread over lanes on their way to the writer: what
+	// its source gives (plan.SourcePartitioning), and for a statement's
+	// output, that past the statement. The zero value is unpartitioned.
+	Partitioning plan.Partitioning
 	// Its name in the destination, exactly; empty: from Name, by the naming.
 	Table string
 	// One of a SQL transform's outputs: the stream its statement reads, or
@@ -222,7 +225,8 @@ type Job struct {
 	writers int
 }
 
-func (j *Job) lanes() int { return max(j.Lanes, 1) }
+// lanes are at most the key groups, so each lane owns one or more.
+func (j *Job) lanes() int { return min(max(j.Lanes, 1), j.keyGroups()) }
 
 // Reset is a request to read streams again from the start.
 type Reset struct {
@@ -1404,13 +1408,11 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 	}
 	plan.Lanes, plan.WriterLanes, plan.KeyGroups = j.lanes(), j.writerLanes(), j.keyGroups()
 	for _, s := range j.sinkStreams() {
-		// A key's rows meet on one writer lane. An output of a SQL
-		// transform has its stream's splits and read.
-		if j.keyGrouped(s) && plan.WriterLanes > 1 {
-			if plan.KeyGrouped == nil {
-				plan.KeyGrouped = map[string]bool{}
+		if cols := exchange(s, plan.WriterLanes); cols != nil {
+			if plan.Exchanges == nil {
+				plan.Exchanges = map[string][]string{}
 			}
-			plan.KeyGrouped[s.Name] = true
+			plan.Exchanges[s.Name] = cols
 		}
 	}
 	if restored != nil {
@@ -1422,11 +1424,21 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 	return plan
 }
 
-// keyGrouped says a stream's rows are routed to writer lanes by their key's
-// group, since its splits don't keep a key's rows together.
-func (j *Job) keyGrouped(s Stream) bool {
-	return len(s.PrimaryKey) > 0 && (!s.SplitsByKey || s.Read == source.CDC)
+// exchange is the columns a stream's rows are exchanged by before the
+// writer, on writers writer lanes: the writer's need, its primary key, where
+// the stream's partitioning doesn't meet it; nil where it does, as on one
+// writer lane, which every lane merges into.
+func exchange(s Stream, writers int) []string {
+	p := plan.Place(s.Partitioning, plan.WriterOperator(s.PrimaryKey, writers <= 1))
+	if !p.Steps[0].Exchange {
+		return nil
+	}
+	return p.Steps[0].Need.Columns
 }
+
+// keyGrouped says a stream's rows meet the writer through an exchange by key
+// group when there is more than one writer lane.
+func (j *Job) keyGrouped(s Stream) bool { return exchange(s, 2) != nil }
 
 // sinkStarts are the starts of the reads of the destination's streams that
 // the attempt reads, and where their reads end.

@@ -94,11 +94,21 @@ pub struct Statement {
 }
 
 impl Statement {
-    /// The columns its rows are exchanged by, by key group, before its
-    /// operator; `None` where the operator runs in the lane that read them.
-    pub fn exchange(&self) -> Option<&[String]> {
+    /// What its operator needs of its input: the columns whose equal values
+    /// must be on one lane, which an exchange by key group gives where the
+    /// input's partitioning doesn't; `None` for nothing, as a row-wise
+    /// operator, which runs in the lane that read its rows.
+    pub fn need(&self) -> Option<&[String]> {
         match self.operator {
             Operator::RowWise(_) => None,
+        }
+    }
+
+    /// The input's columns that reach the output unchanged, each with its
+    /// name there: a partitioning by them is the output's too.
+    pub fn passes(&self) -> Vec<(String, String)> {
+        match &self.operator {
+            Operator::RowWise(r) => r.passes(),
         }
     }
 }
@@ -137,6 +147,58 @@ pub struct RowWise {
 }
 
 impl RowWise {
+    /// The input's columns that reach the output unchanged, renamed or not,
+    /// each with the first name the output gives it, in the output's order:
+    /// through filters, projections that pass them, and `UNNEST`, which
+    /// repeats a row's values on each row it gives.
+    pub fn passes(&self) -> Vec<(String, String)> {
+        // Each column of a step's batch, with the input column it holds.
+        let mut cols: Vec<(String, Option<String>)> = self
+            .reads
+            .fields()
+            .iter()
+            .map(|f| (f.name().clone(), Some(f.name().clone())))
+            .collect();
+        for step in &self.steps {
+            cols = match step {
+                Step::Filter(_) => continue,
+                Step::Project(p) => p
+                    .columns
+                    .iter()
+                    .map(|c| {
+                        let from = c.expr.column().and_then(|n| {
+                            cols.iter()
+                                .find(|(m, _)| m == n)
+                                .and_then(|(_, i)| i.clone())
+                        });
+                        (c.name.clone(), from)
+                    })
+                    .collect(),
+                Step::Unnest(u) => u
+                    .sources
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &src)| {
+                        let from = match u.lists.contains(&src) {
+                            true => None,
+                            false => cols.get(src).and_then(|(_, i)| i.clone()),
+                        };
+                        (u.schema.field(j).name().clone(), from)
+                    })
+                    .collect(),
+            };
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (name, from) in cols {
+            if let Some(from) = from
+                && !out.iter().any(|(f, _)| *f == from)
+            {
+                out.push((from, name));
+            }
+        }
+        out
+    }
+
     /// A batch of the input's columns that the first step reads, from a
     /// batch of the stream that has them, by name and type, in any order.
     pub fn input(&self, batch: &RecordBatch) -> Result<RecordBatch, Error> {

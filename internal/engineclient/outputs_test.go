@@ -56,7 +56,7 @@ func TestStartRequestWithoutSQL(t *testing.T) {
 	p.Streams[0].Mode, p.Streams[0].PrimaryKey, p.Streams[0].Table = destination.Merge, []string{"id"}, "A"
 	p.Schemas = map[string][]byte{"a": schemaBytes(t, "x")}
 	p.Holds = map[string]*runner.HoldPlan{"a": {StreamHolds: runner.StreamHolds{Cells: true}}}
-	p.KeyGrouped = map[string]bool{"a": true}
+	p.Exchanges = map[string][]string{"a": {"id"}}
 	req, names, sinkNames, err := startRequest(p)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestStartRequestWithoutSQL(t *testing.T) {
 		}
 	}
 	a := req.GetStreams()[0]
-	if !a.GetSoftDeletes() || !a.GetHolds().GetCells() || a.GetTable() != "A" || a.GetRouting() != enginev1.Routing_ROUTING_KEY_GROUP || len(a.GetRestoredSchema()) == 0 {
+	if !a.GetSoftDeletes() || !a.GetHolds().GetCells() || a.GetTable() != "A" || !slices.Equal(a.GetExchange().GetColumns(), []string{"id"}) || len(a.GetRestoredSchema()) == 0 {
 		t.Errorf("stream a lost the destination's settings: %v", a)
 	}
 	if a.GetKeyGroups() != nil {
@@ -115,7 +115,7 @@ func TestStartRequestCarriesSQLAndOutputs(t *testing.T) {
 	}
 	p.OutputSchemas = map[string][]byte{"a": schemaBytes(t, "output")}
 	p.Holds = map[string]*runner.HoldPlan{"a": {StreamHolds: runner.StreamHolds{Cells: true}}}
-	p.KeyGrouped = map[string]bool{"a": true}
+	p.Exchanges = map[string][]string{"a": {"id"}}
 	expected := arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil)
 	p.SQL = &runner.SQLTransform{
 		SQL:       "INSERT INTO a SELECT id FROM a; INSERT INTO c SELECT * FROM b",
@@ -140,7 +140,7 @@ func TestStartRequestCarriesSQLAndOutputs(t *testing.T) {
 	}
 
 	in := req.GetStreams()[0]
-	if in.GetSoftDeletes() || in.GetHolds() != nil || in.GetTable() != "" || in.GetRouting() != enginev1.Routing_ROUTING_UNSPECIFIED {
+	if in.GetSoftDeletes() || in.GetHolds() != nil || in.GetTable() != "" || in.GetExchange() != nil {
 		t.Errorf("input a has the destination's settings: %v", in)
 	}
 	if in.GetCursorField() != "at" || in.GetReadStartMicros() != 7 || len(in.GetArrowSchema()) == 0 || !slices.Equal(in.GetRestoredSchema(), p.Schemas["a"]) {
@@ -155,7 +155,7 @@ func TestStartRequestCarriesSQLAndOutputs(t *testing.T) {
 		t.Fatalf("outputs: %v", outs)
 	}
 	a, c := outs[0], outs[1]
-	if !a.GetSoftDeletes() || !a.GetHolds().GetCells() || a.GetTable() != "A" || a.GetRouting() != enginev1.Routing_ROUTING_KEY_GROUP ||
+	if !a.GetSoftDeletes() || !a.GetHolds().GetCells() || a.GetTable() != "A" || !slices.Equal(a.GetExchange().GetColumns(), []string{"id"}) ||
 		!slices.Equal(a.GetPrimaryKey(), []string{"id"}) || !slices.Equal(a.GetRestoredSchema(), p.OutputSchemas["a"]) {
 		t.Errorf("output a: %v", a)
 	}
