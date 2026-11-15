@@ -71,7 +71,7 @@ Sources can also implement these operations:
 
 | Operation | Contract |
 |---|---|
-| `Check` | Validate the connection configuration. |
+| `Check` | Check the connection configuration without reading. A `Preflight` says what it looked at, item by item; see [Pre-flight checks](#pre-flight-checks). |
 | `Committed` | Acknowledge upstream offsets or replication positions. Notifications are one checkpoint behind. |
 | `Splits`, `Resplit` | Divide streams into concurrent reads. |
 | `Retention` | Report retention usage for saved positions while the pipeline is stopped. Set `Retention: true` in `sdk.Connector` to enable checks every 15 minutes. Reports can open a **Retention at risk** incident. |
@@ -107,6 +107,45 @@ Failed teardown operations retry for up to 7 days. After that, OpenETL records `
 A destination must not change an existing column's type unless the pipeline permits it. This applies to target columns, staging columns and other columns that become user data. Refuse an unpermitted type change with `RefusedColumn`. Include the column, reason, types and a `Fix` statement or repair step, such as `ALTER TABLE`.
 
 OpenETL holds the affected column where supported, or stops the stream. It shows the repair to the user. New columns can still be added.
+
+### Pre-flight checks
+
+`Check` answers whether a config works. A pre-flight also says what the check looked at: reaching the service, each permission, each stream or table, and what to do about each one that fails. The console shows each item on a source's or destination's page, and `openetl check` prints them.
+
+A check's response lists its items in the order they ran. Each has a `name`, unique and the same from one check to the next, such as `stream.clicks.read`; a `title` for people; a status, `passed`, `warning`, `failed` or `skipped`; a `message`; a failed item's classified `error`; a `fix`, what to do about a failure or a warning; and the config `field` it concerns, as a dotted path. The response's `error` is its first failed item's. A warning doesn't fail the check: the pipeline can still run, not as configured or not as well as it could. Skip what an earlier failure makes pointless, and what can't be checked without changing something, such as writing a record, and say in the `fix` which permission it needs. Item text is shown and kept, so it never holds secrets or records.
+
+In Go, implement `source.Preflighter` or `destination.Preflighter` in place of `Checker`. Record failures in the report rather than stopping at the first, so one check shows everything that's wrong:
+
+```go
+func (s *Source) Preflight(ctx context.Context, r *preflight.Report) {
+	if !r.Run("connect", "Reach the API", func() error { return s.ping(ctx) }, preflight.Field("url")) {
+		r.Skip("stream.orders.read", "Read orders", "the API can't be reached")
+		return
+	}
+	r.Run("stream.orders.read", "Read orders", func() error {
+		return preflight.Fix(s.peek(ctx, "orders"), "Grant the API key the orders:read scope.")
+	})
+}
+```
+
+`preflight.Fix` attaches a fix to an error, so the code that classifies errors can say what to do about each. `Warn`, `Pass` and `Skip` record the other statuses.
+
+### The config schema
+
+The config schema is a JSON Schema, draft 2020-12. OpenETL validates configs against it, and builds the console's view of a role's config from it: fields in the order the schema declares them, under groups, with their values, defaults and conditions. Give every field a `description`, and a `title` where its name doesn't read well. These keywords shape the form:
+
+| Keyword | Where | What it does |
+|---|---|---|
+| `x-groups` | The root | The form's sections, in order: a list of `{"id", "title", "description"}`. Fields without a group go before every section. |
+| `x-group` | A field | The `id` of the section it's in. A nested field is in its parent's unless it sets one. |
+| `x-secret` | A field | Its value is a secret's name, as `{ secret: NAME }`, never the secret. |
+| `x-advanced` | A field | Shown after the others in its section, and marked advanced. |
+| `x-when` | A field | It applies only when other fields have these values: `{"consumer.type": "efo"}`, or a list of values, `{"mode": ["a", "b"]}`. Paths are dotted from the config's root, and a field that isn't set has its default. It hides the field in a form; validate the config in the connector too. |
+| `x-format` | A field | What a text field holds, beyond JSON Schema's `format`: `duration` (Go's syntax, `500ms`, `1m30s`), `date-time` (RFC 3339), `uri`, `email`, `hostname`, `regex` or `multiline`. |
+| `oneOf` of `const` | A field | Values with labels: `"oneOf": [{"const": "efo", "title": "Enhanced fan-out", "description": "…"}]`. A plain `enum` works too, shown as its values. |
+| `default`, `examples`, `minimum`, `maximum`, `pattern`, `deprecated` | A field | As in JSON Schema; the form shows each. |
+
+`openetl connector package` refuses a schema that would break a form: an `x-group` the root doesn't declare, an `x-when` on a field that doesn't exist or on a value it can't take, a `default` that isn't one of a field's values, or an `x-format` it doesn't know. The conformance kit's `spec` check finds the same, and flags fields without a description.
 
 ### Jobs on several workers
 
@@ -267,11 +306,11 @@ greetings: 3 records, complete
 
 Connectors run as trusted code: `egress` says what yours means to reach, and OpenETL doesn't enforce it yet. [What that means for the people who run them](../self-host/index.md#connectors-are-trusted-code).
 
-`openetl connector check` checks a config reaches the upstream. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
+`openetl connector check` checks a config reaches the upstream, and prints a pre-flight's items. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
 
 ## Test it with the conformance kit
 
-The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications, connection checks, discovery, reads, resumption, and reads that stop at a redo's `until`. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
+The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications and their config schemas, connection checks and their pre-flight items, discovery, reads, resumption, and reads that stop at a redo's `until`. Destination checks cover commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
 
 Run it from the CLI:
 

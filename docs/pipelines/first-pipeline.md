@@ -158,7 +158,7 @@ A failed check identifies the missing requirement. For example, the default dest
 openetl: workspaces/default/destinations/warehouse failed its check: PERMISSION_DENIED: postgres: no CREATE on schema "public"
 ```
 
-Correct the database privileges or connection configuration. If you changed `app-db.yaml`, apply it again. Repeat both connection checks before continuing.
+A connector that says what its check looked at lists each item under that line, with a fix and the config field for each one that failed or warned. Correct the database privileges or connection configuration. If you changed `app-db.yaml`, apply it again. Repeat both connection checks before continuing.
 
 ## 5. Look at the source's streams
 
