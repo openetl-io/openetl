@@ -11,17 +11,18 @@ import (
 // WorkerJob is what decides whether a job runs on workers.
 type WorkerJob struct {
 	Workers int
-	// A Spark or Flink transform.
-	OwnCode bool
-	Caps    destination.Capabilities
+	// A Spark or Flink transform; a SQL transform.
+	OwnCode, SQL bool
+	Caps         destination.Capabilities
 	// The engine writes the destination's data.
 	EngineWritten bool
 }
 
 // OnePod says why a job that asks for workers runs on one pod; empty if it
 // can run on them. What needs one writer, or what only one pod runs, stays
-// on one pod. A SQL transform runs on workers, and so do holds: the
-// attempt's coordinator owns each stream's schema and what it holds.
+// on one pod. A SQL transform runs on workers, but into a destination whose
+// lanes commit on their own, and so do holds: the attempt's coordinator owns
+// each stream's schema and what it holds.
 func OnePod(j WorkerJob) string {
 	caps := j.Caps
 	switch {
@@ -33,6 +34,11 @@ func OnePod(j WorkerJob) string {
 		return fmt.Sprintf("the destination takes %d writer lanes, fewer than %d workers", caps.Lanes(), j.Workers)
 	case caps.Class == destination.TransactionalStream && !caps.LaneCommits:
 		return "a transactional destination runs on one pod unless its writer lanes commit on their own"
+	case j.SQL && caps.LaneCommits:
+		// A lane's part of an epoch, written again from the source, holds the
+		// rows of the input's splits that reached it, which an exchange of a
+		// statement's output sends to any lane.
+		return "a SQL transform into a destination whose writer lanes commit on their own runs on one pod"
 	case caps.Delivery == destination.DeliveryStaged:
 		return "a destination that loads staged epochs runs on one pod"
 	case j.EngineWritten:
@@ -89,7 +95,7 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 	if asked <= 1 {
 		return 0, "", nil
 	}
-	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec)}
+	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec), SQL: spec.GetTransform().GetSql() != nil}
 	if why := OnePod(j); why != "" {
 		return 0, why, nil
 	}

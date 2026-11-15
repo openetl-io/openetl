@@ -1132,6 +1132,12 @@ func TestWhatRunsOnOnePod(t *testing.T) {
 			j.SQL = &runner.SQLTransform{}
 			j.Outputs = j.Streams
 		}, false},
+		// A redo of one lane's part wouldn't run the statement's exchange.
+		"a SQL transform into lane commits": {2, func(j *runner.Job) {
+			j.SQL = &runner.SQLTransform{}
+			j.Outputs = j.Streams
+			j.Destination = txnDest{s: newTxnStore(t)}
+		}, true},
 		"holds": {2, func(j *runner.Job) {
 			j.Destination = holdingStagingDest{stagingDest{s: p.store, t: t}}
 			j.HeldURL = "file:///held"

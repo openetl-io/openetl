@@ -92,10 +92,11 @@ When a job size is an object rather than a preset, both `cpu` and `memory` are r
 With `resources.workers` above 1, `openetl plan` shows `workers:` and the count after the job size. A job runs on one pod, and the plan's warnings say why, when:
 
 - the pipeline has a Spark or Flink `transform`;
+- the pipeline has `transform.sql`, and the destination's writer lanes commit on their own (`laneCommits`);
 - the destination declares fewer writer lanes than workers (`maxWriterLanes`, one if unset), is a transactional stream without lane commits (`laneCommits`), loads staged epochs, or is the built-in `parquet`;
 - no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners of its data plane have.
 
-A pipeline with `transform.sql` runs on workers, and so do streams that hold columns or cells. The coordinator decides each stream's schema and what it holds, so every worker writes the same columns and holds the same ones. Only the first worker patches in released holds. A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
+A pipeline with `transform.sql` runs on workers into other destinations, and so do streams that hold columns or cells. The coordinator decides each stream's schema and what it holds, so every worker writes the same columns and holds the same ones. Only the first worker patches in released holds. A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
 
 Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
 

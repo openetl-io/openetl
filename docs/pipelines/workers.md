@@ -78,6 +78,7 @@ The pipeline still applies, and its jobs run on one pod. These are the reasons, 
 | `the destination declares one writer lane` | Nothing: the destination takes one writer lane, so its jobs run on one pod. |
 | `the destination takes N writer lanes, fewer than M workers` | Set `resources.workers` to `N` or fewer. |
 | `a transactional destination runs on one pod unless its writer lanes commit on their own` | Nothing today: a transactional destination runs on workers only if its connector declares lane commits. Its documentation says whether it does. |
+| `a SQL transform into a destination whose writer lanes commit on their own runs on one pod` | Nothing today: a pipeline with a [SQL transform](./sql-transforms.md) runs on one pod when its destination declares lane commits. |
 | `a destination that loads staged epochs runs on one pod` | Nothing today: a destination that loads files that OpenETL stages runs on one pod. |
 | `a destination the engine writes runs on one pod` | Nothing today: the built-in `parquet` destination runs on one pod. |
 | `no pod launcher of data plane "PLANE" and pool "POOL" has reported in the last ten minutes, and an attempt runs on workers only in pods` | Run the pipeline in a pool that has a pod launcher, or ask your operator to add one. |
@@ -109,7 +110,7 @@ The plan warns about each one, in this form:
 STREAM: each attempt reads it on one of its 4 workers: REASON
 ```
 
-Each such stream is no faster than on one pod, but different such streams can go to different workers, which read them at the same time. A worker with no stream or split to read has no work. For example, a job with only two such streams leaves two of four workers with nothing to read.
+Each such stream is no faster than on one pod. Different such streams can go to different workers, which read them at the same time, except that every `cdc` stream goes to one worker. A worker with no stream or split to read has no work. For example, a job with only two such streams leaves two of four workers with nothing to read. If both streams are read with `cdc`, the job leaves three of four workers with nothing to read.
 
 With a [SQL transform](./sql-transforms.md), these rules apply to each statement's output, and to each stream that passes through. One worker reads all the splits of a stream when an output written from it has an exchange in the `partitioning` section, or is written with `overwrite`. For example, a statement that passes the key through keeps the stream's split by key, and an output without a key needs no exchange. The plan's warning names the stream that the statement reads.
 

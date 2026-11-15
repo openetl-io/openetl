@@ -359,11 +359,17 @@ func listen(t *testing.T) *attempt.Server {
 	return srv
 }
 
-// drainAfter has j stop at the checkpoint after its first commit.
-func drainAfter(j *runner.Job) {
+// drainOnceRecorded has j stop at the checkpoint after the first committed
+// record that ok says yes of.
+func drainOnceRecorded(j *runner.Job, ok func(*checkpoint.Record) bool) {
 	ch := make(chan struct{})
 	var once sync.Once
-	j.Drain, j.OnCommit = ch, func(uint64) { once.Do(func() { close(ch) }) }
+	j.Drain = ch
+	j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+		if ok(rec) {
+			once.Do(func() { close(ch) })
+		}
+	}
 }
 
 func fieldNames(raw []byte) ([]string, error) {
@@ -437,12 +443,19 @@ func TestSQLOnWorkersThroughTheEngine(t *testing.T) {
 	}
 	p.wait()
 
-	// Two workers, with more to read, drained after a commit; then one
-	// runner, to the end.
+	// Two workers, with more to read, drained once a record holds what
+	// worker 1, which reads the split with extra, saw; then one runner, to
+	// the end.
 	p.mk = job("a2", 6)
 	j = p.mk()
 	p.on(&j, srv, 2)
-	drainAfter(&j)
+	sawExtra := func(raw []byte) bool {
+		names, err := fieldNames(raw)
+		return err == nil && slices.Contains(names, "extra:utf8")
+	}
+	drainOnceRecorded(&j, func(rec *checkpoint.Record) bool {
+		return sawExtra(rec.Streams["s"].Schema) && sawExtra(rec.Outputs["kept"].Schema)
+	})
 	res, err := runner.RunAttempt(ctx, j)
 	if !errors.Is(err, runner.ErrDrained) {
 		t.Fatalf("two workers: %v", err)

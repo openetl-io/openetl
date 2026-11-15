@@ -140,6 +140,7 @@ These jobs run on one pod:
 - a job with a Spark or Flink transform;
 - a job whose destination loads staged epochs or is written by the engine;
 - a job whose destination is transactional and does not have lane commits;
+- a job with a SQL transform whose destination has lane commits: a committable's coverage names the input splits on its own lanes, and a redo filters key groups by the destination's stream, so a lane's part of an exchanged output can't be written again from the source yet;
 - a job whose destination takes fewer writer lanes than there are workers.
 
 `plan.OnePod` ([`internal/plan`](../../internal/plan)) is the one check behind these cases, for the plan, for `EnqueueWork` and for `Job.OnWorkers`. `EnqueueWork` works out an attempt's workers when it sizes the attempt, so the workflows and their histories do not change. The placer sends an attempt on workers only to a pod launcher of its pool, all of its pods or none, and the launcher's `--max-pods` and `--max-pod-cpu` count every pod. The launcher ([`internal/runner/pods`](../../internal/runner/pods)) makes the workers' pods, then the coordinator's.
