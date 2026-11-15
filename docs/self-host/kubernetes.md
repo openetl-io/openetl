@@ -146,7 +146,7 @@ For each attempt, the launcher makes a pod for each worker, then the coordinator
 | Pod | Name | Requests and limits | What the launcher adds |
 |---|---|---|---|
 | The coordinator | `openetl-attempt-HASH-PLACEMENT` | `xs` plus the reserve | `OPENETL_POD_IP`, from the pod's IP; `OPENETL_ATTEMPT_LISTEN` set to `:7720`; `OPENETL_ATTEMPT_ADVERTISE` set to `$(OPENETL_POD_IP)`; the container port `attempt`, 7720/TCP |
-| Worker `N`, from 1 | `openetl-attempt-HASH-PLACEMENT-wN` | The job's size plus the reserve | `OPENETL_WORKER` set to `N`; the annotation `openetl.io/worker: "N"` |
+| Worker `N`, from 1 | `openetl-attempt-HASH-PLACEMENT-wN` | The job's size plus the reserve | `OPENETL_WORKER` set to `N`; the annotation `openetl.io/worker: "N"`; `OPENETL_POD_IP`, from the pod's IP; `OPENETL_EXCHANGE_LISTEN` set to `:7720`; `OPENETL_EXCHANGE_ADVERTISE` set to `$(OPENETL_POD_IP)`; the container port `exchange`, 7720/TCP |
 
 `HASH` comes from the attempt's ID, and `PLACEMENT` counts the attempt's placements. Every pod also has what any job's pod has:
 
@@ -169,6 +169,8 @@ Each worker connects to its coordinator's pod IP on TCP port 7720. No Service is
 The workers get the address, the certificate and the token from the API. The coordinator gives them to the API after it claims the pipeline. While the attempt runs, the API gives them to a caller with the data plane's runner token that asks for that attempt's workers. The control plane's database keeps them in the attempt's queue entry, which it deletes a day after the attempt ends.
 
 Each end sends a heartbeat every 2 seconds. If either end hears nothing from the other for 10 seconds, the attempt fails, and OpenETL retries it from the last checkpoint. Every worker must join within 5 minutes after the coordinator starts the attempt.
+
+When a job's rows go through an [exchange](../pipelines/workers.md#the-exchange-between-workers), each worker's engine also connects to every other worker's pod IP on TCP port 7720. Each worker gives its address when it joins, and the coordinator sends every worker the others' addresses. These connections use TLS 1.3 with a certificate, a key and a secret that the coordinator makes for each try of the attempt and sends to the workers. Each engine trusts only that certificate, and refuses a connection that does not prove the secret. A pod is either a coordinator or a worker, so each pod listens on port 7720 for one of these purposes. If an engine cannot reach another within a minute, or a connection between two of them breaks, the attempt fails, and OpenETL retries it.
 
 #### Allow the route in a NetworkPolicy
 
@@ -205,7 +207,7 @@ spec:
           port: 7720
 ```
 
-Only coordinators listen on port 7720, but no label tells them apart, so the policy opens the port on every job pod. Each attempt's certificate and token keep other pods out of it. To allow the route only within one pool, add `openetl.io/pool: POOL` to the three selectors, and make one such policy for each pool.
+Coordinators listen on port 7720 for their workers, and workers for each other's engines. No label tells them apart, so the policy opens the port on every job pod, both ways. Each attempt's certificates, token and secret keep other pods out of it. To allow the route only within one pool, add `openetl.io/pool: POOL` to the three selectors, and make one such policy for each pool.
 
 > [!WARNING]
 > A NetworkPolicy that selects a pod blocks all the pod's traffic that no policy allows. Apply this policy only with the policies that already let job pods reach DNS, the API, the bucket, the connector registry and your data systems, and let Prometheus scrape them. Without those policies, every job pod loses that traffic, and its jobs fail.

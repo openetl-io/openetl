@@ -37,7 +37,10 @@ type Dataflow struct {
 	started func(*process)
 }
 
-var _ runner.Dataflow = (*Dataflow)(nil)
+var _ runner.Meshing = (*Dataflow)(nil)
+
+// Meshes: an attempt's engines, one per worker, exchange rows over TLS.
+func (*Dataflow) Meshes() bool { return true }
 
 const (
 	// How long a failed edge waits for the engine to explain the failure.
@@ -356,6 +359,12 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		FirstWriterLane:    ints.Uint32(plan.FirstWriterLane),
 		AttemptWriterLanes: ints.Uint32(plan.AttemptWriterLanes),
 	}
+	if m := plan.Mesh; m != nil {
+		req.Mesh = &enginev1.Mesh{Engine: ints.Uint32(m.Engine), Listen: m.Listen, Certificate: m.Certificate, Key: m.Key, Secret: m.Secret}
+		for _, e := range m.Engines {
+			req.Mesh.Engines = append(req.Mesh.Engines, &enginev1.MeshEngine{Address: e.Address, Lanes: ints.Uint32(e.Lanes), WriterLanes: ints.Uint32(e.WriterLanes)})
+		}
+	}
 	sql := plan.SQL != nil
 	for i, s := range plan.Streams {
 		names[i] = s.Name
@@ -587,12 +596,24 @@ func fromStatus(err error) error {
 	if !ok {
 		return nil
 	}
+	var cause error
+	peerLost := false
 	for _, d := range st.Details() {
-		if pe, ok := d.(*protocolv1.Error); ok {
-			return fmt.Errorf("engine: %w", errs.FromProto(pe))
+		switch d := d.(type) {
+		case *protocolv1.Error:
+			cause = errs.FromProto(d)
+		case *enginev1.PeerLost:
+			peerLost = true
 		}
 	}
-	return nil
+	switch {
+	case cause == nil:
+		return nil
+	case peerLost:
+		// Another worker's engine was lost, whose own failure says why.
+		return fmt.Errorf("engine: %w", &attempt.PeerLost{Err: cause})
+	}
+	return fmt.Errorf("engine: %w", cause)
 }
 
 func inEdge(lane int) string { return fmt.Sprintf("in-%d", lane) }

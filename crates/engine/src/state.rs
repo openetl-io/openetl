@@ -1,7 +1,10 @@
 //! Where a job's stateful operators keep their state, and how the record
 //! names it. The store is the process's memory for now: what it holds
 //! outlives an epoch and a lane, but not the engine, so a restore finds a
-//! record's state only in the engine that wrote it. A store on object
+//! record's state only in the engine that wrote it. Each attempt runs an
+//! engine of its own, so only the layer that wrote a version reads it, and
+//! a keyed lane keeps its newest two; releasing by what records keep is the
+//! store on object storage's. A store on object
 //! storage takes its place behind the same [`Stores`]. Each operator of a
 //! pipeline has a store of its own, and each lane a layer of it for its key
 //! groups.

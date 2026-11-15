@@ -242,7 +242,11 @@ func (w *worker) end(err error, failure, abort bool) {
 		return
 	}
 	w.over, w.err = true, err
-	if failure {
+	var peer *PeerLost
+	switch {
+	case failure && errors.As(err, &peer):
+		w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_PeerLost{PeerLost: errs.ToProto(err)}})
+	case failure:
 		w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_Failure{Failure: errs.ToProto(err)}})
 	}
 	close(w.done)

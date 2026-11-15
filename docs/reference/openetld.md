@@ -100,6 +100,8 @@ Where a runner keeps checkpoints and its cache, the programs it runs, the pool i
 | `--bridge-advertise` | `OPENETL_BRIDGE_ADVERTISE` |  | the host:port Flink jobs reach this runner's bridge at, which must reach this runner and not a load balancer (default: the listen address) |
 | `--attempt-listen` | `OPENETL_ATTEMPT_LISTEN` |  | where a runner that coordinates an attempt on workers serves them, such as :7720 (default: 127.0.0.1 and a free port, which only workers on this machine reach); the kubernetes launcher sets it in a coordinator's pod |
 | `--attempt-advertise` | `OPENETL_ATTEMPT_ADVERTISE` |  | the host, or host:port, an attempt's workers reach their coordinator at; a host alone takes --attempt-listen's port (default: the listen address); the kubernetes launcher sets it to the coordinator pod's IP |
+| `--exchange-listen` | `OPENETL_EXCHANGE_LISTEN` |  | where a worker's engine listens for the engines of the attempt's other workers, which send it rows by key group, such as :7720 (default: 127.0.0.1 and a free port, which only workers on this machine reach); the kubernetes launcher sets it in a worker's pod |
+| `--exchange-advertise` | `OPENETL_EXCHANGE_ADVERTISE` |  | the host, or host:port, the attempt's other workers' engines reach this worker's at; a host alone takes --exchange-listen's port (default: the listen address); the kubernetes launcher sets it to the worker pod's IP |
 | `--pool` | `OPENETL_POOL` | `default` | the pool this runner serves |
 | `--capacity` | `OPENETL_CAPACITY` |  | what this runner places on itself, as CPU,MEMORY such as 4,8Gi (default: its cgroup's or host's, less --reserve) |
 | `--reserve` | `OPENETL_RESERVE` | `0.5,512Mi` | what this runner keeps for itself, as CPU,MEMORY |

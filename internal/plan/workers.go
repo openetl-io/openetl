@@ -59,38 +59,21 @@ func OnePod(j WorkerJob) string {
 const (
 	whyOverwrite = "an overwrite's read ends on one worker"
 	whyChanges   = "the source reads its changes from one log, with those of every stream read with cdc, which one worker reads"
-	whySplits    = "the source's splits don't partition it by key, and the rows of each key must meet on one writer lane"
 )
 
 // OneWorker says why an attempt on workers reads all of a stream's splits on
-// one worker; empty if it spreads them.
-func OneWorker(mode destination.WriteMode, keyed, splitsByKey bool, read apiv1.SyncMode) string {
+// one worker, where it's written in mode, or a SQL statement writes an
+// output from it in mode; empty if it spreads them. An exchange before the
+// writer sends each row to the worker whose writer lane owns its key group,
+// so a keyed stream whose splits don't partition it by key spreads too.
+func OneWorker(mode destination.WriteMode, read apiv1.SyncMode) string {
 	switch {
 	case mode == destination.Overwrite:
 		return whyOverwrite
 	case read == apiv1.SyncMode_SYNC_MODE_CDC:
 		return whyChanges
-	case keyed && !splitsByKey:
-		return whySplits
 	}
 	return ""
-}
-
-// oneWorkerOn says why an attempt on workers reads all of a stream's splits
-// on one worker, where a statement writes path's output from it in mode:
-// the output is an overwrite, the stream is read with cdc, or the output's
-// path has an exchange, which runs inside one engine. Empty if it spreads
-// them.
-func oneWorkerOn(mode destination.WriteMode, path Path, read apiv1.SyncMode) string {
-	switch {
-	case mode == destination.Overwrite:
-		return whyOverwrite
-	case read == apiv1.SyncMode_SYNC_MODE_CDC:
-		return whyChanges
-	case len(path.Exchanges()) == 0:
-		return ""
-	}
-	return whySplits
 }
 
 // Workers plans a job's workers: how many each attempt runs on (0: one pod),
@@ -125,7 +108,7 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 				continue
 			}
 		}
-		whys[name] = OneWorker(StreamMode(spec, caps, read, keyed), keyed, s.cs.GetSplitsByKey(), read)
+		whys[name] = OneWorker(StreamMode(spec, caps, read, keyed), read)
 	}
 	if sql {
 		outs, _ := SQLOutputs(spec, caps, a, inputs)
@@ -135,8 +118,7 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 			}
 			for _, in := range inputs {
 				if in.Name == st.Inputs[0] {
-					path := StatementPath(statementSource(spec, cat, st), st, outs[i].PrimaryKey, false)
-					whys[in.Name] = oneWorkerOn(outs[i].Mode, path, in.Read)
+					whys[in.Name] = OneWorker(outs[i].Mode, in.Read)
 				}
 			}
 		}

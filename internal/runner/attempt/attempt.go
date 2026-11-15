@@ -42,7 +42,19 @@ const (
 	DefaultHeartbeat   = 2 * time.Second
 	DefaultTimeout     = 10 * time.Second
 	DefaultJoinTimeout = 5 * time.Minute
+	// Another worker's own failure follows its engine's at once, and a
+	// call breaks at once when its pod is gone.
+	DefaultPeerLostGrace = 5 * time.Second
 )
+
+// PeerLost is a worker's failure that says only that its engine lost
+// another worker's engine, whose own failure, or loss, says why: the
+// coordinator prefers that one, if it comes within a moment.
+type PeerLost struct{ Err error }
+
+func (e *PeerLost) Error() string { return e.Err.Error() }
+
+func (e *PeerLost) Unwrap() error { return e.Err }
 
 // Options are the protocol's timings. Zero fields take the defaults. Both
 // ends of an attempt run one image, so they share them.
@@ -55,6 +67,16 @@ type Options struct {
 	// How long a coordinator's workers have to join once it's opened. A
 	// worker waits this long and Timeout more for its assignment.
 	JoinTimeout time.Duration
+	// How long a worker's PeerLost failure waits for another worker's
+	// failure or loss, which says why, before it fails the attempt.
+	PeerLostGrace time.Duration
+}
+
+func (o Options) peerLostGrace() time.Duration {
+	if o.PeerLostGrace > 0 {
+		return o.PeerLostGrace
+	}
+	return DefaultPeerLostGrace
 }
 
 func (o Options) heartbeat() time.Duration {
@@ -203,6 +225,9 @@ type Target struct {
 	// Where other workers' engines reach this worker's, as host:port;
 	// empty: nowhere.
 	Exchange string
+	// Where this worker's engine listens for theirs, as host:port; empty:
+	// Exchange.
+	Listen string
 }
 
 func lost(who string, cause error) error {

@@ -486,7 +486,9 @@ func TestACompletedSplitsWatermarkIsInAnEpoch(t *testing.T) {
 }
 
 // A reset of a stream drops the state of the statements that read it, which
-// build it again from the new read, and keeps the rest.
+// build it again from the new read, and state no statement keeps, as a
+// changed statement's old operator's, which the engine wouldn't restore; it
+// keeps the rest.
 func TestAResetDropsTheStateOfWhatReadsItsStream(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -497,7 +499,7 @@ func TestAResetDropsTheStateOfWhatReadsItsStream(t *testing.T) {
 			j.SQL.Expected[1].Input, j.SQL.Expected[1].Operator = "b", "window-b"
 			j.SQL.Operators = []string{"window-a", "window-b"}
 		}
-		state := []checkpoint.Snapshot{{Operator: "window-a", URL: "memory:1/a"}, {Operator: "window-b", URL: "memory:1/b"}}
+		state := []checkpoint.Snapshot{{Operator: "window-a", URL: "memory:1/a"}, {Operator: "window-b", URL: "memory:1/b"}, {Operator: "window-old", URL: "memory:1/old"}}
 		first := &seenFlow{inner: &sqlFlow{t: t, rename: map[string]string{"a": "a", "b": "c"}}, seen: map[string][]runner.Frame{}, snapshots: state}
 		j := sqlJob(log, "a1", nil, &transformDest{}, map[string]int{"a": 3, "b": 2})
 		windows(&j)
@@ -513,7 +515,7 @@ func TestAResetDropsTheStateOfWhatReadsItsStream(t *testing.T) {
 		if _, err := runner.RunAttempt(ctx, j); err != nil {
 			t.Fatal(err)
 		}
-		if len(second.plans) != 1 || !slices.Equal(second.plans[0].Snapshots, state[1:]) {
+		if len(second.plans) != 1 || !slices.Equal(second.plans[0].Snapshots, state[1:2]) {
 			t.Fatalf("after a reset of a, the attempt restores %+v, want window-b's alone", second.plans[0].Snapshots)
 		}
 	})

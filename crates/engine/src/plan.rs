@@ -11,6 +11,7 @@ use openetl_proto::engine::v1::{
 use crate::error::JobError;
 use crate::ipc;
 use crate::layout::Layout;
+use crate::mesh::MeshPlan;
 use crate::quarantine::Quarantine;
 use crate::remote::Remote;
 use crate::transform::{Input, Route, Transform};
@@ -78,6 +79,11 @@ pub struct Plan {
     /// Where stateful operators keep state, and what the restored record
     /// names of it.
     pub state: StatePlan,
+    /// The attempt.
+    pub job: String,
+    /// The attempt's engines, where several run it: their exchanges send
+    /// rows to the attempt's writer lanes, in whichever engine.
+    pub mesh: Option<MeshPlan>,
     /// Where set, a transform's streams pass through to their outputs by a
     /// probe of it, not as they are.
     #[cfg(test)]
@@ -306,13 +312,31 @@ impl Plan {
             0 => 256,
             n => n,
         };
-        let layout = Layout::new(key_groups, lanes, writer_lanes).map_err(JobError::config)?;
+        let mesh = MeshPlan::of(&req, lanes, writer_lanes)?;
+        let layout = match &mesh {
+            Some(m) => Layout::meshed(key_groups, &m.parts(), m.engine),
+            None => Layout::new(key_groups, lanes, writer_lanes),
+        }
+        .map_err(JobError::config)?;
         if req.passthrough && req.transform.is_some() {
             return Err(JobError::config(
                 "a passthrough job leaves batches as they came, and can't transform them",
             ));
         }
         let transform = check_transform(&req)?;
+        // A group window's keyed lanes take its stream from every lane of
+        // the attempt, inside one engine, which keeps their state.
+        let windowed = transform
+            .as_ref()
+            .is_some_and(|t| t.statements.iter().any(|s| s.window.is_some()));
+        let part = mesh.as_ref().is_some_and(|m| m.engines.len() > 1)
+            || req.first_lane != 0
+            || (req.attempt_writer_lanes as usize) > writer_lanes;
+        if windowed && part {
+            return Err(JobError::config(
+                "transform.sql has a group window, which runs in one engine with every lane of the attempt: the job runs on one pod",
+            ));
+        }
         let mut restored_state = Vec::with_capacity(req.restored_snapshots.len());
         for s in &req.restored_snapshots {
             let known = transform
@@ -320,7 +344,8 @@ impl Plan {
                 .is_some_and(|t| t.operators().any(|o| o == s.operator));
             if !known {
                 return Err(JobError::config(format!(
-                    "the job has no operator {:?} to restore",
+                    "the checkpoint names state of operator {:?}, which no statement of transform.sql keeps: the group window that kept it changed or is gone. \
+                     Reset the streams it read to drop that state, and build the statements' again from a new read: openetl reset --stream STREAM NAME",
                     s.operator
                 )));
             }
@@ -625,6 +650,8 @@ impl Plan {
                 pipeline: req.pipeline.clone(),
                 restored: restored_state,
             },
+            job: req.job.clone(),
+            mesh,
             remote: req
                 .remote_schemas
                 .then(|| std::sync::Arc::new(Remote::new(names.len(), inputs))),
@@ -696,6 +723,27 @@ impl Plan {
             }
         }
         Ok(plan)
+    }
+}
+
+impl Plan {
+    /// The writer lanes an exchange sends rows to: the attempt's, with a
+    /// mesh, or the engine's.
+    pub fn routed_writers(&self) -> usize {
+        match &self.mesh {
+            Some(_) => self.attempt_writer_lanes,
+            None => self.writer_lanes,
+        }
+    }
+
+    /// The lanes, by their index in the attempt, whose rows an exchange
+    /// sends to each writer lane: every lane of the attempt, with a mesh, or
+    /// the engine's.
+    pub fn senders(&self) -> std::ops::Range<usize> {
+        match &self.mesh {
+            Some(m) => 0..m.lanes,
+            None => self.first_lane..self.first_lane + self.inbound.len(),
+        }
     }
 }
 
@@ -951,6 +999,7 @@ pub(crate) mod tests {
             first_lane: 0,
             first_writer_lane: 0,
             attempt_writer_lanes: 0,
+            mesh: None,
         }
     }
 

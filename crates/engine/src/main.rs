@@ -17,6 +17,7 @@ mod frame;
 mod ipc;
 mod layout;
 mod memory;
+mod mesh;
 mod plan;
 mod quarantine;
 mod remote;

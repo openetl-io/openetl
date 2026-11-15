@@ -151,8 +151,10 @@ func (a *workersAPI) ReportAttemptFailure(context.Context, *connect.Request[data
 // An attempt on two workers, each a process the process launcher starts as
 // it would a pod: the coordinator tells the API where they join, they find
 // it there, read and write their parts with connectors and engines of their
-// own, and every row lands once. The coordinator closes the connectors it
-// discovered with and reads and writes nothing.
+// own, whose exchange sends each keyed row over TLS to the writer lane that
+// owns its key group, in either worker, and every row lands once. The
+// coordinator closes the connectors it discovered with and reads and writes
+// nothing.
 func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 	engine := os.Getenv("OPENETL_ENGINE")
 	if _, err := os.Stat(engine); engine == "" || err != nil {
@@ -258,6 +260,51 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 	if rows, _ := wk.Meter.Progress(); rows == 0 {
 		t.Error("the workers' rows didn't reach the coordinator's meter")
 	}
+	// Each stream is read by one worker, and its rows, keyed, reach both
+	// workers' writer lanes through the exchange between their engines.
+	for _, stream := range []string{"users", "purchases"} {
+		if lanes := stagedLanes(t, filepath.Join(out, ".epochs"))[stream]; len(lanes) != 2 {
+			t.Errorf("%s's rows were staged on writer lanes %v, want both workers'", stream, lanes)
+		}
+	}
+}
+
+// stagedLanes are the writer lanes that staged rows of each stream, as
+// laneFiles names its staging in dir.
+func stagedLanes(t *testing.T, dir string) map[string]map[int]bool {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]map[int]bool{}
+	for _, e := range entries {
+		parts := strings.Split(e.Name(), "-")
+		if len(parts) != 3 {
+			continue
+		}
+		lane, err := strconv.Atoi(parts[2])
+		if err != nil {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rows map[string][]json.RawMessage
+		if err := json.Unmarshal(b, &rows); err != nil {
+			t.Fatal(err)
+		}
+		for stream, rs := range rows {
+			if len(rs) > 0 {
+				if out[stream] == nil {
+					out[stream] = map[int]bool{}
+				}
+				out[stream][lane] = true
+			}
+		}
+	}
+	return out
 }
 
 // launchWorkersOnly starts l's workers' processes, but not its own, which

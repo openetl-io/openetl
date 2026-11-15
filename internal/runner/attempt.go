@@ -769,7 +769,8 @@ func markForced(rec *checkpoint.Record, streams []Stream) {
 // streams. A stream keeps its schema and holds: the destination still has
 // them. A paused stream is reset too, so it carries no position and reads
 // from the start once it's resumed. The state of a statement that reads one
-// goes too, so the statement builds it again from the new read.
+// goes too, so the statement builds it again from the new read, and so does
+// state no statement of the job keeps, which the engine wouldn't restore.
 func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []string) {
 	var taken string
 	if rec != nil {
@@ -812,15 +813,18 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 		cp.Forced = slices.DeleteFunc(cp.Forced, func(s string) bool { return s == name })
 		cp.Reread = slices.DeleteFunc(cp.Reread, func(s string) bool { return s == name })
 	}
+	kept := map[string]bool{}
 	if j.SQL != nil {
-		reread := map[string]bool{}
+		for _, op := range j.SQL.Operators {
+			kept[op] = true
+		}
 		for _, e := range j.SQL.Expected {
 			if e.Operator != "" && slices.Contains(streams, e.Input) {
-				reread[e.Operator] = true
+				kept[e.Operator] = false
 			}
 		}
-		cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return reread[s.Operator] })
 	}
+	cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return !kept[s.Operator] })
 	cp.Reset = newest
 	return &cp, newest, streams
 }
@@ -1423,14 +1427,7 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 		plan.HeldURL, plan.Holds = j.HeldURL, holdPlans
 	}
 	plan.Lanes, plan.WriterLanes, plan.KeyGroups = j.lanes(), j.writerLanes(), j.keyGroups()
-	for _, s := range j.sinkStreams() {
-		if cols := exchange(s, plan.WriterLanes); cols != nil {
-			if plan.Exchanges == nil {
-				plan.Exchanges = map[string][]string{}
-			}
-			plan.Exchanges[s.Name] = cols
-		}
-	}
+	plan.Exchanges = j.exchanges(plan.WriterLanes)
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots
 	}
@@ -1438,6 +1435,21 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 		plan.Sink = es.EngineSink()
 	}
 	return plan
+}
+
+// exchanges are the columns each of the destination's streams is exchanged
+// by before the writer, on writers writer lanes; nil for none.
+func (j *Job) exchanges(writers int) map[string][]string {
+	var out map[string][]string
+	for _, s := range j.sinkStreams() {
+		if cols := exchange(s, writers); cols != nil {
+			if out == nil {
+				out = map[string][]string{}
+			}
+			out[s.Name] = cols
+		}
+	}
+	return out
 }
 
 // exchange is the columns a stream's rows are exchanged by before the

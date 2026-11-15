@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -41,7 +42,8 @@ var errFinished = errors.New("runner: the attempt finished")
 // positions of records the coordinator sends. It returns nil once the
 // coordinator ends the attempt as finished. The job is the coordinator's,
 // whose Log, Sync, Paused, Resets, Rewind, KeepRecords, Drain, Workers and
-// On callbacks it doesn't use.
+// On callbacks it doesn't use. A target without an exchange address has its
+// engine listen on 127.0.0.1, at a free port.
 func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Options) error {
 	if err := job.validateRun(false); err != nil {
 		return err
@@ -54,6 +56,12 @@ func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Opti
 		log = slog.New(slog.DiscardHandler)
 	}
 	log = log.With("pipeline", job.Pipeline, "owner", job.Owner, "generation", t.Generation, "worker", t.Worker)
+	if t.Exchange == "" {
+		var err error
+		if t.Listen, t.Exchange, err = attempt.ExchangeAddresses(ctx, t.Listen, ""); err != nil {
+			return err
+		}
+	}
 	w, err := attempt.Join(ctx, t, opts)
 	if err != nil {
 		return err
@@ -521,6 +529,9 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 	plan := job.plan(gen, a.GetFirstEpoch(), restored, readStarts, schemas, outputs, holdPlans)
 	plan.SchemaOwner, plan.FirstLane = p.schemas, firstLane
 	plan.FirstWriterLane, plan.AttemptWriterLanes = p.global[0], len(a.GetWriterLanes())
+	if x := a.GetExchange(); x != nil {
+		plan.Mesh, plan.Exchanges = p.mesh(a, x), job.exchanges(len(a.GetWriterLanes()))
+	}
 	plan.Floors = floors(job.Streams, all)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -575,6 +586,25 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 		return err
 	})
 	return g.Wait()
+}
+
+// mesh is the attempt's engines as the assignment lays them out, each
+// worker's lanes and writer lanes after the worker before it's, and how
+// they reach each other: this worker's engine listens where its target
+// says.
+func (p *workerPart) mesh(a *attemptv1.Assignment, x *attemptv1.Exchange) *Mesh {
+	m := &Mesh{Engine: p.t.Worker, Listen: cmp.Or(p.t.Listen, p.t.Exchange), Certificate: x.GetCertificate(), Key: x.GetKey(), Secret: x.GetSecret()}
+	m.Engines = make([]MeshEngine, len(a.GetWorkers()))
+	for i, addr := range a.GetWorkers() {
+		m.Engines[i].Address = addr
+	}
+	for _, l := range a.GetLanes() {
+		m.Engines[l.GetWorker()].Lanes++
+	}
+	for _, l := range a.GetWriterLanes() {
+		m.Engines[l.GetWorker()].WriterLanes++
+	}
+	return m
 }
 
 // usageEvery is how often a worker tells its coordinator what it has used

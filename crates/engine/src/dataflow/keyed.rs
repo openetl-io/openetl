@@ -64,7 +64,13 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
         };
         let batch = reads(st, &typed.batch, &t.sql.inputs[st.input].name)?;
         let mut why: Vec<Option<String>> = vec![None; batch.num_rows()];
-        for c in &typed.cells {
+        // A cell the stream holds is no value only for a column the
+        // statement reads.
+        for c in typed
+            .cells
+            .iter()
+            .filter(|c| st.op.reads.column_with_name(&c.column).is_some())
+        {
             if let Some(w) = why.get_mut(c.row) {
                 w.get_or_insert_with(|| {
                     format!(

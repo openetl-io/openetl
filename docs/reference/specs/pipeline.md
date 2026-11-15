@@ -99,13 +99,12 @@ With `resources.workers` above 1, `openetl plan` shows `workers:` and the count 
 
 A pipeline with `transform.sql` runs on workers into other destinations, and so do streams that hold columns or cells. The coordinator decides each stream's schema and what it holds, so every worker writes the same columns and holds the same ones. Only the first worker patches in released holds. A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
 
-Each job's workers read the source's splits between them. Each of these streams is read on one worker, and the plan warns about each one:
+Each job's workers read the source's splits between them. A stream with an exchange in the plan's `partitioning` sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Each of these streams is read on one worker, and the plan warns about each one:
 
-- a keyed stream whose splits don't partition it by key;
 - a stream read with `cdc`, on the same worker as every other stream read with `cdc`, since the source reads their changes from one log;
 - a stream written with `overwrite`.
 
-With `transform.sql`, these rules apply to each statement's output and each stream passed through: the stream a statement reads is read on one worker when an output from it is written with `overwrite` or has an exchange in the plan's `partitioning`.
+With `transform.sql`, these rules apply to each statement's output and each stream passed through: the stream a statement reads is read on one worker when it is read with `cdc`, or an output from it is written with `overwrite`.
 
 When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks the capabilities before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod. [Run a job on several pods](../../pipelines/workers.md) explains the plan's messages and what happens when a pod fails.
 

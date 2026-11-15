@@ -130,19 +130,22 @@ func TestSourcePartitioning(t *testing.T) {
 	}
 }
 
-// Until an exchange crosses pods, a stream whose path has one is read on
-// one worker: OneWorker gives a keyed stream that reason exactly when the
-// path has an exchange.
+// An exchange crosses workers, so a path with one doesn't keep its stream on
+// one worker: only a read with cdc, whose source reads one log, and an
+// overwrite do.
 func TestOneWorkerWherePathsExchange(t *testing.T) {
 	for _, splitsByKey := range []bool{false, true} {
 		for _, read := range []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL, apiv1.SyncMode_SYNC_MODE_CDC} {
 			cdc := read == apiv1.SyncMode_SYNC_MODE_CDC
 			path := Place(SourcePartitioning([]string{"id"}, splitsByKey, cdc), WriterOperator([]string{"id"}, false))
-			why := OneWorker(destination.Merge, true, splitsByKey, read)
-			if (why != "") != (len(path.Exchanges()) > 0) {
+			why := OneWorker(destination.Merge, read)
+			if (why != "") != cdc || (len(path.Exchanges()) > 0) != (cdc || !splitsByKey) {
 				t.Errorf("splits by key %v, %v: one worker %q, exchanges %v", splitsByKey, read, why, path.Exchanges())
 			}
 		}
+	}
+	if OneWorker(destination.Overwrite, apiv1.SyncMode_SYNC_MODE_INCREMENTAL) == "" {
+		t.Error("an overwrite spread over workers")
 	}
 }
 
@@ -221,6 +224,46 @@ func TestLayout(t *testing.T) {
 		if err != nil || !slices.Equal(l.Lanes, tc.ranges) || !slices.Equal(l.WriterOf, tc.writerOf) {
 			t.Errorf("%d groups, %d lanes, %d writers: %v %v %v", tc.groups, tc.lanes, tc.writers, l.Lanes, l.WriterOf, err)
 		}
+	}
+}
+
+// Each worker's lanes cut its own writer lanes' ranges of the attempt's,
+// the same layouts as the engine's
+// engines_cut_the_attempts_writer_lanes_ranges, and a worker's part is its
+// own.
+func TestWorkerLayout(t *testing.T) {
+	type r = KeyGroupRange
+	for _, tc := range []struct {
+		groups           int
+		lanes, writers   []int
+		ranges, writers2 []KeyGroupRange
+		writerOf         []int
+	}{
+		{256, []int{2, 2}, []int{1, 1}, []r{{0, 63}, {64, 127}, {128, 191}, {192, 255}}, []r{{0, 127}, {128, 255}}, []int{0, 0, 1, 1}},
+		{256, []int{1, 3}, []int{1, 2}, []r{{0, 85}, {86, 128}, {129, 170}, {171, 255}}, []r{{0, 85}, {86, 170}, {171, 255}}, []int{0, 1, 1, 2}},
+		{8, []int{2, 1, 2}, []int{1, 1, 2}, []r{{0, 0}, {1, 1}, {2, 3}, {4, 5}, {6, 7}}, []r{{0, 1}, {2, 3}, {4, 5}, {6, 7}}, []int{0, 0, 1, 2, 3}},
+	} {
+		l, err := NewWorkerLayout(tc.groups, tc.lanes, tc.writers)
+		if err != nil || !slices.Equal(l.Lanes, tc.ranges) || !slices.Equal(l.Writers, tc.writers2) || !slices.Equal(l.WriterOf, tc.writerOf) {
+			t.Errorf("%d groups, lanes %v, writers %v: %v %v %v %v", tc.groups, tc.lanes, tc.writers, l.Lanes, l.Writers, l.WriterOf, err)
+		}
+	}
+	for _, bad := range [][2][]int{{{3, 1, 2}, {1, 1, 2}}, {{1, 1}, {1, 2}}, {{1}, {1, 1}}} {
+		if _, err := NewWorkerLayout(8, bad[0], bad[1]); err == nil {
+			t.Errorf("%v laid out", bad)
+		}
+	}
+	one, _ := NewLayout(256, 5, 3)
+	if w, _ := NewWorkerLayout(256, []int{5}, []int{3}); !slices.Equal(w.Lanes, one.Lanes) || !slices.Equal(w.WriterOf, one.WriterOf) {
+		t.Errorf("one worker's layout %v isn't NewLayout's %v", w, one)
+	}
+	l, _ := NewWorkerLayout(256, []int{1, 3}, []int{1, 2})
+	p, err := l.Part(1, 3, 1, 2)
+	if err != nil || !slices.Equal(p.Lanes, l.Lanes[1:]) || !slices.Equal(p.Writers, l.Writers[1:]) || !slices.Equal(p.WriterOf, []int{0, 0, 1}) {
+		t.Errorf("worker 1's part: %v, %v", p, err)
+	}
+	if _, err := l.Part(0, 2, 0, 1); err == nil {
+		t.Error("a part whose lane feeds another's writer lane")
 	}
 }
 

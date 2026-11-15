@@ -207,6 +207,7 @@ A group window keeps each window's aggregates as state, by key group, until its 
 - A window over no group keys runs on one lane.
 - Each checkpoint names the state. The engine keeps the state in its memory, and each attempt runs in an engine of its own. If an attempt ends while windows are open, the next attempt cannot restore their state, and fails with `CONFIG_INVALID`. For example, a continuous pipeline's attempt that restarts, or a sync's attempt that fails, ends this way.
 - To recover, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)).
+- A changed group window statement is a new operator, which starts with no state. If the checkpoint still names the old operator's state, the next attempt fails with `CONFIG_INVALID` until a reset of the streams that the window reads drops that state.
 - A pipeline with a group window runs on one pod, whatever its `resources.workers`.
 
 ## Expressions and operators

@@ -44,7 +44,6 @@ func TestWorkers(t *testing.T) {
 	}{
 		{name: "one asked", spec: spec(1, nil), cat: cat, caps: lanes},
 		{name: "spread", spec: spec(4, nil), cat: cat, caps: lanes, workers: 4, oneWorker: []string{
-			`hashed: each attempt reads it on one of its 4 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
 			`changes: each attempt reads it on one of its 4 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			`snapshot: each attempt reads it on one of its 4 workers: an overwrite's read ends on one worker`,
 		}},
@@ -63,14 +62,12 @@ func TestWorkers(t *testing.T) {
 			onePod: "a transactional destination runs on one pod unless its writer lanes commit on their own"},
 		{name: "lane commits", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.TransactionalStream, WriterLanes: 4, LaneCommits: true},
 			workers: 2, oneWorker: []string{
-				`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
 				`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			}},
 		{name: "staged", spec: spec(2, nil), cat: cat, caps: destination.Capabilities{Class: destination.StageAndApply, WriterLanes: 4, Delivery: destination.DeliveryStaged},
 			onePod: "a destination that loads staged epochs runs on one pod"},
 		{name: "engine written", spec: spec(2, nil), cat: cat, caps: lanes, engine: true, onePod: "a destination the engine writes runs on one pod"},
 		{name: "holds", spec: spec(2, nil), cat: cat, caps: held, workers: 2, oneWorker: []string{
-			`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
 			`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
 		}},
@@ -83,7 +80,6 @@ func TestWorkers(t *testing.T) {
 		{name: "sql passing streams through", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: held, sql: &sqlplan.Answer{}, workers: 2, oneWorker: []string{
-			`hashed: each attempt reads it on one of its 2 workers: the source's splits don't partition it by key, and the rows of each key must meet on one writer lane`,
 			`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
 		}},
@@ -94,9 +90,9 @@ func TestWorkers(t *testing.T) {
 		{name: "sql not planned", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: held, workers: 2},
-		// An output whose path has an exchange is read on one worker: a key
-		// renamed through a statement keeps its split, and an output without
-		// a key needs none.
+		// A statement's input spreads over the workers whatever its
+		// output's path, since an exchange crosses them; one read with cdc
+		// doesn't.
 		{name: "sql statements", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "…", Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}}
 		}), cat: cat, caps: held, workers: 2, sql: &sqlplan.Answer{Statements: []sqlplan.Statement{

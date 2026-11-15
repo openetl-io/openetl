@@ -188,6 +188,43 @@ type Plan struct {
 	// attempt reads, every worker's, which a lane past an exchange starts
 	// at; missing where one has none.
 	Floors map[string]int64
+	// A worker's, where the workers' engines exchange rows between them:
+	// then its lanes and writer lanes are its part of the attempt's layout
+	// (plan.NewWorkerLayout), and Exchanges send rows to the attempt's
+	// writer lanes, whichever worker has them. Nil: an exchange stays in
+	// the engine.
+	Mesh *Mesh
+}
+
+// Mesh is the attempt's engines, one per worker (openetl.engine.v1.Mesh).
+type Mesh struct {
+	// This worker's.
+	Engine  int
+	Engines []MeshEngine
+	// Where this worker's engine listens for the others, host:port.
+	Listen string
+	// The attempt's certificate, as DER, which every engine presents and is
+	// the only one each trusts, its PKCS #8 key, and its secret.
+	Certificate, Key, Secret []byte
+}
+
+type MeshEngine struct {
+	// Where the others reach it, host:port.
+	Address            string
+	Lanes, WriterLanes int
+}
+
+// Meshing is a Dataflow whose engines, one per worker of an attempt,
+// exchange rows with each other's, as Plan.Mesh says.
+type Meshing interface {
+	Dataflow
+	Meshes() bool
+}
+
+// meshes says the dataflow's engines exchange rows between workers.
+func meshes(d Dataflow) bool {
+	m, ok := d.(Meshing)
+	return ok && m.Meshes()
 }
 
 // SchemaOwner decides the schemas of the destination's streams, with the
@@ -240,9 +277,26 @@ func (p Plan) WriterLane(g int) int {
 	return g * p.writerLanes() / p.keyGroups()
 }
 
-// layout is the key groups the plan's lanes and writer lanes own.
+// layout is the key groups the plan's lanes and writer lanes own: with a
+// mesh, the worker's part of the attempt's.
 func (p Plan) layout() (plan.Layout, error) {
-	return plan.NewLayout(p.keyGroups(), p.lanes(), p.writerLanes())
+	m := p.Mesh
+	if m == nil {
+		return plan.NewLayout(p.keyGroups(), p.lanes(), p.writerLanes())
+	}
+	lanes, writers := make([]int, len(m.Engines)), make([]int, len(m.Engines))
+	firstLane, firstWriter := 0, 0
+	for i, e := range m.Engines {
+		lanes[i], writers[i] = e.Lanes, e.WriterLanes
+		if i < m.Engine {
+			firstLane, firstWriter = firstLane+e.Lanes, firstWriter+e.WriterLanes
+		}
+	}
+	l, err := plan.NewWorkerLayout(p.keyGroups(), lanes, writers)
+	if err != nil {
+		return plan.Layout{}, err
+	}
+	return l.Part(firstLane, p.lanes(), firstWriter, p.writerLanes())
 }
 
 // laidOut is the plan's layout; empty for a plan no layout fits, which a
@@ -344,6 +398,9 @@ func (p Passthrough) Run(ctx context.Context, plan Plan, in <-chan Frame, out ch
 	staging := plan.Sink.StagedURL != ""
 	if staging && p.Stage == nil {
 		return errors.New("runner: the plan stages its epochs, and the dataflow can't")
+	}
+	if plan.Mesh != nil && len(plan.Mesh.Engines) > 1 {
+		return errors.New("runner: the plan exchanges rows between engines, and the dataflow can't")
 	}
 	lanes, writers := plan.lanes(), plan.writerLanes()
 	if writers > lanes {
