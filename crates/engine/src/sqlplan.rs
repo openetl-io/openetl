@@ -679,6 +679,45 @@ mod tests {
         assert!(e[1]["message"].as_str().unwrap().contains("nope"));
     }
 
+    /// `openetl-engine plan` plans the deepest chain of views on a small
+    /// stack, and answers a deeper one with an error at the view.
+    #[test]
+    fn a_chain_of_views_plans_to_its_limit() {
+        let chain = |depth: usize| {
+            let mut sql = String::from("CREATE VIEW v0 AS SELECT id, email FROM customers;\n");
+            for i in 1..depth {
+                sql.push_str(&format!(
+                    "CREATE VIEW v{i} AS SELECT id + id AS id, email FROM v{};\n",
+                    i - 1
+                ));
+            }
+            sql.push_str(&format!(
+                "INSERT INTO t SELECT id, email FROM v{}",
+                depth - 1
+            ));
+            json!({"sql": sql, "streams": [{"name": "customers", "columns": [{"name": "id", "type": "int64"}, {"name": "email", "type": "utf8"}]}]})
+        };
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || {
+                let got = answer(chain(openetl_sql::VIEW_DEPTH));
+                assert_eq!(got["errors"], json!([]));
+                assert_eq!(got["views"].as_array().map(Vec::len), Some(32));
+                let got = answer(chain(openetl_sql::VIEW_DEPTH + 1));
+                assert_eq!(got["errors"][0]["kind"], "unsupported");
+                assert_eq!(got["errors"][0]["at"]["line"], 33);
+                assert!(
+                    got["errors"][0]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("views go at most 32 deep")
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     /// What a group window keeps, in microseconds whatever the event time's
     /// unit, and by the stream's names.
     #[test]

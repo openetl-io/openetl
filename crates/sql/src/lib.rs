@@ -38,5 +38,5 @@ pub use plan::{
     Aggregate, AggregateKind, Class, Column, GroupKey, GroupWindow, Operator, Plan, Projection,
     RowWise, Statement, Step, Unnest, Unnested, View, Window,
 };
-pub use sql::{Sql, plan};
+pub use sql::{Sql, VIEW_DEPTH, plan};
 pub use types::{cast_type, ident};

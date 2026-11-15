@@ -338,20 +338,12 @@ fn each_unnest_counts() {
     assert_ne!(count(once, "a"), count(twice, "b"));
 }
 
-/// A chain of views that each read a column twice plans in time that grows
-/// with the chain, and its operator's ID still follows what it computes.
-/// Binding a plan this deep takes more stack than a test's thread has.
+/// The deepest chain of views, each reading a column of the one before
+/// twice, plans in time that grows with the chain, and its operator's ID
+/// still follows what it computes. Planning has a stack of its own.
 #[test]
 fn a_deep_chain_of_views_keeps_its_id_short() {
-    std::thread::Builder::new()
-        .stack_size(256 << 20)
-        .spawn(deep_chain)
-        .unwrap_or_else(|e| panic!("{e}"))
-        .join()
-        .unwrap_or_else(|_| panic!("the chain failed"));
-}
-
-fn deep_chain() {
+    // v0 and the views after it, up to v{depth}: depth + 1 views.
     let chain = |depth: usize, last: &str| {
         let mut sql =
             String::from("CREATE VIEW v0 AS SELECT qty AS x, region, created_at FROM orders;\n");
@@ -368,14 +360,21 @@ fn deep_chain() {
         ));
         sql
     };
+    let deepest = openetl_sql::VIEW_DEPTH - 1;
     let start = std::time::Instant::now();
-    let deep = id(&chain(40, "+"));
+    let deep = id(&chain(deepest, "+"));
     assert!(
         start.elapsed() < std::time::Duration::from_secs(20),
-        "40 views took {:?}",
+        "{} views took {:?}",
+        deepest + 1,
         start.elapsed()
     );
-    assert_eq!(deep, id(&chain(40, "+")));
-    assert_ne!(deep, id(&chain(40, "*")));
-    assert_ne!(deep, id(&chain(39, "+")));
+    assert_eq!(deep, id(&chain(deepest, "+")));
+    assert_ne!(deep, id(&chain(deepest, "*")));
+    assert_ne!(deep, id(&chain(deepest - 1, "+")));
+    let too_deep = chain(deepest + 1, "+");
+    let Err(e) = openetl_sql::plan(&too_deep, &catalog(DataType::Utf8)) else {
+        panic!("{} views planned", deepest + 2)
+    };
+    assert!(e.to_string().contains("views go at most 32 deep"), "{e}");
 }

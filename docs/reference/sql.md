@@ -21,6 +21,7 @@ A transform is one or more statements, each ended by `;`. The last `;` is option
 - `INSERT INTO` takes no list of columns: the `SELECT` names the output's columns. It takes no `ON CONFLICT`.
 - `CREATE VIEW` takes a name and `AS SELECT`, and nothing else: not `OR REPLACE`, `TEMPORARY`, `MATERIALIZED` or a list of columns.
 - A view is defined before the statements and views that read it.
+- Views go at most 32 deep. A view that reads no view is 1 deep, and a view that reads views is one deeper than the deepest of them. A deeper view is a problem in the plan, at its name.
 - Statements read the source's streams, never an output. To read what a statement writes, define its `SELECT` as a view, and read the view.
 
 ## What FROM reads
@@ -657,6 +658,7 @@ A view of one of these kinds is refused too, where the view is defined.
 | A `SELECT` on its own | `a SELECT on its own writes nothing: write INSERT INTO output SELECT …, or name it with CREATE VIEW` |
 | Other statements, such as `UPDATE`, `DELETE` or `CREATE TABLE` | `a transform's statements are INSERT INTO … SELECT and CREATE VIEW … AS SELECT, not DELETE FROM` |
 | No `INSERT INTO` | `a transform writes at least one output, with INSERT INTO … SELECT` |
+| A view more than 32 views deep | `view v32 is 33 views deep, counting each view it reads through: views go at most 32 deep; read a view nearer the stream, or merge views into one` |
 
 ### Names and columns
 

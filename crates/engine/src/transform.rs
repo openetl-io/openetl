@@ -528,6 +528,51 @@ mod tests {
         assert!(t.routes(&outputs[..1])[1].is_empty());
     }
 
+    /// A chain of views `depth` deep, each reading the one before and its
+    /// column twice, and a statement over the last.
+    pub(crate) fn chain(depth: usize) -> String {
+        let mut sql = String::from("CREATE VIEW v0 AS SELECT id, email FROM a;\n");
+        for i in 1..=depth {
+            sql.push_str(&format!(
+                "CREATE VIEW v{i} AS SELECT id + id AS id, email FROM v{};\n",
+                i - 1
+            ));
+        }
+        sql.push_str(&format!("INSERT INTO c SELECT id, email FROM v{depth}"));
+        sql
+    }
+
+    /// A job plans the deepest chain of views on a thread with a tokio
+    /// worker's stack, and refuses a deeper one as CONFIG_INVALID.
+    #[test]
+    fn a_chain_of_views_plans_to_its_limit_on_a_workers_stack() {
+        std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(|| {
+                // v0 and the views after it: VIEW_DEPTH views.
+                let deepest = chain(openetl_sql::VIEW_DEPTH - 1);
+                Transform::plan(&deepest, vec![input("a", &["id"], false)]).unwrap();
+                let e = Transform::plan(
+                    &chain(openetl_sql::VIEW_DEPTH),
+                    vec![input("a", &["id"], false)],
+                )
+                .unwrap_err();
+                assert_eq!(
+                    e.code,
+                    openetl_proto::connector::v1::ErrorCode::ConfigInvalid
+                );
+                assert!(
+                    e.message
+                        .contains("view v32 is 33 views deep, counting each view it reads through: views go at most 32 deep"),
+                    "{}",
+                    e.message
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     #[test]
     fn a_stream_without_known_columns_cant_be_read() {
         let mut unknown = input("b", &[], false);
