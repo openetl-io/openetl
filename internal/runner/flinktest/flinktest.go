@@ -70,6 +70,11 @@ type Faults struct {
 	// does: half the sinks are inside it, and the other readers pass over
 	// its barrier.
 	AbortOnStop bool
+	// The checkpoint stays pending once every sink's barrier is acked, until
+	// the job is asked to stop, which aborts it as Flink's stop-with-savepoint
+	// aborts the checkpoint in flight, or until a second has passed, when it
+	// completes.
+	HoldForStop func(c int64) bool
 	// Consulted when the job's tasks restart: the JobManager restarts
 	// without high availability, so they restore from the checkpoint the
 	// job was deployed from, not the newest.
@@ -110,6 +115,7 @@ type Cluster struct {
 	savepoints map[string]savepoint
 	deploys    int
 	runs       int
+	heldAborts int
 	// Every checkpoint ever completed, and every savepoint taken by hand,
 	// by job.
 	everCompleted map[string]map[int64]bool
@@ -173,6 +179,14 @@ func (c *Cluster) Deploys() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.deploys
+}
+
+// HeldAborts is how many checkpoints Faults.HoldForStop held that a stop
+// aborted.
+func (c *Cluster) HeldAborts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.heldAborts
 }
 
 func (c *Cluster) CancelAll(ctx context.Context) error {
@@ -596,6 +610,7 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 	stop := typ == bridgev1.BarrierType_BARRIER_TYPE_SYNC_SAVEPOINT
 	failTasks := !stop && f.FailTasks != nil && f.FailTasks(c)
 	decline := !stop && f.DeclineAfterRecord != nil && f.DeclineAfterRecord(c)
+	hold := !stop && f.HoldForStop != nil && f.HoldForStop(c)
 	if err := r.point("flink.start", nil); err != nil {
 		return err
 	}
@@ -636,6 +651,16 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 		if err != nil {
 			return fmt.Errorf("checkpoint %d: a sink's barrier was refused: %w", c, err)
 		}
+	}
+	if hold && r.stopRequested(time.Second) {
+		j.cluster.logf("flink: %s's stop aborts checkpoint %d, which it held", j.id, c)
+		if err := coord.call(&bridgev1.CoordinateRequest{Message: &bridgev1.CoordinateRequest_Outcome{Outcome: &bridgev1.CheckpointOutcome{Checkpoint: c}}}); err != nil {
+			return fmt.Errorf("checkpoint %d's abort: %w", c, err)
+		}
+		j.cluster.mu.Lock()
+		j.cluster.heldAborts++
+		j.cluster.mu.Unlock()
+		return nil
 	}
 	if decline {
 		j.cluster.logf("flink: %s declines checkpoint %d after its record", j.id, c)
@@ -682,6 +707,21 @@ func (r *taskRun) checkpoint(coord *bidi[bridgev1.CoordinateRequest, bridgev1.Co
 		return errFinished
 	}
 	return nil
+}
+
+// stopRequested waits up to d for the job to be asked to stop.
+func (r *taskRun) stopRequested(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) && r.ctx.Err() == nil {
+		r.job.mu.Lock()
+		stopping := r.job.stopping != ""
+		r.job.mu.Unlock()
+		if stopping {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return false
 }
 
 // abortForStop aborts checkpoint c with half its sinks inside it. The

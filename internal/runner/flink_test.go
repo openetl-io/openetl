@@ -610,6 +610,41 @@ func TestFlinkStopAbortsTheCheckpointInFlight(t *testing.T) {
 	})
 }
 
+// Flink's stop aborts the checkpoint in flight, even one whose epoch the
+// runner recorded, which would restart the job's tasks and fail the stop. A
+// drain ends no epoch at a checkpoint, and stops the job once every epoch
+// ended at one has completed.
+func TestFlinkDrainWaitsForTheEpochInFlight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+		dest := newExactDest()
+		bridge := flinktest.NewBridge()
+		cluster := flinktest.NewCluster(bridge)
+		cluster.Logf = t.Logf
+		drain := make(chan struct{})
+		var once sync.Once
+		cluster.Faults.HoldForStop = func(c int64) bool {
+			if c < 3 || dest.count() == 0 {
+				return false
+			}
+			once.Do(func() { close(drain) })
+			return true
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		res, err := runner.RunAttempt(ctx, oneStreamJob(log, dest, cluster, bridge, 400, drain))
+		if !errors.Is(err, runner.ErrDrained) {
+			t.Fatalf("attempt: %v (%+v)", err, res)
+		}
+		if n := cluster.HeldAborts(); n != 1 {
+			t.Errorf("the stop aborted %d held checkpoints, want 1", n)
+		}
+		if n := dest.count(); n == 0 || n >= 400 {
+			t.Errorf("%d rows landed before the drain, want some of 400", n)
+		}
+	})
+}
+
 // failSecondStart fails a job's first run of tasks at its second
 // checkpoint, after the first has completed, and calls then once.
 func failSecondStart(then func()) func(context.Context, int, string, func() error) error {

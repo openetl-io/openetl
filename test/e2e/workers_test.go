@@ -103,7 +103,7 @@ func lastPlacements(t *testing.T, name string) int {
 		JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id WHERE p.name = $1 ORDER BY a.create_time DESC LIMIT 1`, name)
 }
 
-// workersJoined are the workers, by index, that joined the coordinator of
+// workersJoined are the workers, by number from 1, that joined the coordinator of
 // the pipeline's latest attempt on workers, as the launcher's processes
 // logged it.
 func workersJoined(t *testing.T, launcher *runner, name string) map[int]bool {
@@ -228,8 +228,8 @@ func TestWorkersInPods(t *testing.T) {
 		if a := lastAttempt(t, name); a.GetWorkers() != 3 || a.GetOnePod() != "" {
 			t.Errorf("the second sync's attempt ran on %d workers (%q), want 3", a.GetWorkers(), a.GetOnePod())
 		}
-		if got := workersJoined(t, launcher, name); len(got) != 3 || !got[0] || !got[1] || !got[2] {
-			t.Errorf("workers %v joined their coordinator, want 0, 1 and 2", slices.Sorted(maps.Keys(got)))
+		if got := workersJoined(t, launcher, name); len(got) != 3 || !got[1] || !got[2] || !got[3] {
+			t.Errorf("workers %v joined their coordinator, want 1, 2 and 3", slices.Sorted(maps.Keys(got)))
 		}
 		// Rows of the table's key ranges reached several writer lanes.
 		if committables, splits := coverage(t, name, second.Generation, "items"); committables < 2 || splits < 2 {

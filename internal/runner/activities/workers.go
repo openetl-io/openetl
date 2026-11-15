@@ -113,7 +113,7 @@ func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", in.Attempt, "worker", j.GetWorker())
+	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", in.Attempt, "worker", j.GetWorker()+1)
 	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
 	if err != nil {
 		return err
