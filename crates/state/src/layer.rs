@@ -1,0 +1,522 @@
+//! The memory tier: a lane's open epoch of changes over its store.
+
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Bound;
+
+use bytes::Bytes;
+
+use crate::layout;
+use crate::store::{Snapshot, Store, Stores};
+use crate::{
+    DueRow, Error, KeyGroup, KeyGroupRange, KeyRef, LAYOUT, NEVER, OperatorId, Result,
+    StateBackend, Timer,
+};
+
+/// What an entry costs in memory beyond its key's and value's bytes, about:
+/// its share of a map's nodes and its handles.
+pub(crate) const ENTRY_OVERHEAD: usize = 64;
+
+/// Entries asked of the store at once in a scan.
+const PAGE: usize = 1024;
+
+/// What a layer holds in memory, in bytes, about.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Memory {
+    /// The open epoch's changes.
+    pub changes: usize,
+    /// The store's.
+    pub store: usize,
+}
+
+impl Memory {
+    pub fn total(&self) -> usize {
+        self.changes + self.store
+    }
+}
+
+/// A lane's state, for its range of key groups and every operator of the
+/// lane, as [`StateBackend`] serves it. The open epoch's changes stay in
+/// memory until [`Layer::barrier`] commits them, or [`Layer::discard`]
+/// drops them.
+pub struct Layer {
+    store: Box<dyn Store>,
+    range: KeyGroupRange,
+    /// The epoch the next barrier closes.
+    epoch: u64,
+    /// The open epoch's changes by key: a value, or `None` for a delete.
+    changes: BTreeMap<Bytes, Option<Bytes>>,
+    change_bytes: usize,
+    /// Each operator's horizon in each group as the store has it, as read.
+    horizons: HashMap<(OperatorId, u16), i64>,
+    /// Horizons the open epoch moved, for every group of the range.
+    moved: HashMap<OperatorId, i64>,
+    /// Rows appended in the open epoch.
+    appended: u32,
+    /// What fails the open epoch's barrier: the first write it can't keep.
+    fault: Option<Error>,
+    /// A barrier failed, so the layer is unusable.
+    failed: bool,
+}
+
+impl Layer {
+    /// Opens a lane's state for `range`, as `snapshots` hold it: those of
+    /// the record it restores, empty for none. `epoch` is the first the
+    /// lane commits, one past the record's, and `generation` the
+    /// attempt's.
+    pub async fn open(
+        stores: &dyn Stores,
+        generation: u64,
+        epoch: u64,
+        range: KeyGroupRange,
+        snapshots: &[Snapshot],
+    ) -> Result<Layer> {
+        if range.first > range.last || range.last > u32::from(u16::MAX) {
+            return Err(Error::Invalid(format!(
+                "key groups {} to {}: the layer takes a range within 0 to {}",
+                range.first,
+                range.last,
+                u16::MAX
+            )));
+        }
+        if epoch == 0 {
+            return Err(Error::Invalid("epochs start at 1".into()));
+        }
+        if let Some(s) = snapshots.iter().find(|s| s.layout != LAYOUT) {
+            return Err(Error::Snapshot(format!(
+                "layout {}, where this engine reads {LAYOUT}",
+                s.layout
+            )));
+        }
+        let store = stores.open(generation, range, snapshots).await?;
+        Ok(Layer {
+            store,
+            range,
+            epoch,
+            changes: BTreeMap::new(),
+            change_bytes: 0,
+            horizons: HashMap::new(),
+            moved: HashMap::new(),
+            appended: 0,
+            fault: None,
+            failed: false,
+        })
+    }
+
+    pub fn range(&self) -> KeyGroupRange {
+        self.range
+    }
+
+    /// The epoch the next barrier closes.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    pub fn memory(&self) -> Memory {
+        Memory {
+            changes: self.change_bytes,
+            store: self.store.memory_bytes(),
+        }
+    }
+
+    /// The barrier of epoch `epoch`, the open one: commits its changes to
+    /// the store and returns the snapshots the record names for the lane.
+    /// They count once the record is written. Another epoch is refused;
+    /// after any other error the layer is unusable, and the lane opens
+    /// again from a record.
+    pub async fn barrier(&mut self, epoch: u64) -> Result<Vec<Snapshot>> {
+        self.usable()?;
+        if epoch != self.epoch {
+            return Err(Error::Invalid(format!(
+                "the barrier of epoch {epoch}, where epoch {} is open",
+                self.epoch
+            )));
+        }
+        self.failed = true;
+        if let Some(e) = self.fault.take() {
+            return Err(e);
+        }
+        self.settle_horizons().await?;
+        let changes = std::mem::take(&mut self.changes).into_iter().collect();
+        let snapshots = self.store.commit(epoch, changes).await?;
+        self.epoch += 1;
+        self.change_bytes = 0;
+        self.appended = 0;
+        self.failed = false;
+        Ok(snapshots)
+    }
+
+    /// Drops the open epoch's changes, which failed: the layer is as the
+    /// last barrier left it, and the epoch is open again.
+    pub fn discard(&mut self) {
+        self.changes.clear();
+        self.change_bytes = 0;
+        self.moved.clear();
+        self.appended = 0;
+        self.fault = None;
+    }
+
+    /// The versions this lane committed before `epoch` can go: no record
+    /// that's kept names them.
+    pub async fn release(&mut self, epoch: u64) -> Result<()> {
+        self.usable()?;
+        self.store.release(epoch).await
+    }
+
+    fn usable(&self) -> Result<()> {
+        match self.failed {
+            true => Err(Error::Invalid(
+                "a barrier failed: open the lane again from a record".into(),
+            )),
+            false => Ok(()),
+        }
+    }
+
+    /// The horizons the epoch moved, as changes, where they're later than
+    /// the store's.
+    async fn settle_horizons(&mut self) -> Result<()> {
+        if self.moved.is_empty() {
+            return Ok(());
+        }
+        let mut moved: Vec<(OperatorId, i64)> = self.moved.drain().collect();
+        moved.sort();
+        let groups = self.groups();
+        let want: Vec<(OperatorId, u16)> = moved
+            .iter()
+            .flat_map(|(op, _)| groups.iter().map(move |g| (*op, *g)))
+            .collect();
+        self.load_horizons(&want).await?;
+        for (op, h) in moved {
+            for &g in &groups {
+                if h > self.horizon(op, g) {
+                    self.horizons.insert((op, g), h);
+                    self.change(layout::horizon(g, op), Some(layout::time_value(h)));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads the horizons of `want` that aren't read yet.
+    async fn load_horizons(&mut self, want: &[(OperatorId, u16)]) -> Result<()> {
+        let mut need: Vec<(OperatorId, u16)> = want
+            .iter()
+            .filter(|w| !self.horizons.contains_key(w))
+            .copied()
+            .collect();
+        need.sort();
+        need.dedup();
+        if need.is_empty() {
+            return Ok(());
+        }
+        let keys: Vec<Bytes> = need
+            .iter()
+            .map(|(op, g)| layout::horizon(*g, *op))
+            .collect();
+        let got = self.store.get(&keys).await?;
+        for (w, v) in need.into_iter().zip(got) {
+            let h = match v {
+                Some(v) => layout::parse_time_value(&v)
+                    .ok_or_else(|| Error::Corrupt("a horizon that isn't a time".into()))?,
+                None => i64::MIN,
+            };
+            self.horizons.insert(w, h);
+        }
+        Ok(())
+    }
+
+    /// The lane's key groups, which [`Layer::open`] checked fit a u16.
+    fn groups(&self) -> Vec<u16> {
+        (self.range.first..=self.range.last)
+            .filter_map(|g| u16::try_from(g).ok())
+            .collect()
+    }
+
+    /// The store's horizon, which [`Layer::load_horizons`] read.
+    fn horizon(&self, op: OperatorId, g: u16) -> i64 {
+        self.horizons.get(&(op, g)).copied().unwrap_or(i64::MIN)
+    }
+
+    /// A read's group, which must be the lane's.
+    fn group(&self, g: KeyGroup) -> Result<u16> {
+        match self.range.contains(g) {
+            true => u16::try_from(g).map_err(|_| self.outside(g)),
+            false => Err(self.outside(g)),
+        }
+    }
+
+    /// A write's group, or `None` and the epoch's fault.
+    fn place(&mut self, g: KeyGroup) -> Option<u16> {
+        match self.group(g) {
+            Ok(g) => Some(g),
+            Err(e) => {
+                self.fault.get_or_insert(e);
+                None
+            }
+        }
+    }
+
+    fn outside(&self, g: KeyGroup) -> Error {
+        Error::Invalid(format!(
+            "key group {g} is outside the lane's, {} to {}",
+            self.range.first, self.range.last
+        ))
+    }
+
+    fn change(&mut self, k: Bytes, v: Option<Bytes>) {
+        let (key, value) = (k.len(), v.as_ref().map_or(0, |v| v.len()));
+        match self.changes.insert(k, v) {
+            Some(old) => {
+                self.change_bytes -= old.map_or(0, |v| v.len());
+                self.change_bytes += value;
+            }
+            None => self.change_bytes += key + value + ENTRY_OVERHEAD,
+        }
+    }
+
+    /// A row's seq, the epoch's and the row's count in it: rows appended
+    /// later sort later, across epochs too, and none of a restored record's
+    /// can tie with a new one's.
+    fn next_seq(&mut self) -> Option<u64> {
+        let epoch = u32::try_from(self.epoch).ok()?;
+        let n = self.appended;
+        self.appended = n.checked_add(1)?;
+        Some((u64::from(epoch) << 32) | u64::from(n))
+    }
+
+    /// Up to `limit` live entries with `start <= key < end`, in key order:
+    /// the store's, under the open epoch's changes.
+    async fn live(&self, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<(Bytes, Bytes)>> {
+        let mut out = Vec::new();
+        if limit == 0 || start >= end {
+            return Ok(out);
+        }
+        let bounds = (Bound::Included(start), Bound::Excluded(end));
+        let mut changes = self.changes.range::<[u8], _>(bounds).peekable();
+        let mut page = Vec::new().into_iter();
+        let mut from = Bytes::copy_from_slice(start);
+        let mut more = true;
+        let mut stored: Option<(Bytes, Bytes)> = None;
+        while out.len() < limit {
+            if stored.is_none() {
+                stored = page.next();
+                if stored.is_none() && more {
+                    let got = self.store.scan(&from, end, PAGE).await?;
+                    more = got.len() == PAGE;
+                    if let Some((k, _)) = got.last() {
+                        from = layout::after(k);
+                    }
+                    page = got.into_iter();
+                    stored = page.next();
+                }
+            }
+            let changed_first = match (&stored, changes.peek()) {
+                (None, None) => break,
+                (Some(_), None) => false,
+                (None, Some(_)) => true,
+                (Some((s, _)), Some((c, _))) => c <= &s,
+            };
+            if !changed_first {
+                out.extend(stored.take());
+                continue;
+            }
+            if let Some((k, v)) = changes.next() {
+                if stored.as_ref().is_some_and(|(s, _)| s == k) {
+                    stored = None;
+                }
+                if let Some(v) = v {
+                    out.push((k.clone(), v.clone()));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl StateBackend for Layer {
+    async fn get(&mut self, op: OperatorId, keys: &[KeyRef<'_>]) -> Result<Vec<Option<Bytes>>> {
+        self.usable()?;
+        let mut out = Vec::with_capacity(keys.len());
+        let mut missing = Vec::new();
+        let mut at = Vec::new();
+        for (i, k) in keys.iter().enumerate() {
+            let key = layout::value(self.group(k.group)?, op, k.key);
+            match self.changes.get(&key) {
+                Some(v) => out.push(v.clone()),
+                None => {
+                    out.push(None);
+                    missing.push(key);
+                    at.push(i);
+                }
+            }
+        }
+        if !missing.is_empty() {
+            let got = self.store.get(&missing).await?;
+            for (i, v) in at.into_iter().zip(got) {
+                out[i] = v;
+            }
+        }
+        Ok(out)
+    }
+
+    fn put(&mut self, op: OperatorId, key: KeyRef<'_>, value: Bytes) {
+        if let Some(g) = self.place(key.group) {
+            self.change(layout::value(g, op, key.key), Some(value));
+        }
+    }
+
+    fn delete(&mut self, op: OperatorId, key: KeyRef<'_>) {
+        if let Some(g) = self.place(key.group) {
+            self.change(layout::value(g, op, key.key), None);
+        }
+    }
+
+    fn append(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64, row: Bytes) {
+        let Some(g) = self.place(key.group) else {
+            return;
+        };
+        match self.next_seq() {
+            Some(seq) => self.change(layout::row(g, op, time, key.key, seq), Some(row)),
+            None => {
+                self.fault.get_or_insert(Error::Invalid(format!(
+                    "a row appended in epoch {}: rows take epochs up to {} and {} rows in each",
+                    self.epoch,
+                    u32::MAX,
+                    u32::MAX
+                )));
+            }
+        }
+    }
+
+    async fn rows(
+        &mut self,
+        op: OperatorId,
+        slots: &[(KeyRef<'_>, i64)],
+    ) -> Result<Vec<Vec<Bytes>>> {
+        self.usable()?;
+        let mut out = Vec::with_capacity(slots.len());
+        for (k, time) in slots {
+            let prefix = layout::row_slot(self.group(k.group)?, op, *time, k.key);
+            let end = layout::successor(&prefix);
+            let got = self.live(&prefix, &end, usize::MAX).await?;
+            out.push(got.into_iter().map(|(_, row)| row).collect());
+        }
+        Ok(out)
+    }
+
+    async fn take_rows(
+        &mut self,
+        op: OperatorId,
+        watermark: i64,
+        limit: usize,
+    ) -> Result<Vec<DueRow>> {
+        self.usable()?;
+        let mut out = Vec::new();
+        for g in self.groups() {
+            if out.len() >= limit {
+                break;
+            }
+            let (start, end) = layout::rows_due(g, op, watermark);
+            for (k, row) in self.live(&start, &end, limit - out.len()).await? {
+                let (group, time, key, _) =
+                    layout::parse_row(&k).ok_or_else(|| Error::Corrupt("a row's key".into()))?;
+                out.push(DueRow {
+                    group: group.into(),
+                    time,
+                    key: Bytes::copy_from_slice(key),
+                    row,
+                });
+                self.change(k, None);
+            }
+        }
+        Ok(out)
+    }
+
+    async fn insert_new(
+        &mut self,
+        op: OperatorId,
+        ids: &[KeyRef<'_>],
+        at: &[i64],
+        expires: &[i64],
+    ) -> Result<Vec<bool>> {
+        self.usable()?;
+        if ids.len() != at.len() || ids.len() != expires.len() {
+            return Err(Error::Invalid(format!(
+                "{} ids, {} times and {} expiries",
+                ids.len(),
+                at.len(),
+                expires.len()
+            )));
+        }
+        let mut keys = Vec::with_capacity(ids.len());
+        let mut groups = Vec::with_capacity(ids.len());
+        for id in ids {
+            let g = self.group(id.group)?;
+            keys.push(layout::set(g, op, id.key));
+            groups.push((op, g));
+        }
+        self.load_horizons(&groups).await?;
+        let ask: Vec<Bytes> = keys
+            .iter()
+            .filter(|k| !self.changes.contains_key(*k))
+            .cloned()
+            .collect();
+        let got = self.store.get(&ask).await?;
+        let stored: HashMap<Bytes, Option<Bytes>> = ask.into_iter().zip(got).collect();
+        let moved = self.moved.get(&op).copied().unwrap_or(i64::MIN);
+        let mut out = Vec::with_capacity(keys.len());
+        for (i, k) in keys.into_iter().enumerate() {
+            let now = at[i].max(self.horizon(op, groups[i].1)).max(moved);
+            let current = match self.changes.get(&k) {
+                Some(v) => v.clone(),
+                None => stored.get(&k).cloned().flatten(),
+            };
+            let live = match current {
+                Some(v) => {
+                    let e = layout::parse_time_value(&v)
+                        .ok_or_else(|| Error::Corrupt("an expiry that isn't a time".into()))?;
+                    e == NEVER || e > now
+                }
+                None => false,
+            };
+            if !live && (expires[i] == NEVER || expires[i] > now) {
+                self.change(k, Some(layout::time_value(expires[i])));
+            }
+            out.push(!live);
+        }
+        Ok(out)
+    }
+
+    fn expire(&mut self, op: OperatorId, horizon: i64) {
+        let h = self.moved.entry(op).or_insert(i64::MIN);
+        *h = (*h).max(horizon);
+    }
+
+    fn set_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64) {
+        if let Some(g) = self.place(key.group) {
+            self.change(layout::timer(op, time, g, key.key), Some(Bytes::new()));
+        }
+    }
+
+    fn delete_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64) {
+        if let Some(g) = self.place(key.group) {
+            self.change(layout::timer(op, time, g, key.key), None);
+        }
+    }
+
+    async fn fire(&mut self, op: OperatorId, watermark: i64, limit: usize) -> Result<Vec<Timer>> {
+        self.usable()?;
+        let (start, end) = layout::timers_due(op, watermark);
+        let mut out = Vec::new();
+        for (k, _) in self.live(&start, &end, limit).await? {
+            let (time, group, key) =
+                layout::parse_timer(&k).ok_or_else(|| Error::Corrupt("a timer's key".into()))?;
+            out.push(Timer {
+                time,
+                group: group.into(),
+                key: Bytes::copy_from_slice(key),
+            });
+            self.change(k, None);
+        }
+        Ok(out)
+    }
+}

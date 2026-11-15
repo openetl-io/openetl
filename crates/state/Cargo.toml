@@ -1,0 +1,17 @@
+[package]
+name = "openetl-state"
+description = "Keyed state for the engine's stateful operators: one layer for every consumer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

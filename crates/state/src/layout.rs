@@ -1,0 +1,403 @@
+//! How state is laid out as a store's keys, layout [`LAYOUT`]. Fields are
+//! big-endian, so keys sort as their fields do, and a time has its sign bit
+//! flipped, so times sort as signed numbers. A key's length goes before it
+//! wherever more fields follow, so no key's fields are a prefix of
+//! another's.
+//!
+//! Keyed state goes key group first, so a range of key groups is a range of
+//! keys: `0x00 | group u16 | operator u32 | kind u8 | rest`, where rest is
+//! - for a value (`v`): the key;
+//! - for a set's id (`s`): the id, with its expiry as the value;
+//! - for a set's horizon (`h`): nothing, with the horizon as the value;
+//! - for a row (`r`): `time | key length u32 | key | seq u64`. A group's
+//!   rows sort by the time they fall due, so the rows a watermark releases
+//!   are one range.
+//!
+//! Timers go time first, so the timers a watermark makes due are one range
+//! across the store's key groups, and a restore reads none of them before
+//! one is due: `0x01 | operator u32 | t | time | group u16 | key length u32
+//! | key`.
+
+use bytes::{BufMut, Bytes, BytesMut};
+
+use crate::OperatorId;
+
+/// The layout's version, which every snapshot names.
+pub const LAYOUT: u32 = 1;
+
+const KEYED: u8 = 0x00;
+const TIMED: u8 = 0x01;
+/// The space, the group, the operator and the kind.
+const KEYED_HEAD: usize = 1 + 2 + 4 + 1;
+/// The space, the operator, the kind and the time.
+const TIMED_HEAD: usize = 1 + 4 + 1 + 8;
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum Kind {
+    Value = b'v',
+    Set = b's',
+    Horizon = b'h',
+    Row = b'r',
+    Timer = b't',
+}
+
+fn keyed(group: u16, op: OperatorId, kind: Kind, extra: usize) -> BytesMut {
+    let mut b = BytesMut::with_capacity(KEYED_HEAD + extra);
+    b.put_u8(KEYED);
+    b.put_u16(group);
+    b.put_u32(op.0);
+    b.put_u8(kind as u8);
+    b
+}
+
+fn timed(op: OperatorId, time: i64, extra: usize) -> BytesMut {
+    let mut b = BytesMut::with_capacity(TIMED_HEAD + extra);
+    b.put_u8(TIMED);
+    b.put_u32(op.0);
+    b.put_u8(Kind::Timer as u8);
+    b.put_u64(flip(time));
+    b
+}
+
+pub fn value(group: u16, op: OperatorId, key: &[u8]) -> Bytes {
+    let mut b = keyed(group, op, Kind::Value, key.len());
+    b.put_slice(key);
+    b.freeze()
+}
+
+pub fn set(group: u16, op: OperatorId, id: &[u8]) -> Bytes {
+    let mut b = keyed(group, op, Kind::Set, id.len());
+    b.put_slice(id);
+    b.freeze()
+}
+
+/// The keys of an operator's set in a group: `[start, end)`.
+pub fn set_range(group: u16, op: OperatorId) -> (Bytes, Bytes) {
+    let start = keyed(group, op, Kind::Set, 0).freeze();
+    let end = successor(&start);
+    (start, end)
+}
+
+pub fn horizon(group: u16, op: OperatorId) -> Bytes {
+    keyed(group, op, Kind::Horizon, 0).freeze()
+}
+
+/// A horizon key's group and operator.
+pub fn parse_horizon(key: &[u8]) -> Option<(u16, OperatorId)> {
+    if key.len() != KEYED_HEAD || key[0] != KEYED || key[7] != Kind::Horizon as u8 {
+        return None;
+    }
+    Some((u16_at(key, 1)?, OperatorId(u32_at(key, 3)?)))
+}
+
+/// The prefix of a key's rows at a time.
+pub fn row_slot(group: u16, op: OperatorId, time: i64, key: &[u8]) -> Bytes {
+    let mut b = keyed(group, op, Kind::Row, 8 + 4 + key.len() + 8);
+    b.put_u64(flip(time));
+    b.put_u32(len32(key.len()));
+    b.put_slice(key);
+    b.freeze()
+}
+
+pub fn row(group: u16, op: OperatorId, time: i64, key: &[u8], seq: u64) -> Bytes {
+    let mut b = BytesMut::from(&row_slot(group, op, time, key)[..]);
+    b.put_u64(seq);
+    b.freeze()
+}
+
+/// The keys of an operator's rows in a group at or before `watermark`:
+/// `[start, end)`.
+pub fn rows_due(group: u16, op: OperatorId, watermark: i64) -> (Bytes, Bytes) {
+    let start = keyed(group, op, Kind::Row, 0).freeze();
+    let end = match watermark.checked_add(1) {
+        Some(next) => {
+            let mut b = keyed(group, op, Kind::Row, 8);
+            b.put_u64(flip(next));
+            b.freeze()
+        }
+        None => successor(&start),
+    };
+    (start, end)
+}
+
+/// A row key's group, time, key and seq.
+pub fn parse_row(k: &[u8]) -> Option<(u16, i64, &[u8], u64)> {
+    if k.len() < KEYED_HEAD + 8 + 4 + 8 || k[0] != KEYED || k[7] != Kind::Row as u8 {
+        return None;
+    }
+    let group = u16_at(k, 1)?;
+    let time = unflip(u64_at(k, KEYED_HEAD)?);
+    let len = usize::try_from(u32_at(k, KEYED_HEAD + 8)?).ok()?;
+    let key_at = KEYED_HEAD + 8 + 4;
+    if k.len() != key_at + len + 8 {
+        return None;
+    }
+    let seq = u64_at(k, key_at + len)?;
+    Some((group, time, &k[key_at..key_at + len], seq))
+}
+
+pub fn timer(op: OperatorId, time: i64, group: u16, key: &[u8]) -> Bytes {
+    let mut b = timed(op, time, 2 + 4 + key.len());
+    b.put_u16(group);
+    b.put_u32(len32(key.len()));
+    b.put_slice(key);
+    b.freeze()
+}
+
+/// The keys of an operator's timers at or before `watermark`: `[start, end)`.
+pub fn timers_due(op: OperatorId, watermark: i64) -> (Bytes, Bytes) {
+    let start = timed(op, i64::MIN, 0).freeze();
+    let end = match watermark.checked_add(1) {
+        Some(next) => timed(op, next, 0).freeze(),
+        None => successor(&start[..TIMED_HEAD - 8]),
+    };
+    (start, end)
+}
+
+/// A timer key's time, group and key.
+pub fn parse_timer(k: &[u8]) -> Option<(i64, u16, &[u8])> {
+    if k.len() < TIMED_HEAD + 2 + 4 || k[0] != TIMED || k[5] != Kind::Timer as u8 {
+        return None;
+    }
+    let time = unflip(u64_at(k, 6)?);
+    let group = u16_at(k, TIMED_HEAD)?;
+    let len = usize::try_from(u32_at(k, TIMED_HEAD + 2)?).ok()?;
+    let key_at = TIMED_HEAD + 2 + 4;
+    if k.len() != key_at + len {
+        return None;
+    }
+    Some((time, group, &k[key_at..]))
+}
+
+/// The key group of any key of this layout.
+pub fn group_of(k: &[u8]) -> Option<u16> {
+    match *k.first()? {
+        KEYED => u16_at(k, 1),
+        TIMED => u16_at(k, TIMED_HEAD),
+        _ => None,
+    }
+}
+
+/// The group of a key in keyed state, or of a bound of a scan of it.
+pub fn keyed_group(k: &[u8]) -> Option<u16> {
+    match *k.first()? {
+        KEYED => u16_at(k, 1),
+        _ => None,
+    }
+}
+
+/// The smallest key greater than every key that starts with `prefix`, which
+/// starts with a space, so the key exists.
+pub fn successor(prefix: &[u8]) -> Bytes {
+    let mut b = prefix.to_vec();
+    while let Some(last) = b.pop() {
+        if last < u8::MAX {
+            b.push(last + 1);
+            break;
+        }
+    }
+    Bytes::from(b)
+}
+
+/// The smallest key greater than `k`.
+pub fn after(k: &[u8]) -> Bytes {
+    let mut b = Vec::with_capacity(k.len() + 1);
+    b.extend_from_slice(k);
+    b.push(0);
+    Bytes::from(b)
+}
+
+/// An expiry or a horizon as a value.
+pub fn time_value(t: i64) -> Bytes {
+    Bytes::copy_from_slice(&t.to_be_bytes())
+}
+
+pub fn parse_time_value(v: &[u8]) -> Option<i64> {
+    Some(i64::from_be_bytes(v.try_into().ok()?))
+}
+
+fn flip(t: i64) -> u64 {
+    u64::from_be_bytes(t.to_be_bytes()) ^ (1 << 63)
+}
+
+fn unflip(u: u64) -> i64 {
+    i64::from_be_bytes((u ^ (1 << 63)).to_be_bytes())
+}
+
+/// A key's length; keys are under 4 GiB.
+fn len32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+fn u16_at(k: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(k.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn u32_at(k: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(k.get(at..at + 4)?.try_into().ok()?))
+}
+
+fn u64_at(k: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_be_bytes(k.get(at..at + 8)?.try_into().ok()?))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    const OP: OperatorId = OperatorId(7);
+    const TIMES: [i64; 7] = [i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX - 1, i64::MAX];
+    const KEYS: [&[u8]; 6] = [b"", b"\x00", b"a", b"b", b"ab", b"\xff\xff"];
+
+    fn sorted<T: Ord + Clone>(v: &[T]) -> bool {
+        v.windows(2).all(|w| w[0] < w[1])
+    }
+
+    #[test]
+    fn times_sort_as_signed_numbers() {
+        let rows: Vec<Bytes> = TIMES.iter().map(|&t| row(3, OP, t, b"k", 0)).collect();
+        let timers: Vec<Bytes> = TIMES.iter().map(|&t| timer(OP, t, 3, b"k")).collect();
+        assert!(sorted(&rows));
+        assert!(sorted(&timers));
+        for (&t, r) in TIMES.iter().zip(&rows) {
+            assert_eq!(parse_row(r).unwrap().1, t);
+        }
+        for (&t, k) in TIMES.iter().zip(&timers) {
+            assert_eq!(parse_timer(k).unwrap().0, t);
+        }
+    }
+
+    /// Keys by length, then bytewise: the order rows and timers come out in.
+    fn by_length(a: &&[u8], b: &&[u8]) -> std::cmp::Ordering {
+        a.len().cmp(&b.len()).then(a.cmp(b))
+    }
+
+    #[test]
+    fn rows_sort_by_time_then_key_then_seq_within_a_group() {
+        let mut want = Vec::new();
+        let mut keys = KEYS.to_vec();
+        keys.sort_by(by_length);
+        for t in [-5, 0, 9] {
+            for k in &keys {
+                for seq in [0, 1, u64::MAX] {
+                    want.push(row(2, OP, t, k, seq));
+                }
+            }
+        }
+        assert!(sorted(&want));
+        for (i, r) in want.iter().enumerate() {
+            let (g, _, k, _) = parse_row(r).unwrap();
+            assert_eq!(g, 2);
+            assert_eq!(k, keys[(i / 3) % keys.len()]);
+        }
+    }
+
+    #[test]
+    fn a_slot_holds_only_its_keys_rows() {
+        for a in KEYS {
+            let slot = row_slot(1, OP, 4, a);
+            let end = successor(&slot);
+            for b in KEYS {
+                for t in [3, 4, 5] {
+                    let r = row(1, OP, t, b, 9);
+                    let inside = slot <= r && r < end;
+                    assert_eq!(inside, a == b && t == 4, "{a:?} {b:?} {t}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rows_due_are_those_at_or_before_the_watermark() {
+        for w in TIMES {
+            let (start, end) = rows_due(5, OP, w);
+            for t in TIMES {
+                for k in KEYS {
+                    let r = row(5, OP, t, k, 1);
+                    assert_eq!(start <= r && r < end, t <= w, "{t} {w}");
+                    assert!(row(4, OP, t, k, 1) < start && row(6, OP, t, k, 1) >= end);
+                    assert!(row(5, OperatorId(8), t, k, 1) >= end);
+                    assert!(value(5, OP, k) >= end && set(5, OP, k) >= end);
+                    assert!(horizon(5, OP) < start);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn timers_sort_by_time_then_group_then_key() {
+        let mut keys = KEYS.to_vec();
+        keys.sort_by(by_length);
+        let mut want = Vec::new();
+        for t in [-1, 0, 7] {
+            for g in [0, 1, u16::MAX] {
+                for k in &keys {
+                    want.push(timer(OP, t, g, k));
+                }
+            }
+        }
+        assert!(sorted(&want));
+        let (start, end) = timers_due(OP, 0);
+        for k in &want {
+            let (t, g, key) = parse_timer(k).unwrap();
+            assert_eq!(start <= *k && *k < end, t <= 0);
+            assert_eq!(group_of(k), Some(g));
+            assert!(keys.contains(&key));
+        }
+        let (start, end) = timers_due(OP, i64::MAX);
+        assert!(want.iter().all(|k| start <= *k && *k < end));
+        assert!(timer(OperatorId(6), i64::MAX, 0, b"") < start);
+        assert!(timer(OperatorId(8), i64::MIN, 0, b"") >= end);
+    }
+
+    #[test]
+    fn key_groups_lead_keyed_state_and_kinds_keep_apart() {
+        let keys = |g: u16| {
+            [
+                value(g, OP, b"x"),
+                set(g, OP, b"x"),
+                horizon(g, OP),
+                row(g, OP, 0, b"x", 0),
+                value(g, OperatorId(u32::MAX), b""),
+            ]
+        };
+        for g in [0, 1, 255, u16::MAX - 1] {
+            for a in keys(g) {
+                for b in keys(g + 1) {
+                    assert!(a < b);
+                }
+                assert_eq!(group_of(&a), Some(g));
+                // Every keyed key sorts before every timer.
+                assert!(a < timer(OperatorId(0), i64::MIN, 0, b""));
+            }
+        }
+        let (s, e) = set_range(3, OP);
+        assert!(s <= set(3, OP, b"") && set(3, OP, b"\xff\xff") < e);
+        assert!(horizon(3, OP) < s || horizon(3, OP) >= e);
+        assert!(value(3, OP, b"") < s || value(3, OP, b"") >= e);
+        assert_eq!(parse_horizon(&horizon(9, OP)), Some((9, OP)));
+        assert_eq!(parse_horizon(&set(9, OP, b"")), None);
+    }
+
+    #[test]
+    fn parsing_refuses_other_keys() {
+        assert_eq!(parse_row(&value(1, OP, b"0123456789abcdefghijk")), None);
+        assert_eq!(parse_row(&row(1, OP, 1, b"k", 2)[..20]), None);
+        assert_eq!(parse_timer(&row(1, OP, 1, b"k", 2)), None);
+        assert_eq!(parse_timer(&timer(OP, 1, 1, b"key")[..20]), None);
+        assert_eq!(group_of(b"\x02abc"), None);
+        assert_eq!(group_of(b""), None);
+        assert_eq!(parse_time_value(b"short"), None);
+        assert_eq!(parse_time_value(&time_value(-3)), Some(-3));
+    }
+
+    #[test]
+    fn successor_and_after() {
+        assert_eq!(&successor(b"\x00\x01\xff\xff")[..], b"\x00\x02");
+        let k = b"\x00ab";
+        assert!(after(k).as_ref() > &k[..] && after(k) < successor(k));
+        assert!(after(k) < Bytes::from_static(b"\x00ab\x00\x00"));
+    }
+}

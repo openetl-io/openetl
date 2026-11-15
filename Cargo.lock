@@ -2337,6 +2337,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openetl-state"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

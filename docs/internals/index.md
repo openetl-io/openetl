@@ -80,6 +80,18 @@ The same plan gives `openetl plan` its `partitioning` section, and the runner th
 
 Lanes and writer lanes own contiguous ranges of the pipeline's key groups, picked together ([`crates/engine/src/layout.rs`](../../crates/engine/src/layout.rs), and `plan.NewLayout` for the runner). Writer lane `w` owns the `w`-th of the writer lanes' equal ranges. Each writer lane's range is cut again among the lanes that feed it, in lane order: each writer lane gets one lane, and each other lane goes to the writer lane with the most key groups per lane. A lane without an exchange writes to the writer lane whose range holds its own. An attempt has no more lanes than key groups.
 
+### Keyed state
+
+[`crates/state`](../../crates/state) is the state layer for stateful operators. No operator uses it.
+
+Operators reach state through one trait, `StateBackend`, which has four primitives: a value per key, rows per key by the time they fall due, a set with expiry, and timers. Each call names the operator and the key's group. A lane opens one `Layer` for its range of key groups, and all operators of the lane share it.
+
+The layer keeps the open epoch's changes in memory. At a barrier, it commits them to a store, which returns the snapshots that the checkpoint record names. If the epoch fails, the layer discards its changes. A restore opens only the snapshots that a record names, for any range of the pipeline's key groups. So the state of a key group can move to another lane, or to another worker.
+
+Keys start with their key group, so a range of key groups is a range of keys. In each key group, rows sort by the time they fall due, so the rows that a watermark releases are one range. Timers sort by time across the lane's key groups, so a restore reads no timer before it is due.
+
+The only store keeps every version in the memory of the process. Tests use it to stop lanes and restore them. Nothing in it survives the process.
+
 ## Checkpoints
 
 [`internal/checkpoint`](../../internal/checkpoint) keeps each pipeline's checkpoint log under `{org}/{pipeline}/_checkpoints/` in object storage. Records are immutable, and `HEAD` points to the latest record. Compare-and-swap updates use conditional writes on S3, GCS and Azure Blob Storage. This prevents two attempts from advancing the same `HEAD` concurrently.
