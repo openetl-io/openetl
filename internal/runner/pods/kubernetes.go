@@ -279,14 +279,21 @@ func (k *Kubernetes) WorkerPod(l Launch, worker int) *corev1.Pod {
 		c.Env = append(c.Env, corev1.EnvVar{Name: name, Value: value})
 	}
 	size := l.Size
-	if l.Workers > 0 && worker == 0 {
+	podIP := corev1.EnvVar{Name: "OPENETL_POD_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}}
+	switch {
+	case l.Workers > 0 && worker == 0:
 		size = l.Coordinator
-		c.Env = append(c.Env,
-			corev1.EnvVar{Name: "OPENETL_POD_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}},
+		c.Env = append(c.Env, podIP,
 			corev1.EnvVar{Name: "OPENETL_ATTEMPT_LISTEN", Value: fmt.Sprintf(":%d", AttemptPort)},
 			corev1.EnvVar{Name: "OPENETL_ATTEMPT_ADVERTISE", Value: "$(OPENETL_POD_IP)"},
 		)
 		c.Ports = append(c.Ports, corev1.ContainerPort{Name: "attempt", ContainerPort: AttemptPort, Protocol: corev1.ProtocolTCP})
+	case worker > 0:
+		c.Env = append(c.Env, podIP,
+			corev1.EnvVar{Name: "OPENETL_EXCHANGE_LISTEN", Value: fmt.Sprintf(":%d", ExchangePort)},
+			corev1.EnvVar{Name: "OPENETL_EXCHANGE_ADVERTISE", Value: "$(OPENETL_POD_IP)"},
+		)
+		c.Ports = append(c.Ports, corev1.ContainerPort{Name: "exchange", ContainerPort: ExchangePort, Protocol: corev1.ProtocolTCP})
 	}
 	size = size.Add(k.Reserve)
 	amounts := corev1.ResourceList{

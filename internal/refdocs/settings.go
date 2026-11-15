@@ -57,7 +57,7 @@ var groups = []group{
 	{
 		"Runners",
 		"Where a runner keeps checkpoints and its cache, the programs it runs, the pool it serves, the room it has, and its token.",
-		[]string{"checkpoints", "engine", "connectors", "cache", "dbt", "spark-submit", "bridge-listen", "bridge-advertise", "attempt-listen", "attempt-advertise", "pool", "capacity", "reserve", "cgroup-root", "report-interval", "token-file", config.RunnerTokenEnv},
+		[]string{"checkpoints", "engine", "connectors", "cache", "dbt", "spark-submit", "bridge-listen", "bridge-advertise", "attempt-listen", "attempt-advertise", "exchange-listen", "exchange-advertise", "pool", "capacity", "reserve", "cgroup-root", "report-interval", "token-file", config.RunnerTokenEnv},
 	},
 	{
 		"Pod launchers",

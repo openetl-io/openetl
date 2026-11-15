@@ -31,6 +31,15 @@ fn invalid(msg: impl Into<String>) -> io::Error {
 
 /// Reads the next frame, or `None` if the edge closed between frames.
 pub async fn read<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Frame>> {
+    read_limited(r, MAX_PAYLOAD).await
+}
+
+/// As read, refusing a payload longer than `max` bytes before it takes
+/// any memory for it.
+pub async fn read_limited<R: AsyncRead + Unpin>(
+    r: &mut R,
+    max: usize,
+) -> io::Result<Option<Frame>> {
     let mut h = [0u8; HEADER_LEN];
     let mut filled = 0;
     while filled < HEADER_LEN {
@@ -54,7 +63,7 @@ pub async fn read<R: AsyncRead + Unpin>(r: &mut R) -> io::Result<Option<Frame>> 
     }
     let stream = u32::from_le_bytes([h[4], h[5], h[6], h[7]]);
     let len = u32::from_le_bytes([h[8], h[9], h[10], h[11]]) as usize;
-    if len > MAX_PAYLOAD {
+    if len > max.min(MAX_PAYLOAD) {
         return Err(invalid(format!("frame payload of {len} bytes")));
     }
     let mut payload = Vec::with_capacity(len);
@@ -143,5 +152,17 @@ mod tests {
             read(&mut bad.as_slice()).await.unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    /// A header claiming more than the limit is refused as it's read, with
+    /// none of its payload sent or taken.
+    #[tokio::test]
+    async fn a_limit_refuses_a_long_payload_before_reading_it() {
+        let h = header(FrameKind::MeshHello, 0, 1 << 29);
+        let err = read_limited(&mut h.as_slice(), 4096).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        let h = header(FrameKind::MeshHello, 0, 10);
+        let err = read_limited(&mut h.as_slice(), 4096).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
 }

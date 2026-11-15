@@ -16,7 +16,10 @@ import (
 // the commit; the coordinator likewise. The runs alternate between Postgres
 // and Iceberg. Then keyed CDC streams on workers: merged into Iceberg, with
 // held columns into Postgres, and through a SQL transform, through a
-// worker's kill and the coordinator's. Every row lands once.
+// worker's kill and the coordinator's; one worker reads the changes, and
+// the exchange between the workers' engines sends each row to the writer
+// lane owning its key group, so on three workers too, through a worker's
+// kill and one at its record. Every row lands once.
 func TestChaosWorkers(t *testing.T) {
 	s := newChaosSuite(t, 1, 1)
 	faults := []string{
@@ -34,14 +37,17 @@ func TestChaosWorkers(t *testing.T) {
 		dest, write, transform string
 		holds                  bool
 		fault                  string
+		workers                int
 	}{
-		{"iceberg", "merge", "", false, faultWorker},
-		{"postgres", "merge", "", true, faultKill},
-		{"postgres", "merge", "sql", false, faultWorker},
+		{"iceberg", "merge", "", false, faultWorker, 2},
+		{"postgres", "merge", "", true, faultKill, 2},
+		{"postgres", "merge", "sql", false, faultWorker, 2},
+		{"postgres", "merge", "", false, faultWorker, 3},
+		{"iceberg", "merge", "", false, "crash " + crashWorkerHead, 3},
 	} {
 		configs = append(configs, chaosConfig{
 			i: len(configs), seed: 1, source: "cdc", continuous: true, write: k.write, dest: k.dest, transform: k.transform, holds: k.holds,
-			scope: "stream", interval: "1s", size: "m", pods: true, workers: 2, faults: []string{k.fault}, writeFor: 30 * time.Second, strict: true,
+			scope: "stream", interval: "1s", size: "m", pods: true, workers: k.workers, faults: []string{k.fault}, writeFor: 30 * time.Second, strict: true,
 		})
 	}
 	sem := make(chan struct{}, *chaosParallel)

@@ -17,7 +17,8 @@ import (
 func TestPlanWorkers(t *testing.T) {
 	sp := &apiv1.PipelineSpec{Resources: &apiv1.JobResources{Workers: 3}}
 	lanes := destination.Capabilities{Class: destination.StageAndApply, WriterLanes: 4, WriteModes: []destination.WriteMode{destination.Append}}
-	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{{Name: "orders", PrimaryKey: []string{"id"}}, {Name: "logs"}}}
+	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{{Name: "orders", PrimaryKey: []string{"id"}}, {Name: "logs"},
+		{Name: "changes", PrimaryKey: []string{"id"}, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_CDC}}}}
 	for name, tc := range map[string]struct {
 		cat     *apiv1.Catalog
 		caps    destination.Capabilities
@@ -27,7 +28,7 @@ func TestPlanWorkers(t *testing.T) {
 	}{
 		"unknown capabilities": {cat, lanes, false, 3, "doesn't know the destination's capabilities"},
 		"one writer lane":      {cat, destination.Capabilities{Class: destination.StageAndApply}, true, 0, "resources.workers asks for 3 workers, and the job runs on one pod: the destination declares one writer lane"},
-		"spread":               {cat, lanes, true, 3, "orders: each attempt reads it on one of its 3 workers"},
+		"spread":               {cat, lanes, true, 3, "changes: each attempt reads it on one of its 3 workers"},
 		"no catalog":           {nil, lanes, true, 3, "the source hasn't been discovered"},
 	} {
 		out := &apiv1.PipelinePlan{}
@@ -39,6 +40,11 @@ func TestPlanWorkers(t *testing.T) {
 		said = append(said, out.GetNotes()...)
 		if got != tc.workers || !strings.Contains(strings.Join(said, "\n"), tc.has) {
 			t.Errorf("%s: %d workers, and said %q; want %d, and %q", name, got, said, tc.workers, tc.has)
+		}
+		// A keyed stream not split by key spreads over the workers, whose
+		// engines exchange its rows.
+		if strings.Contains(strings.Join(said, "\n"), "orders:") {
+			t.Errorf("%s: said %q of orders", name, said)
 		}
 	}
 	if got := planWorkers(&apiv1.PipelineSpec{}, cat, nil, lanes, true, false, &apiv1.PipelinePlan{}); got != 0 {

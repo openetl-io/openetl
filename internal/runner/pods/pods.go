@@ -78,6 +78,11 @@ func WorkerName(attempt string, placement int32, worker int) string {
 // protocol.
 const AttemptPort = 7720
 
+// ExchangePort is where a worker pod's engine listens for the engines of
+// the attempt's other workers. A pod is a coordinator or a worker, never
+// both, so job pods talk on one port.
+const ExchangePort = AttemptPort
+
 // Env is what a pod's runner needs to run its one attempt, or worker, from
 // 1, of it, as openetld's environment.
 func Env(l Launch, pool string, worker int) []string {

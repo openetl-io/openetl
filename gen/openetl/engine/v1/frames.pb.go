@@ -29,11 +29,18 @@ const (
 //
 // A BATCH payload is an Arrow IPC stream: the schema, any dictionaries, one
 // record batch. Every other payload is the message named after its kind.
+//
+// Engines of one attempt (StartJobRequest.mesh) send each other the same
+// frames over TLS 1.3, on a connection from each engine to each other:
+// MESH_HELLO each way first, then the dialing engine's lanes' frames to the
+// listening engine's writer lanes, each after the ROUTE it goes by. Every
+// engine presents the attempt's certificate and trusts no other.
 type FrameKind int32
 
 const (
 	FrameKind_FRAME_KIND_UNSPECIFIED FrameKind = 0
-	// The first frame on every connection, from the runner.
+	// The first frame on every connection to the data socket, from the
+	// runner.
 	FrameKind_FRAME_KIND_HELLO FrameKind = 1
 	FrameKind_FRAME_KIND_BATCH FrameKind = 2
 	// To the engine only.
@@ -49,6 +56,11 @@ const (
 	// Between a lane and the lanes it sends to, in one engine or another's: a
 	// sender's watermark of the stream, in order with what it sends.
 	FrameKind_FRAME_KIND_WATERMARK FrameKind = 10
+	// Between engines only: the first frame each way on a connection.
+	FrameKind_FRAME_KIND_MESH_HELLO FrameKind = 11
+	// Between engines only: where the frames after it go, until the next
+	// ROUTE.
+	FrameKind_FRAME_KIND_ROUTE FrameKind = 12
 )
 
 // Enum value maps for FrameKind.
@@ -64,6 +76,8 @@ var (
 		8:  "FRAME_KIND_PATCH",
 		9:  "FRAME_KIND_SPLIT",
 		10: "FRAME_KIND_WATERMARK",
+		11: "FRAME_KIND_MESH_HELLO",
+		12: "FRAME_KIND_ROUTE",
 	}
 	FrameKind_value = map[string]int32{
 		"FRAME_KIND_UNSPECIFIED":   0,
@@ -76,6 +90,8 @@ var (
 		"FRAME_KIND_PATCH":         8,
 		"FRAME_KIND_SPLIT":         9,
 		"FRAME_KIND_WATERMARK":     10,
+		"FRAME_KIND_MESH_HELLO":    11,
+		"FRAME_KIND_ROUTE":         12,
 	}
 )
 
@@ -432,6 +448,151 @@ func (x *Watermark) GetMicros() int64 {
 	return 0
 }
 
+// MeshHello opens a connection from one engine of an attempt to another,
+// which carries the dialing engine's lanes' frames to the other's writer
+// lanes. The dialer's says which engine it is and carries the attempt's
+// secret. The listener answers with its own, without the secret, once it
+// takes the connection; or with refused set, and closes it. It refuses a
+// connection of another attempt or generation, with another secret, of an
+// engine that isn't another of the attempt's, or of one already connected.
+type MeshHello struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// StartJobRequest.job and generation.
+	Attempt    string `protobuf:"bytes,1,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Generation uint64 `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	// Its index in Mesh.engines.
+	Engine uint32 `protobuf:"varint,3,opt,name=engine,proto3" json:"engine,omitempty"`
+	Secret []byte `protobuf:"bytes,4,opt,name=secret,proto3" json:"secret,omitempty"`
+	// Why the listener refused the connection; empty: it took it.
+	Refused       string `protobuf:"bytes,5,opt,name=refused,proto3" json:"refused,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MeshHello) Reset() {
+	*x = MeshHello{}
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MeshHello) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MeshHello) ProtoMessage() {}
+
+func (x *MeshHello) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MeshHello.ProtoReflect.Descriptor instead.
+func (*MeshHello) Descriptor() ([]byte, []int) {
+	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MeshHello) GetAttempt() string {
+	if x != nil {
+		return x.Attempt
+	}
+	return ""
+}
+
+func (x *MeshHello) GetGeneration() uint64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *MeshHello) GetEngine() uint32 {
+	if x != nil {
+		return x.Engine
+	}
+	return 0
+}
+
+func (x *MeshHello) GetSecret() []byte {
+	if x != nil {
+		return x.Secret
+	}
+	return nil
+}
+
+func (x *MeshHello) GetRefused() string {
+	if x != nil {
+		return x.Refused
+	}
+	return ""
+}
+
+// Route is where the frames after it on a connection between engines go:
+// from one of the dialer's lanes to one of the listener's writer lanes,
+// each by its index in the attempt. Only frames of streams with an exchange
+// follow, their stream an index into the destination's streams: BATCH,
+// SCHEMA_CHANGE, BARRIER, WATERMARK and END_OF_STREAM. The dialer closes the
+// connection once each of its lanes has ended every such stream on each of
+// the listener's writer lanes; closed before, it fails the job.
+type Route struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Lane          uint32                 `protobuf:"varint,1,opt,name=lane,proto3" json:"lane,omitempty"`
+	WriterLane    uint32                 `protobuf:"varint,2,opt,name=writer_lane,json=writerLane,proto3" json:"writer_lane,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Route) Reset() {
+	*x = Route{}
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Route) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Route) ProtoMessage() {}
+
+func (x *Route) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_engine_v1_frames_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Route.ProtoReflect.Descriptor instead.
+func (*Route) Descriptor() ([]byte, []int) {
+	return file_openetl_engine_v1_frames_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *Route) GetLane() uint32 {
+	if x != nil {
+		return x.Lane
+	}
+	return 0
+}
+
+func (x *Route) GetWriterLane() uint32 {
+	if x != nil {
+		return x.WriterLane
+	}
+	return 0
+}
+
 var File_openetl_engine_v1_frames_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_frames_proto_rawDesc = "" +
@@ -452,7 +613,19 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\n" +
 	"_watermark\"#\n" +
 	"\tWatermark\x12\x16\n" +
-	"\x06micros\x18\x01 \x01(\x03R\x06micros*\xa1\x02\n" +
+	"\x06micros\x18\x01 \x01(\x03R\x06micros\"\x8f\x01\n" +
+	"\tMeshHello\x12\x18\n" +
+	"\aattempt\x18\x01 \x01(\tR\aattempt\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x04R\n" +
+	"generation\x12\x16\n" +
+	"\x06engine\x18\x03 \x01(\rR\x06engine\x12\x16\n" +
+	"\x06secret\x18\x04 \x01(\fR\x06secret\x12\x18\n" +
+	"\arefused\x18\x05 \x01(\tR\arefused\"<\n" +
+	"\x05Route\x12\x12\n" +
+	"\x04lane\x18\x01 \x01(\rR\x04lane\x12\x1f\n" +
+	"\vwriter_lane\x18\x02 \x01(\rR\n" +
+	"writerLane*\xd2\x02\n" +
 	"\tFrameKind\x12\x1a\n" +
 	"\x16FRAME_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10FRAME_KIND_HELLO\x10\x01\x12\x14\n" +
@@ -464,7 +637,9 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x10FRAME_KIND_PATCH\x10\b\x12\x14\n" +
 	"\x10FRAME_KIND_SPLIT\x10\t\x12\x18\n" +
 	"\x14FRAME_KIND_WATERMARK\x10\n" +
-	"\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
+	"\x12\x19\n" +
+	"\x15FRAME_KIND_MESH_HELLO\x10\v\x12\x14\n" +
+	"\x10FRAME_KIND_ROUTE\x10\f\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_openetl_engine_v1_frames_proto_rawDescOnce sync.Once
@@ -479,7 +654,7 @@ func file_openetl_engine_v1_frames_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_engine_v1_frames_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_openetl_engine_v1_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_openetl_engine_v1_frames_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_openetl_engine_v1_frames_proto_goTypes = []any{
 	(FrameKind)(0),       // 0: openetl.engine.v1.FrameKind
 	(*Hello)(nil),        // 1: openetl.engine.v1.Hello
@@ -489,15 +664,17 @@ var file_openetl_engine_v1_frames_proto_goTypes = []any{
 	(*EndOfStream)(nil),  // 5: openetl.engine.v1.EndOfStream
 	(*Split)(nil),        // 6: openetl.engine.v1.Split
 	(*Watermark)(nil),    // 7: openetl.engine.v1.Watermark
-	(*v1.Epoch)(nil),     // 8: openetl.connector.v1.Epoch
+	(*MeshHello)(nil),    // 8: openetl.engine.v1.MeshHello
+	(*Route)(nil),        // 9: openetl.engine.v1.Route
+	(*v1.Epoch)(nil),     // 10: openetl.connector.v1.Epoch
 }
 var file_openetl_engine_v1_frames_proto_depIdxs = []int32{
-	8, // 0: openetl.engine.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	10, // 0: openetl.engine.v1.Barrier.epoch:type_name -> openetl.connector.v1.Epoch
+	1,  // [1:1] is the sub-list for method output_type
+	1,  // [1:1] is the sub-list for method input_type
+	1,  // [1:1] is the sub-list for extension type_name
+	1,  // [1:1] is the sub-list for extension extendee
+	0,  // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_frames_proto_init() }
@@ -512,7 +689,7 @@ func file_openetl_engine_v1_frames_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_engine_v1_frames_proto_rawDesc), len(file_openetl_engine_v1_frames_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

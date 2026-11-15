@@ -157,6 +157,15 @@ func TestWorkersOnKubernetes(t *testing.T) {
 		if e, _ := envOf(w, "OPENETL_WORKER"); e.Value != strconv.Itoa(n) {
 			t.Errorf("worker pod %s has OPENETL_WORKER %q, want %d", w.Name, e.Value, n)
 		}
+		// Its engine listens for the other worker's on 7720, at its pod's
+		// IP: faker's keyed streams aren't split by key, so the engines
+		// exchange their rows.
+		if e, _ := envOf(w, "OPENETL_EXCHANGE_LISTEN"); e.Value != ":7720" {
+			t.Errorf("worker pod %s's engine listens at %q, want :7720", w.Name, e.Value)
+		}
+		if e, _ := envOf(w, "OPENETL_EXCHANGE_ADVERTISE"); e.Value != "$(OPENETL_POD_IP)" {
+			t.Errorf("worker pod %s's engine advertises %q, want its pod's IP", w.Name, e.Value)
+		}
 		eventually(t, 2*time.Minute, w.Name+" to join its coordinator at "+at, func() bool {
 			log := p.podLog(t, w.Name)
 			return strings.Contains(log, `msg="runner running one worker of an attempt"`) && strings.Contains(log, fmt.Sprintf("worker=%d", n-1)) &&

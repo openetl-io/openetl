@@ -369,8 +369,15 @@ func TestWorkerPods(t *testing.T) {
 		if p.Name != WorkerName(l.Attempt, 2, w) || len(p.Name) > 63 || p.Annotations[annoWorker] != strconv.Itoa(w) || p.Annotations[annoAttempt] != l.Attempt {
 			t.Errorf("worker %d's pod %q, annotations %v", w, p.Name, p.Annotations)
 		}
-		if e["OPENETL_WORKER"] != strconv.Itoa(w) || e["OPENETL_CAPACITY"] != resources.M.Flag() || e["OPENETL_ATTEMPT_LISTEN"] != "" || len(c.Ports) != 0 {
+		if e["OPENETL_WORKER"] != strconv.Itoa(w) || e["OPENETL_CAPACITY"] != resources.M.Flag() || e["OPENETL_ATTEMPT_LISTEN"] != "" {
 			t.Errorf("worker %d's env %v and ports %v", w, e, c.Ports)
+		}
+		// Its engine listens for the other workers' on the pod's IP.
+		ip := slices.IndexFunc(c.Env, func(v corev1.EnvVar) bool { return v.Name == "OPENETL_POD_IP" })
+		if e["OPENETL_EXCHANGE_LISTEN"] != ":7720" || e["OPENETL_EXCHANGE_ADVERTISE"] != "$(OPENETL_POD_IP)" || ip < 0 ||
+			ip > slices.IndexFunc(c.Env, func(v corev1.EnvVar) bool { return v.Name == "OPENETL_EXCHANGE_ADVERTISE" }) ||
+			len(c.Ports) != 1 || c.Ports[0].Name != "exchange" || c.Ports[0].ContainerPort != ExchangePort {
+			t.Errorf("worker %d's exchange env %v and ports %v", w, e, c.Ports)
 		}
 		if cpu := c.Resources.Limits.Cpu().MilliValue(); cpu != 2500 {
 			t.Errorf("worker %d's CPU %dm, want m and the reserve", w, cpu)

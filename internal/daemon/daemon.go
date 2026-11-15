@@ -548,6 +548,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		AWSRoles:    roles,
 
 		AttemptListen: cfg.AttemptListen, AttemptAdvertise: cfg.AttemptAdvertise,
+		ExchangeListen: cfg.ExchangeListen, ExchangeAdvertise: cfg.ExchangeAdvertise,
 	}
 	dbt := &dpactivities.Dbt{API: apiClient, Artifacts: versions, Secrets: stores, Executable: cfg.Dbt, Logger: log, Logs: cps}
 	sparkSteps := &dpactivities.Spark{

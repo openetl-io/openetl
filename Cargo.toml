@@ -43,6 +43,8 @@ object_store = { version = "0.14.2", default-features = false, features = ["aws"
 parquet = { version = "59.3.2", default-features = false, features = ["arrow", "snap", "async"] }
 prost = "0.14.4"
 prost-types = "0.14.4"
+# TLS between engines, with the provider object_store's client already has.
+rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision"] }
 socket2 = "0.6.5"
@@ -50,6 +52,7 @@ sqllogictest = "0.29.1"
 tempfile = "3.27.0"
 thiserror = "2"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time"] }
+tokio-rustls = { version = "0.26.6", default-features = false }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tokio-util = "0.7.20"
 tonic = "0.14.9"

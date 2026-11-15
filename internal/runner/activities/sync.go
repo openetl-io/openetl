@@ -74,6 +74,10 @@ type Sync struct {
 	// host:port, and where they reach it; empty: 127.0.0.1:0, and the
 	// listener's address.
 	AttemptListen, AttemptAdvertise string
+	// Where a worker's engine listens for the other workers' engines, as
+	// host:port, and where they reach it; empty: 127.0.0.1 and a free port,
+	// and the listener's address.
+	ExchangeListen, ExchangeAdvertise string
 }
 
 // RunSyncAttempt runs one attempt of a sync. When it's asked to stop, or the
