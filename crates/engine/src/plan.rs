@@ -74,6 +74,17 @@ pub struct Plan {
     /// which name held files.
     pub first_writer_lane: usize,
     pub attempt_writer_lanes: usize,
+    /// Where stateful operators keep state, and what the restored record
+    /// names of it.
+    pub state: StatePlan,
+}
+
+/// A job's state: the pipeline whose operators' stores it opens, and the
+/// snapshots of the restored record, by operator.
+#[derive(Debug)]
+pub struct StatePlan {
+    pub pipeline: String,
+    pub restored: Vec<(String, openetl_state::Snapshot)>,
 }
 
 /// A job's SQL transform: the streams it reads, which the inbound edges
@@ -269,12 +280,6 @@ impl Plan {
         if req.streams.is_empty() {
             return Err(JobError::config("the job has no streams"));
         }
-        if let Some(s) = req.restored_snapshots.first() {
-            return Err(JobError::config(format!(
-                "the job has no operator {:?} to restore",
-                s.operator
-            )));
-        }
         let (lanes, writer_lanes) = (req.lanes.max(1) as usize, req.writer_lanes.max(1) as usize);
         if writer_lanes > lanes {
             return Err(JobError::config(format!(
@@ -298,6 +303,19 @@ impl Plan {
             ));
         }
         let transform = check_transform(&req)?;
+        let mut restored_state = Vec::with_capacity(req.restored_snapshots.len());
+        for s in &req.restored_snapshots {
+            let known = transform
+                .as_ref()
+                .is_some_and(|t| t.operators().any(|o| o == s.operator));
+            if !known {
+                return Err(JobError::config(format!(
+                    "the job has no operator {:?} to restore",
+                    s.operator
+                )));
+            }
+            restored_state.push(crate::state::snapshot(s, key_groups)?);
+        }
         let sinks = match transform {
             Some(_) => &req.outputs,
             None => &req.streams,
@@ -363,7 +381,7 @@ impl Plan {
                 }
                 identities[o] = match route {
                     Route::Pass => input,
-                    Route::Statement(_) => Identity {
+                    Route::Statement(_) | Route::Window(_) => Identity {
                         stream: names[o].clone(),
                         key: identities[o].key.clone(),
                         cursor: None,
@@ -587,6 +605,10 @@ impl Plan {
         let inputs = transform.as_ref().map_or(0, |_| req.streams.len());
 
         let plan = Plan {
+            state: StatePlan {
+                pipeline: req.pipeline.clone(),
+                restored: restored_state,
+            },
             remote: req
                 .remote_schemas
                 .then(|| std::sync::Arc::new(Remote::new(names.len(), inputs))),
@@ -1272,7 +1294,7 @@ pub(crate) mod tests {
                 }),
             ),
             (
-                "has stateful operator \"op-1\", and its statements plan none now",
+                "has stateful operators op-1, and its statements plan none now",
                 Box::new(|r| r.transform.as_mut().unwrap().operators = vec!["op-1".into()]),
             ),
             (

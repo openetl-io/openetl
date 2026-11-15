@@ -1,0 +1,177 @@
+# Group windows: tumble, hop and session over a stream's event time, the
+# aggregates they run, FILTER and HAVING, on rows that have all come, so
+# every window closes at the end of input. Each query is ours, then the
+# same windows in DuckDB's SQL: time_bucket from the Unix epoch for
+# tumble, a row per window for hop, and lag over the event time for
+# session.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE orders (id BIGINT NOT NULL, region TEXT, amount DECIMAL(12, 2), qty INTEGER, price DOUBLE, ts TIMESTAMPTZ NOT NULL, PRIMARY KEY (id))
+
+onlyif openetl
+statement ok
+ALTER TABLE orders SET EVENT TIME ts
+
+statement ok
+INSERT INTO orders VALUES (1, 'eu', 120.00, 3, 1.5, '2024-02-29 12:30:45.123456+00:00'), (2, 'eu', 9.99, 1, 2.5, '2024-02-29 12:30:59+00:00'), (3, 'us', 45.50, 2, -0.5, '2024-02-29 12:31:10+00:00'), (4, NULL, 1000.01, 12, 1e10, '2024-02-29 12:31:20+00:00'), (5, 'eu', 0.01, 0, NULL, '2024-02-29 12:32:00+00:00'), (6, 'us', NULL, NULL, 100.125, '2024-02-29 13:00:00+00:00'), (7, 'eu', 7.00, 7, 7.0, '2024-02-29 12:31:00+00:00')
+
+statement ok
+CREATE VIEW paid AS SELECT region AS area, amount, ts FROM orders WHERE amount > 0
+
+# A minute's windows, by region: counts, sums, the least and the most.
+onlyif openetl
+query TTIRIRT
+SELECT window_start, region, count(*) AS n, sum(amount) AS total, sum(qty) AS q, min(amount) AS lo, max(region) AS hi
+FROM orders GROUP BY tumble(ts, INTERVAL '1 minute'), region
+----
+2024-02-29 12:30:00+00 eu 2 129.99 4 9.99 eu
+2024-02-29 12:31:00+00 NULL 1 1000.01 12 1000.01 NULL
+2024-02-29 12:31:00+00 eu 1 7 7 7 eu
+2024-02-29 12:31:00+00 us 1 45.5 2 45.5 us
+2024-02-29 12:32:00+00 eu 1 0.01 0 0.01 eu
+2024-02-29 13:00:00+00 us 1 NULL NULL NULL us
+
+onlyif duckdb
+query TTIRIRT
+SELECT time_bucket(INTERVAL '1 minute', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS window_start, region, count(*) AS n, sum(amount) AS total, sum(qty) AS q, min(amount) AS lo, max(region) AS hi
+FROM orders GROUP BY 1, region
+----
+2024-02-29 12:30:00+00 eu 2 129.99 4 9.99 eu
+2024-02-29 12:31:00+00 NULL 1 1000.01 12 1000.01 NULL
+2024-02-29 12:31:00+00 eu 1 7 7 7 eu
+2024-02-29 12:31:00+00 us 1 45.5 2 45.5 us
+2024-02-29 12:32:00+00 eu 1 0.01 0 0.01 eu
+2024-02-29 13:00:00+00 us 1 NULL NULL NULL us
+
+# A window's end, and a window of the whole stream's rows.
+onlyif openetl
+query TTIR
+SELECT window_start, window_end, count(*) AS n, sum(price) AS total
+FROM orders GROUP BY tumble(ts, INTERVAL '1 hour')
+----
+2024-02-29 12:00:00+00 2024-02-29 13:00:00+00 6 10000000010.5
+2024-02-29 13:00:00+00 2024-02-29 14:00:00+00 1 100.125
+
+onlyif duckdb
+query TTIR
+SELECT time_bucket(INTERVAL '1 hour', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS window_start, time_bucket(INTERVAL '1 hour', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') + INTERVAL '1 hour' AS window_end, count(*) AS n, fsum(price) AS total
+FROM orders GROUP BY 1, 2
+----
+2024-02-29 12:00:00+00 2024-02-29 13:00:00+00 6 10000000010.5
+2024-02-29 13:00:00+00 2024-02-29 14:00:00+00 1 100.125
+
+# Averages, medians, a percentile and a distinct count.
+onlyif openetl
+query TRRRRRRI
+SELECT window_start, avg(qty) AS a, avg(amount) AS am, avg(price) AS ap, median(qty) AS m, median(amount) AS mm, percentile_cont(0.9) WITHIN GROUP (ORDER BY price) AS p90, approx_distinct(region) AS regions
+FROM orders GROUP BY tumble(ts, INTERVAL '1 day')
+----
+2024-02-29 00:00:00+00 4.16666666667 197.085 1666666685.1 2.5 27.74 5000000050.06 2
+
+onlyif duckdb
+query TRRRRRRI
+SELECT time_bucket(INTERVAL '1 day', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS window_start, avg(qty) AS a, CAST(avg(amount) AS DECIMAL(16, 6)) AS am, fsum(price) / count(price) AS ap, median(qty) AS m, median(amount) AS mm, quantile_cont(price, 0.9) AS p90, count(DISTINCT region) AS regions
+FROM orders GROUP BY 1
+----
+2024-02-29 00:00:00+00 4.16666666667 197.085 1666666685.1 2.5 27.74 5000000050.06 2
+
+# FILTER counts some rows, and HAVING keeps some windows.
+onlyif openetl
+query TTII
+SELECT window_start, region, count(*) FILTER (WHERE qty > 1) AS big, count(qty) AS n
+FROM orders GROUP BY tumble(ts, INTERVAL '1 minute'), region
+HAVING count(*) > 1
+----
+2024-02-29 12:30:00+00 eu 1 2
+
+onlyif duckdb
+query TTII
+SELECT time_bucket(INTERVAL '1 minute', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS window_start, region, count(*) FILTER (WHERE qty > 1) AS big, count(qty) AS n
+FROM orders GROUP BY 1, region
+HAVING count(*) > 1
+----
+2024-02-29 12:30:00+00 eu 1 2
+
+# Hopping windows of an hour every half an hour: each row is in two.
+onlyif openetl
+query TTI
+SELECT window_start, region, count(*) AS n
+FROM orders GROUP BY hop(ts, INTERVAL '30 minutes', INTERVAL '1 hour'), region
+----
+2024-02-29 12:00:00+00 NULL 1
+2024-02-29 12:00:00+00 eu 4
+2024-02-29 12:00:00+00 us 1
+2024-02-29 12:30:00+00 NULL 1
+2024-02-29 12:30:00+00 eu 4
+2024-02-29 12:30:00+00 us 2
+2024-02-29 13:00:00+00 us 1
+
+onlyif duckdb
+query TTI
+SELECT window_start, region, count(*) AS n
+FROM (SELECT region, unnest(generate_series(time_bucket(INTERVAL '30 minutes', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') - INTERVAL '30 minutes', time_bucket(INTERVAL '30 minutes', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00'), INTERVAL '30 minutes')) AS window_start FROM orders)
+GROUP BY window_start, region
+----
+2024-02-29 12:00:00+00 NULL 1
+2024-02-29 12:00:00+00 eu 4
+2024-02-29 12:00:00+00 us 1
+2024-02-29 12:30:00+00 NULL 1
+2024-02-29 12:30:00+00 eu 4
+2024-02-29 12:30:00+00 us 2
+2024-02-29 13:00:00+00 us 1
+
+# Sessions: a region's rows no more than 30 seconds apart.
+onlyif openetl
+query TTTIR
+SELECT window_start, window_end, region, count(*) AS n, sum(amount) AS total
+FROM orders GROUP BY session(ts, INTERVAL '30 seconds'), region
+----
+2024-02-29 12:30:45.123456+00 2024-02-29 12:31:30+00 eu 3 136.99
+2024-02-29 12:31:10+00 2024-02-29 12:31:40+00 us 1 45.5
+2024-02-29 12:31:20+00 2024-02-29 12:31:50+00 NULL 1 1000.01
+2024-02-29 12:32:00+00 2024-02-29 12:32:30+00 eu 1 0.01
+2024-02-29 13:00:00+00 2024-02-29 13:00:30+00 us 1 NULL
+
+onlyif duckdb
+query TTTIR
+SELECT min(ts) AS window_start, max(ts) + INTERVAL '30 seconds' AS window_end, region, count(*) AS n, sum(amount) AS total
+FROM (SELECT *, sum(fresh) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS session
+      FROM (SELECT *, CASE WHEN ts - lag(ts) OVER (PARTITION BY region ORDER BY ts) <= INTERVAL '30 seconds' THEN 0 ELSE 1 END AS fresh FROM orders))
+GROUP BY region, session
+----
+2024-02-29 12:30:45.123456+00 2024-02-29 12:31:30+00 eu 3 136.99
+2024-02-29 12:31:10+00 2024-02-29 12:31:40+00 us 1 45.5
+2024-02-29 12:31:20+00 2024-02-29 12:31:50+00 NULL 1 1000.01
+2024-02-29 12:32:00+00 2024-02-29 12:32:30+00 eu 1 0.01
+2024-02-29 13:00:00+00 2024-02-29 13:00:30+00 us 1 NULL
+
+# A view's rows, renamed, grouped by a window.
+onlyif openetl
+query TTR
+SELECT window_start AS hour, area, sum(amount) AS revenue
+FROM paid GROUP BY tumble(ts, INTERVAL '1 hour'), area
+----
+2024-02-29 12:00:00+00 NULL 1000.01
+2024-02-29 12:00:00+00 eu 137
+2024-02-29 12:00:00+00 us 45.5
+
+onlyif duckdb
+query TTR
+SELECT time_bucket(INTERVAL '1 hour', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS hour, area, sum(amount) AS revenue
+FROM paid GROUP BY 1, area
+----
+2024-02-29 12:00:00+00 NULL 1000.01
+2024-02-29 12:00:00+00 eu 137
+2024-02-29 12:00:00+00 us 45.5
+
+# The output's key is window_start and the group keys.
+onlyif openetl
+query TTT
+DESCRIBE SELECT window_start, region, count(*) AS n
+FROM orders GROUP BY tumble(ts, INTERVAL '1 minute'), region
+----
+n Int64 not null
+region Utf8 null key
+window_start Timestamp(µs, "UTC") null key

@@ -12,7 +12,11 @@
 //! A record that one engine skips says why in a comment just above it, and
 //! a record that expects an error is ours alone: DuckDB runs what we
 //! refuse. Where the two differ on purpose, a file has both results, each
-//! under `onlyif` its engine.
+//! under `onlyif` its engine. Where DuckDB writes a query otherwise, as a
+//! group window, a query under `onlyif openetl` is followed by the same
+//! query in DuckDB's SQL under `onlyif duckdb`, with the same results, and
+//! the two are compared over generated rows. `ALTER TABLE t SET EVENT TIME
+//! column`, ours only, gives a table its event time.
 
 mod duckdb;
 mod generate;
@@ -284,6 +288,7 @@ fn a_record_one_engine_skips_says_why() {
         let mut commented = false;
         // A pair's second record shares the first's comment.
         let mut last: Option<&str> = None;
+        let mut last_ours = false;
         for r in &records {
             let (conditions, loc, sql) = match r {
                 Record::Comment(_) => {
@@ -315,14 +320,23 @@ fn a_record_one_engine_skips_says_why() {
             });
             let ours_by_kind = matches!(
                 rows::kind(ours::statement(sql)),
-                rows::Kind::Describe | rows::Kind::Transform
+                rows::Kind::Describe | rows::Kind::Transform | rows::Kind::EventTime
             );
-            let explained = commented || last == Some(sql) || ours_by_kind;
+            // A query only DuckDB runs, after one only ours runs, is the
+            // same query in DuckDB's SQL, and shares its comment.
+            let duckdb_only = conditions
+                .iter()
+                .any(|c| matches!(c, Condition::OnlyIf { label } if label == "duckdb"));
+            let translated = duckdb_only && last_ours;
+            let explained = commented || last == Some(sql) || ours_by_kind || translated;
             if skips && !explained && !expects_error(r) && !ours_only(&p) {
                 unexplained.push(format!("{}:{}", file_name(&p), loc.line()));
             }
             commented = false;
             last = Some(sql);
+            last_ours = conditions
+                .iter()
+                .any(|c| matches!(c, Condition::OnlyIf { label } if label == "openetl"));
         }
     }
     assert!(

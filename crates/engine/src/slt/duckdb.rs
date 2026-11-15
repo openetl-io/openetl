@@ -131,7 +131,7 @@ impl sqllogictest::DB for DuckDb {
                 self.define(sql)?;
                 Ok(DBOutput::StatementComplete(0))
             }
-            Kind::Describe | Kind::Transform => Err(Failure(format!(
+            Kind::Describe | Kind::Transform | Kind::EventTime => Err(Failure(format!(
                 "only our engine runs this; mark it onlyif openetl: {sql}"
             ))),
         }

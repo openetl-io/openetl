@@ -42,6 +42,9 @@ message Rows {
 // Barrier ends the epoch on one stream.
 message Barrier {
   openetl.connector.v1.Epoch epoch = 1;
+  // The stream's read ended before it: no row of the stream follows it on
+  // this edge. Its group windows close at it.
+  bool last = 2;
 }
 
 // SchemaChange comes before the first batch with the new schema.

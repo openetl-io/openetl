@@ -208,6 +208,22 @@ message StreamPlan {
   // lane's part of an epoch. A destination's stream with a primary key.
   // Unset: every row.
   KeyGroupRange key_groups = 14;
+  // A stream a transform reads whose rows' time is a column's: how its
+  // watermarks go. Unset: it has none, and neither do the outputs it feeds.
+  EventTime event_time = 15;
+}
+
+// EventTime is how a stream's watermarks are made, and how its group
+// windows take rows that come late.
+message EventTime {
+  // Its name in the stream, under source names. Group windows over the
+  // stream go by it.
+  string column = 1;
+  int64 delay_micros = 2;
+  // How long after a group window over the stream closes a row may still
+  // come, giving the window's row again, in microseconds. A row later than
+  // that is quarantined.
+  int64 lateness_micros = 5;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and

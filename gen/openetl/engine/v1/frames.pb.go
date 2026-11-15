@@ -188,8 +188,11 @@ func (x *Rows) GetRows() [][]byte {
 
 // Barrier ends the epoch on one stream.
 type Barrier struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Epoch         *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Epoch *v1.Epoch              `protobuf:"bytes,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	// The stream's read ended before it: no row of the stream follows it on
+	// this edge. Its group windows close at it.
+	Last          bool `protobuf:"varint,2,opt,name=last,proto3" json:"last,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -229,6 +232,13 @@ func (x *Barrier) GetEpoch() *v1.Epoch {
 		return x.Epoch
 	}
 	return nil
+}
+
+func (x *Barrier) GetLast() bool {
+	if x != nil {
+		return x.Last
+	}
+	return false
 }
 
 // SchemaChange comes before the first batch with the new schema.
@@ -321,9 +331,10 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x05Hello\x12\x12\n" +
 	"\x04edge\x18\x01 \x01(\tR\x04edge\"\x1a\n" +
 	"\x04Rows\x12\x12\n" +
-	"\x04rows\x18\x01 \x03(\fR\x04rows\"<\n" +
+	"\x04rows\x18\x01 \x03(\fR\x04rows\"P\n" +
 	"\aBarrier\x121\n" +
-	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\"1\n" +
+	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x12\n" +
+	"\x04last\x18\x02 \x01(\bR\x04last\"1\n" +
 	"\fSchemaChange\x12!\n" +
 	"\farrow_schema\x18\x01 \x01(\fR\varrowSchema\"\r\n" +
 	"\vEndOfStream*\xf1\x01\n" +

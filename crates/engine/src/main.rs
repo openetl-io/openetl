@@ -27,9 +27,11 @@ mod slt;
 mod sqlplan;
 mod stage;
 mod staging;
+mod state;
 mod store;
 mod telemetry;
 mod transform;
+mod window;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
