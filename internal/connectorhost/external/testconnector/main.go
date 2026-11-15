@@ -266,19 +266,51 @@ func newFiles(config []byte, _ host.Host) (destination.Destination, error) {
 
 func (f *files) Capabilities() destination.Capabilities { return destination.Capabilities{} }
 
-// CheckReport checks the token, then the directory.
-func (f *files) CheckReport(_ context.Context, r *check.Report) {
-	ok := r.Run("token", "Sign in", func() error {
-		if f.token != "s3cr3t" {
-			return check.Fix(sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, fmt.Errorf("files: wrong token (%d bytes)", len(f.token))), "use the token you were given")
-		}
-		return nil
-	}, check.Field("token"))
-	if !ok {
-		r.Skip("dir", "Write to the directory", "it needs a token")
-		return
+// tokenRejected is the files destination's own reason.
+var tokenRejected = check.Reason{
+	Name: "token_rejected", Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID,
+	Message: "The token of {length} bytes isn't the directory's.", Fix: "Set {field} to the token you were given.",
+}
+
+// Checks checks the token, then the directory, and warns that a directory
+// isn't replicated.
+func (f *files) Checks() []check.Check {
+	return []check.Check{
+		{Name: "token", Kind: check.Authentication, Title: "Sign in", Field: "token", Run: func(context.Context, *check.Probe) error {
+			if f.token != "s3cr3t" {
+				return tokenRejected.Fail("length", strconv.Itoa(len(f.token)), "field", "token")
+			}
+			return nil
+		}},
+		{Name: "dir", Kind: check.Resource, Title: "Write to {dir}", Field: "dir", Params: check.Params{"dir": f.dir}, Needs: []string{"token"},
+			Run: func(_ context.Context, p *check.Probe) error {
+				if _, err := os.Stat(f.dir); err != nil {
+					return check.NotFound.Wrap(err, "resource", f.dir)
+				}
+				p.Found("{dir} is there")
+				return nil
+			}},
+		{Name: "replicated", Kind: check.Compatibility, Title: "Keep files on more than one disk", Advisory: true, Run: func(context.Context, *check.Probe) error {
+			return errors.New("a directory is on one disk")
+		}},
 	}
-	r.Pass("dir", "Write to the directory", f.dir)
+}
+
+// Preflight checks each stream's write mode is one the destination has.
+func (f *files) Preflight(req destination.PreflightRequest) []check.Check {
+	var checks []check.Check
+	for _, s := range req.Streams {
+		checks = append(checks, check.Check{
+			Name: "stream." + s.Name, Kind: check.Compatibility, Title: "Write {stream}", Params: check.Params{"stream": s.Name},
+			Run: func(context.Context, *check.Probe) error {
+				if s.Mode != destination.Append && s.Mode != destination.Overwrite {
+					return check.SettingMismatch.Fail("setting", s.Name+"'s write mode", "found", strconv.Itoa(int(s.Mode)), "required", "append or overwrite")
+				}
+				return nil
+			},
+		})
+	}
+	return checks
 }
 
 // Open writes the commit interval it's given to interval.

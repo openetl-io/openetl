@@ -209,10 +209,16 @@ func (x *PreflightSourceRequest) GetInterval() *durationpb.Duration {
 	return nil
 }
 
+// A source without a preflight answers with no items, or with the status
+// Unimplemented, which a host reads the same way: no items and no failure.
 type PreflightSourceResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unset when nothing failed; otherwise the first failed item's error. A
-	// failed preflight is reported here, not as an RPC error.
+	// Set when the preflight failed, as CheckResponse.error is: the first
+	// FAILED item's error; or, with no item FAILED, the error of a preflight
+	// that couldn't finish (the items it didn't reach or finish are SKIPPED)
+	// or couldn't run at all (no items). A response with this set has failed
+	// either way. A failed preflight is reported here, not as an RPC error. A
+	// host also fails the preflight when an item is FAILED and this is unset.
 	Error *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
 	// In the order they ran.
 	Items         []*CheckItem `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`

@@ -6,7 +6,8 @@ import (
 	"strings"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
-	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/sdk/go/check"
 )
 
 // checkItem is one thing a connector's check looked at, from the API or from
@@ -23,15 +24,18 @@ func apiCheckItems(items []*apiv1.CheckItem) []checkItem {
 	return out
 }
 
-func protoCheckItems(items []*protocolv1.CheckItem) []checkItem {
+// reportItems are a connector's items as it answered, filled in, a failed
+// or warning one's message followed by its detail.
+func reportItems(items []check.Item) []checkItem {
 	out := make([]checkItem, 0, len(items))
 	for _, it := range items {
-		c := checkItem{
-			title: it.GetTitle(), status: strings.ToLower(strings.TrimPrefix(it.GetStatus().String(), "CHECK_STATUS_")),
-			message: it.GetMessage(), fix: it.GetFix(), field: it.GetField(),
-		}
-		if e := it.GetError(); e != nil {
-			c.code = strings.TrimPrefix(e.GetCode().String(), "ERROR_CODE_")
+		it = it.Rendered()
+		c := checkItem{title: it.Title, status: it.Status.String(), message: it.Message, field: it.Field}
+		if f := it.Failure; f != nil {
+			c.code, c.fix = errs.Code(f.ErrorCode()).String(), f.Fix
+			if f.Detail != "" {
+				c.message = strings.TrimSuffix(c.message, ".") + ": " + f.Detail
+			}
 		}
 		out = append(out, c)
 	}

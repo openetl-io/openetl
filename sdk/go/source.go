@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/host"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -19,8 +20,14 @@ import (
 type Source[C any] struct {
 	Name string
 	// Optional: verifies that cfg reaches the source.
-	Check   func(ctx context.Context, cfg *C) error
-	Streams []Stream[C]
+	Check func(ctx context.Context, cfg *C) error
+	// Optional: the connection's named checks, run in place of Check when
+	// there are any, as source.CheckLister's. Listing them does no I/O.
+	Checks func(cfg *C, h host.Host) []check.Check
+	// Optional: a pipeline's preflight, the checks for what req would read,
+	// as source.Preflighter's. Listing them does no I/O.
+	Preflight func(cfg *C, h host.Host, req source.PreflightRequest) []check.Check
+	Streams   []Stream[C]
 }
 
 // Ctx is a read's context and config.
@@ -76,9 +83,25 @@ type bound[C any] struct {
 }
 
 var (
-	_ source.Source  = (*bound[struct{}])(nil)
-	_ source.Checker = (*bound[struct{}])(nil)
+	_ source.Source      = (*bound[struct{}])(nil)
+	_ source.Checker     = (*bound[struct{}])(nil)
+	_ source.CheckLister = (*bound[struct{}])(nil)
+	_ source.Preflighter = (*bound[struct{}])(nil)
 )
+
+func (b *bound[C]) Checks() []check.Check {
+	if b.src.Checks == nil {
+		return nil
+	}
+	return b.src.Checks(&b.cfg, b.host)
+}
+
+func (b *bound[C]) Preflight(req source.PreflightRequest) []check.Check {
+	if b.src.Preflight == nil {
+		return nil
+	}
+	return b.src.Preflight(&b.cfg, b.host, req)
+}
 
 func (b *bound[C]) Check(ctx context.Context) error {
 	if b.src.Check == nil {

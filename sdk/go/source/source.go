@@ -567,23 +567,25 @@ type Checker interface {
 	Check(ctx context.Context) error
 }
 
-// CheckReporter is implemented by sources whose check says what it looked
-// at, item by item, such as reaching the source and signing in. It takes
-// Checker's place. A check is about the connection alone and is light: the
-// pipeline's streams are its preflight's. It records a failure in r rather
-// than stopping at it, so one check shows everything that's wrong.
-type CheckReporter interface {
-	CheckReport(ctx context.Context, r *check.Report)
+// CheckLister is implemented by sources whose check is a list of named
+// checks, such as reaching the source and signing in, which the SDK runs in
+// order, one item each. A check is about the connection alone and is light:
+// the pipeline's streams are its preflight's. With a non-empty list,
+// Checker's Check isn't called. Listing the checks does no I/O; their Run
+// does.
+type CheckLister interface {
+	Checks() []check.Check
 }
 
 // Preflighter is implemented by sources that can say whether a pipeline's
 // reads would work, without reading records: each stream there and
 // readable, its sync mode one the source has, positions the schedule keeps
-// within retention. The platform runs it after the check passes. Which
-// items apply is the source's to say from its config, such as a consumer
-// only a mode of reading uses.
+// within retention. Preflight lists the checks for req, which the SDK runs
+// as it runs Checks'; the platform runs them after the check passes. Which
+// checks apply is the source's to say from its config, such as a consumer
+// only a mode of reading uses. Listing the checks does no I/O.
 type Preflighter interface {
-	Preflight(ctx context.Context, req PreflightRequest, r *check.Report)
+	Preflight(req PreflightRequest) []check.Check
 }
 
 // PreflightRequest is what a pipeline would read.

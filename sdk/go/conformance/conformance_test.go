@@ -17,8 +17,12 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/conformance"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
@@ -69,6 +73,8 @@ type upstream struct {
 	// Changes are a log read with stream: change i has id i. A resume can't
 	// go back before trimmed, as a log discards what's acknowledged.
 	changes, trimmed int64
+	// The streams preflights asked about, as name:mode.
+	preflighted []string
 }
 
 type memSource struct {
@@ -99,6 +105,32 @@ func (s *memSource) Check(context.Context) error {
 		return errors.New("bad token")
 	}
 	return s.c.check()
+}
+
+// Preflight keeps the streams it's asked about, and checks each is one the
+// source has, in a mode it reads it.
+func (s *memSource) Preflight(req source.PreflightRequest) []check.Check {
+	cat, _ := s.Discover(context.Background())
+	s.up.mu.Lock()
+	defer s.up.mu.Unlock()
+	var checks []check.Check
+	for _, cs := range req.Streams {
+		s.up.preflighted = append(s.up.preflighted, fmt.Sprintf("%s:%d", cs.Name, cs.SyncMode))
+		checks = append(checks, check.Check{
+			Name: "stream." + cs.Name, Kind: check.Resource, Title: "Read {stream}", Params: check.Params{"stream": cs.Name},
+			Run: func(context.Context, *check.Probe) error {
+				i := slices.IndexFunc(cat.Streams, func(c source.CatalogStream) bool { return c.Name == cs.Name })
+				switch {
+				case i < 0:
+					return check.NotFound.Fail("resource", "the stream "+cs.Name)
+				case !slices.Contains(cat.Streams[i].SyncModes, cs.SyncMode):
+					return check.SettingMismatch.Fail("setting", "the sync mode", "found", fmt.Sprint(cs.SyncMode), "required", fmt.Sprint(cat.Streams[i].SyncModes))
+				}
+				return nil
+			},
+		})
+	}
+	return checks
 }
 
 func (s *memSource) Discover(context.Context) (source.Catalog, error) {
@@ -386,13 +418,13 @@ func sourceSuite(bug string) conformance.SourceSuite {
 
 func memSuite(up *upstream, bug string) conformance.SourceSuite {
 	return conformance.SourceSuite{
-		Launch: conformance.InProcess(sdk.Connector{
+		Launch: rewrite(bug, conformance.InProcess(sdk.Connector{
 			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw}, Acknowledges: true,
 			Source: func(config []byte, _ host.Host) (source.Source, error) {
 				c, err := bind(config)
 				return &memSource{c: c, up: up, bug: bug}, err
 			},
-		}),
+		})),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
 		Streams:      []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}, {Name: "changes", Mode: source.Stream}},
 		ReadTimeout:  5 * time.Second,
@@ -526,7 +558,62 @@ func (d *memDestination) Capabilities() destination.Capabilities {
 	c.WriterLanes = d.lanes
 	return c
 }
-func (d *memDestination) Check(context.Context) error { return d.c.check() }
+
+// Checks are the memory destination's: reaching it, signing in, and a
+// warning of its own reason. The memory source keeps a lone Check, as a
+// connector from before items does.
+func (d *memDestination) Checks() []check.Check {
+	params := check.Params{"store": "the memory store"}
+	return []check.Check{
+		{Name: "connect", Kind: check.Connection, Title: "Reach {store}", Params: params, Run: func(context.Context, *check.Probe) error {
+			if d.c.Down {
+				return check.ConnectionRefused.Fail("address", "memory:1")
+			}
+			return nil
+		}},
+		{Name: "auth", Kind: check.Authentication, Title: "Sign in with the token", Field: "token", Needs: []string{"connect"}, Run: func(context.Context, *check.Probe) error {
+			if d.c.Token != "good" {
+				return check.CredentialsRejected.Fail()
+			}
+			return nil
+		}},
+		{Name: "durable", Kind: check.Compatibility, Title: "Keep data in {store}", Params: params, Advisory: true, Run: func(context.Context, *check.Probe) error {
+			return volatile.Fail()
+		}},
+	}
+}
+
+// volatile is the memory destination's own reason, which it always warns
+// of.
+var volatile = check.Reason{
+	Name: "store_volatile", Code: protocolv1.ErrorCode_ERROR_CODE_CONFIG_INVALID,
+	Message: "{store} loses what it holds when the process ends.", Fix: "Use {store} in tests only.",
+}
+
+// Preflight checks each stream's write mode is one the destination has, and
+// that it has a schema.
+func (d *memDestination) Preflight(req destination.PreflightRequest) []check.Check {
+	modes := d.Capabilities().WriteModes
+	if len(modes) == 0 {
+		modes = []destination.WriteMode{destination.Append}
+	}
+	var checks []check.Check
+	for _, s := range req.Streams {
+		checks = append(checks, check.Check{
+			Name: "stream." + s.Name, Kind: check.Compatibility, Title: "Write {stream} in {namespace}", Params: check.Params{"stream": s.Name, "namespace": req.Namespace},
+			Run: func(context.Context, *check.Probe) error {
+				if !slices.Contains(modes, s.Mode) {
+					return check.SettingMismatch.Fail("setting", "the write mode", "found", fmt.Sprint(s.Mode), "required", fmt.Sprint(modes))
+				}
+				if req.Schemas[s.Name] == nil {
+					return check.NotFound.Fail("resource", "the schema of "+s.Name)
+				}
+				return nil
+			},
+		})
+	}
+	return checks
+}
 
 func (d *memDestination) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
 	modes := map[string]destination.WriteMode{}
@@ -977,14 +1064,14 @@ func memSuiteOf(bug string, lanes int, laneCommits bool) conformance.Destination
 	}
 	caps.WriterLanes = lanes
 	return conformance.DestinationSuite{
-		Launch: conformance.InProcess(sdk.Connector{
+		Launch: rewrite(bug, conformance.InProcess(sdk.Connector{
 			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw},
 			Destination: func(config []byte, _ host.Host) (destination.Destination, error) {
 				c, err := bind(config)
 				return &memDestination{c: c, st: st, bug: bug, lanes: lanes, laneCommits: laneCommits}, err
 			},
 			Capabilities: caps,
-		}),
+		})),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
 		Read: func(_ context.Context, namespace, stream string) ([]map[string]any, error) {
 			st.mu.Lock()
@@ -1098,5 +1185,143 @@ func TestDestinationLossyTypes(t *testing.T) {
 	})
 	if len(failed) > 0 || !flagged {
 		t.Errorf("failed %v, flagged %v; want none failed, and float64 flagged", failed, flagged)
+	}
+}
+
+// rewrites plant the bugs in answers that the SDK doesn't give, and a
+// connector written without it can: each runs in place of a call, and calls
+// it with call if it will.
+var rewrites = map[string]func(ctx context.Context, method string, reply any, call func() error) error{
+	// The response's error is left unset, and the failed item's code is
+	// INTERNAL.
+	"check-no-error": func(_ context.Context, _ string, reply any, call func() error) error {
+		err := call()
+		if r, ok := reply.(*protocolv1.CheckResponse); ok && len(r.GetItems()) > 0 {
+			r.Error = nil
+			for _, it := range r.GetItems() {
+				if it.GetError() != nil {
+					it.Error.Code = protocolv1.ErrorCode_ERROR_CODE_INTERNAL
+				}
+			}
+		}
+		return err
+	},
+	// An item's detail shows the good config's token.
+	"check-leaks": func(_ context.Context, _ string, reply any, call func() error) error {
+		err := call()
+		if r, ok := reply.(*protocolv1.CheckResponse); ok && len(r.GetItems()) > 0 {
+			r.Items[0].Detail = "signed in with good"
+		}
+		return err
+	},
+	// Check given a deadline runs out of it.
+	"check-hangs": func(ctx context.Context, method string, _ any, call func() error) error {
+		if _, ok := ctx.Deadline(); ok && strings.HasSuffix(method, "/Check") {
+			<-ctx.Done()
+			return status.FromContextError(ctx.Err()).Err()
+		}
+		return call()
+	},
+	// The connector has no preflight.
+	"preflight-unimplemented": func(_ context.Context, method string, _ any, call func() error) error {
+		if strings.Contains(method, "/Preflight") {
+			return status.Error(codes.Unimplemented, "unknown method "+method)
+		}
+		return call()
+	},
+}
+
+func rewrite(bug string, launch conformance.Launcher) conformance.Launcher {
+	r := rewrites[bug]
+	if r == nil {
+		return launch
+	}
+	return func(ctx context.Context, config []byte) (conformance.Process, error) {
+		p, err := launch(ctx, config)
+		if err != nil {
+			return nil, err
+		}
+		return rewritten{Process: p, rewrite: r}, nil
+	}
+}
+
+type rewritten struct {
+	conformance.Process
+	rewrite func(ctx context.Context, method string, reply any, call func() error) error
+}
+
+func (p rewritten) Conn() grpc.ClientConnInterface {
+	return rewrittenConn{ClientConnInterface: p.Process.Conn(), rewrite: p.rewrite}
+}
+
+type rewrittenConn struct {
+	grpc.ClientConnInterface
+	rewrite func(ctx context.Context, method string, reply any, call func() error) error
+}
+
+func (c rewrittenConn) Invoke(ctx context.Context, method string, args, reply any, opts ...grpc.CallOption) error {
+	return c.rewrite(ctx, method, reply, func() error { return c.ClientConnInterface.Invoke(ctx, method, args, reply, opts...) })
+}
+
+// The kit fails a connector's answers that break the protocol, in the
+// checks that call for them, saying what's wrong.
+func TestAnswerBugsFail(t *testing.T) {
+	cases := map[string]struct {
+		failed []string
+		says   string
+	}{
+		"check-no-error": {[]string{"errors"},
+			`with bad credentials, item "auth" (Sign in with the token) failed with ERROR_CODE_INTERNAL, not [ERROR_CODE_AUTH_INVALID]`},
+		"check-leaks": {[]string{"check", "errors"}, "with the good config, item 1's detail shows the value of a secret in the config"},
+		"check-hangs": {[]string{"errors"},
+			"with an upstream that doesn't answer and 5s to answer, Check ran out of time as an RPC"},
+	}
+	for bug, tc := range cases {
+		t.Run(bug, func(t *testing.T) {
+			var log []string
+			failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) {
+				destinationSuite(bug).Run(ctx, func(r conformance.Result) {
+					log = append(log, r.Log...)
+					report(r)
+				})
+			})
+			said := slices.ContainsFunc(log, func(l string) bool { return strings.HasPrefix(l, tc.says) })
+			if !slices.Equal(failed, tc.failed) || !said {
+				t.Errorf("failed checks %v, want %v; said %q: %v", failed, tc.failed, tc.says, said)
+			}
+		})
+	}
+}
+
+// A connector that answers a preflight with Unimplemented has none, so the
+// preflight check is skipped, not failed.
+func TestPreflightUnimplementedSkips(t *testing.T) {
+	results := map[string]conformance.Result{}
+	collect := func(r conformance.Result) { results[r.Check] = r }
+	destinationSuite("preflight-unimplemented").Run(t.Context(), collect)
+	if r := results["preflight"]; r.Failed || !r.Skipped {
+		t.Errorf("the destination's preflight: %+v", r)
+	}
+	sourceSuite("preflight-unimplemented").Run(t.Context(), collect)
+	if r := results["preflight"]; r.Failed || !r.Skipped {
+		t.Errorf("the source's preflight: %+v", r)
+	}
+}
+
+// A source's preflight is of the streams the suite reads, as it reads them.
+func TestSourcePreflightReadsTheSuitesStreams(t *testing.T) {
+	up := &upstream{users: 23, events: 18, changes: 14}
+	s := memSuite(up, "")
+	s.Streams = []conformance.Stream{{Name: "events", Mode: source.FullRefresh}}
+	var preflight conformance.Result
+	s.Run(t.Context(), func(r conformance.Result) {
+		if r.Check == "preflight" {
+			preflight = r
+		}
+	})
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	if want := fmt.Sprintf("events:%d", source.FullRefresh); preflight.Failed || preflight.Skipped || !slices.Equal(up.preflighted, []string{want}) {
+		t.Errorf("the preflight %+v asked about %v, want %s alone", preflight, up.preflighted, want)
 	}
 }

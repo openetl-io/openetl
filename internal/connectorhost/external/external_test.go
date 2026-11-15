@@ -24,6 +24,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/util"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -517,18 +519,67 @@ func TestDestinationSecrets(t *testing.T) {
 
 	bad := NewDestination(exe("destination-files"), filesConfig(dir, "nope"), Options{})
 	defer func() { _ = bad.Close() }()
-	if err := bad.Check(t.Context()); errs.CodeOf(err) != errs.AuthInvalid {
+	if err := bad.Check(t.Context()); errs.CodeOf(err) != errs.AuthInvalid || err.Error() != "Sign in: The token of 4 bytes isn't the directory's." {
 		t.Fatalf("check with a wrong token: %v", err)
 	}
-	items, err := bad.CheckItems(t.Context())
-	if errs.CodeOf(err) != errs.AuthInvalid || len(items) != 2 {
-		t.Fatalf("check items %+v, %v", items, err)
+}
+
+// A connector's checks and preflight come back item by item, with their
+// templates and params apart.
+func TestDestinationCheckAndPreflight(t *testing.T) {
+	dir := t.TempDir()
+	d := NewDestination(exe("destination-files"), filesConfig(dir, "s3cr3t"), Options{})
+	defer func() { _ = d.Close() }()
+	if r := d.CheckReport(t.Context()); !r.OK() || statuses(r) != "token=passed dir=passed replicated=warning" || r.Items[1].Rendered().Message != dir+" is there" {
+		t.Errorf("a good check: %s, %v", statuses(r), r.Err())
 	}
-	if it := items[0]; it.Status != check.Failed || it.Field != "token" || it.Fix != "use the token you were given" || errs.CodeOf(it.Err) != errs.AuthInvalid {
-		t.Errorf("the token's item %+v", it)
+
+	bad := NewDestination(exe("destination-files"), filesConfig(dir, "nope"), Options{})
+	defer func() { _ = bad.Close() }()
+	r := bad.CheckReport(t.Context())
+	if statuses(r) != "token=failed dir=skipped replicated=warning" || errs.CodeOf(r.Err()) != errs.AuthInvalid {
+		t.Fatalf("a check with a wrong token: %s, %v", statuses(r), r.Err())
 	}
-	if items[1].Status != check.Skipped {
-		t.Errorf("the directory's item %+v", items[1])
+	token := r.Items[0]
+	if token.Message != tokenRejected || token.Field != "token" || token.Kind != check.Authentication || token.Params["length"] != "4" {
+		t.Errorf("the token's item, as it came: %+v", token)
+	}
+	if it := token.Rendered(); it.Message != "The token of 4 bytes isn't the directory's." || it.Failure.Fix != "Set token to the token you were given." ||
+		it.Failure.Reason != "token_rejected" || it.Failure.Code != protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID {
+		t.Errorf("the token's item %+v, %+v", it, it.Failure)
+	}
+	if it := r.Items[1]; it.Message != "needs token, which failed" {
+		t.Errorf("the directory's item %+v", it)
+	}
+	if f := r.Items[2].Failure; f == nil || f.Detail != "a directory is on one disk" {
+		t.Errorf("the warning %+v", r.Items[2])
+	}
+
+	r = d.PreflightReport(t.Context(), destination.PreflightRequest{Pipeline: "p", Streams: []destination.Stream{{Name: "s", Mode: destination.Append}, {Name: "m", Mode: destination.Merge}}})
+	if statuses(r) != "stream.s=passed stream.m=failed" || errs.CodeOf(r.Err()) != errs.ConfigInvalid || r.Items[1].Failure.Reason != "setting_mismatch" {
+		t.Errorf("a preflight: %s, %v", statuses(r), r.Err())
+	}
+}
+
+const tokenRejected = "The token of {length} bytes isn't the directory's."
+
+func statuses(r check.Report) string {
+	var s []string
+	for _, it := range r.Items {
+		s = append(s, it.Name+"="+it.Status.String())
+	}
+	return strings.Join(s, " ")
+}
+
+// An answer is read failing closed, and a connector without a preflight
+// passes it.
+func TestPreflightReport(t *testing.T) {
+	if r := preflightReport(nil, nil, status.Error(codes.Unimplemented, "unknown method")); !r.OK() || len(r.Items) != 0 {
+		t.Errorf("Unimplemented: %s, %v", statuses(r), r.Err())
+	}
+	r := preflightReport(nil, &protocolv1.PreflightSourceResponse{Items: []*protocolv1.CheckItem{{Name: "a", Title: "A", Status: 9}}}, nil)
+	if r.OK() || statuses(r) != "a=failed" {
+		t.Errorf("an unknown status: %s, %v", statuses(r), r.Err())
 	}
 }
 

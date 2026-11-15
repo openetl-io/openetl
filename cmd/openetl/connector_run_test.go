@@ -79,8 +79,18 @@ func TestConnectorRun(t *testing.T) {
 		t.Errorf("check: %v %s", err, out)
 	}
 	t.Setenv("OPENETL_SECRET_TOK", "wrong")
-	if _, _, err := runOut(t, "check", "--config", files, filepath.Join(dir, "destination-files")); err == nil || !strings.Contains(err.Error(), "AUTH_INVALID") {
+	out, _, err = runOut(t, "check", "--config", files, filepath.Join(dir, "destination-files"))
+	if err == nil || !strings.Contains(err.Error(), "AUTH_INVALID") {
 		t.Errorf("a wrong secret from the environment: %v", err)
+	}
+	// Each item filled in, with a failure's field and fix.
+	for _, line := range []string{
+		"failed   Sign in: AUTH_INVALID: The token of 5 bytes isn't the directory's.\n         field: token\n         fix: Set token to the token you were given.\n",
+		": needs token, which failed\n",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("a failed check printed, without %q:\n%s", line, out)
+		}
 	}
 
 	out, _, err = runOut(t, "discover", "--format", "json", "--config", faker, filepath.Join(dir, "source-faker"))
@@ -238,5 +248,31 @@ func TestConnectorRunImage(t *testing.T) {
 	s, err := imageSpec(t.Context(), image, "destination", nil)
 	if err != nil || s.GetKind() != protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION {
 		t.Errorf("an image's destination spec: %v, %v", s.GetKind(), err)
+	}
+}
+
+// A connector's answer is read failing closed: a failed item fails the
+// check though the answer has no error, and an unknown status counts as
+// failed.
+func TestPrintConnectorCheck(t *testing.T) {
+	var out bytes.Buffer
+	err := printConnectorCheck(&out, "acme", &protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{
+		{Name: "connect", Title: "Reach {host}", Params: map[string]string{"host": "db"}, Status: protocolv1.CheckStatus_CHECK_STATUS_PASSED},
+		{Name: "auth", Title: "Sign in", Status: protocolv1.CheckStatus_CHECK_STATUS_FAILED, Message: "{user} was rejected.", Params: map[string]string{"user": "etl"},
+			Error: &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, Message: "etl was rejected."}, Detail: "pq: password authentication failed"},
+	}})
+	if err == nil || err.Error() != "acme failed its check: AUTH_INVALID: Sign in: etl was rejected: pq: password authentication failed" {
+		t.Errorf("a failed item without the answer's error: %v", err)
+	}
+	if want := "passed   Reach db\nfailed   Sign in: AUTH_INVALID: etl was rejected: pq: password authentication failed\n"; out.String() != want {
+		t.Errorf("printed %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	if err := printConnectorCheck(&out, "acme", &protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{{Name: "a", Title: "A", Status: 9}}}); err == nil || out.String() != "failed   A: INTERNAL: The check failed: the connector gave the item the status 9\n" {
+		t.Errorf("an unknown status: %v, %q", err, out.String())
+	}
+	out.Reset()
+	if err := printConnectorCheck(&out, "acme", &protocolv1.CheckResponse{}); err != nil || out.String() != "acme passed its check\n" {
+		t.Errorf("a passing check without items: %v, %q", err, out.String())
 	}
 }
