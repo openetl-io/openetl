@@ -124,7 +124,7 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 
 - The stream has an event time: its `eventTime` in the [Pipeline](./specs/pipeline.md#source-and-streams). The window's first argument is that column, as the statement reads it.
 - `GROUP BY` has one window, and any number of the stream's columns, renamed or not. A computed key, such as `lower(region)`, is refused.
-- The stream is read whole, with `full_refresh`. In a continuous pipeline, it is read with `stream`. A group window over a stream read another way is a problem in the plan: [Reads](#reads) says why.
+- The stream is read whole, with `full_refresh`, or in the order of its event time: with `incremental` and its `eventTime` as the cursor, or with `stream`. A group window over a stream read another way is a problem in the plan: [Reads](#reads) says why.
 - A group window is in the statement's own `SELECT`. It reads the stream or a view of it, and the view is row-wise.
 
 ### Windows
@@ -187,13 +187,13 @@ How the stream is read decides when windows close:
 | Read | Pipeline | When windows close |
 |---|---|---|
 | `full_refresh` | Scheduled | The watermark holds until the sync's read ends. Every window closes at the end of the read. The next sync starts its windows again, from the whole stream. |
+| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. A window that is still open goes on in the next sync, which restores its state. |
 | `stream` | Continuous | The watermark follows the rows as they come. Each window closes while the pipeline runs. |
 
 A group window over a stream read another way is a problem in the plan:
 
 - With `cdc`, the stream is a changelog, and a group window groups appended rows.
 - With `incremental` and a cursor other than the stream's `eventTime`, each sync's windows would hold only the rows that the sync reads.
-- In a scheduled pipeline, a stream read with `incremental` by its `eventTime`, or with `stream`, leaves windows open at the end of each sync. The next sync runs in another engine, which does not have their state.
 
 ### State
 
