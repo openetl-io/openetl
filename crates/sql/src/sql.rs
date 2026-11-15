@@ -205,6 +205,7 @@ impl Sql {
                                 }
                             }
                             Ok(Lowered::GroupWindow(g)) => {
+                                let g = *g;
                                 if let Some((output, replaces)) = output {
                                     statements.push(Statement {
                                         at: *at,
@@ -646,7 +647,7 @@ struct Check<'a> {
 /// A statement's query, lowered.
 enum Lowered {
     RowWise(lower::Lowered),
-    GroupWindow(crate::window::Lowered),
+    GroupWindow(Box<crate::window::Lowered>),
 }
 
 struct Top {
@@ -1409,7 +1410,8 @@ impl<'a> Check<'a> {
             window,
             column: &column,
         };
-        crate::window::lower(&plan, self.catalog, &at, output).map(Lowered::GroupWindow)
+        crate::window::lower(&plan, self.catalog, &at, output)
+            .map(|g| Lowered::GroupWindow(Box::new(g)))
     }
 
     /// The query bound, with the views it reads inlined.

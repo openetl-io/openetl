@@ -17,6 +17,7 @@
 //! a plan is made again from the SQL and the streams' schemas.
 
 mod bind;
+mod canon;
 mod catalog;
 mod dialect;
 mod error;

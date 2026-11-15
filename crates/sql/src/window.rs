@@ -434,6 +434,11 @@ pub(crate) fn lower(
             },
         ));
     }
+    // The output's key follows GROUP BY. The operator takes its keys by the
+    // stream's names, and its aggregates by what they compute, so writing
+    // either in another order keeps its key groups, its state and its ID.
+    let written: Vec<(usize, String)> = keys.iter().map(|(i, k)| (*i, k.stream.clone())).collect();
+    keys.sort_by(|(i, a), (j, b)| a.stream.cmp(&b.stream).then(i.cmp(j)));
 
     let mut aggregates = Vec::with_capacity(agg.aggr_expr.len());
     for (j, e) in agg.aggr_expr.iter().enumerate() {
@@ -442,8 +447,11 @@ pub(crate) fn lower(
             .field(agg.group_expr.len() + j)
             .data_type()
             .clone();
-        aggregates.push(aggregate(e, schema, data_type, at)?);
+        let a = aggregate(e, schema, data_type, at)?;
+        let computes = computes(e, &a, &agg.input, at)?;
+        aggregates.push((j, a, computes));
     }
+    aggregates.sort_by(|(i, _, a), (j, _, b)| a.cmp(b).then(i.cmp(j)));
 
     // The grouped rows: the window's bounds in place of its call, then the
     // keys and the aggregates, as the aggregate names them.
@@ -455,7 +463,7 @@ pub(crate) fn lower(
         let (q, f) = agg.schema.qualified_field(*i);
         fields.push((q.cloned(), f.clone()));
     }
-    for j in 0..agg.aggr_expr.len() {
+    for (j, _, _) in &aggregates {
         let (q, f) = agg.schema.qualified_field(agg.group_expr.len() + j);
         fields.push((q.cloned(), f.clone()));
     }
@@ -483,11 +491,11 @@ pub(crate) fn lower(
             ));
         }
     }
-    for (i, k) in &keys {
+    for (i, stream) in &written {
         let name = agg.schema.field(*i).name();
         match through(name, &steps) {
             Some(out) => {
-                passes.push((k.stream.clone(), out.clone()));
+                passes.push((stream.clone(), out.clone()));
                 key.push(out);
             }
             None => {
@@ -502,22 +510,34 @@ pub(crate) fn lower(
     }
     let keys: Vec<GroupKey> = keys.into_iter().map(|(_, k)| k).collect();
     let need = keys.iter().map(|k| k.stream.clone()).collect();
-    let id = operator_id(
+    let (aggregates, computes): (Vec<Aggregate>, Vec<String>) =
+        aggregates.into_iter().map(|(_, a, c)| (a, c)).unzip();
+    let event_time = stream.event_time.clone().unwrap_or_default();
+    let before = crate::canon::rows(&agg.input)
+        .map_err(|e| internal(at.statement, &format!("{e} before the window")))?;
+    let id = operator_id(&Kept {
         output,
-        &window,
-        &rows.operator,
-        time_index,
-        &keys,
-        &aggregates,
-    );
+        input: &input,
+        window: &window,
+        time: (&event_time, &time_type),
+        keys: &keys
+            .iter()
+            .map(|k| (k.stream.as_str(), schema.field(k.column).data_type()))
+            .collect::<Vec<_>>(),
+        aggregates: &aggregates,
+        computes: &computes,
+        before: &before,
+    });
     Ok(Lowered {
         operator: GroupWindow {
             input: rows.operator,
             rows: schema.inner().clone(),
             window,
             time: time_index,
+            event_time,
             keys,
             aggregates,
+            computes,
             grouped: grouped.inner().clone(),
             steps,
             need,
@@ -926,67 +946,87 @@ fn through(name: &str, steps: &[Step]) -> Option<String> {
     Some(name)
 }
 
-/// A hash of what the operator keeps: the output it feeds, its window,
-/// the stream it reads and the row-wise steps before it, its time and keys
-/// as the stream names them, its aggregates and its state's layout.
-fn operator_id(
-    output: &str,
-    window: &Window,
-    rows: &RowWise,
-    time: usize,
-    keys: &[GroupKey],
-    aggregates: &[Aggregate],
-) -> String {
-    let mut d = format!(
-        "group_window {STATE}\n{output}\n{window:?}\n{}\n{}",
-        rows.input,
-        described(&rows.steps)
-    );
-    let origin = |i: usize| {
-        let out = match rows.steps.iter().rev().find_map(|s| match s {
-            Step::Project(p) => Some(p.schema.clone()),
-            Step::Unnest(u) => Some(u.schema.clone()),
-            Step::Filter(_) => None,
-        }) {
-            Some(s) => s,
-            None => rows.reads.clone(),
-        };
-        let name = out.field(i).name().clone();
-        rows.origin(&name).unwrap_or(name)
+/// What a group window computes and keeps, by the stream's names.
+struct Kept<'a> {
+    output: &'a str,
+    input: &'a str,
+    window: &'a Window,
+    /// The event-time column, and its type.
+    time: (&'a str, &'a DataType),
+    /// The keys, and their types, in the operator's order.
+    keys: &'a [(&'a str, &'a DataType)],
+    aggregates: &'a [Aggregate],
+    /// Each aggregate, over the stream's columns.
+    computes: &'a [String],
+    /// What the steps before the window do to the rows: filters and
+    /// unnests.
+    before: &'a [String],
+}
+
+/// A hash of what the operator computes and keeps: the output it feeds, the
+/// stream it reads, its window, its time and keys with their types, its
+/// aggregates over the stream's columns with their types, the filters and
+/// unnests before it, and its state's layout. A projection, a name, a
+/// view, the order of GROUP BY or of the aggregates, and HAVING or anything
+/// else after the window don't enter it.
+fn operator_id(k: &Kept) -> String {
+    use crate::canon::type_text;
+    let window = match k.window {
+        Window::Tumble { size } => format!("tumble size {size}"),
+        Window::Hop { slide, size } => format!("hop slide {slide} size {size}"),
+        Window::Session { gap } => format!("session gap {gap}"),
     };
-    d.push_str(&origin(time));
-    d.push('\n');
-    for k in keys {
-        d.push_str(&k.stream);
-        d.push('\n');
+    let mut d = format!(
+        "group_window {STATE}\noutput {}\ninput {}\nwindow {window}\ntime {} {}\n",
+        crate::ident(k.output),
+        crate::ident(k.input),
+        crate::ident(k.time.0),
+        type_text(k.time.1)
+    );
+    for (name, t) in k.keys {
+        d.push_str(&format!("key {} {}\n", crate::ident(name), type_text(t)));
     }
-    for a in aggregates {
-        let arg = a.arg.as_ref().map(|e| e.to_string()).unwrap_or_default();
-        let filter = a.filter.as_ref().map(|e| e.to_string()).unwrap_or_default();
-        d.push_str(&format!("{:?}({arg}) [{filter}] {}\n", a.kind, a.data_type));
+    for (a, c) in k.aggregates.iter().zip(k.computes) {
+        let arg = a
+            .arg
+            .as_ref()
+            .map(|e| type_text(e.data_type()))
+            .unwrap_or_default();
+        d.push_str(&format!(
+            "aggregate {c} of {arg} as {}\n",
+            type_text(&a.data_type)
+        ));
+    }
+    for b in k.before {
+        d.push_str(b);
+        d.push('\n');
     }
     format!("window-{:016x}", XxHash3_64::oneshot(d.as_bytes()))
 }
 
-/// Row-wise steps as an operator's ID takes them: a line each.
-fn described(steps: &[Step]) -> String {
-    let mut d = String::new();
-    for s in steps {
-        match s {
-            Step::Filter(e) => d.push_str(&format!("filter {e}\n")),
-            Step::Project(p) => {
-                let columns: Vec<String> = p
-                    .columns
-                    .iter()
-                    .map(|c| format!("{} := {}", c.name, c.expr))
-                    .collect();
-                d.push_str(&format!("project {}\n", columns.join(", ")));
-            }
-            Step::Unnest(u) => d.push_str(&format!(
-                "unnest {:?} {:?} {}\n",
-                u.lists, u.sources, u.outer
-            )),
-        }
+/// An aggregate as the stream's columns compute it, such as `sum(amount)`
+/// or `count(*) FILTER (WHERE (amount > …))`: `e` is over `input`'s
+/// output.
+fn computes(e: &DfExpr, a: &Aggregate, input: &LogicalPlan, at: &At) -> Result<String, Error> {
+    let inner = e.clone().unalias_nested().data;
+    let DfExpr::AggregateFunction(f) = &inner else {
+        return Err(internal(at.statement, &format!("an aggregate {e}")));
+    };
+    let over = |e: &DfExpr| {
+        crate::canon::unfold(e, input)
+            .map(|u| crate::canon::text(&u))
+            .map_err(|m| internal(at.statement, &format!("{m} under an aggregate")))
+    };
+    let arg = match (&a.arg, f.params.args.first()) {
+        (Some(_), Some(x)) => over(x)?,
+        _ => "*".to_owned(),
+    };
+    let mut out = match a.kind {
+        AggregateKind::Percentile(p) => format!("percentile_cont({p}, {arg})"),
+        k => format!("{}({arg})", k.name()),
+    };
+    if let Some(filter) = &f.params.filter {
+        out.push_str(&format!(" FILTER (WHERE {})", over(filter)?));
     }
-    d
+    Ok(out)
 }

@@ -35,8 +35,12 @@
 //! holding only the schema, in base64), its `key`, what its operator needs of
 //! its input (`need`: the columns whose equal values must be on one lane,
 //! null for nothing), the input's columns that reach the output unchanged,
-//! each with its name there (`passes`), and its stateful operator's ID
-//! (`operator`, null for none). Each error has a `kind`, a `class` and
+//! each with its name there (`passes`), its stateful operator's ID
+//! (`operator`, null for none), and what that operator keeps (`state`, null
+//! for none): its `window` (`tumble`, `hop` or `session`), its `size_us` (a
+//! tumble's or hop's size, a session's gap) and `slide_us` (a hop's) in
+//! microseconds, and by the stream's names its `event_time`, `keys` and
+//! `aggregates`, such as `sum(amount)`. Each error has a `kind`, a `class` and
 //! `tier` for a later tier's statement, an `at` unless it isn't about the
 //! text, and a `message`.
 //!
@@ -51,7 +55,7 @@ use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
 use base64::Engine as _;
 use openetl_normalize::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY};
 use openetl_proto::engine::v1::StreamPlan;
-use openetl_sql::{Catalog, ErrorKind, Position, Statement, Stream};
+use openetl_sql::{Catalog, ErrorKind, Operator, Position, Statement, Stream, Window};
 use serde::{Deserialize, Serialize};
 
 use crate::{ipc, transform};
@@ -123,6 +127,21 @@ pub struct AnswerStatement {
     pub need: Option<Vec<String>>,
     pub passes: BTreeMap<String, String>,
     pub operator: Option<String>,
+    pub state: Option<AnswerState>,
+}
+
+/// What a stateful operator keeps, by the stream's names. Sizes are in
+/// microseconds.
+#[derive(Debug, Serialize)]
+pub struct AnswerState {
+    pub window: &'static str,
+    /// A tumble's or hop's size, or a session's gap.
+    pub size_us: i64,
+    /// A hop's slide; `None` for the others.
+    pub slide_us: Option<i64>,
+    pub event_time: String,
+    pub keys: Vec<String>,
+    pub aggregates: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -291,6 +310,30 @@ fn statement(s: &Statement) -> Result<AnswerStatement, String> {
         need: s.need().map(<[String]>::to_vec),
         passes: s.passes().into_iter().collect(),
         operator: s.operator_id().map(str::to_owned),
+        state: state(s),
+    })
+}
+
+fn state(s: &Statement) -> Option<AnswerState> {
+    let Operator::GroupWindow(g) = &s.operator else {
+        return None;
+    };
+    let per_micro = match g.rows.field(g.time).data_type() {
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => 1000,
+        _ => 1,
+    };
+    let (size, slide) = match g.window {
+        Window::Tumble { size } => (size, None),
+        Window::Hop { slide, size } => (size, Some(slide / per_micro)),
+        Window::Session { gap } => (gap, None),
+    };
+    Some(AnswerState {
+        window: g.window.name(),
+        size_us: size / per_micro,
+        slide_us: slide,
+        event_time: g.event_time.clone(),
+        keys: g.need.clone(),
+        aggregates: g.computes.clone(),
     })
 }
 
@@ -634,6 +677,31 @@ mod tests {
         assert_eq!(e[1]["at"]["line"], 4);
         assert!(e[1].get("tier").is_none());
         assert!(e[1]["message"].as_str().unwrap().contains("nope"));
+    }
+
+    /// What a group window keeps, in microseconds whatever the event time's
+    /// unit, and by the stream's names.
+    #[test]
+    fn a_group_window_says_what_it_keeps() {
+        let got = answer(json!({
+            "sql": "INSERT INTO h SELECT window_start, kind AS k, max(n) AS most, count(*) AS c FROM ticks AS t\n\
+                    GROUP BY hop(t.at, INTERVAL '1 minute', INTERVAL '5 minutes'), kind",
+            "streams": [{"name": "ticks", "nanoseconds": true, "event_time": "at", "columns": [
+                {"name": "kind", "type": "utf8"},
+                {"name": "n", "type": "int64"},
+                {"name": "at", "type": "timestamp[us, tz=UTC]"},
+            ]}],
+        }));
+        assert_eq!(got["errors"], json!([]));
+        assert_eq!(
+            got["statements"][0]["state"],
+            json!({"window": "hop", "size_us": 300_000_000, "slide_us": 60_000_000, "event_time": "at",
+                   "keys": ["kind"], "aggregates": ["count(*)", "max(n)"]})
+        );
+        let got = answer(
+            json!({"sql": "INSERT INTO t SELECT id FROM customers", "streams": [customers()]}),
+        );
+        assert_eq!(got["statements"][0]["state"], Value::Null);
     }
 
     #[test]
