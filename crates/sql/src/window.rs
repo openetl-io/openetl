@@ -930,25 +930,30 @@ fn bounds_read(e: &DfExpr, call: &datafusion_common::Column, at: &At) -> Result<
     Ok(out)
 }
 
-/// The name a column of the grouped rows has once it passes the steps
-/// unchanged; `None` if it doesn't.
-fn through(name: &str, steps: &[Step]) -> Option<String> {
-    let mut name = name.to_owned();
+/// The name a column of the rows the steps take has once it passes them
+/// unchanged; `None` if it doesn't. A column passed under several names is
+/// followed under each, and has the first the last step gives it.
+pub(crate) fn through(name: &str, steps: &[Step]) -> Option<String> {
+    let mut names = vec![name.to_owned()];
     for s in steps {
         match s {
             Step::Filter(_) => {}
             Step::Unnest(_) => return None,
             Step::Project(p) => {
-                name = p
+                names = p
                     .columns
                     .iter()
-                    .find(|c| c.expr.column() == Some(name.as_str()))?
-                    .name
-                    .clone();
+                    .filter(|c| {
+                        c.expr
+                            .column()
+                            .is_some_and(|from| names.iter().any(|n| n == from))
+                    })
+                    .map(|c| c.name.clone())
+                    .collect();
             }
         }
     }
-    Some(name)
+    names.into_iter().next()
 }
 
 /// What a group window computes and keeps, by the stream's names.

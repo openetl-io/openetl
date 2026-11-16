@@ -1,0 +1,368 @@
+# OVER: sum, count, min, max, avg, lag and first_value over a frame of each
+# key's rows that ends at the current row, by event time, as one operator
+# with a need on its partition keys.
+
+stream orders key(id) time(created_at)
+  id int64 not null
+  customer int64
+  region utf8
+  amount decimal(12, 2)
+  qty int32
+  tags list<utf8>
+  created_at timestamp
+
+stream ticks time(at)
+  sym utf8
+  price float64
+  at timestamp_ns
+
+stream cdc key(id) changelog time(at)
+  id int64 not null
+  v int64
+  at timestamp
+
+stream plain key(id)
+  id int64 not null
+  amount int64
+  at timestamp
+
+# A running total: ORDER BY alone is RANGE BETWEEN UNBOUNDED PRECEDING AND
+# CURRENT ROW. The output keeps the stream's key.
+plan
+INSERT INTO running
+SELECT id, region, amount, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total
+FROM orders
+----
+statement 1:1 running over
+  inputs orders
+  key id
+  schema id Int64 not null, region Utf8, amount Decimal128(12, 2), total Decimal128(22, 2)
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Sum(orders.amount) Range { preceding: None }: Decimal128(22, 2)
+  computes sum(amount) range unbounded
+  framed id, region, amount, created_at, sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, region, amount, total := sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id, region -> region, amount -> amount
+  operator over-2acc389a245b33a8
+
+# Several functions over one PARTITION BY and ORDER BY, each with its own
+# frame, run as one operator.
+plan
+INSERT INTO stats
+SELECT id, customer AS c,
+  count(*) FILTER (WHERE qty > 1) OVER (PARTITION BY customer ORDER BY created_at ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS recent,
+  avg(qty) OVER (PARTITION BY customer ORDER BY created_at RANGE BETWEEN INTERVAL '1 hour' PRECEDING AND CURRENT ROW) AS hourly,
+  min(amount) OVER (PARTITION BY customer ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS lo,
+  max(region) OVER (PARTITION BY customer ORDER BY created_at ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS hi,
+  lag(amount) OVER (PARTITION BY customer ORDER BY created_at) AS before,
+  lag(amount, 2, 0) OVER (PARTITION BY customer ORDER BY created_at) AS two_before,
+  first_value(amount) OVER (PARTITION BY customer ORDER BY created_at) AS opening
+FROM orders
+----
+statement 1:1 stats over
+  inputs orders
+  key id
+  schema id Int64 not null, c Int64, recent Int64 not null, hourly Float64, lo Decimal128(12, 2), hi Utf8, before Decimal128(12, 2), two_before Decimal128(12, 2), opening Decimal128(12, 2)
+  reads orders: id, customer, region, amount, qty, created_at
+  over by created_at on customer
+  function Avg(CAST(orders.qty AS Float64)) Range { preceding: Some(3600000000) }: Float64
+  function Count(*) filter orders.qty > Int32(1) Rows { preceding: Some(2) }: Int64
+  function FirstValue(orders.amount) Range { preceding: None }: Decimal128(12, 2)
+  function Lag { offset: 1, default: None }(orders.amount): Decimal128(12, 2)
+  function Lag { offset: 2, default: Some(Decimal128(0.00,12,2)) }(orders.amount): Decimal128(12, 2)
+  function Max(orders.region) Rows { preceding: Some(0) }: Utf8
+  function Min(orders.amount) Rows { preceding: None }: Decimal128(12, 2)
+  computes avg(cast(qty as float64)) range 3600000000; count(*) FILTER (WHERE (qty > "1"::int32)) rows 2; first_value(amount) range unbounded; lag(amount, 1); lag(amount, 2, "0.00"::decimal128(12, 2)); max("region") rows 0; min(amount) rows unbounded
+  framed id, customer, region, amount, qty, created_at, avg(orders.qty) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN 1 hour PRECEDING AND CURRENT ROW, count(Int64(1)) FILTER (WHERE orders.qty > Int64(1)) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW, first_value(orders.amount) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, lag(orders.amount) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, lag(orders.amount,Int64(2),Int64(0)) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, max(orders.region) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN CURRENT ROW AND CURRENT ROW, min(orders.amount) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, c := orders.customer, recent := count(Int64(1)) FILTER (WHERE orders.qty > Int64(1)) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW, hourly := avg(orders.qty) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN 1 hour PRECEDING AND CURRENT ROW, lo := min(orders.amount) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, hi := max(orders.region) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN CURRENT ROW AND CURRENT ROW, before := lag(orders.amount) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, two_before := lag(orders.amount,Int64(2),Int64(0)) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, opening := first_value(orders.amount) PARTITION BY [orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need customer
+  passes id -> id, customer -> c
+  operator over-c6636aa16d0597ab
+
+# Keys in another order are one operator's, by the stream's names.
+plan
+INSERT INTO x
+SELECT id, count(*) OVER (PARTITION BY region, customer ORDER BY created_at) AS a,
+  sum(qty) OVER (PARTITION BY customer, region ORDER BY created_at) AS b
+FROM orders
+----
+statement 1:1 x over
+  inputs orders
+  key id
+  schema id Int64 not null, a Int64 not null, b Int64
+  reads orders: id, customer, region, qty, created_at
+  over by created_at on customer, region
+  function Count(*) Range { preceding: None }: Int64
+  function Sum(CAST(orders.qty AS Int64)) Range { preceding: None }: Int64
+  computes count(*) range unbounded; sum(cast(qty as int64)) range unbounded
+  framed id, customer, region, qty, created_at, count(Int64(1)) PARTITION BY [orders.region, orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, sum(orders.qty) PARTITION BY [orders.customer, orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, a := count(Int64(1)) PARTITION BY [orders.region, orders.customer] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, b := sum(orders.qty) PARTITION BY [orders.customer, orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need customer, region
+  passes id -> id
+  operator over-0e972a3a04ae0956
+
+# Without PARTITION BY, every row is one key's, on one lane.
+plan
+INSERT INTO x SELECT id, count(*) OVER (ORDER BY created_at) AS n FROM orders
+----
+statement 1:1 x over
+  inputs orders
+  key id
+  schema id Int64 not null, n Int64 not null
+  reads orders: id, created_at
+  over by created_at on 
+  function Count(*) Range { preceding: None }: Int64
+  computes count(*) range unbounded
+  framed id, created_at, count(Int64(1)) ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, n := count(Int64(1)) ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need 
+  passes id -> id
+  operator over-b76b19b19cb1e37d
+
+# A view's rows, renamed and filtered, and a filter on OVER's values after
+# it, in QUALIFY or in a SELECT that reads it.
+plan
+CREATE VIEW paid AS SELECT id, region AS area, amount, created_at AS t FROM orders WHERE amount > 0;
+INSERT INTO big SELECT * FROM (
+  SELECT id, area, sum(amount) OVER (PARTITION BY area ORDER BY t) AS total FROM paid
+) AS s WHERE total > 100
+----
+view 1:13 paid
+  inputs orders
+  key id
+  schema id Int64 not null, area Utf8, amount Decimal128(12, 2), t Timestamp(µs, "UTC")
+statement 2:1 big over
+  inputs orders
+  views paid
+  key id
+  schema id Int64 not null, area Utf8, total Decimal128(22, 2)
+  reads orders: id, region, amount, created_at
+  filter orders.amount > Decimal128(0.00,12,2)
+  project id, area := orders.region, amount, t := orders.created_at
+  over by t on area
+  function Sum(paid.amount) Range { preceding: None }: Decimal128(22, 2)
+  computes sum(amount) range unbounded
+  framed id, area, amount, t, sum(paid.amount) PARTITION BY [paid.area] ORDER BY [paid.t ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, area, total := sum(paid.amount) PARTITION BY [paid.area] ORDER BY [paid.t ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  filter s.total > Decimal128(100.00,22,2)
+  need region
+  passes id -> id, region -> area
+  operator over-0923f2165c013ff1
+
+plan
+INSERT INTO big SELECT id, region FROM orders
+QUALIFY sum(amount) OVER (PARTITION BY region ORDER BY created_at) > 100
+----
+statement 1:1 big over
+  inputs orders
+  key id
+  schema id Int64 not null, region Utf8
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Sum(orders.amount) Range { preceding: None }: Decimal128(22, 2)
+  computes sum(amount) range unbounded
+  framed id, region, amount, created_at, sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, region, sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  filter sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW > Decimal128(100.00,22,2)
+  project id, region
+  need region
+  passes id -> id, region -> region
+  operator over-57872a16f4f5adbd
+
+# Nanosecond time: a RANGE frame's offset in nanoseconds.
+plan
+INSERT INTO moving SELECT sym, at, avg(price) OVER (PARTITION BY sym ORDER BY at RANGE BETWEEN INTERVAL '5 seconds' PRECEDING AND CURRENT ROW) AS avg5
+FROM ticks
+----
+statement 1:1 moving over
+  inputs ticks
+  key 
+  schema sym Utf8, at Timestamp(ns, "UTC"), avg5 Float64
+  reads ticks: sym, price, at
+  over by at on sym
+  function Avg(ticks.price) Range { preceding: Some(5000000000) }: Float64
+  computes avg(price) range 5000000000
+  framed sym, price, at, avg(ticks.price) PARTITION BY [ticks.sym] ORDER BY [ticks.at ASC NULLS LAST] RANGE BETWEEN 5 seconds PRECEDING AND CURRENT ROW
+  project sym, at, avg5 := avg(ticks.price) PARTITION BY [ticks.sym] ORDER BY [ticks.at ASC NULLS LAST] RANGE BETWEEN 5 seconds PRECEDING AND CURRENT ROW
+  need sym
+  passes sym -> sym, at -> at
+  operator over-3ca72dcb5528cd28
+
+# What's refused.
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY id ORDER BY at) AS total FROM plain
+----
+error unsupported 1:26 plain has no event time, which OVER goes by: set eventTime on the stream in source.streams
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY id) AS total FROM orders
+----
+error unsupported 1:26 OVER goes by the event time of orders, created_at: write ORDER BY created_at
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region) AS total FROM orders
+----
+error unsupported 1:26 OVER goes by the event time of orders, created_at: write ORDER BY created_at
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at, id) AS total FROM orders
+----
+error unsupported 1:26 OVER orders by the event time alone, which ties don't change: write ORDER BY created_at
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at DESC) AS total FROM orders
+----
+error unsupported 1:26 OVER's frames end at the current row in event-time order: write ORDER BY created_at without DESC
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS total FROM orders
+----
+error unsupported 1:26 OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS total FROM orders
+----
+error unsupported 1:26 OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) AS total FROM orders
+----
+error unsupported 1:26 OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) AS total FROM orders
+----
+error unsupported 1:26 GROUPS frames aren't supported: write ROWS or RANGE
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN INTERVAL '1 month' PRECEDING AND CURRENT ROW) AS total FROM orders
+----
+error unsupported 1:26 a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies
+
+plan
+INSERT INTO x SELECT id, lead(amount) OVER (PARTITION BY region ORDER BY created_at) AS next FROM orders
+----
+error unsupported 1:26 lead reads rows after the current one, and OVER's frames end at the current row: lag reads the rows before it
+
+plan
+INSERT INTO x SELECT id, last_value(amount) OVER (PARTITION BY region ORDER BY created_at) AS last FROM orders
+----
+error unsupported 1:26 last_value isn't a function OVER takes: OVER takes sum, count, min, max, avg, lag and first_value, and ROW_NUMBER() … = 1 to deduplicate
+
+plan
+INSERT INTO x SELECT id, median(amount) OVER (PARTITION BY region ORDER BY created_at) AS m FROM orders
+----
+error unsupported 1:26 median isn't a function OVER takes: OVER takes sum, count, min, max, avg, lag and first_value, and ROW_NUMBER() … = 1 to deduplicate
+
+plan
+INSERT INTO x SELECT id, rank() OVER (PARTITION BY region ORDER BY created_at) AS r FROM orders
+----
+error later_tier updating 1:26 rank(): transforms don't run updating statements yet (tier 5)
+
+plan
+INSERT INTO x SELECT id, lag(amount) AS before FROM orders
+----
+error unsupported 1:26 lag is a window function, which takes OVER: lag(…) OVER (PARTITION BY … ORDER BY …)
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS a,
+  sum(amount) OVER (PARTITION BY customer ORDER BY created_at) AS b
+FROM orders
+----
+error unsupported 1:26 a statement's OVER clauses have one PARTITION BY and ORDER BY, by which one operator keeps their state: compute the others in a statement of their own
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY lower(region) ORDER BY created_at) AS total FROM orders
+----
+error unsupported 1:26 OVER partitions by columns of orders, renamed or not: lower(orders.region) is computed
+
+plan
+INSERT INTO x SELECT id, count(*) OVER (PARTITION BY tags ORDER BY created_at) AS n FROM orders
+----
+error unsupported 1:26 OVER can't partition by tags, of type List(Utf8)
+
+plan
+INSERT INTO x SELECT id, count(DISTINCT region) OVER (PARTITION BY customer ORDER BY created_at) AS n FROM orders
+----
+error unsupported 1:26 count(DISTINCT …) isn't supported over a frame
+
+plan
+INSERT INTO x SELECT id, first_value(amount) IGNORE NULLS OVER (PARTITION BY customer ORDER BY created_at) AS f FROM orders
+----
+error unsupported 1:26 first_value(…) IGNORE NULLS isn't supported
+
+plan
+INSERT INTO x SELECT id, lag(amount) FILTER (WHERE qty > 1) OVER (PARTITION BY customer ORDER BY created_at) AS l FROM orders
+----
+error unsupported 1:26 lag takes no FILTER, which is for aggregates
+
+plan
+INSERT INTO x SELECT id, lag(amount, qty) OVER (PARTITION BY customer ORDER BY created_at) AS l FROM orders
+----
+error unsupported 1:26 lag's offset is a constant whole number, 1 or more
+
+plan
+INSERT INTO x SELECT id, lag(amount, 0) OVER (PARTITION BY customer ORDER BY created_at) AS l FROM orders
+----
+error unsupported 1:26 lag's offset is a constant whole number, 1 or more
+
+plan
+INSERT INTO x SELECT id, sum(region) OVER (PARTITION BY customer ORDER BY created_at) AS s FROM orders
+----
+error bind 1:1 there's no sum(Utf8): CAST the argument to a type it takes
+
+plan
+INSERT INTO x SELECT id, first_value(tags) OVER (PARTITION BY customer ORDER BY created_at) AS f FROM orders
+----
+error unsupported 1:26 first_value takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY customer ORDER BY created_at) FROM orders
+----
+error unsupported 1:26 name this column: sum(amount) OVER (PARTITION BY customer ORDER BY created_at) AS name
+
+plan
+INSERT INTO x SELECT id, sum(v) OVER (PARTITION BY id ORDER BY at) AS total FROM cdc
+----
+error later_tier updating 1:26 cdc is a changelog, and OVER reads appended rows: transforms don't run updating statements yet (tier 5)
+
+plan
+INSERT INTO x SELECT window_start, count(*) AS n, sum(count(*)) OVER (ORDER BY window_start) AS total
+FROM orders GROUP BY tumble(created_at, INTERVAL '1 minute')
+----
+error unsupported 2:22 a statement groups by a window or computes OVER, not both: compute OVER in a statement of its own
+
+plan
+CREATE VIEW totals AS SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total FROM orders;
+INSERT INTO x SELECT * FROM totals
+----
+error unsupported 1:34 a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view
+
+plan
+INSERT INTO x SELECT id FROM orders WHERE sum(amount) OVER (PARTITION BY region ORDER BY created_at) > 1
+----
+error unsupported 1:43 WHERE runs before OVER, so it can't read OVER's values: compare them in QUALIFY, or in the WHERE of a SELECT that reads this one
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER w AS total FROM orders WINDOW w AS (PARTITION BY region ORDER BY created_at)
+----
+error unsupported 1:73 WINDOW isn't supported: write each OVER (…) in full
+
+plan
+INSERT INTO x SELECT id, sum(total) OVER (PARTITION BY region ORDER BY created_at) AS t2 FROM (
+  SELECT id, region, created_at, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total FROM orders
+) AS s
+----
+error unsupported 1:1 OVER over the values of another OVER isn't supported: compute a statement's OVER over the stream's rows
+
+plan
+INSERT INTO x SELECT id, unnest(tags) AS tag, count(*) OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders
+----
+error unsupported 1:1 UNNEST of OVER's rows isn't supported: unnest the stream's rows before OVER, in a view
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY random() ORDER BY created_at) AS total FROM orders
+----
+error not_deterministic 1:57 random() isn't deterministic, so it can't feed a window's partition

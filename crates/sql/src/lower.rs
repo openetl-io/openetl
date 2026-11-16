@@ -141,7 +141,7 @@ fn unnest(u: &datafusion_expr::logical_plan::Unnest, at: Position) -> Result<Unn
 /// projection unchanged; nothing if any of them doesn't, or rows multiply.
 /// A column passed through under several names is followed under each, and
 /// ends up under the first the output has.
-fn follow(key: &[String], steps: &[Step]) -> Vec<String> {
+pub(crate) fn follow(key: &[String], steps: &[Step]) -> Vec<String> {
     let mut names: Vec<Vec<String>> = key.iter().map(|k| vec![k.clone()]).collect();
     for s in steps {
         match s {
@@ -185,7 +185,7 @@ pub(crate) fn refusal(node: &LogicalPlan, at: Position) -> Error {
     match node {
         LogicalPlan::Aggregate(_) => later(Class::Updating, "an aggregate"),
         LogicalPlan::Distinct(_) => later(Class::Updating, "DISTINCT"),
-        LogicalPlan::Window(_) => later(Class::Over, "OVER"),
+        LogicalPlan::Window(_) => unsupported(crate::over::NESTED),
         LogicalPlan::Join(_) | LogicalPlan::Subquery(_) => later(Class::Join, "a join"),
         LogicalPlan::Sort(_) => unsupported("ORDER BY"),
         LogicalPlan::Limit(_) => unsupported("LIMIT"),

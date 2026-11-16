@@ -1,0 +1,208 @@
+# Dedupe: ROW_NUMBER() OVER (PARTITION BY keys ORDER BY event time) = 1
+# keeps a row for each key. Ascending keeps the first, which the output
+# appends; descending keeps the latest, as upserts keyed by the partition
+# keys. Other uses of ROW_NUMBER() are refused.
+
+stream orders key(id) time(created_at)
+  id int64 not null
+  customer int64
+  region utf8
+  amount decimal(12, 2)
+  created_at timestamp
+
+stream events time(at)
+  event_id utf8
+  kind utf8
+  at timestamp_ns
+
+stream cdc key(id) changelog time(at)
+  id int64 not null
+  v int64
+  at timestamp
+
+# The first row of each key, with QUALIFY.
+plan
+INSERT INTO first_events
+SELECT event_id, kind, at FROM events
+QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY at) = 1
+----
+statement 1:1 first_events over
+  inputs events
+  key event_id
+  schema event_id Utf8, kind Utf8, at Timestamp(ns, "UTC")
+  reads events: event_id, kind, at
+  dedupe First by at on event_id, appends
+  project event_id, kind, at
+  need event_id
+  passes event_id -> event_id, kind -> kind, at -> at
+  operator dedupe-f2110852e6cff603
+
+# The latest, read from a subquery whose number is 1: the output's key is
+# the partition keys, renamed or not, and the number reads as 1. A filter
+# beside it runs on the rows kept.
+plan
+INSERT INTO latest
+SELECT customer AS c, region, amount, rn FROM (
+  SELECT *, ROW_NUMBER() OVER (PARTITION BY region, customer ORDER BY created_at DESC) AS rn
+  FROM orders WHERE amount > 0
+) AS t
+WHERE rn = 1 AND amount < 1000
+----
+statement 1:1 latest over
+  inputs orders
+  key region, c
+  schema c Int64, region Utf8, amount Decimal128(12, 2), rn Int64 not null
+  reads orders: customer, region, amount, created_at
+  filter orders.amount > Decimal128(0.00,12,2)
+  dedupe Latest by created_at on customer, region, upserts
+  project customer, region, amount, rn := UInt64(1)
+  filter t.amount < Decimal128(1000.00,12,2)
+  project c := t.customer, region, amount, rn := CAST(UInt64(1) AS Int64)
+  need customer, region
+  passes customer -> c, region -> region, amount -> amount
+  operator dedupe-58fff7c547603344
+
+plan
+INSERT INTO latest SELECT id, amount FROM (
+  SELECT id, amount, row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS n FROM orders
+) WHERE 1 = n
+----
+statement 1:1 latest over
+  inputs orders
+  key id
+  schema id Int64 not null, amount Decimal128(12, 2)
+  reads orders: id, amount, created_at
+  dedupe Latest by created_at on id, upserts
+  project id, amount, n := UInt64(1)
+  project id, amount
+  need id
+  passes id -> id, amount -> amount
+  operator dedupe-bd9ad3248dbfe379
+
+# The number compared = 1 through a cast that keeps numbers apart is
+# dedupe; '01' isn't any number's text, so comparing with it isn't.
+plan
+INSERT INTO latest SELECT id, amount FROM orders
+QUALIFY CAST(row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS VARCHAR) = '1'
+----
+statement 1:1 latest over
+  inputs orders
+  key id
+  schema id Int64 not null, amount Decimal128(12, 2)
+  reads orders: id, amount, created_at
+  dedupe Latest by created_at on id, upserts
+  project id, amount, row_number() PARTITION BY [orders.id] ORDER BY [orders.created_at DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW := UInt64(1)
+  project id, amount
+  need id
+  passes id -> id, amount -> amount
+  operator dedupe-bd9ad3248dbfe379
+
+plan
+INSERT INTO latest SELECT id, amount FROM orders
+QUALIFY CAST(row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS VARCHAR) = '01'
+----
+error later_tier updating 2:14 ROW_NUMBER() compared other than = 1, as in a top-N: transforms don't run updating statements yet (tier 5)
+
+plan
+INSERT INTO latest SELECT id, amount FROM orders
+QUALIFY CAST(row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS BOOLEAN) = true
+----
+error later_tier updating 2:14 ROW_NUMBER() compared other than = 1, as in a top-N: transforms don't run updating statements yet (tier 5)
+
+# A partition key the output selects under a second name is its key.
+plan
+INSERT INTO latest SELECT b, amount FROM (
+  SELECT customer AS a, customer AS b, amount FROM orders
+  QUALIFY row_number() OVER (PARTITION BY customer ORDER BY created_at DESC) = 1
+) AS t WHERE a > 0
+----
+statement 1:1 latest over
+  inputs orders
+  key b
+  schema b Int64, amount Decimal128(12, 2)
+  reads orders: customer, amount, created_at
+  dedupe Latest by created_at on customer, upserts
+  project customer, amount, row_number() PARTITION BY [orders.customer] ORDER BY [orders.created_at DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW := UInt64(1)
+  project a := orders.customer, b := orders.customer, amount
+  filter t.a > Int64(0)
+  project b, amount
+  need customer
+  passes customer -> b, amount -> amount
+  operator dedupe-b6c848e954c1018a
+
+# QUALIFY's names match the stream's columns as the SELECT list's do.
+stream accounts time(At)
+  AccountID int64
+  Balance int64
+  At timestamp
+
+plan
+INSERT INTO latest SELECT accountid, balance FROM accounts
+QUALIFY row_number() OVER (PARTITION BY accountid ORDER BY at DESC) = 1
+----
+statement 1:1 latest over
+  inputs accounts
+  key AccountID
+  schema AccountID Int64, Balance Int64
+  reads accounts: AccountID, Balance, At
+  dedupe Latest by At on AccountID, upserts
+  project AccountID, Balance, row_number() PARTITION BY [accounts.AccountID] ORDER BY [accounts.At DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW := UInt64(1)
+  project AccountID, Balance
+  need AccountID
+  passes AccountID -> AccountID, Balance -> Balance
+  operator dedupe-387287e9e8d04d1f
+
+# What's refused.
+plan
+INSERT INTO x SELECT id, row_number() OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders
+----
+error unsupported 1:26 ROW_NUMBER() deduplicates, keeping the rows where it's 1: compare it = 1 in QUALIFY, or in the WHERE of a SELECT that reads it; count(*) OVER (… ROWS UNBOUNDED PRECEDING) numbers every row
+
+plan
+INSERT INTO x SELECT * FROM (
+  SELECT id, row_number() OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders
+) WHERE n <= 3
+----
+error later_tier updating 2:14 ROW_NUMBER() compared other than = 1, as in a top-N: transforms don't run updating statements yet (tier 5)
+
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY row_number() OVER (ORDER BY created_at) = 1
+----
+error unsupported 2:9 ROW_NUMBER() … = 1 keeps a row for each key of its PARTITION BY: partition by the columns that identify a row
+
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY row_number() OVER (PARTITION BY customer ORDER BY amount) = 1
+----
+error unsupported 2:9 OVER goes by the event time of orders, created_at: write ORDER BY created_at
+
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY row_number() OVER (PARTITION BY customer ORDER BY created_at DESC, id) = 1
+----
+error unsupported 2:9 OVER orders by the event time alone, which ties don't change: write ORDER BY created_at
+
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY row_number() OVER (PARTITION BY customer ORDER BY created_at) = 1
+----
+error unsupported 1:1 a deduplicated output keeps its PARTITION BY columns, which are its primary key: select customer
+
+plan
+INSERT INTO x SELECT customer, amount, sum(amount) OVER (PARTITION BY customer ORDER BY created_at) AS total FROM orders
+QUALIFY row_number() OVER (PARTITION BY customer ORDER BY created_at) = 1
+----
+error unsupported 1:40 ROW_NUMBER() … = 1 deduplicates on its own: compute other functions OVER in a statement of their own
+
+plan
+INSERT INTO x SELECT id, v FROM cdc
+QUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1
+----
+error later_tier updating 2:9 cdc is a changelog, and OVER reads appended rows: transforms don't run updating statements yet (tier 5)
+
+plan
+CREATE VIEW numbered AS SELECT *, row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS rn FROM orders;
+INSERT INTO x SELECT * FROM numbered WHERE rn = 1
+----
+error unsupported 1:35 a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view

@@ -381,6 +381,15 @@ fn list(names: BTreeSet<&str>) -> String {
     }
 }
 
+/// Whether jobs run an operator. `OVER` and dedupe plan, and are refused
+/// as a later tier's until their operators run.
+pub(crate) fn runs(op: &Operator) -> bool {
+    match op {
+        Operator::RowWise(_) | Operator::GroupWindow(_) => true,
+        Operator::Over(_) | Operator::Dedupe(_) => false,
+    }
+}
+
 /// Plans every statement, with one input's schema replaced if `changed`.
 fn plan_statements(
     sql: &Sql,
@@ -436,14 +445,17 @@ fn plan_statements(
             if names.len() == 1 { "has" } else { "have" }
         )
     };
-    let plan = sql.plan(&catalog).map_err(|e| {
-        let mut msg = format!("transform.sql: {e}");
-        if !unknown.is_empty() {
-            msg.push('\n');
-            msg.push_str(&unknown_note(&unknown));
-        }
-        JobError::config(msg)
-    })?;
+    let plan = sql
+        .plan(&catalog)
+        .and_then(|p| p.refuse_unless(runs))
+        .map_err(|e| {
+            let mut msg = format!("transform.sql: {e}");
+            if !unknown.is_empty() {
+                msg.push('\n');
+                msg.push_str(&unknown_note(&unknown));
+            }
+            JobError::config(msg)
+        })?;
     let index: HashMap<&str, usize> = inputs
         .iter()
         .enumerate()
@@ -456,6 +468,12 @@ fn plan_statements(
             Operator::GroupWindow(g) => {
                 let id = g.id.clone();
                 (g.input.clone(), Some((Arc::new(*g), id)))
+            }
+            Operator::Over(_) | Operator::Dedupe(_) => {
+                return Err(JobError::internal(format!(
+                    "the statement at {} has an operator jobs don't run",
+                    s.at
+                )));
             }
         };
         let Some(&input) = index.get(op.input.as_str()) else {
@@ -605,6 +623,43 @@ mod tests {
             openetl_proto::connector::v1::ErrorCode::ConfigInvalid
         );
         assert!(e.message.starts_with("transform.sql: 2:"), "{}", e.message);
+    }
+
+    #[test]
+    fn over_and_dedupe_plan_and_are_refused_as_tier_3s() {
+        let mut a = input("a", &["id"], false);
+        a.schema = Some(Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("amount", DataType::Int64, true),
+            Field::new(
+                "at",
+                DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+                true,
+            ),
+        ])));
+        a.event_time = Some("at".into());
+        for (sql, at) in [
+            (
+                "INSERT INTO c\nSELECT id, sum(amount) OVER (PARTITION BY id ORDER BY at) AS total FROM a",
+                "2:12",
+            ),
+            (
+                "INSERT INTO c\nSELECT id, amount FROM a\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1",
+                "3:9",
+            ),
+        ] {
+            let e = Transform::plan(sql, vec![a.clone()]).unwrap_err();
+            assert_eq!(
+                e.code,
+                openetl_proto::connector::v1::ErrorCode::ConfigInvalid
+            );
+            assert_eq!(
+                e.message,
+                format!(
+                    "transform.sql: {at}: OVER: transforms don't run window functions yet (tier 3)"
+                ),
+            );
+        }
     }
 
     #[test]

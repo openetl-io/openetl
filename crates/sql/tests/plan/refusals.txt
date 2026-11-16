@@ -41,22 +41,23 @@ GROUP BY hop(created_at, INTERVAL '1 minute', INTERVAL '5 minutes')
 ----
 error unsupported 2:10 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
-# Over: tier 3.
+# OVER, as over.txt and dedupe.txt plan it, goes by the stream's event
+# time; a window function takes OVER.
 plan
 INSERT INTO running
 SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total FROM orders
 ----
-error later_tier over 2:12 OVER: transforms don't run window functions yet (tier 3)
+error unsupported 2:12 orders has no event time, which OVER goes by: set eventTime on the stream in source.streams
 
 plan
 INSERT INTO firsts SELECT id, row_number() OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders
 ----
-error later_tier over 1:31 OVER: transforms don't run window functions yet (tier 3)
+error unsupported 1:31 orders has no event time, which OVER goes by: set eventTime on the stream in source.streams
 
 plan
 INSERT INTO x SELECT id, rank() AS r FROM orders
 ----
-error later_tier over 1:26 a window function: transforms don't run window functions yet (tier 3)
+error unsupported 1:26 rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)
 
 # Joins: tier 4.
 plan
@@ -121,7 +122,6 @@ error not_deterministic 2:65 seen_at isn't deterministic, so it can't feed a gro
 plan
 INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY uuid()) AS total FROM orders
 ----
-error later_tier over 1:26 OVER: transforms don't run window functions yet (tier 3)
 error not_deterministic 1:57 uuid() isn't deterministic, so it can't feed a window's partition
 
 # Clauses a stream has no use for.

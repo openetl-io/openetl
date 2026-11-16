@@ -2,7 +2,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, RecordBatch, RecordBatchOptions, UInt64Array};
 use arrow_schema::{DataType, SchemaRef};
 
-use crate::{Error, Expr, Note, Position};
+use crate::{Error, Errors, Expr, Note, Position};
 
 /// What a statement is, which decides where it runs and what state it keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -12,7 +12,8 @@ pub enum Class {
     RowWise,
     /// `GROUP BY tumble/hop/session(…)` with aggregates.
     GroupWindow,
-    /// `… OVER (PARTITION BY …)`.
+    /// `… OVER (PARTITION BY … ORDER BY event time …)`, and dedupe by
+    /// `ROW_NUMBER() … = 1`.
     Over,
     /// Joins, and subqueries that read another stream.
     Join,
@@ -104,6 +105,8 @@ impl Statement {
         match &self.operator {
             Operator::RowWise(_) => None,
             Operator::GroupWindow(g) => Some(&g.need),
+            Operator::Over(o) => Some(&o.need),
+            Operator::Dedupe(d) => Some(&d.need),
         }
     }
 
@@ -113,6 +116,8 @@ impl Statement {
         match &self.operator {
             Operator::RowWise(r) => r.passes(),
             Operator::GroupWindow(g) => g.passes.clone(),
+            Operator::Over(o) => o.passes.clone(),
+            Operator::Dedupe(d) => d.passes.clone(),
         }
     }
 
@@ -121,6 +126,37 @@ impl Statement {
         match &self.operator {
             Operator::RowWise(_) => None,
             Operator::GroupWindow(g) => Some(&g.id),
+            Operator::Over(o) => Some(&o.id),
+            Operator::Dedupe(d) => Some(&d.id),
+        }
+    }
+
+    /// The statement refused as a later tier's, where its operator is
+    /// written: for an engine that doesn't run its operator yet.
+    pub fn later_tier(&self) -> Error {
+        let (at, what) = match &self.operator {
+            Operator::RowWise(_) => (self.at, "this statement"),
+            Operator::GroupWindow(_) => (self.at, "a group window"),
+            Operator::Over(o) => (o.at, "OVER"),
+            Operator::Dedupe(d) => (d.at, "OVER"),
+        };
+        Error::later_tier(self.class, at, what)
+    }
+}
+
+impl Plan {
+    /// The plan, if `runs` takes every statement's operator; otherwise each
+    /// statement whose operator it doesn't take, refused as a later tier's.
+    pub fn refuse_unless(self, runs: impl Fn(&Operator) -> bool) -> Result<Plan, Errors> {
+        let refused: Vec<Error> = self
+            .statements
+            .iter()
+            .filter(|s| !runs(&s.operator))
+            .map(Statement::later_tier)
+            .collect();
+        match refused.is_empty() {
+            true => Ok(self),
+            false => Err(Errors::new(refused)),
         }
     }
 }
@@ -142,6 +178,170 @@ pub struct View {
 pub enum Operator {
     RowWise(RowWise),
     GroupWindow(Box<GroupWindow>),
+    Over(Box<Over>),
+    Dedupe(Box<Dedupe>),
+}
+
+/// Functions `OVER (PARTITION BY keys ORDER BY event time …)`, each over a
+/// frame of its key's rows that ends at the current row, in event-time
+/// order. Each row leaves once, with the functions' values beside its own.
+/// Times are in the event-time column's unit: microseconds, or nanoseconds
+/// where the column keeps them.
+#[derive(Debug)]
+pub struct Over {
+    /// The row-wise steps on the stream's batches before the operator,
+    /// whose output is the rows it takes: [`Over::rows`].
+    pub input: RowWise,
+    pub rows: SchemaRef,
+    /// The column of `rows` with each row's event time: the stream's
+    /// event-time column, passed through.
+    pub time: usize,
+    /// The stream's event-time column.
+    pub event_time: String,
+    /// `PARTITION BY`, in the order of the stream's names for its columns,
+    /// whatever the statement's. Empty for none: every row is one key's.
+    pub keys: Vec<GroupKey>,
+    /// In the order of what they compute, whatever the statement's.
+    pub functions: Vec<OverFunction>,
+    /// Each function as the stream's columns compute it, such as
+    /// `sum(amount) rows unbounded`, in the order of `functions`.
+    pub computes: Vec<String>,
+    /// What the steps after the operator take: the columns of `rows`, then
+    /// each function's value.
+    pub framed: SchemaRef,
+    /// On the framed rows, in order: filters and projections to the output.
+    pub steps: Vec<Step>,
+    /// The stream's columns its keys are, in order.
+    pub need: Vec<String>,
+    /// The stream's columns that reach the output unchanged, with their
+    /// names there.
+    pub passes: Vec<(String, String)>,
+    /// Stable while what it computes and keeps is: a hash of the output,
+    /// the stream, the time and keys and their types, the functions over the
+    /// stream's columns with their frames and types, the filters before it
+    /// and the state's layout. Names, views, projections, the order of keys
+    /// and functions, the columns passed through, and what follows the
+    /// operator don't change it.
+    pub id: String,
+    /// Where its first `OVER` is written.
+    pub at: Position,
+}
+
+/// A function the [`Over`] operator computes for each row.
+#[derive(Debug)]
+pub struct OverFunction {
+    pub kind: OverKind,
+    /// Its argument, on [`Over::rows`]; `None` for `count(*)`.
+    pub arg: Option<Expr>,
+    /// `FILTER (WHERE …)`, on [`Over::rows`]: only rows where it's true
+    /// count. Aggregates only.
+    pub filter: Option<Expr>,
+    /// The rows it's over; `None` for `lag`, which takes the row `offset`
+    /// before the current one, whatever the frame.
+    pub frame: Option<Frame>,
+    /// Its value's.
+    pub data_type: DataType,
+}
+
+#[derive(Clone, Debug)]
+pub enum OverKind {
+    /// Rows where the argument isn't null; with none, every row.
+    Count,
+    Sum,
+    Min,
+    Max,
+    Avg,
+    /// The argument's value `offset` rows before the current one, by event
+    /// time, or `default` where there's no such row: a constant of the
+    /// argument's type on [`Over::rows`], null for `None`.
+    Lag {
+        offset: u64,
+        default: Option<Expr>,
+    },
+    /// The argument's value on the frame's first row.
+    FirstValue,
+}
+
+impl OverKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            OverKind::Count => "count",
+            OverKind::Sum => "sum",
+            OverKind::Min => "min",
+            OverKind::Max => "max",
+            OverKind::Avg => "avg",
+            OverKind::Lag { .. } => "lag",
+            OverKind::FirstValue => "first_value",
+        }
+    }
+}
+
+/// A frame that ends at the current row, in event-time order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Frame {
+    /// `ROWS`: the current row and the `preceding` rows before it; every
+    /// row before it for `None`.
+    Rows { preceding: Option<u64> },
+    /// `RANGE`: the rows whose event time is at most `preceding` before the
+    /// current row's, through the rows with the current row's own event
+    /// time; every row before it for `None`. `preceding` is in the
+    /// event-time column's unit.
+    Range { preceding: Option<i64> },
+}
+
+/// `ROW_NUMBER() OVER (PARTITION BY keys ORDER BY event time) = 1`: one
+/// row for each key, by its event time.
+#[derive(Debug)]
+pub struct Dedupe {
+    /// The row-wise steps on the stream's batches before the operator,
+    /// whose output is the rows it takes: [`Dedupe::rows`].
+    pub input: RowWise,
+    pub rows: SchemaRef,
+    /// The column of `rows` with each row's event time: the stream's
+    /// event-time column, passed through.
+    pub time: usize,
+    /// The stream's event-time column.
+    pub event_time: String,
+    /// `PARTITION BY`, in the order of the stream's names for its columns,
+    /// whatever the statement's. Never empty.
+    pub keys: Vec<GroupKey>,
+    pub keep: Keep,
+    /// On the rows kept, in order: filters and projections to the output.
+    /// The row number they read is 1.
+    pub steps: Vec<Step>,
+    /// The stream's columns its keys are, in order.
+    pub need: Vec<String>,
+    /// The stream's columns that reach the output unchanged, with their
+    /// names there.
+    pub passes: Vec<(String, String)>,
+    /// Stable while what it keeps is: a hash of the output, the stream, the
+    /// time and keys and their types, which row it keeps, the filters before
+    /// it and the state's layout. Names, views, projections, the columns
+    /// passed through, and what follows the operator don't change it.
+    pub id: String,
+    /// Where its `ROW_NUMBER()` is written.
+    pub at: Position,
+}
+
+/// Which row of each key a [`Dedupe`] keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keep {
+    /// `ORDER BY` the event time ascending: the first row, which the output
+    /// appends once.
+    First,
+    /// `ORDER BY` the event time descending: the latest row, which replaces
+    /// the one before it in the output, as an upsert keyed by the
+    /// partition keys.
+    Latest,
+}
+
+impl Keep {
+    /// Whether the output's rows replace earlier ones of their key, as
+    /// upserts that only a merge applies; otherwise the output only
+    /// appends.
+    pub fn upserts(&self) -> bool {
+        matches!(self, Keep::Latest)
+    }
 }
 
 /// `GROUP BY` a window over the stream's event time, and keys, with

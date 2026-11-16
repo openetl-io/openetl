@@ -635,7 +635,8 @@ These are refused, each at the place it is written. The message says what was fo
 
 | What | Message |
 |---|---|
-| `OVER`, window functions such as `row_number()`, `rank()` and `lag()`, `QUALIFY` | `OVER: transforms don't run window functions yet (tier 3)`, or with `a window function:` or `QUALIFY:` first |
+| `OVER`, in the `SELECT` list or in `QUALIFY`, with window functions such as `sum()`, `lag()` or `row_number()` | `OVER: transforms don't run window functions yet (tier 3)`. That is the message for a statement tier 3 takes. One it does not take gives a message that says why, at the place it is written: a window function, frame or `OVER` clause outside tier 3, a stream with no event time, or `row_number()` that is not compared with `= 1`. For example, `rank(): transforms don't run updating statements yet (tier 5)` |
+| A window function without `OVER` | `rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)` |
 | `JOIN` | `a join: transforms don't run joins yet (tier 4)` |
 | Two relations in `FROM` | `reading two relations: transforms don't run joins yet (tier 4)` |
 | A subquery in an expression, such as `IN (SELECT …)` or `EXISTS (…)` | `a subquery: transforms don't run joins yet (tier 4)` |
