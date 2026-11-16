@@ -209,6 +209,17 @@ impl Run {
         }
         out
     }
+
+    /// The windows its lanes began keeping less those they stopped keeping,
+    /// since the last call.
+    fn kept(&mut self) -> i64 {
+        let mut n = 0;
+        for op in &mut self.ops {
+            n += i64::try_from(std::mem::take(&mut op.opened)).unwrap();
+            n -= i64::try_from(std::mem::take(&mut op.dropped)).unwrap();
+        }
+        n
+    }
 }
 
 const TUMBLE: &str = "INSERT INTO o SELECT window_start, window_end, region, sum(amount) AS total, count(*) AS n, max(amount) AS hi \
@@ -670,6 +681,12 @@ async fn the_final_rows_dont_depend_on_order_barriers_or_lanes() {
         want.rows(&input).await;
         want.advance(i64::MAX).await;
         assert!(!want.table.0.is_empty());
+        assert!(want.ops[0].opened > 0, "{sql}");
+        assert_eq!(
+            want.kept(),
+            0,
+            "{sql}: every window's state goes at the end"
+        );
         for seed in 0..12u64 {
             let mut s = seed + 100;
             // Shuffled within each split of time: no row is ever late,
@@ -686,6 +703,9 @@ async fn the_final_rows_dont_depend_on_order_barriers_or_lanes() {
             let mut epoch = 1;
             let mut generation = 1;
             let mut at = 0;
+            // The windows kept as of the last barrier, as a record would
+            // count them across restores.
+            let mut kept = 0;
             while at < shuffled.len() {
                 let n = 1 + usize::try_from(next(&mut s) % 40).unwrap();
                 let part = &shuffled[at..(at + n).min(shuffled.len())];
@@ -697,6 +717,8 @@ async fn the_final_rows_dont_depend_on_order_barriers_or_lanes() {
                 }
                 if next(&mut s).is_multiple_of(4) {
                     let snaps = run.barrier(epoch).await;
+                    kept += run.kept();
+                    assert!(kept >= 0, "{sql}, seed {seed}");
                     epoch += 1;
                     if next(&mut s).is_multiple_of(2) {
                         // The attempt dies after the record; another
@@ -713,6 +735,7 @@ async fn the_final_rows_dont_depend_on_order_barriers_or_lanes() {
                 }
             }
             run.advance(i64::MAX).await;
+            assert_eq!(kept + run.kept(), 0, "{sql}, seed {seed}");
             assert_eq!(run.rejected, 0, "{sql}, seed {seed}");
             assert_eq!(run.table, want.table, "{sql}, seed {seed}");
         }

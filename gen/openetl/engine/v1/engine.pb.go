@@ -2601,7 +2601,10 @@ type EpochReady struct {
 	// The watermarks of the splits of each stream with event time, by
 	// stream, each at its lane's barrier: every split a lane has, complete
 	// ones included.
-	Watermarks    map[string]*SplitWatermarks `protobuf:"bytes,10,rep,name=watermarks,proto3" json:"watermarks,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Watermarks map[string]*SplitWatermarks `protobuf:"bytes,10,rep,name=watermarks,proto3" json:"watermarks,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Each stateful operator's part of the epoch on this engine's lanes.
+	// Every engine of an attempt reports its own, which add up.
+	Operators     []*OperatorEpoch `protobuf:"bytes,11,rep,name=operators,proto3" json:"operators,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2706,6 +2709,231 @@ func (x *EpochReady) GetWatermarks() map[string]*SplitWatermarks {
 	return nil
 }
 
+func (x *EpochReady) GetOperators() []*OperatorEpoch {
+	if x != nil {
+		return x.Operators
+	}
+	return nil
+}
+
+// OperatorEpoch is what an engine's lanes of one stateful operator did in
+// an epoch, and what they held at their barriers.
+type OperatorEpoch struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Operator string                 `protobuf:"bytes,1,opt,name=operator,proto3" json:"operator,omitempty"`
+	// Rows of the statement's stream that reached its lanes.
+	RowsIn uint64 `protobuf:"varint,2,opt,name=rows_in,json=rowsIn,proto3" json:"rows_in,omitempty"`
+	// The output's rows it wrote, by op: those the output quarantined aren't
+	// counted.
+	Inserts uint64 `protobuf:"varint,3,opt,name=inserts,proto3" json:"inserts,omitempty"`
+	Updates uint64 `protobuf:"varint,4,opt,name=updates,proto3" json:"updates,omitempty"`
+	Deletes uint64 `protobuf:"varint,5,opt,name=deletes,proto3" json:"deletes,omitempty"`
+	// Rows it quarantined as late, past their windows' allowed lateness.
+	Late uint64 `protobuf:"varint,6,opt,name=late,proto3" json:"late,omitempty"`
+	// Windows, or sessions, whose state it began keeping, and stopped
+	// keeping: closed past their lateness, or merged into another session.
+	WindowsOpened  uint64 `protobuf:"varint,7,opt,name=windows_opened,json=windowsOpened,proto3" json:"windows_opened,omitempty"`
+	WindowsDropped uint64 `protobuf:"varint,8,opt,name=windows_dropped,json=windowsDropped,proto3" json:"windows_dropped,omitempty"`
+	// The least of its lanes' watermarks at their barriers, in microseconds
+	// since the Unix epoch; the largest int64 is the end of input. Unset: a
+	// lane has none yet.
+	Watermark *int64 `protobuf:"varint,9,opt,name=watermark,proto3,oneof" json:"watermark,omitempty"`
+	// What its lanes' state held in memory as their barriers began, the
+	// epoch's changes included, and its block cache when the epoch was ready.
+	MemoryBytes uint64 `protobuf:"varint,10,opt,name=memory_bytes,json=memoryBytes,proto3" json:"memory_bytes,omitempty"`
+	// The runs its lanes' snapshots name, below the job's state URL, with
+	// their bytes: the same run from several lanes or engines is one.
+	Runs map[string]uint64 `protobuf:"bytes,11,rep,name=runs,proto3" json:"runs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// Its requests to object storage since the engine's last epoch.
+	Barrier       *StateRequests `protobuf:"bytes,12,opt,name=barrier,proto3" json:"barrier,omitempty"`
+	Lookup        *StateRequests `protobuf:"bytes,13,opt,name=lookup,proto3" json:"lookup,omitempty"`
+	Restore       *StateRequests `protobuf:"bytes,14,opt,name=restore,proto3" json:"restore,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OperatorEpoch) Reset() {
+	*x = OperatorEpoch{}
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OperatorEpoch) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OperatorEpoch) ProtoMessage() {}
+
+func (x *OperatorEpoch) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OperatorEpoch.ProtoReflect.Descriptor instead.
+func (*OperatorEpoch) Descriptor() ([]byte, []int) {
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *OperatorEpoch) GetOperator() string {
+	if x != nil {
+		return x.Operator
+	}
+	return ""
+}
+
+func (x *OperatorEpoch) GetRowsIn() uint64 {
+	if x != nil {
+		return x.RowsIn
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetInserts() uint64 {
+	if x != nil {
+		return x.Inserts
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetUpdates() uint64 {
+	if x != nil {
+		return x.Updates
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetDeletes() uint64 {
+	if x != nil {
+		return x.Deletes
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetLate() uint64 {
+	if x != nil {
+		return x.Late
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetWindowsOpened() uint64 {
+	if x != nil {
+		return x.WindowsOpened
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetWindowsDropped() uint64 {
+	if x != nil {
+		return x.WindowsDropped
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetWatermark() int64 {
+	if x != nil && x.Watermark != nil {
+		return *x.Watermark
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetMemoryBytes() uint64 {
+	if x != nil {
+		return x.MemoryBytes
+	}
+	return 0
+}
+
+func (x *OperatorEpoch) GetRuns() map[string]uint64 {
+	if x != nil {
+		return x.Runs
+	}
+	return nil
+}
+
+func (x *OperatorEpoch) GetBarrier() *StateRequests {
+	if x != nil {
+		return x.Barrier
+	}
+	return nil
+}
+
+func (x *OperatorEpoch) GetLookup() *StateRequests {
+	if x != nil {
+		return x.Lookup
+	}
+	return nil
+}
+
+func (x *OperatorEpoch) GetRestore() *StateRequests {
+	if x != nil {
+		return x.Restore
+	}
+	return nil
+}
+
+// StateRequests are requests of one kind to object storage, and their
+// bytes.
+type StateRequests struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Count         uint64                 `protobuf:"varint,1,opt,name=count,proto3" json:"count,omitempty"`
+	Bytes         uint64                 `protobuf:"varint,2,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StateRequests) Reset() {
+	*x = StateRequests{}
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StateRequests) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StateRequests) ProtoMessage() {}
+
+func (x *StateRequests) ProtoReflect() protoreflect.Message {
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StateRequests.ProtoReflect.Descriptor instead.
+func (*StateRequests) Descriptor() ([]byte, []int) {
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *StateRequests) GetCount() uint64 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *StateRequests) GetBytes() uint64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
 type SplitWatermarks struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// By split ID, in microseconds since the Unix epoch; the largest int64 is
@@ -2717,7 +2945,7 @@ type SplitWatermarks struct {
 
 func (x *SplitWatermarks) Reset() {
 	*x = SplitWatermarks{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[30]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2729,7 +2957,7 @@ func (x *SplitWatermarks) String() string {
 func (*SplitWatermarks) ProtoMessage() {}
 
 func (x *SplitWatermarks) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[30]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2742,7 +2970,7 @@ func (x *SplitWatermarks) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SplitWatermarks.ProtoReflect.Descriptor instead.
 func (*SplitWatermarks) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{30}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *SplitWatermarks) GetSplits() map[string]int64 {
@@ -2769,7 +2997,7 @@ type StreamHolds struct {
 
 func (x *StreamHolds) Reset() {
 	*x = StreamHolds{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[31]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2781,7 +3009,7 @@ func (x *StreamHolds) String() string {
 func (*StreamHolds) ProtoMessage() {}
 
 func (x *StreamHolds) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[31]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2794,7 +3022,7 @@ func (x *StreamHolds) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamHolds.ProtoReflect.Descriptor instead.
 func (*StreamHolds) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{31}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *StreamHolds) GetHolding() []*ColumnHold {
@@ -2836,7 +3064,7 @@ type CellHolds struct {
 
 func (x *CellHolds) Reset() {
 	*x = CellHolds{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[32]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2848,7 +3076,7 @@ func (x *CellHolds) String() string {
 func (*CellHolds) ProtoMessage() {}
 
 func (x *CellHolds) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[32]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2861,7 +3089,7 @@ func (x *CellHolds) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CellHolds.ProtoReflect.Descriptor instead.
 func (*CellHolds) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{32}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *CellHolds) GetCells() uint64 {
@@ -2890,7 +3118,7 @@ type StagedStream struct {
 
 func (x *StagedStream) Reset() {
 	*x = StagedStream{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[33]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2902,7 +3130,7 @@ func (x *StagedStream) String() string {
 func (*StagedStream) ProtoMessage() {}
 
 func (x *StagedStream) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[33]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2915,7 +3143,7 @@ func (x *StagedStream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StagedStream.ProtoReflect.Descriptor instead.
 func (*StagedStream) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{33}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *StagedStream) GetStream() string {
@@ -2957,7 +3185,7 @@ type QuarantineFile struct {
 
 func (x *QuarantineFile) Reset() {
 	*x = QuarantineFile{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[34]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2969,7 +3197,7 @@ func (x *QuarantineFile) String() string {
 func (*QuarantineFile) ProtoMessage() {}
 
 func (x *QuarantineFile) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[34]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2982,7 +3210,7 @@ func (x *QuarantineFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuarantineFile.ProtoReflect.Descriptor instead.
 func (*QuarantineFile) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{34}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *QuarantineFile) GetStream() string {
@@ -3039,7 +3267,7 @@ type QuarantineCause struct {
 
 func (x *QuarantineCause) Reset() {
 	*x = QuarantineCause{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[35]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3051,7 +3279,7 @@ func (x *QuarantineCause) String() string {
 func (*QuarantineCause) ProtoMessage() {}
 
 func (x *QuarantineCause) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[35]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3064,7 +3292,7 @@ func (x *QuarantineCause) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuarantineCause.ProtoReflect.Descriptor instead.
 func (*QuarantineCause) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{35}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *QuarantineCause) GetCode() string {
@@ -3115,7 +3343,7 @@ type StateSnapshot struct {
 
 func (x *StateSnapshot) Reset() {
 	*x = StateSnapshot{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[36]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3127,7 +3355,7 @@ func (x *StateSnapshot) String() string {
 func (*StateSnapshot) ProtoMessage() {}
 
 func (x *StateSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[36]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3140,7 +3368,7 @@ func (x *StateSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StateSnapshot.ProtoReflect.Descriptor instead.
 func (*StateSnapshot) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{36}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *StateSnapshot) GetOperator() string {
@@ -3189,7 +3417,7 @@ type KeyGroupRange struct {
 
 func (x *KeyGroupRange) Reset() {
 	*x = KeyGroupRange{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[37]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3201,7 +3429,7 @@ func (x *KeyGroupRange) String() string {
 func (*KeyGroupRange) ProtoMessage() {}
 
 func (x *KeyGroupRange) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[37]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3214,7 +3442,7 @@ func (x *KeyGroupRange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyGroupRange.ProtoReflect.Descriptor instead.
 func (*KeyGroupRange) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{37}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *KeyGroupRange) GetFirst() uint32 {
@@ -3245,7 +3473,7 @@ type Metrics struct {
 
 func (x *Metrics) Reset() {
 	*x = Metrics{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[38]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3257,7 +3485,7 @@ func (x *Metrics) String() string {
 func (*Metrics) ProtoMessage() {}
 
 func (x *Metrics) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[38]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3270,7 +3498,7 @@ func (x *Metrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Metrics.ProtoReflect.Descriptor instead.
 func (*Metrics) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{38}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *Metrics) GetStreams() []*StreamMetrics {
@@ -3308,7 +3536,7 @@ type LaneMetrics struct {
 
 func (x *LaneMetrics) Reset() {
 	*x = LaneMetrics{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[39]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3320,7 +3548,7 @@ func (x *LaneMetrics) String() string {
 func (*LaneMetrics) ProtoMessage() {}
 
 func (x *LaneMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[39]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3333,7 +3561,7 @@ func (x *LaneMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LaneMetrics.ProtoReflect.Descriptor instead.
 func (*LaneMetrics) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{39}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *LaneMetrics) GetBusyNanos() uint64 {
@@ -3383,7 +3611,7 @@ type StreamMetrics struct {
 
 func (x *StreamMetrics) Reset() {
 	*x = StreamMetrics{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[40]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3395,7 +3623,7 @@ func (x *StreamMetrics) String() string {
 func (*StreamMetrics) ProtoMessage() {}
 
 func (x *StreamMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[40]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3408,7 +3636,7 @@ func (x *StreamMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamMetrics.ProtoReflect.Descriptor instead.
 func (*StreamMetrics) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{40}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *StreamMetrics) GetStream() string {
@@ -3478,7 +3706,7 @@ type CommitRequest struct {
 
 func (x *CommitRequest) Reset() {
 	*x = CommitRequest{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[41]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3490,7 +3718,7 @@ func (x *CommitRequest) String() string {
 func (*CommitRequest) ProtoMessage() {}
 
 func (x *CommitRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[41]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3503,7 +3731,7 @@ func (x *CommitRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitRequest.ProtoReflect.Descriptor instead.
 func (*CommitRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{41}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *CommitRequest) GetEpoch() *v1.Epoch {
@@ -3528,7 +3756,7 @@ type CommitResponse struct {
 
 func (x *CommitResponse) Reset() {
 	*x = CommitResponse{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[42]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3540,7 +3768,7 @@ func (x *CommitResponse) String() string {
 func (*CommitResponse) ProtoMessage() {}
 
 func (x *CommitResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[42]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3553,7 +3781,7 @@ func (x *CommitResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitResponse.ProtoReflect.Descriptor instead.
 func (*CommitResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{42}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{44}
 }
 
 type StopRequest struct {
@@ -3564,7 +3792,7 @@ type StopRequest struct {
 
 func (x *StopRequest) Reset() {
 	*x = StopRequest{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[43]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3576,7 +3804,7 @@ func (x *StopRequest) String() string {
 func (*StopRequest) ProtoMessage() {}
 
 func (x *StopRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[43]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3589,7 +3817,7 @@ func (x *StopRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopRequest.ProtoReflect.Descriptor instead.
 func (*StopRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{43}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{45}
 }
 
 type StopResponse struct {
@@ -3600,7 +3828,7 @@ type StopResponse struct {
 
 func (x *StopResponse) Reset() {
 	*x = StopResponse{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[44]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3612,7 +3840,7 @@ func (x *StopResponse) String() string {
 func (*StopResponse) ProtoMessage() {}
 
 func (x *StopResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[44]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3625,7 +3853,7 @@ func (x *StopResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopResponse.ProtoReflect.Descriptor instead.
 func (*StopResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{44}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{46}
 }
 
 // SchemasRequest is the owner's schema of one of the job's streams: in
@@ -3652,7 +3880,7 @@ type SchemasRequest struct {
 
 func (x *SchemasRequest) Reset() {
 	*x = SchemasRequest{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[45]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3664,7 +3892,7 @@ func (x *SchemasRequest) String() string {
 func (*SchemasRequest) ProtoMessage() {}
 
 func (x *SchemasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[45]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3677,7 +3905,7 @@ func (x *SchemasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchemasRequest.ProtoReflect.Descriptor instead.
 func (*SchemasRequest) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{45}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *SchemasRequest) GetStream() uint32 {
@@ -3735,7 +3963,7 @@ type SchemasResponse struct {
 
 func (x *SchemasResponse) Reset() {
 	*x = SchemasResponse{}
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[46]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3747,7 +3975,7 @@ func (x *SchemasResponse) String() string {
 func (*SchemasResponse) ProtoMessage() {}
 
 func (x *SchemasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_openetl_engine_v1_engine_proto_msgTypes[46]
+	mi := &file_openetl_engine_v1_engine_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3760,7 +3988,7 @@ func (x *SchemasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchemasResponse.ProtoReflect.Descriptor instead.
 func (*SchemasResponse) Descriptor() ([]byte, []int) {
-	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{46}
+	return file_openetl_engine_v1_engine_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *SchemasResponse) GetStream() uint32 {
@@ -3996,7 +4224,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\vepoch_ready\x18\x01 \x01(\v2\x1d.openetl.engine.v1.EpochReadyH\x00R\n" +
 	"epochReady\x126\n" +
 	"\ametrics\x18\x02 \x01(\v2\x1a.openetl.engine.v1.MetricsH\x00R\ametricsB\a\n" +
-	"\x05event\"\x84\b\n" +
+	"\x05event\"\xc4\b\n" +
 	"\n" +
 	"EpochReady\x121\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x1b.openetl.connector.v1.EpochR\x05epoch\x12\x16\n" +
@@ -4013,7 +4241,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"watermarks\x18\n" +
 	" \x03(\v2-.openetl.engine.v1.EpochReady.WatermarksEntryR\n" +
-	"watermarks\x1a:\n" +
+	"watermarks\x12>\n" +
+	"\toperators\x18\v \x03(\v2 .openetl.engine.v1.OperatorEpochR\toperators\x1a:\n" +
 	"\fSchemasEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\x1aX\n" +
@@ -4029,7 +4258,31 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\x1aa\n" +
 	"\x0fWatermarksEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x128\n" +
-	"\x05value\x18\x02 \x01(\v2\".openetl.engine.v1.SplitWatermarksR\x05value:\x028\x01\"\x94\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\".openetl.engine.v1.SplitWatermarksR\x05value:\x028\x01\"\xf5\x04\n" +
+	"\rOperatorEpoch\x12\x1a\n" +
+	"\boperator\x18\x01 \x01(\tR\boperator\x12\x17\n" +
+	"\arows_in\x18\x02 \x01(\x04R\x06rowsIn\x12\x18\n" +
+	"\ainserts\x18\x03 \x01(\x04R\ainserts\x12\x18\n" +
+	"\aupdates\x18\x04 \x01(\x04R\aupdates\x12\x18\n" +
+	"\adeletes\x18\x05 \x01(\x04R\adeletes\x12\x12\n" +
+	"\x04late\x18\x06 \x01(\x04R\x04late\x12%\n" +
+	"\x0ewindows_opened\x18\a \x01(\x04R\rwindowsOpened\x12'\n" +
+	"\x0fwindows_dropped\x18\b \x01(\x04R\x0ewindowsDropped\x12!\n" +
+	"\twatermark\x18\t \x01(\x03H\x00R\twatermark\x88\x01\x01\x12!\n" +
+	"\fmemory_bytes\x18\n" +
+	" \x01(\x04R\vmemoryBytes\x12>\n" +
+	"\x04runs\x18\v \x03(\v2*.openetl.engine.v1.OperatorEpoch.RunsEntryR\x04runs\x12:\n" +
+	"\abarrier\x18\f \x01(\v2 .openetl.engine.v1.StateRequestsR\abarrier\x128\n" +
+	"\x06lookup\x18\r \x01(\v2 .openetl.engine.v1.StateRequestsR\x06lookup\x12:\n" +
+	"\arestore\x18\x0e \x01(\v2 .openetl.engine.v1.StateRequestsR\arestore\x1a7\n" +
+	"\tRunsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01B\f\n" +
+	"\n" +
+	"_watermark\";\n" +
+	"\rStateRequests\x12\x14\n" +
+	"\x05count\x18\x01 \x01(\x04R\x05count\x12\x14\n" +
+	"\x05bytes\x18\x02 \x01(\x04R\x05bytes\"\x94\x01\n" +
 	"\x0fSplitWatermarks\x12F\n" +
 	"\x06splits\x18\x01 \x03(\v2..openetl.engine.v1.SplitWatermarks.SplitsEntryR\x06splits\x1a9\n" +
 	"\vSplitsEntry\x12\x10\n" +
@@ -4155,7 +4408,7 @@ func file_openetl_engine_v1_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_engine_v1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_openetl_engine_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 57)
+var file_openetl_engine_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 60)
 var file_openetl_engine_v1_engine_proto_goTypes = []any{
 	(SchemaPolicy)(0),        // 0: openetl.engine.v1.SchemaPolicy
 	(HeldMode)(0),            // 1: openetl.engine.v1.HeldMode
@@ -4192,44 +4445,47 @@ var file_openetl_engine_v1_engine_proto_goTypes = []any{
 	(*EventsRequest)(nil),    // 32: openetl.engine.v1.EventsRequest
 	(*EventsResponse)(nil),   // 33: openetl.engine.v1.EventsResponse
 	(*EpochReady)(nil),       // 34: openetl.engine.v1.EpochReady
-	(*SplitWatermarks)(nil),  // 35: openetl.engine.v1.SplitWatermarks
-	(*StreamHolds)(nil),      // 36: openetl.engine.v1.StreamHolds
-	(*CellHolds)(nil),        // 37: openetl.engine.v1.CellHolds
-	(*StagedStream)(nil),     // 38: openetl.engine.v1.StagedStream
-	(*QuarantineFile)(nil),   // 39: openetl.engine.v1.QuarantineFile
-	(*QuarantineCause)(nil),  // 40: openetl.engine.v1.QuarantineCause
-	(*StateSnapshot)(nil),    // 41: openetl.engine.v1.StateSnapshot
-	(*KeyGroupRange)(nil),    // 42: openetl.engine.v1.KeyGroupRange
-	(*Metrics)(nil),          // 43: openetl.engine.v1.Metrics
-	(*LaneMetrics)(nil),      // 44: openetl.engine.v1.LaneMetrics
-	(*StreamMetrics)(nil),    // 45: openetl.engine.v1.StreamMetrics
-	(*CommitRequest)(nil),    // 46: openetl.engine.v1.CommitRequest
-	(*CommitResponse)(nil),   // 47: openetl.engine.v1.CommitResponse
-	(*StopRequest)(nil),      // 48: openetl.engine.v1.StopRequest
-	(*StopResponse)(nil),     // 49: openetl.engine.v1.StopResponse
-	(*SchemasRequest)(nil),   // 50: openetl.engine.v1.SchemasRequest
-	(*SchemasResponse)(nil),  // 51: openetl.engine.v1.SchemasResponse
-	nil,                      // 52: openetl.engine.v1.HoldPlan.ColumnsEntry
-	nil,                      // 53: openetl.engine.v1.Replay.FirstEntry
-	nil,                      // 54: openetl.engine.v1.Replay.FirstCellsEntry
-	nil,                      // 55: openetl.engine.v1.EpochReady.SchemasEntry
-	nil,                      // 56: openetl.engine.v1.EpochReady.HoldsEntry
-	nil,                      // 57: openetl.engine.v1.EpochReady.DeliveredEntry
-	nil,                      // 58: openetl.engine.v1.EpochReady.OutputSchemasEntry
-	nil,                      // 59: openetl.engine.v1.EpochReady.WatermarksEntry
-	nil,                      // 60: openetl.engine.v1.SplitWatermarks.SplitsEntry
-	nil,                      // 61: openetl.engine.v1.StreamHolds.CellsEntry
-	(*v1.TableLimits)(nil),   // 62: openetl.connector.v1.TableLimits
-	(*v1.Epoch)(nil),         // 63: openetl.connector.v1.Epoch
-	(v1.Recovery)(0),         // 64: openetl.connector.v1.Recovery
-	(*v1.StagedFile)(nil),    // 65: openetl.connector.v1.StagedFile
+	(*OperatorEpoch)(nil),    // 35: openetl.engine.v1.OperatorEpoch
+	(*StateRequests)(nil),    // 36: openetl.engine.v1.StateRequests
+	(*SplitWatermarks)(nil),  // 37: openetl.engine.v1.SplitWatermarks
+	(*StreamHolds)(nil),      // 38: openetl.engine.v1.StreamHolds
+	(*CellHolds)(nil),        // 39: openetl.engine.v1.CellHolds
+	(*StagedStream)(nil),     // 40: openetl.engine.v1.StagedStream
+	(*QuarantineFile)(nil),   // 41: openetl.engine.v1.QuarantineFile
+	(*QuarantineCause)(nil),  // 42: openetl.engine.v1.QuarantineCause
+	(*StateSnapshot)(nil),    // 43: openetl.engine.v1.StateSnapshot
+	(*KeyGroupRange)(nil),    // 44: openetl.engine.v1.KeyGroupRange
+	(*Metrics)(nil),          // 45: openetl.engine.v1.Metrics
+	(*LaneMetrics)(nil),      // 46: openetl.engine.v1.LaneMetrics
+	(*StreamMetrics)(nil),    // 47: openetl.engine.v1.StreamMetrics
+	(*CommitRequest)(nil),    // 48: openetl.engine.v1.CommitRequest
+	(*CommitResponse)(nil),   // 49: openetl.engine.v1.CommitResponse
+	(*StopRequest)(nil),      // 50: openetl.engine.v1.StopRequest
+	(*StopResponse)(nil),     // 51: openetl.engine.v1.StopResponse
+	(*SchemasRequest)(nil),   // 52: openetl.engine.v1.SchemasRequest
+	(*SchemasResponse)(nil),  // 53: openetl.engine.v1.SchemasResponse
+	nil,                      // 54: openetl.engine.v1.HoldPlan.ColumnsEntry
+	nil,                      // 55: openetl.engine.v1.Replay.FirstEntry
+	nil,                      // 56: openetl.engine.v1.Replay.FirstCellsEntry
+	nil,                      // 57: openetl.engine.v1.EpochReady.SchemasEntry
+	nil,                      // 58: openetl.engine.v1.EpochReady.HoldsEntry
+	nil,                      // 59: openetl.engine.v1.EpochReady.DeliveredEntry
+	nil,                      // 60: openetl.engine.v1.EpochReady.OutputSchemasEntry
+	nil,                      // 61: openetl.engine.v1.EpochReady.WatermarksEntry
+	nil,                      // 62: openetl.engine.v1.OperatorEpoch.RunsEntry
+	nil,                      // 63: openetl.engine.v1.SplitWatermarks.SplitsEntry
+	nil,                      // 64: openetl.engine.v1.StreamHolds.CellsEntry
+	(*v1.TableLimits)(nil),   // 65: openetl.connector.v1.TableLimits
+	(*v1.Epoch)(nil),         // 66: openetl.connector.v1.Epoch
+	(v1.Recovery)(0),         // 67: openetl.connector.v1.Recovery
+	(*v1.StagedFile)(nil),    // 68: openetl.connector.v1.StagedFile
 }
 var file_openetl_engine_v1_engine_proto_depIdxs = []int32{
 	13, // 0: openetl.engine.v1.StartJobRequest.streams:type_name -> openetl.engine.v1.StreamPlan
 	22, // 1: openetl.engine.v1.StartJobRequest.edges:type_name -> openetl.engine.v1.Edge
 	23, // 2: openetl.engine.v1.StartJobRequest.sink:type_name -> openetl.engine.v1.SinkPlan
 	28, // 3: openetl.engine.v1.StartJobRequest.limits:type_name -> openetl.engine.v1.Limits
-	41, // 4: openetl.engine.v1.StartJobRequest.restored_snapshots:type_name -> openetl.engine.v1.StateSnapshot
+	43, // 4: openetl.engine.v1.StartJobRequest.restored_snapshots:type_name -> openetl.engine.v1.StateSnapshot
 	12, // 5: openetl.engine.v1.StartJobRequest.naming:type_name -> openetl.engine.v1.Naming
 	0,  // 6: openetl.engine.v1.StartJobRequest.schema_policy:type_name -> openetl.engine.v1.SchemaPolicy
 	13, // 7: openetl.engine.v1.StartJobRequest.outputs:type_name -> openetl.engine.v1.StreamPlan
@@ -4240,73 +4496,78 @@ var file_openetl_engine_v1_engine_proto_depIdxs = []int32{
 	2,  // 12: openetl.engine.v1.StreamPlan.lane:type_name -> openetl.engine.v1.Lane
 	15, // 13: openetl.engine.v1.StreamPlan.holds:type_name -> openetl.engine.v1.HoldPlan
 	11, // 14: openetl.engine.v1.StreamPlan.exchange:type_name -> openetl.engine.v1.Exchange
-	42, // 15: openetl.engine.v1.StreamPlan.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	44, // 15: openetl.engine.v1.StreamPlan.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
 	14, // 16: openetl.engine.v1.StreamPlan.event_time:type_name -> openetl.engine.v1.EventTime
 	16, // 17: openetl.engine.v1.HoldPlan.held:type_name -> openetl.engine.v1.Held
-	52, // 18: openetl.engine.v1.HoldPlan.columns:type_name -> openetl.engine.v1.HoldPlan.ColumnsEntry
+	54, // 18: openetl.engine.v1.HoldPlan.columns:type_name -> openetl.engine.v1.HoldPlan.ColumnsEntry
 	17, // 19: openetl.engine.v1.HoldPlan.groups:type_name -> openetl.engine.v1.ColumnGroup
 	18, // 20: openetl.engine.v1.HoldPlan.holding:type_name -> openetl.engine.v1.ColumnHold
-	62, // 21: openetl.engine.v1.HoldPlan.limits:type_name -> openetl.connector.v1.TableLimits
+	65, // 21: openetl.engine.v1.HoldPlan.limits:type_name -> openetl.connector.v1.TableLimits
 	20, // 22: openetl.engine.v1.HoldPlan.replay:type_name -> openetl.engine.v1.Replay
 	1,  // 23: openetl.engine.v1.Held.mode:type_name -> openetl.engine.v1.HeldMode
 	19, // 24: openetl.engine.v1.ColumnHold.cause:type_name -> openetl.engine.v1.HoldCause
 	4,  // 25: openetl.engine.v1.HoldCause.kind:type_name -> openetl.engine.v1.HoldCause.Kind
 	21, // 26: openetl.engine.v1.Replay.from:type_name -> openetl.engine.v1.ReplayProgress
 	18, // 27: openetl.engine.v1.Replay.versioned:type_name -> openetl.engine.v1.ColumnHold
-	53, // 28: openetl.engine.v1.Replay.first:type_name -> openetl.engine.v1.Replay.FirstEntry
-	54, // 29: openetl.engine.v1.Replay.first_cells:type_name -> openetl.engine.v1.Replay.FirstCellsEntry
+	55, // 28: openetl.engine.v1.Replay.first:type_name -> openetl.engine.v1.Replay.FirstEntry
+	56, // 29: openetl.engine.v1.Replay.first_cells:type_name -> openetl.engine.v1.Replay.FirstCellsEntry
 	3,  // 30: openetl.engine.v1.Edge.direction:type_name -> openetl.engine.v1.EdgeDirection
 	24, // 31: openetl.engine.v1.SinkPlan.runner:type_name -> openetl.engine.v1.RunnerSink
 	25, // 32: openetl.engine.v1.SinkPlan.parquet:type_name -> openetl.engine.v1.ParquetSink
 	27, // 33: openetl.engine.v1.SinkPlan.discard:type_name -> openetl.engine.v1.DiscardSink
 	26, // 34: openetl.engine.v1.SinkPlan.staged:type_name -> openetl.engine.v1.StagedSink
-	63, // 35: openetl.engine.v1.RecoverRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	64, // 36: openetl.engine.v1.RecoverResponse.recovery:type_name -> openetl.connector.v1.Recovery
+	66, // 35: openetl.engine.v1.RecoverRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	67, // 36: openetl.engine.v1.RecoverResponse.recovery:type_name -> openetl.connector.v1.Recovery
 	34, // 37: openetl.engine.v1.EventsResponse.epoch_ready:type_name -> openetl.engine.v1.EpochReady
-	43, // 38: openetl.engine.v1.EventsResponse.metrics:type_name -> openetl.engine.v1.Metrics
-	63, // 39: openetl.engine.v1.EpochReady.epoch:type_name -> openetl.connector.v1.Epoch
-	41, // 40: openetl.engine.v1.EpochReady.snapshots:type_name -> openetl.engine.v1.StateSnapshot
-	55, // 41: openetl.engine.v1.EpochReady.schemas:type_name -> openetl.engine.v1.EpochReady.SchemasEntry
-	39, // 42: openetl.engine.v1.EpochReady.quarantine:type_name -> openetl.engine.v1.QuarantineFile
-	38, // 43: openetl.engine.v1.EpochReady.files:type_name -> openetl.engine.v1.StagedStream
-	56, // 44: openetl.engine.v1.EpochReady.holds:type_name -> openetl.engine.v1.EpochReady.HoldsEntry
-	57, // 45: openetl.engine.v1.EpochReady.delivered:type_name -> openetl.engine.v1.EpochReady.DeliveredEntry
-	58, // 46: openetl.engine.v1.EpochReady.output_schemas:type_name -> openetl.engine.v1.EpochReady.OutputSchemasEntry
-	59, // 47: openetl.engine.v1.EpochReady.watermarks:type_name -> openetl.engine.v1.EpochReady.WatermarksEntry
-	60, // 48: openetl.engine.v1.SplitWatermarks.splits:type_name -> openetl.engine.v1.SplitWatermarks.SplitsEntry
-	18, // 49: openetl.engine.v1.StreamHolds.holding:type_name -> openetl.engine.v1.ColumnHold
-	61, // 50: openetl.engine.v1.StreamHolds.cells:type_name -> openetl.engine.v1.StreamHolds.CellsEntry
-	65, // 51: openetl.engine.v1.StreamHolds.files:type_name -> openetl.connector.v1.StagedFile
-	21, // 52: openetl.engine.v1.StreamHolds.replayed:type_name -> openetl.engine.v1.ReplayProgress
-	65, // 53: openetl.engine.v1.StagedStream.files:type_name -> openetl.connector.v1.StagedFile
-	40, // 54: openetl.engine.v1.QuarantineFile.causes:type_name -> openetl.engine.v1.QuarantineCause
-	42, // 55: openetl.engine.v1.StateSnapshot.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
-	45, // 56: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
-	44, // 57: openetl.engine.v1.Metrics.lanes:type_name -> openetl.engine.v1.LaneMetrics
-	63, // 58: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	18, // 59: openetl.engine.v1.SchemasRequest.holding:type_name -> openetl.engine.v1.ColumnHold
-	18, // 60: openetl.engine.v1.SchemasResponse.holding:type_name -> openetl.engine.v1.ColumnHold
-	16, // 61: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
-	36, // 62: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
-	35, // 63: openetl.engine.v1.EpochReady.WatermarksEntry.value:type_name -> openetl.engine.v1.SplitWatermarks
-	37, // 64: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
-	5,  // 65: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
-	30, // 66: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
-	32, // 67: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
-	46, // 68: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
-	48, // 69: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
-	50, // 70: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
-	29, // 71: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
-	31, // 72: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
-	33, // 73: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
-	47, // 74: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
-	49, // 75: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
-	51, // 76: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
-	71, // [71:77] is the sub-list for method output_type
-	65, // [65:71] is the sub-list for method input_type
-	65, // [65:65] is the sub-list for extension type_name
-	65, // [65:65] is the sub-list for extension extendee
-	0,  // [0:65] is the sub-list for field type_name
+	45, // 38: openetl.engine.v1.EventsResponse.metrics:type_name -> openetl.engine.v1.Metrics
+	66, // 39: openetl.engine.v1.EpochReady.epoch:type_name -> openetl.connector.v1.Epoch
+	43, // 40: openetl.engine.v1.EpochReady.snapshots:type_name -> openetl.engine.v1.StateSnapshot
+	57, // 41: openetl.engine.v1.EpochReady.schemas:type_name -> openetl.engine.v1.EpochReady.SchemasEntry
+	41, // 42: openetl.engine.v1.EpochReady.quarantine:type_name -> openetl.engine.v1.QuarantineFile
+	40, // 43: openetl.engine.v1.EpochReady.files:type_name -> openetl.engine.v1.StagedStream
+	58, // 44: openetl.engine.v1.EpochReady.holds:type_name -> openetl.engine.v1.EpochReady.HoldsEntry
+	59, // 45: openetl.engine.v1.EpochReady.delivered:type_name -> openetl.engine.v1.EpochReady.DeliveredEntry
+	60, // 46: openetl.engine.v1.EpochReady.output_schemas:type_name -> openetl.engine.v1.EpochReady.OutputSchemasEntry
+	61, // 47: openetl.engine.v1.EpochReady.watermarks:type_name -> openetl.engine.v1.EpochReady.WatermarksEntry
+	35, // 48: openetl.engine.v1.EpochReady.operators:type_name -> openetl.engine.v1.OperatorEpoch
+	62, // 49: openetl.engine.v1.OperatorEpoch.runs:type_name -> openetl.engine.v1.OperatorEpoch.RunsEntry
+	36, // 50: openetl.engine.v1.OperatorEpoch.barrier:type_name -> openetl.engine.v1.StateRequests
+	36, // 51: openetl.engine.v1.OperatorEpoch.lookup:type_name -> openetl.engine.v1.StateRequests
+	36, // 52: openetl.engine.v1.OperatorEpoch.restore:type_name -> openetl.engine.v1.StateRequests
+	63, // 53: openetl.engine.v1.SplitWatermarks.splits:type_name -> openetl.engine.v1.SplitWatermarks.SplitsEntry
+	18, // 54: openetl.engine.v1.StreamHolds.holding:type_name -> openetl.engine.v1.ColumnHold
+	64, // 55: openetl.engine.v1.StreamHolds.cells:type_name -> openetl.engine.v1.StreamHolds.CellsEntry
+	68, // 56: openetl.engine.v1.StreamHolds.files:type_name -> openetl.connector.v1.StagedFile
+	21, // 57: openetl.engine.v1.StreamHolds.replayed:type_name -> openetl.engine.v1.ReplayProgress
+	68, // 58: openetl.engine.v1.StagedStream.files:type_name -> openetl.connector.v1.StagedFile
+	42, // 59: openetl.engine.v1.QuarantineFile.causes:type_name -> openetl.engine.v1.QuarantineCause
+	44, // 60: openetl.engine.v1.StateSnapshot.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	47, // 61: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
+	46, // 62: openetl.engine.v1.Metrics.lanes:type_name -> openetl.engine.v1.LaneMetrics
+	66, // 63: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	18, // 64: openetl.engine.v1.SchemasRequest.holding:type_name -> openetl.engine.v1.ColumnHold
+	18, // 65: openetl.engine.v1.SchemasResponse.holding:type_name -> openetl.engine.v1.ColumnHold
+	16, // 66: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
+	38, // 67: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
+	37, // 68: openetl.engine.v1.EpochReady.WatermarksEntry.value:type_name -> openetl.engine.v1.SplitWatermarks
+	39, // 69: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
+	5,  // 70: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
+	30, // 71: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
+	32, // 72: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
+	48, // 73: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
+	50, // 74: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
+	52, // 75: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
+	29, // 76: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
+	31, // 77: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
+	33, // 78: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
+	49, // 79: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
+	51, // 80: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
+	53, // 81: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
+	76, // [76:82] is the sub-list for method output_type
+	70, // [70:76] is the sub-list for method input_type
+	70, // [70:70] is the sub-list for extension type_name
+	70, // [70:70] is the sub-list for extension extendee
+	0,  // [0:70] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_engine_proto_init() }
@@ -4325,14 +4586,15 @@ func file_openetl_engine_v1_engine_proto_init() {
 		(*EventsResponse_EpochReady)(nil),
 		(*EventsResponse_Metrics)(nil),
 	}
-	file_openetl_engine_v1_engine_proto_msgTypes[40].OneofWrappers = []any{}
+	file_openetl_engine_v1_engine_proto_msgTypes[30].OneofWrappers = []any{}
+	file_openetl_engine_v1_engine_proto_msgTypes[42].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_engine_v1_engine_proto_rawDesc), len(file_openetl_engine_v1_engine_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   57,
+			NumMessages:   60,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
