@@ -109,7 +109,7 @@ func main() {
 	stop()
 	if err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(os.Stderr, "openetl:", err)
-		os.Exit(1)
+		os.Exit(exitStatus(err))
 	}
 }
 
@@ -170,9 +170,9 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	case "logs":
 		return runLogs(ctx, args[1:], out)
 	case "check":
-		return runCheck(ctx, args[1:], out)
+		return checkStatus(runCheck(ctx, args[1:], out))
 	case "preflight":
-		return runPreflight(ctx, args[1:], out)
+		return checkStatus(runPreflight(ctx, args[1:], out))
 	case "discover":
 		return runDiscover(ctx, args[1:], out)
 	}
@@ -329,9 +329,9 @@ func printWarnings(out io.Writer, res *apiv1.ApplyResponse) {
 	changed := changedPipelines(res)
 	for _, p := range res.GetPlans() {
 		if changed[p.GetPipeline()] && len(p.GetWarnings()) > 0 {
-			fmt.Fprintf(out, "\nwarnings for %s:\n", p.GetPipeline())
+			fmt.Fprintf(out, "\nwarnings for %s:\n", printable(p.GetPipeline()))
 			for _, w := range p.GetWarnings() {
-				fmt.Fprintf(out, "  %s\n", warningText(w))
+				fmt.Fprintf(out, "  %s\n", printable(warningText(w)))
 			}
 		}
 	}
@@ -399,7 +399,10 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 	return nil
 }
 
+// printPlan prints a pipeline's plan, its text made printable: a
+// connector's discover names the streams and columns in it.
 func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
+	p = printableCopy(p)
 	fmt.Fprintf(out, "\n%s (%s)\n", p.GetPipeline(), versionText(p.GetVersion()))
 	if len(p.GetChanges()) > 0 {
 		fmt.Fprintln(out, "  changes:")
@@ -741,12 +744,33 @@ func connectorFlags(cmd, usage string) (fs *flag.FlagSet, conn *api, workspace, 
 
 func runCheck(ctx context.Context, args []string, out io.Writer) error {
 	fs, conn, workspace, dataPlane := connectorFlags("check", "source|destination NAME")
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: openetl check [flags] source|destination NAME")
+		fmt.Fprint(fs.Output(), "\nChecks that a source's or destination's connection works, on a runner, and\n"+
+			"prints what its connector checked, item by item. openetl check pipeline NAME\n"+
+			"is a deprecated name for openetl preflight NAME, which takes its flags.\n"+exitStatusUsage+"\n")
+		fs.PrintDefaults()
+	}
+	format := formatFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	kind := fs.Arg(0)
 	if kind == "pipeline" {
-		return errors.New("a pipeline has a preflight, not a check: openetl preflight NAME")
+		fmt.Fprintln(stderr, "openetl: check pipeline is deprecated; use openetl preflight NAME")
+		// It took --data-plane before preflight replaced it; a preflight
+		// runs on the pipeline's own data plane, so it drops the flag.
+		var flags []string
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name != "data-plane" {
+				flags = append(flags, "-"+f.Name+"="+f.Value.String())
+			}
+		})
+		return runPreflight(ctx, slices.Concat(flags, fs.Args()[1:]), out)
+	}
+	if err := checkFormat(*format); err != nil {
+		return err
 	}
 	if fs.NArg() != 2 || (kind != "source" && kind != "destination") {
 		return errors.New("check takes source or destination, then a name, after its flags")
@@ -774,13 +798,40 @@ func runCheck(ctx context.Context, args []string, out io.Writer) error {
 		}
 		res = r.Msg.GetResult()
 	}
-	if !res.GetOk() {
-		printCheckItems(out, "", apiCheckItems(res.GetItems()))
-		return fmt.Errorf("%s failed its check: %s: %s", name, res.GetCode(), res.GetMessage())
+	if res == nil {
+		return errNoResult
 	}
-	fmt.Fprintf(out, "%s passed its check (version %.12s)\n", name, res.GetVersion())
-	printCheckItems(out, "  ", apiCheckItems(res.GetItems()))
+	items := apiCheckItems(res.GetItems())
+	why, failed := resultFailure(res, items)
+	if *format == formatJSON {
+		if err := printJSON(out, res); err != nil {
+			return err
+		}
+	} else {
+		printCheckResult(out, name, res.GetVersion(), why, failed, items)
+	}
+	if failed {
+		return checkFailed("%s failed its check: %s", name, why)
+	}
 	return nil
+}
+
+// printCheckResult prints a check's line, "NAME passed its check" or
+// failed, and its items under it. A check that failed without an item that
+// failed has why on its line.
+func printCheckResult(out io.Writer, name, version, why string, failed bool, items []checkItem) {
+	line := name + " passed its check"
+	if failed {
+		line = name + " failed its check"
+	}
+	if version != "" {
+		line += fmt.Sprintf(" (version %.12s)", printable(version))
+	}
+	if failed && !anyFailing(items) {
+		line += ": " + why
+	}
+	fmt.Fprintln(out, line)
+	printCheckItems(out, "  ", items)
 }
 
 func runDiscover(ctx context.Context, args []string, out io.Writer) error {

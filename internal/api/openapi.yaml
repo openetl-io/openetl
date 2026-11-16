@@ -3244,31 +3244,69 @@ components:
                     description: Unique within the result, such as stream.clicks.read.
                 title:
                     type: string
+                    description: A template.
                 status:
                     type: string
                     description: passed, warning, failed or skipped.
                 message:
                     type: string
+                    description: |-
+                        A template: what it found when passed, why when failed or warning, and
+                         why it wasn't checked when skipped.
                 code:
                     type: string
-                    description: 'When failed: a code of the error taxonomy.'
+                    description: 'When failed or warning: a code of the error taxonomy, if it has one.'
                 fix:
                     type: string
-                    description: What to do about a failure or a warning.
+                    description: 'A template: what to do about a failure or a warning.'
                 field:
                     type: string
                     description: The config field it concerns, as a dotted path; empty if none.
+                kind:
+                    type: string
+                    description: |-
+                        What it verifies: configuration, connection, authentication,
+                         permission, resource, compatibility, quota or custom; empty if
+                         unspecified.
+                description:
+                    type: string
+                    description: 'A template: what it verifies, and why the connector needs it.'
+                reason:
+                    type: string
+                    description: |-
+                        When failed or warning: the kind of failure, lowercase words joined by
+                         _, such as connection_refused or a connector's own; empty if none.
+                params:
+                    type: object
+                    additionalProperties:
+                        type: string
+                    description: The placeholders' values, by name.
+                detail:
+                    type: string
+                    description: The cause's text, such as the upstream's error. Not a template.
+                duration:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: How long it took; unset if it didn't run.
             description: |-
-                CheckItem is one thing a connector's check looked at: reaching the
-                 service, a permission, a stream.
+                CheckItem is one thing a connector's check or preflight looked at:
+                 reaching the service, a permission, a stream.
+
+                 title, message, fix and description are templates, as the connector sent
+                 them. A placeholder is {name}, with name matching [a-z][a-z0-9_]*, and
+                 params holds its value; a placeholder without a param stays as written,
+                 and text without placeholders is plain text. Render them to show an item.
         CheckResult:
             type: object
             properties:
                 ok:
                     type: boolean
+                    description: It has no code and no item failed; warnings don't count.
                 code:
                     type: string
-                    description: 'When not ok: a code of the error taxonomy, such as AUTH_INVALID.'
+                    description: |-
+                        When not ok: a code of the error taxonomy, such as AUTH_INVALID; the
+                         first failed item's, and its rendered text, if the connector gave none.
                 message:
                     type: string
                 version:
@@ -3283,7 +3321,7 @@ components:
                          result.
             description: |-
                 CheckResult is a connector's answer to Check. A connector without a check
-                 of its own only validates its config.
+                 of its own passes with no items.
         CheckSourceRequest:
             type: object
             properties:
@@ -5586,15 +5624,19 @@ components:
                          connector and for the plan.
                 ok:
                     type: boolean
+                    description: It ran, has no code and no item failed; warnings don't count.
                 code:
                     type: string
-                    description: 'When not ok: a code of the error taxonomy, and what failed.'
+                    description: |-
+                        When not ok: a code of the error taxonomy, and what failed; the first
+                         failed item's, and its rendered text, if the part has none. A part can
+                         fail with no items, such as a connector that didn't start or answer.
                 message:
                     type: string
                 skipped:
                     type: string
                     description: |-
-                        Why it didn't run, such as a check before it that failed; empty if it
+                        Why it didn't run, set only when a part before it failed; empty if it
                          ran.
                 items:
                     type: array
@@ -5619,7 +5661,7 @@ components:
             properties:
                 ok:
                     type: boolean
-                    description: No part failed; warnings don't count.
+                    description: 'Every part is ok: none failed or was skipped. Warnings don''t count.'
                 version:
                     type: string
                     description: The pipeline version checked.

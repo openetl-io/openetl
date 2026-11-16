@@ -559,10 +559,8 @@ func (s *session) wantRecovery(gen uint64, got protocolv1.Recovery, want ...prot
 	}
 }
 
-// Write: commit: nothing is visible before Commit, Commit makes the epoch
-// visible once, and a second Commit of it changes nothing.
-// Preflight: with the good config, a preflight of the suite's streams, with
-// their schemas, passes.
+// Preflight: with the good config, a preflight of the kit's streams, with
+// their schemas, passes, and its answer holds to the protocol.
 func (r *destinationRun) checkPreflight(t T, s *session) {
 	req := &protocolv1.PreflightDestinationRequest{Config: r.proc.Config(), Pipeline: s.pipeline, Namespace: s.ns}
 	for _, name := range s.streams {
@@ -574,9 +572,11 @@ func (r *destinationRun) checkPreflight(t T, s *session) {
 		req.Schemas = append(req.Schemas, &protocolv1.StreamSchema{Name: name, ArrowSchema: b})
 	}
 	resp, err := protocolv1.NewDestinationServiceClient(r.proc.Conn()).PreflightDestination(t.Context(), req)
-	preflightResult(t, resp, err)
+	r.preflighted(t, resp, err)
 }
 
+// Write: commit: nothing is visible before Commit, Commit makes the epoch
+// visible once, and a second Commit of it changes nothing.
 func (r *destinationRun) checkCommit(_ T, s *session) {
 	w, rec := s.begin(1, nil, nil)
 	s.wantRecovery(1, rec, protocolv1.Recovery_RECOVERY_APPLIED)

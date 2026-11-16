@@ -56,6 +56,12 @@ func main() {
 		sdk.Serve(sdk.Connector{Name: "typed", Source: func([]byte, host.Host) (source.Source, error) { return typed{}, nil }})
 	case "source-crash":
 		sdk.Serve(sdk.Connector{Name: "crash", Source: func([]byte, host.Host) (source.Source, error) { return crash{}, nil }})
+	case "source-hang":
+		sdk.Serve(sdk.Connector{Name: "hang", Source: func([]byte, host.Host) (source.Source, error) { return hang{}, nil }})
+	case "source-leaky":
+		sdk.Serve(sdk.Connector{Name: "leaky", Source: func([]byte, host.Host) (source.Source, error) { return leaky{}, nil }})
+	case "source-bulky":
+		sdk.Serve(sdk.Connector{Name: "bulky", Source: func([]byte, host.Host) (source.Source, error) { return bulky{}, nil }})
 	case "source-env":
 		sdk.Serve(sdk.Connector{Name: "env", Source: func([]byte, host.Host) (source.Source, error) { return env{}, nil }})
 	case "source-future":
@@ -122,6 +128,68 @@ func (crash) Read(_ context.Context, _ source.ReadRequest, out source.Emitter) e
 	_ = out.Rows("s", []json.RawMessage{[]byte(`{"a": 1}`)})
 	os.Exit(3)
 	return nil
+}
+
+// Check exits.
+func (crash) Check(context.Context) error {
+	os.Exit(3)
+	return nil
+}
+
+// hang's check doesn't answer for a minute, whatever its deadline.
+type hang struct{ echo }
+
+func (hang) Check(context.Context) error {
+	time.Sleep(time.Minute)
+	return nil
+}
+
+// bulky's checks give items of about 50 KB each, more than a host keeps, and
+// the last fails.
+type bulky struct{ echo }
+
+func (bulky) Checks() []check.Check {
+	var checks []check.Check
+	for i := range 24 {
+		p := check.Params{}
+		for j := range 50 {
+			p[fmt.Sprintf("p%02d", j)] = strings.Repeat("v", 1000)
+		}
+		checks = append(checks, check.Check{Name: fmt.Sprintf("c%02d", i), Title: "C", Params: p, Run: func(context.Context, *check.Probe) error {
+			if i == 23 {
+				return errors.New("the last fails")
+			}
+			return nil
+		}})
+	}
+	return checks
+}
+
+// leaky's check shows the AWS token the runner gave it, in texts with control
+// characters and longer than a host keeps, and its AWS secret key and session
+// token in params; it has more items than an answer may. Its Discover fails
+// showing the token too.
+type leaky struct{ echo }
+
+func (leaky) Discover(context.Context) (source.Catalog, error) {
+	return source.Catalog{}, fmt.Errorf("dial %s\x1b[2J\u202e\u2028: refused%s", os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN"), strings.Repeat(".", 5000))
+}
+
+func (leaky) Checks() []check.Check {
+	token := os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN")
+	checks := []check.Check{{
+		Name: "token", Title: "Use " + token + "\x1b]52;c;ZXZpbA==\x07", Field: "aws." + token, Description: strings.Repeat("é", 1500),
+		Params: check.Params{"token": token, "long": strings.Repeat("v", 2000),
+			"secret_key": os.Getenv("AWS_SECRET_ACCESS_KEY"), "session_token": os.Getenv("AWS_SESSION_TOKEN")},
+		Run: func(_ context.Context, p *check.Probe) error {
+			p.Found("found \u202e" + token)
+			return nil
+		},
+	}}
+	for i := range 2100 {
+		checks = append(checks, check.Check{Name: fmt.Sprintf("c%d", i), Title: "C", Run: func(context.Context, *check.Probe) error { return nil }})
+	}
+	return checks
 }
 
 // env emits its environment variables, one row each, and a row named
@@ -266,19 +334,51 @@ func newFiles(config []byte, _ host.Host) (destination.Destination, error) {
 
 func (f *files) Capabilities() destination.Capabilities { return destination.Capabilities{} }
 
-// CheckReport checks the token, then the directory.
-func (f *files) CheckReport(_ context.Context, r *check.Report) {
-	ok := r.Run("token", "Sign in", func() error {
-		if f.token != "s3cr3t" {
-			return check.Fix(sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, fmt.Errorf("files: wrong token (%d bytes)", len(f.token))), "use the token you were given")
-		}
-		return nil
-	}, check.Field("token"))
-	if !ok {
-		r.Skip("dir", "Write to the directory", "it needs a token")
-		return
+// tokenRejected is the files destination's own reason.
+var tokenRejected = check.Reason{
+	Name: "token_rejected", Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID,
+	Message: "The token of {length} bytes isn't the directory's.", Fix: "Set {field} to the token you were given.",
+}
+
+// Checks checks the token, then the directory, and warns that a directory
+// isn't replicated.
+func (f *files) Checks() []check.Check {
+	return []check.Check{
+		{Name: "token", Kind: check.Authentication, Title: "Sign in", Field: "token", Run: func(context.Context, *check.Probe) error {
+			if f.token != "s3cr3t" {
+				return tokenRejected.Fail("length", strconv.Itoa(len(f.token)), "field", "token")
+			}
+			return nil
+		}},
+		{Name: "dir", Kind: check.Resource, Title: "Write to {dir}", Field: "dir", Params: check.Params{"dir": f.dir}, Needs: []string{"token"},
+			Run: func(_ context.Context, p *check.Probe) error {
+				if _, err := os.Stat(f.dir); err != nil {
+					return check.NotFound.Wrap(err, "resource", f.dir)
+				}
+				p.Found("{dir} is there")
+				return nil
+			}},
+		{Name: "replicated", Kind: check.Compatibility, Title: "Keep files on more than one disk", Advisory: true, Run: func(context.Context, *check.Probe) error {
+			return errors.New("a directory is on one disk")
+		}},
 	}
-	r.Pass("dir", "Write to the directory", f.dir)
+}
+
+// Preflight checks each stream's write mode is one the destination has.
+func (f *files) Preflight(req destination.PreflightRequest) []check.Check {
+	var checks []check.Check
+	for _, s := range req.Streams {
+		checks = append(checks, check.Check{
+			Name: "stream." + s.Name, Kind: check.Compatibility, Title: "Write {stream}", Params: check.Params{"stream": s.Name},
+			Run: func(context.Context, *check.Probe) error {
+				if s.Mode != destination.Append && s.Mode != destination.Overwrite {
+					return check.SettingMismatch.Fail("setting", s.Name+"'s write mode", "found", strconv.Itoa(int(s.Mode)), "required", "append or overwrite")
+				}
+				return nil
+			},
+		})
+	}
+	return checks
 }
 
 // Open writes the commit interval it's given to interval.

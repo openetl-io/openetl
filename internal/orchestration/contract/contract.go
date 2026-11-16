@@ -143,8 +143,9 @@ type WorkOutcome struct {
 // NoRunner is the code of a light operation no runner took in time.
 const NoRunner = "NO_RUNNER"
 
-// Failure is an error with a code of its own, outside the taxonomy, which
-// isn't retried.
+// Failure is an error that ends work without a retry, whatever its code: one
+// of its own, such as DbtFailed, or the taxonomy's, such as INTERNAL for a
+// connector an operation started that didn't start or answer.
 type Failure struct {
 	Code    string
 	Message string
@@ -675,14 +676,26 @@ type CheckGroup struct {
 	Items   []CheckItem `json:",omitempty"`
 }
 
-// CheckItem is one thing a connector's check looked at.
+// CheckItem is one thing a connector's check or preflight looked at, as the
+// connector said it. Title, Message, Fix and Description are templates whose
+// {name} placeholders Params fill; nothing on the way to the API renders them.
 type CheckItem struct {
 	Name, Title string
 	// passed, warning, failed or skipped.
 	Status  string
 	Message string `json:",omitempty"`
-	// A failed item's taxonomy code.
+	// A failed or warning item's taxonomy code.
 	Code  string `json:",omitempty"`
 	Fix   string `json:",omitempty"`
 	Field string `json:",omitempty"`
+	// configuration, connection, authentication, permission, resource,
+	// compatibility, quota or custom: the protocol's kinds in lowercase;
+	// empty if unspecified.
+	Kind        string            `json:",omitempty"`
+	Description string            `json:",omitempty"`
+	Reason      string            `json:",omitempty"`
+	Params      map[string]string `json:",omitempty"`
+	// The cause's text; not a template.
+	Detail   string        `json:",omitempty"`
+	Duration time.Duration `json:",omitempty"`
 }

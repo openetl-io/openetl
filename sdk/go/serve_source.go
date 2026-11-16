@@ -217,9 +217,9 @@ func (s *sourceServer) Retention(ctx context.Context, req *protocolv1.RetentionR
 // PreflightSource runs the source's preflight, if it has one; without one, it
 // answers with no items.
 func (s *sourceServer) PreflightSource(ctx context.Context, req *protocolv1.PreflightSourceRequest) (*protocolv1.PreflightSourceResponse, error) {
-	src, err := s.source(ctx, req.GetConfig())
+	src, secrets, err := s.bound(ctx, req.GetConfig())
 	if err != nil {
-		return &protocolv1.PreflightSourceResponse{Error: protoError(err)}, nil
+		return &protocolv1.PreflightSourceResponse{Error: secrets.error(protoError(err))}, nil
 	}
 	p, ok := src.(source.Preflighter)
 	if !ok {
@@ -229,9 +229,10 @@ func (s *sourceServer) PreflightSource(ctx context.Context, req *protocolv1.Pref
 	for _, cs := range req.GetStreams() {
 		pr.Streams = append(pr.Streams, configuredStream(cs))
 	}
-	var r check.Report
-	p.Preflight(ctx, pr, &r)
-	return &protocolv1.PreflightSourceResponse{Error: protoError(r.Err()), Items: checkItems(&r)}, nil
+	items, rerr := answer(ctx, secrets, func(ctx context.Context) check.Report {
+		return check.RunList(ctx, func() []check.Check { return p.Preflight(pr) })
+	})
+	return &protocolv1.PreflightSourceResponse{Items: items, Error: rerr}, nil
 }
 
 // emitter sends what a source reads, in the order it's emitted, encoding and

@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-go/v18/parquet/file"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/spec"
@@ -75,12 +76,42 @@ func TestConnectorRun(t *testing.T) {
 	}
 
 	files := writeFile(t, dir, "files.json", `{"dir": "`+t.TempDir()+`", "token": {"secret": "tok"}}`)
-	if out, _, err := runOut(t, "check", "--config", files, "--secret", "tok=s3cr3t", filepath.Join(dir, "destination-files")); err != nil || !strings.Contains(out, "passed") {
+	// A warning passes.
+	out, _, err = runOut(t, "check", "--config", files, "--secret", "tok=s3cr3t", filepath.Join(dir, "destination-files"))
+	if err != nil || !strings.HasPrefix(out, "destination-files passed its check\n") ||
+		!strings.Contains(out, "  warning  Keep files on more than one disk\n           The check raised a warning.\n           detail: a directory is on one disk\n           code: INTERNAL (unknown)\n") {
 		t.Errorf("check: %v %s", err, out)
 	}
+	t.Logf("connector check that passes with a warning:\n%s", out)
 	t.Setenv("OPENETL_SECRET_TOK", "wrong")
-	if _, _, err := runOut(t, "check", "--config", files, filepath.Join(dir, "destination-files")); err == nil || !strings.Contains(err.Error(), "AUTH_INVALID") {
+	out, _, err = runOut(t, "check", "--config", files, filepath.Join(dir, "destination-files"))
+	if err == nil || !strings.Contains(err.Error(), "AUTH_INVALID") || exitStatus(err) != 1 {
 		t.Errorf("a wrong secret from the environment: %v", err)
+	}
+	// Each item filled in, with a failure's fix, field, code and reason.
+	for _, line := range []string{
+		"  failed   Sign in\n           The token of 5 bytes isn't the directory's.\n           fix: Set token to the token you were given.\n           field: token\n           code: AUTH_INVALID (token_rejected)\n",
+		"\n           needs token, which failed\n",
+	} {
+		if !strings.Contains(out, line) {
+			t.Errorf("a failed check printed, without %q:\n%s", line, out)
+		}
+	}
+	// As JSON, the connector's answer, its templates unfilled.
+	out, _, err = runOut(t, "check", "--format", "json", "--config", files, filepath.Join(dir, "destination-files"))
+	var answer protocolv1.CheckResponse
+	if exitStatus(err) != 1 || protojson.Unmarshal([]byte(out), &answer) != nil || len(answer.GetItems()) != 3 ||
+		answer.GetItems()[0].GetMessage() != "The token of {length} bytes isn't the directory's." || answer.GetItems()[0].GetParams()["length"] != "5" ||
+		answer.GetError().GetCode() != protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID {
+		t.Errorf("check as JSON: %v\n%s", err, out)
+	}
+	t.Logf("connector check --format json:\n%s", out)
+	// A connector that doesn't start couldn't run its check.
+	if _, _, err := runOut(t, "check", filepath.Join(dir, "no-such-connector")); err == nil || exitStatus(err) != 2 {
+		t.Errorf("a connector that doesn't start: %v, status %d", err, exitStatus(err))
+	}
+	if _, _, err := runOut(t, "check", "--format", "yaml", filepath.Join(dir, "destination-files")); err == nil || exitStatus(err) != 2 {
+		t.Errorf("an unknown format: %v", err)
 	}
 
 	out, _, err = runOut(t, "discover", "--format", "json", "--config", faker, filepath.Join(dir, "source-faker"))
@@ -238,5 +269,40 @@ func TestConnectorRunImage(t *testing.T) {
 	s, err := imageSpec(t.Context(), image, "destination", nil)
 	if err != nil || s.GetKind() != protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION {
 		t.Errorf("an image's destination spec: %v, %v", s.GetKind(), err)
+	}
+}
+
+// A connector's answer is read failing closed: a failed item fails the
+// check though the answer has no error, and an unknown status counts as
+// failed.
+func TestPrintConnectorCheck(t *testing.T) {
+	var out bytes.Buffer
+	err := printConnectorCheck(&out, formatText, "acme", &protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{
+		{Name: "connect", Title: "Reach {host}", Params: map[string]string{"host": "db"}, Status: protocolv1.CheckStatus_CHECK_STATUS_PASSED},
+		{Name: "auth", Title: "Sign in", Status: protocolv1.CheckStatus_CHECK_STATUS_FAILED, Message: "{user} was rejected.", Params: map[string]string{"user": "etl"},
+			Error: &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, Message: "etl was rejected."}, Detail: "pq: password authentication failed"},
+	}})
+	if err == nil || err.Error() != "acme failed its check: AUTH_INVALID: Sign in: etl was rejected: pq: password authentication failed" {
+		t.Errorf("a failed item without the answer's error: %v", err)
+	}
+	if want := "acme failed its check\n  passed   Reach db\n  failed   Sign in\n           etl was rejected.\n           detail: pq: password authentication failed\n           code: AUTH_INVALID (unknown)\n"; out.String() != want {
+		t.Errorf("printed %q, want %q", out.String(), want)
+	}
+	out.Reset()
+	if err := printConnectorCheck(&out, formatText, "acme", &protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{{Name: "a", Title: "A", Status: 9}}}); err == nil ||
+		out.String() != "acme failed its check\n  failed   A\n           The check failed.\n           detail: the connector gave the item the status 9\n           code: INTERNAL (unknown)\n" {
+		t.Errorf("an unknown status: %v, %q", err, out.String())
+	}
+	// An error without a failed item is on the check's line.
+	out.Reset()
+	if err := printConnectorCheck(&out, formatText, "acme", &protocolv1.CheckResponse{
+		Error: &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_TRANSIENT, Message: "the checks ran out of time"},
+		Items: []*protocolv1.CheckItem{{Name: "a", Title: "A", Status: protocolv1.CheckStatus_CHECK_STATUS_PASSED}},
+	}); exitStatus(err) != 1 || out.String() != "acme failed its check: TRANSIENT: the checks ran out of time\n  passed   A\n" {
+		t.Errorf("an error without a failed item: %v, %q", err, out.String())
+	}
+	out.Reset()
+	if err := printConnectorCheck(&out, formatText, "acme", &protocolv1.CheckResponse{}); err != nil || out.String() != "acme passed its check\n" {
+		t.Errorf("a passing check without items: %v, %q", err, out.String())
 	}
 }

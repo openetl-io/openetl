@@ -2626,7 +2626,7 @@ export const PreflightPipelineResponseSchema: GenMessage<PreflightPipelineRespon
  */
 export type PreflightResult = Message<"openetl.api.v1.PreflightResult"> & {
   /**
-   * No part failed; warnings don't count.
+   * Every part is ok: none failed or was skipped. Warnings don't count.
    *
    * @generated from field: bool ok = 1;
    */
@@ -2690,12 +2690,16 @@ export type PreflightPart = Message<"openetl.api.v1.PreflightPart"> & {
   version: string;
 
   /**
+   * It ran, has no code and no item failed; warnings don't count.
+   *
    * @generated from field: bool ok = 5;
    */
   ok: boolean;
 
   /**
-   * When not ok: a code of the error taxonomy, and what failed.
+   * When not ok: a code of the error taxonomy, and what failed; the first
+   * failed item's, and its rendered text, if the part has none. A part can
+   * fail with no items, such as a connector that didn't start or answer.
    *
    * @generated from field: string code = 6;
    */
@@ -2707,7 +2711,7 @@ export type PreflightPart = Message<"openetl.api.v1.PreflightPart"> & {
   message: string;
 
   /**
-   * Why it didn't run, such as a check before it that failed; empty if it
+   * Why it didn't run, set only when a part before it failed; empty if it
    * ran.
    *
    * @generated from field: string skipped = 8;

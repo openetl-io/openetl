@@ -11,6 +11,8 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/openetl-io/openetl/sdk/go/configschema"
 	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
@@ -183,68 +185,71 @@ func checkCapabilities(t T, dc *protocolv1.DestinationCapabilities) {
 	}
 }
 
-// Check: a good config passes.
+// Check: a good config passes: none of the connector's items fails, and a
+// warning is logged. Here, in errors and in preflight, the answer holds to
+// the protocol, as checkItems checks.
 func (c *common) checkCheck(t T) {
 	p := c.process(t)
 	resp, err := protocolv1.NewConnectorServiceClient(p.Conn()).Check(t.Context(), &protocolv1.CheckRequest{Config: p.Config()})
 	if err != nil {
 		t.Fatalf("Check failed as an RPC, not in its response: %v", rpcerr.FromStatus(err))
 	}
-	if e := resp.GetError(); e != nil {
-		t.Errorf("Check failed with the good config: %s: %s", e.GetCode(), e.GetMessage())
-	}
-	checkItems(t, resp.GetItems(), resp.GetError())
+	c.passed(t, "Check", resp)
 }
 
-// checkItems: a check's or a preflight's items have unique names, titles and
-// statuses, a failed one has an error, and the response fails with the
-// first failed item's.
-func checkItems(t T, items []*protocolv1.CheckItem, rerr *protocolv1.Error) {
+// passed reports an answer of what, Check or a preflight, with the good
+// config that isn't well formed or doesn't pass.
+func (c *common) passed(t T, what string, resp answer) {
 	t.Helper()
-	names := map[string]bool{}
-	var failed *protocolv1.CheckItem
-	for _, it := range items {
-		switch {
-		case it.GetName() == "" || it.GetTitle() == "":
-			t.Errorf("check item %q has no name or no title", it.GetName()+it.GetTitle())
-		case names[it.GetName()]:
-			t.Errorf("check item %s is there twice", it.GetName())
-		case it.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_UNSPECIFIED:
-			t.Errorf("check item %s has no status", it.GetName())
-		case it.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_FAILED && it.GetError() == nil:
-			t.Errorf("check item %s failed without an error", it.GetName())
-		}
-		names[it.GetName()] = true
-		if failed == nil && it.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_FAILED {
-			failed = it
-		}
+	const with = "with the good config"
+	secrets := c.checkAnswer(t, with, c.config, resp)
+	items := resp.GetItems()
+	// With a failed item, the loop says so; without one, the checks didn't
+	// finish.
+	_, first := firstFailed(items)
+	if e := resp.GetError(); e != nil && first == nil {
+		t.Errorf("%s failed %s: %s: %s", what, with, e.GetCode(), shown(e.GetMessage(), secrets))
 	}
-	if failed != nil && rerr.GetCode() != failed.GetError().GetCode() {
-		t.Errorf("it failed with %s, but its first failed item, %s, with %s", rerr.GetCode(), failed.GetName(), failed.GetError().GetCode())
-	}
-	if failed == nil && len(items) > 0 && rerr != nil {
-		t.Errorf("it failed with %s, but none of its items failed", rerr.GetCode())
+	for i, it := range items {
+		switch it.GetStatus() {
+		case protocolv1.CheckStatus_CHECK_STATUS_FAILED:
+			t.Errorf("%s, %s's %s failed with %s: %s", with, what, label(i, it, secrets), it.GetError().GetCode(), shown(itemText(it), secrets))
+		case protocolv1.CheckStatus_CHECK_STATUS_WARNING:
+			t.Logf("%s, %s's %s warned: %s", with, what, label(i, it, secrets), shown(itemText(it), secrets))
+		}
 	}
 }
 
-// preflightResult: a preflight with the good config passed, as an RPC and
-// in its response, and its items are well formed.
-func preflightResult(t T, resp interface {
-	GetError() *protocolv1.Error
-	GetItems() []*protocolv1.CheckItem
-}, err error) {
+// preflighted reports a preflight's answer with the good config, as passed
+// does. A connector that answers Unimplemented has no preflight, so the
+// check is skipped.
+func (c *common) preflighted(t T, resp answer, err error) {
 	t.Helper()
+	if status.Code(err) == codes.Unimplemented {
+		t.Skipf("the connector has no preflight: it answers Unimplemented")
+	}
 	if err != nil {
 		t.Fatalf("the preflight failed as an RPC, not in its response: %v", rpcerr.FromStatus(err))
 	}
-	if e := resp.GetError(); e != nil {
-		t.Errorf("the preflight failed with the good config: %s: %s", e.GetCode(), e.GetMessage())
-	}
-	checkItems(t, resp.GetItems(), resp.GetError())
+	c.passed(t, "the preflight", resp)
 }
 
+// How long errors gives Check with a config whose upstream doesn't answer,
+// and how much longer than that it may take to answer.
+const (
+	answerTime  = 5 * time.Second
+	answerSlack = time.Second
+)
+
+// How long errors gives the Check whose codes it reads, so that a connector
+// that never answers fails the check rather than hangs it.
+const checkTime = 2 * time.Minute
+
 // Errors: bad credentials are AUTH_INVALID and an upstream that doesn't
-// answer is retryable, both from Check and from the connector's work.
+// answer is retryable, both from Check and from the connector's work. With
+// items, the code is the response's error's, or else the first failed
+// item's. With an upstream that doesn't answer, Check given answerTime
+// answers in time, rather than running out of it as an RPC.
 func (c *common) checkErrors(t T) {
 	if c.badCredentials == nil && c.unreachable == nil {
 		t.Skipf("the suite has neither BadCredentials nor Unreachable")
@@ -254,34 +259,78 @@ func (c *common) checkErrors(t T) {
 		name   string
 		config []byte
 		codes  []protocolv1.ErrorCode
+		// Check is given answerTime too.
+		timed bool
 	}{
-		{"bad credentials", c.badCredentials, []protocolv1.ErrorCode{protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID}},
-		{"an upstream that doesn't answer", c.unreachable, c.unreachableCodes},
+		{"bad credentials", c.badCredentials, []protocolv1.ErrorCode{protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID}, false},
+		{"an upstream that doesn't answer", c.unreachable, c.unreachableCodes, true},
 	}
 	for _, tc := range cases {
 		if tc.config == nil {
 			continue
 		}
 		p := c.another(t, tc.config)
-		resp, err := protocolv1.NewConnectorServiceClient(p.Conn()).Check(t.Context(), &protocolv1.CheckRequest{Config: p.Config()})
-		switch {
-		case err != nil:
-			t.Errorf("with %s, Check failed as an RPC, not in its response: %v", tc.name, rpcerr.FromStatus(err))
-		case resp.GetError() == nil:
-			t.Errorf("with %s, Check passed", tc.name)
-		default:
-			checkItems(t, resp.GetItems(), resp.GetError())
+		with := "with " + tc.name
+		ctx, cancel := context.WithTimeout(t.Context(), checkTime)
+		resp, err := protocolv1.NewConnectorServiceClient(p.Conn()).Check(ctx, &protocolv1.CheckRequest{Config: p.Config()})
+		cancel()
+		if err != nil {
+			t.Errorf("%s, Check failed as an RPC, not in its response: %v", with, rpcerr.FromStatus(err))
+		} else {
+			secrets := c.checkAnswer(t, with, tc.config, resp)
+			c.failedWith(t, with, resp, tc.codes, secrets)
 		}
-		switch {
-		case err != nil || resp.GetError() == nil:
-		case !slices.Contains(tc.codes, resp.GetError().GetCode()):
-			t.Errorf("with %s, Check failed with %s, not %v: %s", tc.name, resp.GetError().GetCode(), tc.codes, resp.GetError().GetMessage())
+		if tc.timed {
+			c.answersInTime(t, with, p, tc.config)
 		}
 		if err := c.work(t, p); err == nil {
 			t.Errorf("with %s, the connector's work succeeded", tc.name)
 		} else if code := codeOf(err); !slices.Contains(tc.codes, code) {
 			t.Errorf("with %s, the connector's work failed with %s, not %v: %v", tc.name, code, tc.codes, err)
 		}
+	}
+}
+
+// failedWith reports a Check answer that passed, or failed with a code
+// other than codes: the response's error's, or without one, which
+// checkAnswer reports, the first failed item's. It shows no text that holds
+// one of secrets.
+func (c *common) failedWith(t T, with string, resp answer, codes []protocolv1.ErrorCode, secrets []string) {
+	t.Helper()
+	i, first := firstFailed(resp.GetItems())
+	switch e := resp.GetError(); {
+	case e == nil && first == nil:
+		t.Errorf("%s, Check passed", with)
+	case e == nil:
+		if code := first.GetError().GetCode(); !slices.Contains(codes, code) {
+			t.Errorf("%s, %s failed with %s, not %v: %s", with, label(i, first, secrets), code, codes, shown(itemText(first), secrets))
+		}
+	case !slices.Contains(codes, e.GetCode()) && first != nil:
+		t.Errorf("%s, %s failed with %s, not %v: %s", with, label(i, first, secrets), e.GetCode(), codes, shown(e.GetMessage(), secrets))
+	case !slices.Contains(codes, e.GetCode()):
+		t.Errorf("%s, Check failed with %s, not %v: %s", with, e.GetCode(), codes, shown(e.GetMessage(), secrets))
+	}
+}
+
+// answersInTime reports a Check with config, given answerTime, that runs out
+// of it as an RPC, or answers more than answerSlack late, rather than
+// answering in time with what it checked.
+func (c *common) answersInTime(t T, with string, p Process, config []byte) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), answerTime)
+	defer cancel()
+	start := time.Now()
+	resp, err := protocolv1.NewConnectorServiceClient(p.Conn()).Check(ctx, &protocolv1.CheckRequest{Config: p.Config()})
+	took := time.Since(start)
+	switch {
+	case status.Code(err) == codes.DeadlineExceeded || err != nil && ctx.Err() != nil:
+		t.Errorf("%s and %s to answer, Check ran out of time as an RPC: it should stop its checks a little before the RPC's deadline, and answer with what it checked", with, answerTime)
+	case err != nil:
+		t.Errorf("%s and %s to answer, Check failed as an RPC, not in its response: %v", with, answerTime, rpcerr.FromStatus(err))
+	case took > answerTime+answerSlack:
+		t.Errorf("%s and %s to answer, Check answered after %s", with, answerTime, took.Round(time.Millisecond))
+	default:
+		c.checkAnswer(t, with+" and "+answerTime.String()+" to answer", config, resp)
 	}
 }
 

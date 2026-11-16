@@ -33,24 +33,12 @@ func buildJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env co
 // connectors' setup to their coordinator, which has done it before they
 // write.
 func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env, planner planSQL, setup bool) (runner.Job, error) {
-	p := spec.GetPipeline()
-	env.RateLimitScale = spec.GetRateLimitScale()
-	srcCfg, err := protojson.Marshal(spec.GetSource().GetConfig())
-	if err != nil {
-		return runner.Job{}, err
-	}
-	srcName, _ := connectorhost.SplitRef(spec.GetSource().GetConnector())
-	src, err := connectorhost.NewSource(srcName, srcCfg, env)
+	src, err := bindSource(spec, env)
 	if err != nil {
 		return runner.Job{}, err
 	}
 	job := runner.Job{Source: src}
-	dstCfg, err := protojson.Marshal(spec.GetDestination().GetConfig())
-	if err != nil {
-		return job, err
-	}
-	dstName, _ := connectorhost.SplitRef(spec.GetDestination().GetConnector())
-	dst, err := connectorhost.NewDestination(dstName, dstCfg, env)
+	dst, err := bindDestination(spec, env)
 	if err != nil {
 		return job, err
 	}
@@ -63,6 +51,36 @@ func bindJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, env con
 			return job, err
 		}
 	}
+	return settleJob(ctx, spec, src, dst, planner)
+}
+
+// bindSource and bindDestination bind the spec's connectors without
+// starting them.
+func bindSource(spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env) (source.Source, error) {
+	env.RateLimitScale = spec.GetRateLimitScale()
+	cfg, err := protojson.Marshal(spec.GetSource().GetConfig())
+	if err != nil {
+		return nil, err
+	}
+	name, _ := connectorhost.SplitRef(spec.GetSource().GetConnector())
+	return connectorhost.NewSource(name, cfg, env)
+}
+
+func bindDestination(spec *dataplanev1.GetSyncSpecResponse, env connectorhost.Env) (destination.Destination, error) {
+	env.RateLimitScale = spec.GetRateLimitScale()
+	cfg, err := protojson.Marshal(spec.GetDestination().GetConfig())
+	if err != nil {
+		return nil, err
+	}
+	name, _ := connectorhost.SplitRef(spec.GetDestination().GetConnector())
+	return connectorhost.NewDestination(name, cfg, env)
+}
+
+// settleJob settles the settings of a job of started connectors: it
+// discovers the source's catalog and plans what a sync of it reads and
+// writes. On an error, the job has only the connectors.
+func settleJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, src source.Source, dst destination.Destination, planner planSQL) (runner.Job, error) {
+	p, job := spec.GetPipeline(), runner.Job{Source: src, Destination: dst}
 	cat, err := src.Discover(ctx)
 	if err != nil {
 		return job, err

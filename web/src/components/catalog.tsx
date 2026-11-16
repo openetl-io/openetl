@@ -18,7 +18,7 @@ import { ErrorNote } from "@/components/empty";
 import { QueryError } from "@/components/query-error";
 import { RelativeTime } from "@/components/relative-time";
 import { type CatalogPackage, type CatalogRole, type ConfigField, ConnectorService, type ConnectorSource } from "@/gen/openetl/api/v1/connector_pb";
-import { appliedState, applyCommand, manualLabel, roleLabel, sourceLabel } from "@/lib/catalog";
+import { appliedState, applyCommand, type ConfigRow, configSections, manualLabel, roleLabel, sourceLabel } from "@/lib/catalog";
 import { dateOf, relative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -177,16 +177,10 @@ function fieldFacts(f: ConfigField): string[] {
   return facts;
 }
 
-/** A field and its object's fields beneath it, the advanced ones last. */
-function flatten(fields: ConfigField[], depth = 0): { field: ConfigField; depth: number }[] {
-  const ordered = [...fields.filter((f) => !f.advanced), ...fields.filter((f) => f.advanced)];
-  return ordered.flatMap((field) => [{ field, depth }, ...flatten(field.fields, depth + 1)]);
-}
-
 /** A nested field's indent, by depth. */
 const indents = ["", "pl-7", "pl-12", "pl-16"];
 
-function ConfigFieldsTable({ fields }: { fields: ConfigField[] }) {
+function ConfigFieldsTable({ rows }: { rows: ConfigRow[] }) {
   return (
     <div className="overflow-hidden rounded-lg border contain-inline-size">
       <Table>
@@ -198,14 +192,14 @@ function ConfigFieldsTable({ fields }: { fields: ConfigField[] }) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {flatten(fields).map(({ field: f, depth }) => {
+          {rows.map(({ field: f, depth, label }) => {
             const type = f.items ? `${f.type} of ${f.items}` : f.type || "any";
             const facts = fieldFacts(f);
             return (
               <TableRow key={f.path || f.name}>
                 <TableCell className={cn("align-top whitespace-normal", indents[Math.min(depth, indents.length - 1)])}>
                   <span className="inline-flex flex-wrap items-center gap-1.5 font-mono text-[0.8125rem]">
-                    {f.name}
+                    {label}
                     {f.secret && (
                       <Badge variant="outline" className="font-sans font-normal">
                         <KeyRound aria-hidden />
@@ -252,12 +246,9 @@ function ConfigFieldsTable({ fields }: { fields: ConfigField[] }) {
 /** A role's config fields, from its JSON Schema, in the schema's order and under its groups. */
 export function ConfigFields({ role }: { role: CatalogRole }) {
   if (role.config.length === 0) return <p className="text-sm text-muted-foreground">Its config takes no fields.</p>;
-  const known = new Set(role.groups.map((g) => g.id));
-  const sections = [
-    { id: "", title: "", description: "", fields: role.config.filter((f) => !f.group || !known.has(f.group)) },
-    ...role.groups.map((g) => ({ ...g, fields: role.config.filter((f) => f.group === g.id) })),
-  ].filter((s) => s.fields.length > 0);
-  if (sections.length === 1 && !sections[0]?.id) return <ConfigFieldsTable fields={role.config} />;
+  const sections = configSections(role);
+  const [only] = sections;
+  if (sections.length === 1 && only && !only.id) return <ConfigFieldsTable rows={only.rows} />;
   return (
     <div className="grid gap-5">
       {sections.map((s) => (
@@ -268,7 +259,7 @@ export function ConfigFields({ role }: { role: CatalogRole }) {
               {s.description && <p className="text-xs text-muted-foreground">{s.description}</p>}
             </div>
           )}
-          <ConfigFieldsTable fields={s.fields} />
+          <ConfigFieldsTable rows={s.rows} />
         </div>
       ))}
     </div>

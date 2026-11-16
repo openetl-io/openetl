@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +25,10 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/util"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
@@ -46,7 +50,7 @@ func TestMain(m *testing.M) {
 	if out, err := exec.Command("go", "build", "-o", bin, "./testconnector").CombinedOutput(); err != nil {
 		panic(string(out))
 	}
-	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-env", "source-future", "source-supports", "source-echo", "source-prepared", "source-unprepared", "destination-files", "source-both"} {
+	for _, name := range []string{"source-faker", "source-typed", "source-crash", "source-hang", "source-leaky", "source-bulky", "source-env", "source-future", "source-supports", "source-echo", "source-prepared", "source-unprepared", "destination-files", "source-both"} {
 		if err := os.Link(bin, filepath.Join(dir, name)); err != nil {
 			panic(err)
 		}
@@ -511,24 +515,340 @@ func TestDestinationSecrets(t *testing.T) {
 	if strings.Contains(string(d.p.config), "s3cr3t") {
 		t.Fatalf("the config sent to the connector holds the secret: %s", d.p.config)
 	}
+	if !slices.Contains(d.p.secrets, "s3cr3t") {
+		t.Errorf("the host doesn't know the secret it gave: %q", d.p.secrets)
+	}
 	if c := d.Capabilities(); c.Class != destination.StageAndApply || c.MaxIdentifierLength != 63 || !c.SupportsScope(destination.ScopePipeline) {
 		t.Fatalf("capabilities = %+v", c)
 	}
 
 	bad := NewDestination(exe("destination-files"), filesConfig(dir, "nope"), Options{})
 	defer func() { _ = bad.Close() }()
-	if err := bad.Check(t.Context()); errs.CodeOf(err) != errs.AuthInvalid {
+	if err := bad.Check(t.Context()); errs.CodeOf(err) != errs.AuthInvalid || err.Error() != "Sign in: The token of 4 bytes isn't the directory's." {
 		t.Fatalf("check with a wrong token: %v", err)
 	}
-	items, err := bad.CheckItems(t.Context())
-	if errs.CodeOf(err) != errs.AuthInvalid || len(items) != 2 {
-		t.Fatalf("check items %+v, %v", items, err)
+}
+
+// A connector's checks and preflight come back item by item, with their
+// templates and params apart.
+func TestDestinationCheckAndPreflight(t *testing.T) {
+	dir := t.TempDir()
+	d := NewDestination(exe("destination-files"), filesConfig(dir, "s3cr3t"), Options{})
+	defer func() { _ = d.Close() }()
+	if r, err := d.CheckReport(t.Context()); err != nil || !r.OK() || statuses(r) != "token=passed dir=passed replicated=warning" || r.Items[1].Rendered().Message != dir+" is there" {
+		t.Errorf("a good check: %s, %v, %v", statuses(r), r.Err(), err)
 	}
-	if it := items[0]; it.Status != check.Failed || it.Field != "token" || it.Fix != "use the token you were given" || errs.CodeOf(it.Err) != errs.AuthInvalid {
-		t.Errorf("the token's item %+v", it)
+
+	bad := NewDestination(exe("destination-files"), filesConfig(dir, "nope"), Options{})
+	defer func() { _ = bad.Close() }()
+	r, err := bad.CheckReport(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if items[1].Status != check.Skipped {
-		t.Errorf("the directory's item %+v", items[1])
+	if statuses(r) != "token=failed dir=skipped replicated=warning" || errs.CodeOf(r.Err()) != errs.AuthInvalid {
+		t.Fatalf("a check with a wrong token: %s, %v", statuses(r), r.Err())
+	}
+	token := r.Items[0]
+	if token.Message != tokenRejected || token.Field != "token" || token.Kind != check.Authentication || token.Params["length"] != "4" {
+		t.Errorf("the token's item, as it came: %+v", token)
+	}
+	if it := token.Rendered(); it.Message != "The token of 4 bytes isn't the directory's." || it.Failure.Fix != "Set token to the token you were given." ||
+		it.Failure.Reason != "token_rejected" || it.Failure.Code != protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID {
+		t.Errorf("the token's item %+v, %+v", it, it.Failure)
+	}
+	if it := r.Items[1]; it.Message != "needs token, which failed" {
+		t.Errorf("the directory's item %+v", it)
+	}
+	if f := r.Items[2].Failure; f == nil || f.Detail != "a directory is on one disk" {
+		t.Errorf("the warning %+v", r.Items[2])
+	}
+
+	r, err = d.PreflightReport(t.Context(), destination.PreflightRequest{Pipeline: "p", Streams: []destination.Stream{{Name: "s", Mode: destination.Append}, {Name: "m", Mode: destination.Merge}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statuses(r) != "stream.s=passed stream.m=failed" || errs.CodeOf(r.Err()) != errs.ConfigInvalid || r.Items[1].Failure.Reason != "setting_mismatch" {
+		t.Errorf("a preflight: %s, %v", statuses(r), r.Err())
+	}
+}
+
+const tokenRejected = "The token of {length} bytes isn't the directory's."
+
+func statuses(r check.Report) string {
+	var s []string
+	for _, it := range r.Items {
+		s = append(s, it.Name+"="+it.Status.String())
+	}
+	return strings.Join(s, " ")
+}
+
+// An answer is read failing closed, a connector without a preflight passes
+// it, and one that doesn't answer is an error, not a report.
+func TestPreflightReport(t *testing.T) {
+	p := &process{secrets: []string{"s3cr3t"}}
+	if r, err := preflightReport(p, nil, status.Error(codes.Unimplemented, "unknown method")); err != nil || !r.OK() || len(r.Items) != 0 {
+		t.Errorf("Unimplemented: %s, %v, %v", statuses(r), r.Err(), err)
+	}
+	r, err := preflightReport(p, &protocolv1.PreflightSourceResponse{Items: []*protocolv1.CheckItem{{Name: "a", Title: "A", Status: 9}}}, nil)
+	if err != nil || r.OK() || statuses(r) != "a=failed" {
+		t.Errorf("an unknown status: %s, %v, %v", statuses(r), r.Err(), err)
+	}
+	r, err = preflightReport(p, nil, status.Error(codes.Unavailable, "dial s3cr3t:\x1b[2J"))
+	if len(r.Items) != 0 || errs.CodeOf(err) != errs.Internal || err.Error() != "INTERNAL: dial [redacted]: [2J" {
+		t.Errorf("no answer: %s, %v", statuses(r), err)
+	}
+}
+
+// A call's error keeps its code, its wait and what it wraps, and its text
+// as an answer's error has it.
+func TestCallError(t *testing.T) {
+	p := &process{secrets: []string{"s3cr3t"}}
+	st, err := status.New(codes.Unknown, "").WithDetails(&protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID,
+		Message: "dial postgres://u:s3cr3t@h\x1b[2J\u202e\u200e: " + strings.Repeat("x", 5000), RetryAfter: durationpb.New(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.failure(errs.FromStatus(st.Err()))
+	if m := errs.ToProto(err).GetMessage(); errs.CodeOf(err) != errs.AuthInvalid || errs.RetryAfterOf(err) != time.Minute || len(m) != maxDetail ||
+		!strings.HasPrefix(m, "dial postgres://u:[redacted]@h [2J : x") {
+		t.Errorf("a classified error: %v, %v, %d bytes", errs.CodeOf(err), errs.RetryAfterOf(err), len(m))
+	}
+	err = p.failure(errs.FromStatus(status.Error(codes.DeadlineExceeded, "s3cr3t didn't answer")))
+	if !errors.Is(err, context.DeadlineExceeded) || err.Error() != "INTERNAL: [redacted] didn't answer: context deadline exceeded" {
+		t.Errorf("a deadline: %v", err)
+	}
+}
+
+// A check that dies or doesn't answer in time is the check's error, not a
+// report.
+func TestCheckUnanswered(t *testing.T) {
+	src := NewSource(exe("source-crash"), nil, Options{})
+	defer func() { _ = src.Close() }()
+	if r, err := src.CheckReport(t.Context()); len(r.Items) != 0 || errs.CodeOf(err) != errs.Internal || !strings.Contains(err.Error(), "exited unexpectedly") {
+		t.Errorf("a check that dies: %s, %v", statuses(r), err)
+	}
+
+	hang := NewSource(exe("source-hang"), nil, Options{})
+	defer func() { _ = hang.p.cmd.Process.Kill(); _ = hang.Close() }()
+	if err := hang.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if r, err := hang.CheckReport(ctx); len(r.Items) != 0 || !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("a check that doesn't answer: %s, %v", statuses(r), err)
+	}
+}
+
+// What a connector answers is kept without the secrets the host gave it,
+// without control characters, and within its bounds.
+func TestCheckAnswerKept(t *testing.T) {
+	src := NewSource(exe("source-leaky"), nil, Options{AWS: AWS{URL: "http://127.0.0.1:1/creds", Token: "lease-t0ken/+"}})
+	defer func() { _ = src.Close() }()
+	r, err := src.CheckReport(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Items) != maxItems || r.OK() || r.Err().Error() != "the connector answered with 2101 items, and an answer has at most 2000: the first 2000 are kept" {
+		t.Fatalf("%d items, %v", len(r.Items), r.Err())
+	}
+	it := r.Items[0]
+	if b, _ := json.Marshal(it); strings.Contains(string(b), "t0ken") {
+		t.Errorf("the item shows the token: %s", b)
+	}
+	if it.Status != check.Passed || it.Title != "Use [redacted] ]52;c;ZXZpbA== " || it.Field != "aws.[redacted]" || it.Message != "found  [redacted]" {
+		t.Errorf("the item %+v", it)
+	}
+	if len(it.Description) != maxText-1 || !strings.HasSuffix(it.Description, "é…") || len(it.Params["long"]) != maxParamValue || it.Params["token"] != "[redacted]" {
+		t.Errorf("the item's description has %d bytes, its params %v", len(it.Description), it.Params)
+	}
+}
+
+// A connector that inherits the runner's AWS variables has their secrets
+// taken out of its answer.
+func TestCheckAnswerKeptInherited(t *testing.T) {
+	secrets := map[string]string{
+		"AWS_SECRET_ACCESS_KEY":             "runner-secret-key",
+		"AWS_SESSION_TOKEN":                 "runner-session-token",
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN": "runner-container-token",
+	}
+	for name, value := range secrets {
+		t.Setenv(name, value)
+	}
+	src := NewSource(exe("source-leaky"), nil, Options{AWS: AWS{Inherit: true}})
+	defer func() { _ = src.Close() }()
+	r, err := src.CheckReport(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := r.Items[0]
+	b, _ := json.Marshal(it)
+	for name, value := range secrets {
+		if strings.Contains(string(b), value) {
+			t.Errorf("the item shows %s", name)
+		}
+	}
+	for _, p := range []string{"token", "secret_key", "session_token"} {
+		if it.Params[p] != "[redacted]" {
+			t.Errorf("the param %s is %q", p, it.Params[p])
+		}
+	}
+}
+
+// What a connector's call fails with is kept as its answers are.
+func TestDiscoverErrorKept(t *testing.T) {
+	src := NewSource(exe("source-leaky"), nil, Options{AWS: AWS{URL: "http://127.0.0.1:1/creds", Token: "lease-t0ken/+"}})
+	defer func() { _ = src.Close() }()
+	_, err := src.Discover(t.Context())
+	if m := errs.ToProto(err).GetMessage(); len(m) != maxDetail || !strings.HasPrefix(m, "dial [redacted] [2J  : refused...") || strings.Contains(m, "t0ken") {
+		t.Errorf("%v, %d bytes: %.60q", errs.CodeOf(err), len(m), m)
+	}
+}
+
+// answer takes out secrets as written and escaped, makes texts valid and
+// cuts them, and keeps each item's status.
+func TestAnswer(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	params := map[string]string{"pw": "p@ss word"}
+	for i := range 60 {
+		params[fmt.Sprintf("p%02d", i)] = long
+	}
+	r := answer([]string{"p@ss word"}, &protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{
+		{Name: "a", Title: "Reach p%40ss+word", Status: protocolv1.CheckStatus_CHECK_STATUS_FAILED, Detail: "line 1\n\tline 2\x00\u202e\xff" + long,
+			Fix: "dsn postgres://u:p%40ss%20word@h " + long, Error: &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, Message: "p@ss word\nrejected"}},
+		{Name: "b", Title: "B" + long, Status: protocolv1.CheckStatus_CHECK_STATUS_PASSED, Params: params},
+	}})
+	a, b := r.Items[0], r.Items[1]
+	if a.Status != check.Failed || b.Status != check.Passed || errs.CodeOf(r.Err()) != errs.AuthInvalid || !strings.HasPrefix(r.Err().Error(), "Reach [redacted]: [redacted] rejected: line 1") {
+		t.Errorf("%s, %v", statuses(r), r.Err())
+	}
+	if d := a.Failure.Detail; len(d) != maxDetail || !strings.HasPrefix(d, "line 1\n\tline 2  \uFFFDxxx") || !strings.HasSuffix(d, "x…") {
+		t.Errorf("a's detail has %d bytes: %q", len(d), d[:30])
+	}
+	if f := a.Failure.Fix; len(f) != maxText || !strings.HasPrefix(f, "dsn postgres://u:[redacted]@h x") {
+		t.Errorf("a's fix has %d bytes: %q", len(f), f[:40])
+	}
+	if _, ok := b.Params["pw"]; len(b.Title) != maxTitle || len(b.Params) != maxParams || ok || len(b.Params["p00"]) != maxParamValue {
+		t.Errorf("b's title has %d bytes, and it has %d params", len(b.Title), len(b.Params))
+	}
+}
+
+// tidy drops Unicode's bidirectional marks and tag characters, and takes a
+// line or paragraph separator as a line break: a newline in a detail, a
+// space elsewhere.
+func TestTidy(t *testing.T) {
+	s := "a\u200eb\u200fc\u061cd\U000E0001\U000E0041\U000E007Fe\u2028f\u2029g\nh\ti\x1bj\u202ek"
+	if got, want := tidy(s, 100, false), "abcde f g h i j k"; got != want {
+		t.Errorf("a text: %q, want %q", got, want)
+	}
+	if got, want := tidy(s, 100, true), "abcde\nf\ng\nh\ti j k"; got != want {
+		t.Errorf("a detail: %q, want %q", got, want)
+	}
+}
+
+// fit keeps what fitting a text whole keeps, or less, though of a long text
+// it redacts only the start: wherever the cut splits a form of a secret, and
+// however much redacting and cleaning shrink what comes before.
+func TestFit(t *testing.T) {
+	secret, other := "pa55 w0rd/ü+x", "an0ther-s3cret-l0nger-than-redacted"
+	r := newRedactor([]string{secret, other})
+	const limit = 60
+	n := 4 * (limit + r.margin)
+	for _, c := range []struct {
+		name, before string
+		// Whether fit keeps what fitting the text whole keeps; or else only
+		// "…".
+		whole bool
+	}{
+		{"text", strings.Repeat("x", n), true},
+		{"another secret", strings.Repeat(other, n/len(other)+1), true},
+		{"tag characters", strings.Repeat("\U000E0041", n/4+1), false},
+		{"invalid bytes", strings.Repeat("\xff", n), false},
+	} {
+		for _, form := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret), strings.TrimPrefix(url.UserPassword("", secret).String(), ":")} {
+			for at := n - len(form); at <= n; at++ {
+				s := c.before[:at] + form + "yyyy"
+				got, whole := r.fit(s, limit, false), clean(r.redact(s), false)
+				if !r.cuts(s, limit) || len(got) > limit || !strings.HasPrefix(whole, strings.TrimSuffix(got, "…")) ||
+					c.whole && got != tidy(whole, limit, false) || !c.whole && got != "…" {
+					t.Fatalf("%s, then %q at %d: %q", c.name, form, at, got)
+				}
+			}
+		}
+	}
+
+	// answer fits each long text on its own.
+	big := strings.Repeat(secret+" ", 100000)
+	ans := answer([]string{secret, other}, &protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{
+		{Name: "a", Title: "A", Status: protocolv1.CheckStatus_CHECK_STATUS_FAILED, Detail: big, Params: map[string]string{"big": big}},
+	}})
+	if it := ans.Items[0]; !r.cuts(big, maxDetail) || it.Failure == nil || it.Failure.Detail != tidy(r.redact(big), maxDetail, true) ||
+		it.Params["big"] != tidy(r.redact(big), maxParamValue, false) {
+		t.Errorf("an answer's long texts: %+v", it)
+	}
+
+	// A secret that's part of what redacting puts in: no cut.
+	r = newRedactor([]string{"act"})
+	if s := strings.Repeat("act", 10000); r.cuts(s, limit) || r.fit(s, limit, false) != tidy(r.redact(s), limit, false) {
+		t.Errorf("a secret within %q: %d", redacted, r.margin)
+	}
+}
+
+// answer keeps the items that fit in maxAnswerBytes, and fails an answer
+// with more, whatever the items it drops say.
+func TestAnswerSize(t *testing.T) {
+	// Items of each bytes, 19 of which fit.
+	const each = len("i000") + len("T") + maxDetail + maxParams*(len("p00")+maxParamValue)
+	items := func(n, detail int) []*protocolv1.CheckItem {
+		var out []*protocolv1.CheckItem
+		for i := range n {
+			it := &protocolv1.CheckItem{Name: fmt.Sprintf("i%03d", i), Title: "T", Status: protocolv1.CheckStatus_CHECK_STATUS_PASSED, Detail: strings.Repeat("d", detail)}
+			if detail == maxDetail {
+				it.Params = map[string]string{}
+				for j := range maxParams {
+					it.Params[fmt.Sprintf("p%02d", j)] = strings.Repeat("v", maxParamValue)
+				}
+			}
+			out = append(out, it)
+		}
+		return out
+	}
+	if r := answer(nil, &protocolv1.CheckResponse{Items: items(19, maxDetail)}); len(r.Items) != 19 || !r.OK() {
+		t.Errorf("under the limit: %d items, %v", len(r.Items), r.Err())
+	}
+	over := fmt.Sprintf("the connector answered with %d bytes of items, and an answer has at most 1048576: the first 19 items are kept", 20*each)
+	for _, failed := range []bool{false, true} {
+		its := items(20, maxDetail)
+		if failed {
+			its[19].Status, its[19].Error = protocolv1.CheckStatus_CHECK_STATUS_FAILED, &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID}
+		}
+		r := answer(nil, &protocolv1.CheckResponse{Items: its})
+		if len(r.Items) != 19 || r.OK() || errs.CodeOf(r.Err()) != errs.Internal || r.Err().Error() != over {
+			t.Errorf("over the limit, the last item failed %v: %d items, %v", failed, len(r.Items), r.Err())
+		}
+	}
+	// 2001 items of 605 bytes, from i1000 on 606: 1731 fit.
+	if r := answer(nil, &protocolv1.CheckResponse{Items: items(2001, 600)}); len(r.Items) != 1731 || r.Err().Error() !=
+		"the connector answered with 2001 items and more than 1048576 bytes of them, and an answer has at most 2000 items and 1048576 bytes: the first 1731 are kept" {
+		t.Errorf("over both limits: %d items, %v", len(r.Items), r.Err())
+	}
+	if r := answer(nil, &protocolv1.CheckResponse{Items: items(2001, 0)}); len(r.Items) != maxItems || r.Err().Error() !=
+		"the connector answered with 2001 items, and an answer has at most 2000: the first 2000 are kept" {
+		t.Errorf("over the count: %d items, %v", len(r.Items), r.Err())
+	}
+}
+
+// An answer's items past maxAnswerBytes are dropped, and fail it.
+func TestCheckAnswerTooBig(t *testing.T) {
+	src := NewSource(exe("source-bulky"), nil, Options{})
+	defer func() { _ = src.Close() }()
+	r, err := src.CheckReport(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := r.Err(); len(r.Items) != 20 || errs.CodeOf(e) != errs.Internal || !strings.HasPrefix(e.Error(), "the connector answered with ") ||
+		!strings.HasSuffix(e.Error(), " bytes of items, and an answer has at most 1048576: the first 20 items are kept") {
+		t.Errorf("%d items, %v", len(r.Items), e)
 	}
 }
 

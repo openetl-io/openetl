@@ -2,8 +2,11 @@ package activities
 
 import (
 	"context"
+	"errors"
+	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/robfig/cron/v3"
@@ -35,18 +38,14 @@ const (
 
 // PreflightPipeline checks a pipeline's source and destination, settles
 // what a sync of its version would read and write as an attempt does, and
-// runs the source's and the destination's preflights for that. What fails
-// is a result, not an error.
+// runs the source's and the destination's preflights for that. What fails,
+// a connector that doesn't start or answer included, is a result, not an
+// error.
 func (a *Ops) PreflightPipeline(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	var res contract.ConnectorOpResult
 	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
 	if err != nil {
 		return res, err
-	}
-	src := contract.CheckGroup{Role: roleSource, Stage: stageCheck, Version: spec.GetSourceConnector()}
-	dst := contract.CheckGroup{Role: roleDestination, Stage: stageCheck, Version: spec.GetDestinationConnector()}
-	failed := func(g *contract.CheckGroup, err error) {
-		g.Code, g.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
 	}
 	if err := readSecrets(ctx, a.Secrets, spec.GetSource(), spec.GetSourceSecrets()); err != nil {
 		return res, err
@@ -82,103 +81,211 @@ func (a *Ops) PreflightPipeline(ctx context.Context, in contract.ConnectorOpInpu
 	if a.Checkpoints != nil {
 		plans = withRestored(engine, checkpoint.NewLog(a.Checkpoints, spec.GetOrgId(), spec.GetPipelineId()))
 	}
-	job, jobErr := bindJob(ctx, spec, env, plans, false)
-	defer connectorhost.Close(job.Source)
-	defer connectorhost.Close(job.Destination)
 
-	var srcOK, dstOK bool
-	for _, side := range []struct {
-		g  *contract.CheckGroup
-		c  any
-		ok *bool
-	}{{&src, job.Source, &srcOK}, {&dst, job.Destination, &dstOK}} {
-		if side.c == nil {
-			side.g.Skipped = "the connector didn't start"
-			continue
-		}
-		items, err := runCheck(ctx, side.c)
-		side.g.Items = checkItems(items)
-		if err != nil {
-			failed(side.g, err)
-			continue
-		}
-		*side.ok = true
+	var (
+		src source.Source
+		dst destination.Destination
+		job runner.Job
+	)
+	defer func() { connectorhost.Close(src) }()
+	defer func() { connectorhost.Close(dst) }()
+	p := preflight{
+		startSource: func(ctx context.Context) (err error) {
+			if src, err = bindSource(spec, env); err != nil {
+				return err
+			}
+			return connectorhost.Start(ctx, src)
+		},
+		startDestination: func(ctx context.Context) (err error) {
+			if dst, err = bindDestination(spec, env); err != nil {
+				return err
+			}
+			return connectorhost.Start(ctx, dst)
+		},
+		checkSource:      func(ctx context.Context) (check.Report, error) { return runCheck(ctx, src) },
+		checkDestination: func(ctx context.Context) (check.Report, error) { return runCheck(ctx, dst) },
+		settle: func(ctx context.Context) (err error) {
+			job, err = settleJob(ctx, spec, src, dst, plans)
+			return err
+		},
+		preflightSource: func(ctx context.Context) (check.Report, error) {
+			return runPreflight(ctx, src, sourcePreflight(spec.GetPipelineId(), spec.GetPipeline(), job))
+		},
+		preflightDestination: func(ctx context.Context) (check.Report, error) {
+			return runPreflight(ctx, dst, destinationPreflight(spec.GetPipelineId(), job))
+		},
+		checkTime: checkTimeout, preflightTime: preflightTimeout,
 	}
-	res.Preflight = append(res.Preflight, src, dst)
-
-	plan := contract.CheckGroup{Role: roleSync, Stage: stagePlan}
-	if jobErr != nil {
-		failed(&plan, jobErr)
-		var r check.Report
-		r.Fail("sync.plan", "Settle what a sync reads and writes", jobErr)
-		plan.Items = checkItems(r.Items())
-		res.Preflight = append(res.Preflight, plan)
-		why := "a sync can't be planned"
-		res.Preflight = append(res.Preflight,
-			contract.CheckGroup{Role: roleSource, Stage: stagePreflight, Version: src.Version, Skipped: why},
-			contract.CheckGroup{Role: roleDestination, Stage: stagePreflight, Version: dst.Version, Skipped: why})
-		return res, nil
+	if res.Preflight, err = p.run(ctx, spec.GetSourceConnector(), spec.GetDestinationConnector()); err != nil {
+		return res, err
 	}
-
-	srcPre := contract.CheckGroup{Role: roleSource, Stage: stagePreflight, Version: src.Version}
-	if !srcOK {
-		srcPre.Skipped = "the source's check failed"
-	} else {
-		items, err := runPreflight(ctx, job.Source, sourcePreflight(spec.GetPipelineId(), spec.GetPipeline(), job))
-		srcPre.Items = checkItems(items)
-		if err != nil {
-			failed(&srcPre, err)
-		}
-	}
-	dstPre := contract.CheckGroup{Role: roleDestination, Stage: stagePreflight, Version: dst.Version}
-	if !dstOK {
-		dstPre.Skipped = "the destination's check failed"
-	} else {
-		items, err := runPreflight(ctx, job.Destination, destinationPreflight(spec.GetPipelineId(), job))
-		dstPre.Items = checkItems(items)
-		if err != nil {
-			failed(&dstPre, err)
-		}
-	}
-	res.Preflight = append(res.Preflight, srcPre, dstPre)
-	return res, nil
+	return fitResult("preflight", res)
 }
 
-// runPreflight runs c's preflight for req: an external connector's items, or
-// a built-in one's report; none without one.
-func runPreflight(ctx context.Context, c any, req any) ([]check.Item, error) {
+// preflight is a pipeline's preflight in parts: starting each connector and
+// its check, settling what a sync reads and writes, and each connector's
+// preflight for that.
+type preflight struct {
+	startSource, startDestination         func(context.Context) error
+	checkSource, checkDestination         func(context.Context) (check.Report, error)
+	settle                                func(context.Context) error
+	preflightSource, preflightDestination func(context.Context) (check.Report, error)
+	// What each check and each preflight has. Settling has what's left of
+	// ctx's time after both preflights'; starting, what it takes.
+	checkTime, preflightTime time.Duration
+}
+
+// run runs the parts in order and gives them as the source's and the
+// destination's checks, the plan, and the source's and the destination's
+// preflights. A part fails with what its connector answered, or with why
+// the connector didn't start or answer; it's skipped, saying why, only when
+// a part it needs failed or was skipped. The error is ctx's.
+func (p preflight) run(ctx context.Context, srcVersion, dstVersion string) ([]contract.CheckGroup, error) {
+	parts := []contract.CheckGroup{
+		{Role: roleSource, Stage: stageCheck, Version: srcVersion},
+		{Role: roleDestination, Stage: stageCheck, Version: dstVersion},
+		{Role: roleSync, Stage: stagePlan},
+		{Role: roleSource, Stage: stagePreflight, Version: srcVersion},
+		{Role: roleDestination, Stage: stagePreflight, Version: dstVersion},
+	}
+	srcCheck, dstCheck, plan, srcPre, dstPre := &parts[0], &parts[1], &parts[2], &parts[3], &parts[4]
+
+	srcUp := started(ctx, srcCheck, p.startSource)
+	srcOK := srcUp && runPart(ctx, srcCheck, p.checkTime, "the source's check", p.checkSource)
+	dstUp := started(ctx, dstCheck, p.startDestination)
+	dstOK := dstUp && runPart(ctx, dstCheck, p.checkTime, "the destination's check", p.checkDestination)
+
+	// The plan needs the destination's capabilities, which don't depend on
+	// its check.
+	switch {
+	case !srcUp:
+		plan.Skipped = "the source didn't start"
+	case !srcOK:
+		plan.Skipped = "the source's check failed"
+	case !dstUp:
+		plan.Skipped = "the destination didn't start"
+	default:
+		left := time.Duration(math.MaxInt64)
+		if d, ok := ctx.Deadline(); ok {
+			left = time.Until(d) - 2*p.preflightTime
+		}
+		runPart(ctx, plan, left, "settling what a sync reads and writes", func(ctx context.Context) (check.Report, error) {
+			return check.Report{}, p.settle(ctx)
+		})
+	}
+	planned := plan.Skipped == "" && plan.Code == ""
+
+	for _, pre := range []struct {
+		g      *contract.CheckGroup
+		role   string
+		up, ok bool
+		run    func(context.Context) (check.Report, error)
+	}{{srcPre, "source", srcUp, srcOK, p.preflightSource}, {dstPre, "destination", dstUp, dstOK, p.preflightDestination}} {
+		switch {
+		case !pre.up:
+			pre.g.Skipped = "the " + pre.role + " didn't start"
+		case !pre.ok:
+			pre.g.Skipped = "the " + pre.role + "'s check failed"
+		case !planned:
+			pre.g.Skipped = "a sync can't be planned"
+		default:
+			runPart(ctx, pre.g, p.preflightTime, "the "+pre.role+"'s preflight", pre.run)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return parts, nil
+}
+
+// started starts a part's connector, and is whether it did; why it didn't
+// is the part's failure.
+func started(ctx context.Context, g *contract.CheckGroup, start func(context.Context) error) bool {
+	if err := start(ctx); err != nil {
+		g.Code, g.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
+		return false
+	}
+	return true
+}
+
+// answerSlack is how long before its deadline a part that answered may have
+// run out of time: the SDK answers up to a second before the RPC's.
+const answerSlack = 2 * time.Second
+
+// runPart runs a part, what, with at most budget of ctx's time, and is
+// whether it passed. The part has what the connector answered, or, without
+// items, why it didn't answer; one that fails for running out of time says
+// how long it had.
+func runPart(ctx context.Context, g *contract.CheckGroup, budget time.Duration, what string, run func(context.Context) (check.Report, error)) bool {
+	pctx, cancel, had := within(ctx, budget)
+	defer cancel()
+	r, err := run(pctx)
+	if err == nil {
+		g.Items, g.Code, g.Message = checkResult(r)
+		if r.OK() {
+			return true
+		}
+	}
+	if d, _ := pctx.Deadline(); time.Until(d) < answerSlack && ctx.Err() == nil && ranOut(r, err) {
+		err = errs.New(errs.Transient, "%s didn't finish within %v", what, had.Round(time.Second))
+	}
+	if err != nil {
+		g.Code, g.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
+	}
+	return false
+}
+
+// ranOut is whether a part that returned r and err stopped for its time:
+// err is a deadline's or a cancellation's, or, without err, an item of r
+// timed out or r's error is a deadline's.
+func ranOut(r check.Report, err error) bool {
+	if err != nil {
+		return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	}
+	if errors.Is(r.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	for _, it := range r.Items {
+		if it.Failure != nil && it.Failure.Reason == check.TimedOut.Name {
+			return true
+		}
+	}
+	return false
+}
+
+// runPreflight runs c's preflight for req, a source.PreflightRequest or a
+// destination.PreflightRequest: an external connector's report of its
+// answer, or a built-in one's checks run here; an empty report without a
+// preflight. The error is an external connector's that didn't answer.
+func runPreflight(ctx context.Context, c any, req any) (check.Report, error) {
 	switch req := req.(type) {
 	case source.PreflightRequest:
 		switch c := c.(type) {
 		case interface {
-			PreflightItems(context.Context, source.PreflightRequest) ([]check.Item, error)
+			PreflightReport(context.Context, source.PreflightRequest) (check.Report, error)
 		}:
-			return c.PreflightItems(ctx, req)
+			return c.PreflightReport(ctx, req)
 		case source.Preflighter:
-			var r check.Report
-			c.Preflight(ctx, req, &r)
-			return r.Items(), r.Err()
+			return check.RunList(ctx, func() []check.Check { return c.Preflight(req) }), nil
 		}
 	case destination.PreflightRequest:
 		switch c := c.(type) {
 		case interface {
-			PreflightItems(context.Context, destination.PreflightRequest) ([]check.Item, error)
+			PreflightReport(context.Context, destination.PreflightRequest) (check.Report, error)
 		}:
-			return c.PreflightItems(ctx, req)
+			return c.PreflightReport(ctx, req)
 		case destination.Preflighter:
-			var r check.Report
-			c.Preflight(ctx, req, &r)
-			return r.Items(), r.Err()
+			return check.RunList(ctx, func() []check.Check { return c.Preflight(req) }), nil
 		}
 	}
-	return nil, nil
+	return check.Report{}, nil
 }
 
 // sourcePreflight is what a sync of the job would read.
 func sourcePreflight(pipeline string, p *apiv1.PipelineSpec, job runner.Job) source.PreflightRequest {
 	req := source.PreflightRequest{Pipeline: pipeline, Continuous: job.Continuous}
 	if !req.Continuous {
-		req.Interval = interval(p.GetSchedule())
+		req.Interval = interval(p.GetSchedule(), time.Now())
 	}
 	for _, s := range job.Streams {
 		req.Streams = append(req.Streams, source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField})
@@ -213,27 +320,44 @@ func destinationPreflight(pipeline string, job runner.Job) destination.Preflight
 
 // tableName is a stream's table as the engine names it, before collisions
 // and identifier limits: as it is, or lowercase with _ for anything outside
-// [a-z0-9_].
+// [a-z0-9_] and before a leading digit; _ for none.
 func tableName(stream string, keep bool) string {
-	if keep {
-		return stream
-	}
-	name := strings.Map(func(r rune) rune {
-		r = []rune(strings.ToLower(string(r)))[0]
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' {
-			return r
+	name := stream
+	if !keep {
+		var b strings.Builder
+		for _, r := range stream {
+			// İ lowercases to i and a combining dot, which isn't in [a-z0-9_].
+			if r == 'İ' {
+				b.WriteString("i_")
+				continue
+			}
+			if r = unicode.ToLower(r); r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' {
+				b.WriteRune(r)
+			} else {
+				b.WriteByte('_')
+			}
 		}
-		return '_'
-	}, stream)
+		name = b.String()
+		if name != "" && name[0] >= '0' && name[0] <= '9' {
+			name = "_" + name
+		}
+	}
 	if name == "" {
 		return "_"
 	}
 	return name
 }
 
-// interval is the longest a schedule goes between syncs, over its next
-// month; 0 without a regular one.
-func interval(s *apiv1.Schedule) time.Duration {
+// The firings of a cron schedule that interval looks at: from the first,
+// until one past cronHorizon from it.
+const cronHorizon = 366 * 24 * time.Hour
+
+// interval is the longest a schedule goes between syncs after now, jitter
+// included: its every, or the longest gap between its cron's firings over
+// about a year, as the scheduler reads them: in UTC unless the cron starts
+// with CRON_TZ=. It's 0 without a regular schedule, and for a cron that
+// never fires.
+func interval(s *apiv1.Schedule, now time.Time) time.Duration {
 	if d := s.GetEvery(); d != nil {
 		return d.AsDuration() + s.GetJitter().AsDuration()
 	}
@@ -244,12 +368,74 @@ func interval(s *apiv1.Schedule) time.Duration {
 	if err != nil {
 		return 0
 	}
-	var longest time.Duration
-	t := sched.Next(time.Now())
-	for end := t.AddDate(0, 1, 0); t.Before(end); {
-		next := sched.Next(t)
-		longest = max(longest, next.Sub(t))
-		t = next
+	t := sched.Next(now.UTC())
+	if t.IsZero() {
+		return 0
+	}
+	longest := longestGap(sched, t)
+	if longest == 0 {
+		return 0
 	}
 	return longest + s.GetJitter().AsDuration()
+}
+
+// longestGap is the longest gap between sched's firings from first, one of
+// them, to the first past cronHorizon from it. A cron fires at the same clock
+// times on each day it fires, so of the days with 24 hours and one UTC
+// offset, it steps through one's firings and takes the others' from it.
+func longestGap(sched cron.Schedule, first time.Time) time.Duration {
+	if c, ok := sched.(cron.ConstantDelaySchedule); ok {
+		return c.Delay
+	}
+	loc := time.UTC
+	if s, ok := sched.(*cron.SpecSchedule); ok && s.Location != time.Local {
+		loc = s.Location
+	}
+	end := first.Add(cronHorizon)
+	var (
+		longest time.Duration
+		// The firings of a plain day, as times since its midnight, and the
+		// longest gap between them; nil until one is stepped through.
+		plain *struct{ first, last, longest time.Duration }
+	)
+	for t := first; !t.After(end); {
+		start, next, isPlain := cronDay(t, loc)
+		last := t
+		if plain != nil && isPlain && t.Equal(start.Add(plain.first)) && !start.Add(plain.last).After(end) {
+			last, longest = start.Add(plain.last), max(longest, plain.longest)
+		} else {
+			whole := plain == nil && isPlain && sched.Next(start.Add(-time.Second)).Equal(t)
+			var within time.Duration
+			for {
+				n := sched.Next(last)
+				if n.IsZero() || !n.Before(next) {
+					break
+				}
+				within = max(within, n.Sub(last))
+				if last = n; last.After(end) {
+					return max(longest, within)
+				}
+			}
+			longest = max(longest, within)
+			if whole {
+				plain = &struct{ first, last, longest time.Duration }{t.Sub(start), last.Sub(start), within}
+			}
+		}
+		n := sched.Next(last)
+		if n.IsZero() {
+			break
+		}
+		longest, t = max(longest, n.Sub(last)), n
+	}
+	return longest
+}
+
+// cronDay is the midnights in loc that start t's day and the next, and whether
+// the day is plain: 24 hours with one UTC offset.
+func cronDay(t time.Time, loc *time.Location) (start, next time.Time, plain bool) {
+	y, m, d := t.In(loc).Date()
+	start, next = time.Date(y, m, d, 0, 0, 0, 0, loc), time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+	_, a := start.Zone()
+	_, b := next.Zone()
+	return start, next, a == b && start.Hour() == 0 && next.Hour() == 0 && next.Sub(start) == 24*time.Hour
 }

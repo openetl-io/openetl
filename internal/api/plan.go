@@ -235,7 +235,16 @@ func (s *Server) GetPipelinePlan(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, err
 	}
-	row, err := s.Store.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Version: p.Version})
+	out, err := s.planAt(ctx, req.Msg.GetName(), p.ID, p.Version)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&apiv1.GetPipelinePlanResponse{Plan: out}), nil
+}
+
+// planAt plans the pipeline name's version, current or not.
+func (s *Server) planAt(ctx context.Context, name string, id uuid.UUID, version string) (*apiv1.PipelinePlan, error) {
+	row, err := s.Store.GetSyncSpec(ctx, db.GetSyncSpecParams{OrgID: s.Tenant.Org, PipelineID: id, Version: version})
 	if err != nil {
 		return nil, err
 	}
@@ -243,17 +252,12 @@ func (s *Server) GetPipelinePlan(ctx context.Context, req *connect.Request[apiv1
 	if err != nil {
 		return nil, err
 	}
-	pl := &planned{id: p.ID, name: req.Msg.GetName(), version: p.Version, v: &pinned{
+	return s.plan(ctx, s.Store.Queries, &planned{id: id, name: name, version: version, v: &pinned{
 		spec:      v.Spec,
 		dataPlane: row.DataPlaneID,
-		src:       db.Source{ID: p.SourceID, Version: row.SourceVersion, Spec: row.SourceSpec, ConnectorDigest: row.SourceConnector},
+		src:       db.Source{ID: row.SourceID, Version: row.SourceVersion, Spec: row.SourceSpec, ConnectorDigest: row.SourceConnector},
 		dst:       db.Destination{Spec: row.DestinationSpec, ConnectorDigest: row.DestinationConnector},
-	}}
-	out, err := s.plan(ctx, s.Store.Queries, pl)
-	if err != nil {
-		return nil, err
-	}
-	return connect.NewResponse(&apiv1.GetPipelinePlanResponse{Plan: out}), nil
+	}})
 }
 
 // refuse fails if the plan of a pipeline the Apply creates or changes has

@@ -1119,7 +1119,7 @@ message PreflightPipelineResponse {
 // PreflightResult is a pipeline's preflight: its parts, in the order they
 // ran.
 message PreflightResult {
-  // No part failed; warnings don't count.
+  // Every part is ok: none failed or was skipped. Warnings don't count.
   bool ok = 1;
   // The pipeline version checked.
   string version = 2;
@@ -1139,11 +1139,14 @@ message PreflightPart {
   // The connector version that answered, by digest; empty for a built-in
   // connector and for the plan.
   string version = 4;
+  // It ran, has no code and no item failed; warnings don't count.
   bool ok = 5;
-  // When not ok: a code of the error taxonomy, and what failed.
+  // When not ok: a code of the error taxonomy, and what failed; the first
+  // failed item's, and its rendered text, if the part has none. A part can
+  // fail with no items, such as a connector that didn't start or answer.
   string code = 6;
   string message = 7;
-  // Why it didn't run, such as a check before it that failed; empty if it
+  // Why it didn't run, set only when a part before it failed; empty if it
   // ran.
   string skipped = 8;
   repeated CheckItem items = 9;

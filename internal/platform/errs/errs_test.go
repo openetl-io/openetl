@@ -7,6 +7,7 @@ import (
 	"time"
 
 	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/host"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
@@ -74,6 +75,15 @@ func TestProtoRoundTrip(t *testing.T) {
 	}
 	if ToProto(nil) != nil || FromProto(nil) != nil {
 		t.Error("nil doesn't map to nil")
+	}
+}
+
+// A check reads a platform error's code as it reads a connector's, so a
+// built-in connector's check that failed with one keeps it.
+func TestCheckReadsCode(t *testing.T) {
+	f := check.Classify(fmt.Errorf("parquet: %w", Wrap(PermissionDenied, errors.New("mkdir /data: permission denied"), "")))
+	if f.Code != protocolv1.ErrorCode_ERROR_CODE_PERMISSION_DENIED || f.Reason != check.PermissionDenied.Name {
+		t.Errorf("Classify = %+v", f)
 	}
 }
 
