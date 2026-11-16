@@ -265,13 +265,6 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 			return out, errs.Wrap(errs.ConfigInvalid, err, "state's location")
 		}
 	}
-	if workers := worker.From(ctx).Workers; workers > 0 {
-		srv, err := a.coordinate(ctx, &job, workers, log)
-		if err != nil {
-			return out, err
-		}
-		defer srv.Close()
-	}
 	if job.Destination.Capabilities().Delivery == destination.DeliveryStaged {
 		area, err := openStaging(ctx, a.Storage, job, log)
 		if err != nil {
@@ -312,6 +305,14 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	job.Meter = meter
 	job.Dataflow = &engineclient.Dataflow{Options: engine}
 	job.Logger = log
+	// Whether it runs on workers depends on its dataflow and transform.
+	if workers := worker.From(ctx).Workers; workers > 0 {
+		srv, err := a.coordinate(ctx, &job, workers, log)
+		if err != nil {
+			return out, err
+		}
+		defer srv.Close()
+	}
 	job.Drain = p.drain
 	job.OnCommit = p.onCommit
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)
