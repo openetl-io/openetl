@@ -19,7 +19,7 @@ FROM connector_sources s WHERE s.org_id = @org_id ORDER BY s.name;
 -- name: DeleteConnectorSource :execrows
 DELETE FROM connector_sources WHERE org_id = @org_id AND name = @name;
 
--- name: ConnectOfficialSource :exec
+-- name: ConnectOfficialSource :execrows
 -- Connects the official source once: an org that ever had it doesn't get it
 -- back after deleting it.
 WITH first AS (

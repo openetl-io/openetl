@@ -272,10 +272,12 @@ func StoreLogo(ctx context.Context, q *db.Queries, org uuid.UUID, l *Logo) (stri
 func LogoPath(digest string) string { return "/logos/" + digest }
 
 // ConnectOfficial connects the official source, once per org: an org that
-// deleted it doesn't get it back. An empty url connects none.
-func ConnectOfficial(ctx context.Context, q *db.Queries, org uuid.UUID, url string) error {
+// deleted it doesn't get it back. An empty url connects none. It reports
+// whether this call connected it, in which case nothing has listed it yet.
+func ConnectOfficial(ctx context.Context, q *db.Queries, org uuid.UUID, url string) (bool, error) {
 	if url == "" {
-		return nil
+		return false, nil
 	}
-	return q.ConnectOfficialSource(ctx, db.ConnectOfficialSourceParams{OrgID: org, Name: OfficialName, Url: url})
+	n, err := q.ConnectOfficialSource(ctx, db.ConnectOfficialSourceParams{OrgID: org, Name: OfficialName, Url: url})
+	return n > 0, err
 }

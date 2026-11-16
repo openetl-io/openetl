@@ -35,7 +35,8 @@ func TestRefreshSavesAFailureAfterItsDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	tenant, err := st.Bootstrap(ctx, "dp1", func(q *db.Queries, org uuid.UUID) error {
-		return pkgcatalog.ConnectOfficial(ctx, q, org, oci.Scheme+strings.TrimPrefix(hung.URL, "http://")+"/acme/connectors")
+		_, err := pkgcatalog.ConnectOfficial(ctx, q, org, oci.Scheme+strings.TrimPrefix(hung.URL, "http://")+"/acme/connectors")
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)

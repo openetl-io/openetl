@@ -115,7 +115,7 @@ openetl connector catalog --refresh
 
 For GitHub, use `https://github.com/OWNER/REPO` as the URL. Connecting a catalog source does not install its packages. You can also apply a public package directly by reference without adding its repository to the catalog.
 
-OpenETL connects the official registry namespace when it creates the org. Your installation can also list community and private packages. The [Connector source reference](../reference/specs/connector-source.md) describes every field.
+When OpenETL creates the org, it connects the official registry namespace and lists its packages. Your installation can also list community and private packages. The [Connector source reference](../reference/specs/connector-source.md) describes every field.
 
 ## Private connectors
 
