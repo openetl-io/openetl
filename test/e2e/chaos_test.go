@@ -97,7 +97,8 @@ type chaosConfig struct {
 	// A test's own run, which fails unless each of its faults reached what
 	// it kills, a record followed a kill of its attempt, and, if it can, it
 	// ran on workers. Its faults wait for its second committed record, and
-	// it writes until they have landed and it has resumed.
+	// it writes until they have landed and a later attempt has written a
+	// record after each kill.
 	strict bool
 }
 
@@ -608,9 +609,15 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		})
 	})
 
-	writeCtx, stopWrite := context.WithTimeout(t.Context(), c.writing())
+	var (
+		writeCtx  context.Context
+		stopWrite context.CancelFunc
+		strictly  func() []string
+	)
 	if c.strict {
-		writeCtx, stopWrite = s.strictWrites(t.Context(), c, pipeline)
+		writeCtx, stopWrite, strictly = s.strictWrites(t.Context(), c, pipeline)
+	} else {
+		writeCtx, stopWrite = context.WithTimeout(t.Context(), c.writing())
 	}
 	defer stopWrite()
 	var faults sync.WaitGroup
@@ -680,9 +687,8 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 				t.Errorf("%s never killed anything; faults: %v", f, counts)
 			}
 		}
-		// A kill of its attempt was followed by a record of the next.
-		if heads, resumes, _ := s.book.progress(pipeline); slices.ContainsFunc(c.faults, killsAttempt) && resumes == 0 {
-			t.Errorf("no record after the last kill of %s's attempt: %d records committed, %d resumes", name, heads, resumes)
+		for _, p := range strictly() {
+			t.Errorf("when the writes stopped: %s", p)
 		}
 		for what, n := range counts {
 			if strings.HasPrefix(what, "missed ") || strings.HasSuffix(what, " to kill") {
@@ -724,29 +730,43 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 }
 
 // strictWrites is how long a strict run writes: until each of its faults
-// has landed and the pipeline has written a record after the last kill of
-// its attempt, so that every fault lands while it reads, and the attempt
-// after it reads too; at least the run's writing time, and at most three
-// times that. It stops early on a fault that missed.
-func (s *chaosSuite) strictWrites(base context.Context, c chaosConfig, pipeline string) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(base, 3*c.writing())
+// has landed and a later attempt has written a record after the last kill
+// of its attempt, so that every fault lands while it reads, and the
+// attempt after it reads too; at least the run's writing time, and at most
+// three times that. It stops early on a fault that missed. strictly waits
+// for the writes to stop, and says what the run failed of then: see
+// ledger.Records.Strict.
+func (s *chaosSuite) strictWrites(base context.Context, c chaosConfig, pipeline string) (ctx context.Context, cancel context.CancelFunc, strictly func() []string) {
+	ctx, cancel = context.WithTimeout(base, 3*c.writing())
 	start := time.Now()
+	stopped := make(chan struct{})
+	var problems []string
 	go func() {
+		defer close(stopped)
 		for ctx.Err() == nil {
 			pause(ctx, 250*time.Millisecond)
 			counts := s.book.counts(pipeline)
 			if slices.ContainsFunc(slices.Collect(maps.Keys(counts)), func(k string) bool { return strings.HasPrefix(k, "missed ") }) {
-				cancel()
-				return
+				break
 			}
-			_, _, resuming := s.book.progress(pipeline)
-			if time.Since(start) >= c.writing() && !resuming && !slices.ContainsFunc(c.faults, func(f string) bool { return counts[faultLanded(c, f)] == 0 }) {
-				cancel()
-				return
+			landed := !slices.ContainsFunc(c.faults, func(f string) bool { return counts[faultLanded(c, f)] == 0 })
+			if time.Since(start) >= c.writing() && landed && !s.book.resuming(pipeline) {
+				break
 			}
 		}
+		kills := 0
+		for _, f := range c.faults {
+			if killsAttempt(f) {
+				kills++
+			}
+		}
+		problems = s.book.strict(pipeline, len(c.faults), kills)
+		cancel()
 	}()
-	return ctx, cancel
+	return ctx, cancel, func() []string {
+		<-stopped
+		return problems
+	}
 }
 
 // faultLanded is what the fault book counts once f has killed: a crash point as
@@ -835,11 +855,8 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 	for _, e := range events {
 		pause(ctx, time.Until(start.Add(e.at)))
 		// A strict run's fault lands only once the pipeline has committed
-		// records, so state is behind it.
-		for c.strict && ctx.Err() == nil {
-			if heads, _, _ := s.book.progress(pipeline); heads >= 2 {
-				break
-			}
+		// records, so state is behind it, and its newest attempt is writing.
+		for c.strict && ctx.Err() == nil && !s.book.ready(pipeline) {
 			pause(ctx, 250*time.Millisecond)
 		}
 		if ctx.Err() != nil {
@@ -853,6 +870,7 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 		switch e.fault {
 		case faultDriver, faultTaskManager, faultJobManager:
 			if s.clusterFault(base, &partitions, e.fault, rng, pipeline) {
+				s.book.landed(pipeline)
 				s.book.count(pipeline, e.fault)
 			} else {
 				s.book.count(pipeline, "missed "+e.fault)
@@ -894,6 +912,7 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 			sl.results.dropFor(5*time.Second + upTo(rng, 15*time.Second))
 		}
 		if done {
+			s.book.landed(pipeline)
 			s.book.count(pipeline, what)
 		} else {
 			s.book.count(pipeline, "missed "+what)

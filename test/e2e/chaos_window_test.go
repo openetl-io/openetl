@@ -139,9 +139,11 @@ func newWindowWork(t *testing.T, c chaosConfig, name string) *windowWork {
 		w.recs = append(w.recs, nil)
 	}
 	// A record that isn't delivered in time fails the run, rather than
-	// holding it past its writes.
+	// holding it past its writes: in flight too, which the idempotent
+	// producer otherwise waits out. Nothing produces a failed record again,
+	// so it can't land twice.
 	cl, err := kgo.NewClient(kgo.SeedBrokers(kafkaBrokers()), kgo.RecordPartitioner(kgo.ManualPartitioner()),
-		kgo.RecordDeliveryTimeout(windowProduce))
+		kgo.RecordDeliveryTimeout(windowProduce), kgo.AllowIdempotentProduceCancellation())
 	if err != nil {
 		t.Fatal(err)
 	}

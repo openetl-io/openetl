@@ -7,6 +7,8 @@ import (
 	"math/rand/v2"
 	"sync"
 	"time"
+
+	"github.com/openetl-io/openetl/test/e2e/ledger"
 )
 
 // Crash points, at the commit protocol's steps. The runner writing the
@@ -68,8 +70,8 @@ const (
 )
 
 // faultBook holds the faults each pipeline's run has armed, and what the
-// proxies saw of it: which slot writes its checkpoints, and how long it
-// took to write one again after that slot's runner died.
+// proxies saw of it: which slot writes its checkpoints, its records, and
+// how long it took a later attempt to write one after each kill.
 type faultBook struct {
 	mu    sync.Mutex
 	rng   *rand.Rand
@@ -86,13 +88,8 @@ type pipeFaults struct {
 	recorded  map[int]bool
 	host      int
 	lastWrite time.Time
-	// When its host's runner was killed, until a record shows the pipeline
-	// resumed.
-	killed time.Time
-	// HEAD swaps: records committed.
-	heads   int
-	counts  map[string]int
-	resumes []time.Duration
+	records   ledger.Records
+	counts    map[string]int
 }
 
 func newFaultBook(seed uint64) *faultBook {
@@ -115,7 +112,7 @@ func (b *faultBook) remove(pipeline string) (map[string]int, []time.Duration) {
 	if f == nil {
 		return nil, nil
 	}
-	return f.counts, f.resumes
+	return f.counts, f.records.Resumes()
 }
 
 func (b *faultBook) arm(pipeline, point string) {
@@ -156,12 +153,17 @@ func (b *faultBook) count(pipeline, what string) {
 	}
 }
 
-func (b *faultBook) decide(slot int, pipeline string, kind int) action {
+// decide is what the proxy does with a request under the pipeline, as it
+// arrives: of kind, and for a record, of generation gen.
+func (b *faultBook) decide(slot int, pipeline string, kind int, gen int64) action {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	f := b.pipes[pipeline]
 	if f == nil {
 		return action{}
+	}
+	if kind == reqRecord {
+		f.records.Received(gen)
 	}
 	armed := ""
 	if len(f.armed) > 0 {
@@ -173,7 +175,7 @@ func (b *faultBook) decide(slot int, pipeline string, kind int) action {
 		f.counts["crash "+armed]++
 		f.armed, a.point = f.armed[1:], armed
 		if a.kind == actKillBefore {
-			f.killed = time.Now()
+			f.records.Killed(time.Now())
 		}
 		return a
 	}
@@ -210,8 +212,9 @@ func (b *faultBook) decide(slot int, pipeline string, kind int) action {
 	}
 }
 
-// wrote notes a successful write under the pipeline by the slot's runner.
-func (b *faultBook) wrote(slot int, pipeline string, kind int) {
+// wrote notes a successful write under the pipeline by the slot's runner,
+// of a request that arrived at `at`.
+func (b *faultBook) wrote(slot int, pipeline string, kind int, gen int64, at time.Time) {
 	if kind == reqOther {
 		return
 	}
@@ -225,26 +228,49 @@ func (b *faultBook) wrote(slot int, pipeline string, kind int) {
 	switch kind {
 	case reqRecord:
 		f.recorded[slot] = true
-		if !f.killed.IsZero() {
-			f.resumes = append(f.resumes, time.Since(f.killed))
-			f.killed = time.Time{}
-		}
+		f.records.Wrote(gen, at, time.Now())
 	case reqHead:
 		f.recorded[slot] = false
-		f.heads++
+		f.records.Head()
 	}
 }
 
-// progress is how many records the pipeline has committed, how many times
-// it resumed after a kill, and whether it has written no record since its
-// attempt was last killed.
-func (b *faultBook) progress(pipeline string) (heads, resumes int, resuming bool) {
+// ready reports whether one of a strict run's faults may land on the
+// pipeline: see ledger.Records.Ready.
+func (b *faultBook) ready(pipeline string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	f := b.pipes[pipeline]
+	return f != nil && f.records.Ready()
+}
+
+// resuming reports whether a kill of the pipeline's attempt waits for a
+// later attempt's record.
+func (b *faultBook) resuming(pipeline string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	f := b.pipes[pipeline]
+	return f != nil && f.records.Resuming()
+}
+
+// landed notes that one of the pipeline's run's own faults landed.
+func (b *faultBook) landed(pipeline string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if f := b.pipes[pipeline]; f != nil {
-		return f.heads, len(f.resumes), !f.killed.IsZero()
+		f.records.Landed()
 	}
-	return 0, 0, false
+}
+
+// strict is what a strict run of the pipeline fails of so far: see
+// ledger.Records.Strict.
+func (b *faultBook) strict(pipeline string, faults, kills int) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if f := b.pipes[pipeline]; f != nil {
+		return f.records.Strict(faults, kills)
+	}
+	return []string{"the pipeline isn't in the fault book"}
 }
 
 // died notes that the slot's runner is being killed, which starts the
@@ -256,7 +282,7 @@ func (b *faultBook) died(slot int) {
 	now := time.Now()
 	for _, f := range b.pipes {
 		if f.host == slot && now.Sub(f.lastWrite) < 10*time.Second {
-			f.killed = now
+			f.records.Killed(now)
 		}
 	}
 }
@@ -267,7 +293,7 @@ func (b *faultBook) attemptDied(pipeline string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if f := b.pipes[pipeline]; f != nil {
-		f.killed = time.Now()
+		f.records.Killed(time.Now())
 	}
 }
 

@@ -493,31 +493,36 @@ const (
 	reqHead
 )
 
-var recordName = regexp.MustCompile(`^\d{20}-g\d{20}\.json$`)
+var recordName = regexp.MustCompile(`^\d{20}-g(\d{20})\.json$`)
 
-// classify returns the pipeline a path-style request is under, and whether
-// it writes a checkpoint record or HEAD.
-func classify(r *http.Request) (pipeline string, kind int) {
+// classify returns the pipeline a path-style request is under, whether it
+// writes a checkpoint record or HEAD, and a record's generation.
+func classify(r *http.Request) (pipeline string, kind int, gen int64) {
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 4)
 	if len(parts) < 4 {
-		return "", reqOther
+		return "", reqOther, 0
 	}
 	pipeline, rest := parts[2], parts[3]
 	if r.Method != http.MethodPut {
-		return pipeline, reqOther
+		return pipeline, reqOther, 0
 	}
-	switch name, ok := strings.CutPrefix(rest, "_checkpoints/"); {
-	case ok && name == "HEAD":
-		return pipeline, reqHead
-	case ok && recordName.MatchString(name):
-		return pipeline, reqRecord
+	name, ok := strings.CutPrefix(rest, "_checkpoints/")
+	if ok && name == "HEAD" {
+		return pipeline, reqHead, 0
 	}
-	return pipeline, reqOther
+	if m := recordName.FindStringSubmatch(name); ok && m != nil {
+		gen, err := strconv.ParseInt(m[1], 10, 64)
+		if err == nil {
+			return pipeline, reqRecord, gen
+		}
+	}
+	return pipeline, reqOther, 0
 }
 
 func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	pipeline, kind := classify(r)
-	act := p.slot.pool.book.decide(p.slot.i, pipeline, kind)
+	arrived := time.Now()
+	pipeline, kind, gen := classify(r)
+	act := p.slot.pool.book.decide(p.slot.i, pipeline, kind, gen)
 	if act.delay > 0 {
 		time.Sleep(act.delay)
 	}
@@ -543,7 +548,7 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = res.Body.Close() }()
 	ok := res.StatusCode/100 == 2
 	if ok {
-		p.slot.pool.book.wrote(p.slot.i, pipeline, kind)
+		p.slot.pool.book.wrote(p.slot.i, pipeline, kind, gen, arrived)
 	} else if killAfter {
 		p.slot.pool.book.count(pipeline, "missed crash "+act.point+": the write failed")
 	}
@@ -577,6 +582,7 @@ func (p *s3Proxy) kill(pipeline string, act action) {
 		killed = p.slot.crash(pipeline)
 	}
 	if killed {
+		p.slot.pool.book.landed(pipeline)
 		p.slot.pool.book.count(pipeline, "killed at crash "+act.point)
 	}
 }
