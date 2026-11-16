@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -646,6 +647,9 @@ type fakeLauncher struct {
 	gate chan struct{}
 	// Listing fails with it.
 	listErr error
+	// Set: the next list takes what's there, sends a channel on it, and
+	// returns that once the channel is closed.
+	pause chan chan struct{}
 }
 
 func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
@@ -674,13 +678,21 @@ func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
 
 func (f *fakeLauncher) Pods(context.Context) ([]pods.Pod, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.listErr != nil {
+		f.mu.Unlock()
 		return nil, f.listErr
 	}
 	var out []pods.Pod
 	for _, p := range f.pods {
 		out = append(out, *p)
+	}
+	pause := f.pause
+	f.pause = nil
+	f.mu.Unlock()
+	if pause != nil {
+		release := make(chan struct{})
+		pause <- release
+		<-release
 	}
 	return out, nil
 }
@@ -839,11 +851,92 @@ func TestLauncherReportsWhatHoldsItsCaps(t *testing.T) {
 	})
 }
 
+// A report that lists the pods while an older list is still out, as the
+// last report when the launcher stops can, doesn't make that older list's
+// report miss a placement whose pods were made after it began.
+func TestOverlappingReportsKeepAPlacementBeingMade(t *testing.T) {
+	gate := make(chan struct{})
+	l := &fakeLauncher{gate: gate}
+	api, w, _ := startLauncherWorker(t, l)
+	var open sync.Once
+	t.Cleanup(func() { open.Do(func() { close(gate) }) })
+	launch := work("sync/1/1", contract.RunSyncAttempt, small, nil)
+	launch.Placement = 1
+	api.give(launch)
+	listed := func(r *dataplanev1.ReportRunnerRequest) bool {
+		return slices.ContainsFunc(r.GetLaunched(), func(l *dataplanev1.Launch) bool {
+			return l.GetAttempt() == "sync/1/1" && !l.GetEnded()
+		})
+	}
+	eventually(t, "a report of the placement whose pods it's making", func() bool {
+		r := api.lastReport()
+		return r != nil && listed(r)
+	})
+
+	// A list takes what's there, none of the pods yet, and waits; the pods
+	// are made meanwhile, and another report lists them.
+	pause := make(chan chan struct{})
+	l.mu.Lock()
+	l.pause = pause
+	l.mu.Unlock()
+	var release chan struct{}
+	select {
+	case release = <-pause:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no list of the pods")
+	}
+	open.Do(func() { close(gate) })
+	eventually(t, "the pod", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.pods) == 1
+	})
+	another := make(chan error, 1)
+	go func() { another <- w.report(context.WithoutCancel(t.Context())) }()
+	select {
+	case err := <-another:
+		another <- err
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-another; err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	n := len(api.reports)
+	api.mu.Unlock()
+	eventually(t, "the older list's report", func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return len(api.reports) > n
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	seen := false
+	for i, r := range api.reports {
+		switch {
+		case !r.GetListed():
+		case listed(r):
+			seen = true
+		case seen:
+			t.Fatalf("report %d of %d leaves out the placement, whose pod runs", i+1, len(api.reports))
+		}
+	}
+}
+
 // startLauncher runs a launcher against a fake API until the returned stop is
 // called.
 func startLauncher(t *testing.T, l pods.Launcher) (api *fakeAPI, stop func()) {
 	t.Helper()
-	api, w := fakeWorker(t)
+	api, _, stop = startLauncherWorker(t, l)
+	return api, stop
+}
+
+// startLauncherWorker is startLauncher, with the launcher's Worker.
+func startLauncherWorker(t *testing.T, l pods.Launcher) (api *fakeAPI, w *Worker, stop func()) {
+	t.Helper()
+	api, w = fakeWorker(t)
 	w.Launcher, w.Pods = l, PodLimits{Min: resources.M, MaxPods: 5}
 	w.Kinds = map[string]Kind{contract.RunSyncAttempt: {StopTimeout: 2 * time.Minute, Checkpoints: true}}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -859,7 +952,7 @@ func startLauncher(t *testing.T, l pods.Launcher) (api *fakeAPI, stop func()) {
 		})
 	}
 	t.Cleanup(stop)
-	return api, stop
+	return api, w, stop
 }
 
 func fakeWorker(t *testing.T) (*fakeAPI, *Worker) {

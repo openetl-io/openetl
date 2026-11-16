@@ -113,6 +113,9 @@ type Worker struct {
 	// The placements whose pods a launcher is making, or made since its
 	// last list of its pods began, by name.
 	making map[string]*making
+	// Held from a launcher's list of its pods until it's added what it's
+	// making: a list can't drop what an older list, still out, missed.
+	listing sync.Mutex
 }
 
 // making is a placement whose pods a launcher is making, and when it
@@ -302,6 +305,8 @@ func (w *Worker) reportPods(ctx context.Context, req *dataplanev1.ReportRunnerRe
 	if w.Pods.Max != (resources.Size{}) {
 		req.Pods.MaxSize = protoSize(w.Pods.Max)
 	}
+	w.listing.Lock()
+	defer w.listing.Unlock()
 	began := time.Now()
 	launched, err := w.Launcher.Pods(ctx)
 	if err != nil {
