@@ -33,7 +33,8 @@ const (
 // Engines of one attempt (StartJobRequest.mesh) send each other the same
 // frames over TLS 1.3, on a connection from each engine to each other:
 // MESH_HELLO each way first, then the dialing engine's lanes' frames to the
-// listening engine's writer lanes, each after the ROUTE it goes by. Every
+// listening engine's writer lanes and keyed lanes, each after the ROUTE it
+// goes by. Every
 // engine presents the attempt's certificate and trusts no other.
 type FrameKind int32
 
@@ -450,7 +451,7 @@ func (x *Watermark) GetMicros() int64 {
 
 // MeshHello opens a connection from one engine of an attempt to another,
 // which carries the dialing engine's lanes' frames to the other's writer
-// lanes. The dialer's says which engine it is and carries the attempt's
+// lanes and keyed lanes. The dialer's says which engine it is and carries the attempt's
 // secret. The listener answers with its own, without the secret, once it
 // takes the connection; or with refused set, and closes it. It refuses a
 // connection of another attempt or generation, with another secret, of an
@@ -538,13 +539,20 @@ func (x *MeshHello) GetRefused() string {
 // from one of the dialer's lanes to one of the listener's writer lanes,
 // each by its index in the attempt. Only frames of streams with an exchange
 // follow, their stream an index into the destination's streams: BATCH,
-// SCHEMA_CHANGE, BARRIER, WATERMARK and END_OF_STREAM. The dialer closes the
-// connection once each of its lanes has ended every such stream on each of
-// the listener's writer lanes; closed before, it fails the job.
+// SCHEMA_CHANGE, BARRIER, WATERMARK and END_OF_STREAM. With keyed_lane,
+// they go to the listener's keyed lane of that lane of the attempt, which
+// runs the group windows, and their stream is a window's statement, by its
+// index in the transform: BATCH (the columns the statement reads, then two
+// strings a row, the column and the reason of a cell the stream holds,
+// which the statement can't read), BARRIER, WATERMARK and END_OF_STREAM. The
+// dialer closes the connection once each of its lanes has ended every such
+// stream on each of the listener's writer lanes, and every window's
+// statement on each of its keyed lanes; closed before, it fails the job.
 type Route struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Lane          uint32                 `protobuf:"varint,1,opt,name=lane,proto3" json:"lane,omitempty"`
 	WriterLane    uint32                 `protobuf:"varint,2,opt,name=writer_lane,json=writerLane,proto3" json:"writer_lane,omitempty"`
+	KeyedLane     *uint32                `protobuf:"varint,3,opt,name=keyed_lane,json=keyedLane,proto3,oneof" json:"keyed_lane,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -593,6 +601,13 @@ func (x *Route) GetWriterLane() uint32 {
 	return 0
 }
 
+func (x *Route) GetKeyedLane() uint32 {
+	if x != nil && x.KeyedLane != nil {
+		return *x.KeyedLane
+	}
+	return 0
+}
+
 var File_openetl_engine_v1_frames_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_frames_proto_rawDesc = "" +
@@ -621,11 +636,14 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"generation\x12\x16\n" +
 	"\x06engine\x18\x03 \x01(\rR\x06engine\x12\x16\n" +
 	"\x06secret\x18\x04 \x01(\fR\x06secret\x12\x18\n" +
-	"\arefused\x18\x05 \x01(\tR\arefused\"<\n" +
+	"\arefused\x18\x05 \x01(\tR\arefused\"o\n" +
 	"\x05Route\x12\x12\n" +
 	"\x04lane\x18\x01 \x01(\rR\x04lane\x12\x1f\n" +
 	"\vwriter_lane\x18\x02 \x01(\rR\n" +
-	"writerLane*\xd2\x02\n" +
+	"writerLane\x12\"\n" +
+	"\n" +
+	"keyed_lane\x18\x03 \x01(\rH\x00R\tkeyedLane\x88\x01\x01B\r\n" +
+	"\v_keyed_lane*\xd2\x02\n" +
 	"\tFrameKind\x12\x1a\n" +
 	"\x16FRAME_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10FRAME_KIND_HELLO\x10\x01\x12\x14\n" +
@@ -683,6 +701,7 @@ func file_openetl_engine_v1_frames_proto_init() {
 		return
 	}
 	file_openetl_engine_v1_frames_proto_msgTypes[5].OneofWrappers = []any{}
+	file_openetl_engine_v1_frames_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

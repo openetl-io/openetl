@@ -67,7 +67,7 @@ func expected(t *testing.T, a sqlplan.Answer) []runner.ExpectedOutput {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out = append(out, runner.ExpectedOutput{Name: st.Output, Schema: schema, PrimaryKey: st.Key, Input: st.Inputs[0]})
+		out = append(out, runner.ExpectedOutput{Name: st.Output, Schema: schema, PrimaryKey: st.Key, Input: st.Inputs[0], Need: st.Need})
 	}
 	return out
 }

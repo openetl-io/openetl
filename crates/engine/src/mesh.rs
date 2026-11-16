@@ -1,13 +1,14 @@
 //! The exchange between engines, where several run an attempt
 //! (StartJobRequest.mesh). A lane hands what an exchanged stream sends
-//! another engine's writer lanes to that engine's link: a queue that holds
-//! at most a bound of bytes, which the lane waits on when it's full, and a
-//! TLS connection that writes the queue's frames in order, each after the
-//! route it goes by. Each engine listens for the others, and each
-//! connection it takes gives its frames to its writer lanes, as its own
-//! lanes would, tagged with the sending lane, so a writer lane aligns on
-//! every lane of the attempt. A slow writer lane slows its senders through
-//! its channel, the connection's flow control and the link's bound.
+//! another engine's writer lanes, and what a group window's statement sends
+//! its keyed lanes, to that engine's link: a queue that holds at most a
+//! bound of bytes, which the lane waits on when it's full, and a TLS
+//! connection that writes the queue's frames in order, each after the route
+//! it goes by. Each engine listens for the others, and each connection it
+//! takes gives its frames to its writer lanes and keyed lanes, as its own
+//! lanes would, tagged with the sending lane, so each aligns on every lane
+//! of the attempt. A slow receiver slows its senders through its channel,
+//! the connection's flow control and the link's bound.
 //!
 //! A frame kind crosses engines once `wire` and `unwire` carry it; a writer
 //! lane's feed aligns it per sending lane as it does for its own lanes.
@@ -35,6 +36,7 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{debug, warn};
 
 use crate::dataflow::Out;
+use crate::dataflow::keyed;
 use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
@@ -281,12 +283,23 @@ pub fn unwire(f: frame::Frame, generation: u64) -> Result<Out, String> {
     }
 }
 
-/// Where a lane sends what goes to other engines' writer lanes.
+/// Where a frame goes in another engine, by its index in the attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Target {
+    Writer(usize),
+    /// The keyed lane of the attempt's lane.
+    Keyed(usize),
+}
+
+/// Where a lane sends what goes to other engines' writer lanes and keyed
+/// lanes.
 pub struct Links {
     first_writer: usize,
     writers: usize,
-    /// By the attempt's writer lane, the engine that has it.
+    /// By the attempt's writer lane, and by its lane, the engine that has
+    /// it.
     engine_of: Vec<usize>,
+    engine_of_lane: Vec<usize>,
     /// By engine; none for this one.
     links: Vec<Option<Link>>,
 }
@@ -301,7 +314,7 @@ struct Link {
 /// A frame queued on a link, holding its bytes of the link's room.
 struct Item {
     lane: u32,
-    writer: u32,
+    to: Target,
     kind: FrameKind,
     stream: u32,
     payload: Vec<u8>,
@@ -341,9 +354,10 @@ impl Links {
         let connector = connector(id)?;
         let cap = u32::try_from(m.buffer).unwrap_or(u32::MAX);
         let mut links = Vec::with_capacity(m.engines.len());
-        let mut engine_of = Vec::new();
+        let (mut engine_of, mut engine_of_lane) = (Vec::new(), Vec::new());
         for (e, peer) in m.engines.iter().enumerate() {
             engine_of.extend(std::iter::repeat_n(e, peer.writers));
+            engine_of_lane.extend(std::iter::repeat_n(e, peer.lanes));
             if e == m.engine {
                 links.push(None);
                 continue;
@@ -371,6 +385,7 @@ impl Links {
             first_writer: me.first_writer,
             writers: me.writers,
             engine_of,
+            engine_of_lane,
             links,
         })))
     }
@@ -383,16 +398,19 @@ impl Links {
             .then(|| w - self.first_writer)
     }
 
-    fn link(&self, w: usize) -> Result<&Link, JobError> {
-        self.engine_of
-            .get(w)
+    fn link(&self, to: Target) -> Result<&Link, JobError> {
+        let engine = match to {
+            Target::Writer(w) => self.engine_of.get(w),
+            Target::Keyed(k) => self.engine_of_lane.get(k),
+        };
+        engine
             .and_then(|&e| self.links[e].as_ref())
-            .ok_or_else(|| JobError::internal(format!("no engine has writer lane {w}")))
+            .ok_or_else(|| JobError::internal(format!("no other engine has {to:?}")))
     }
 
-    /// The room `bytes` take on the link to writer lane `w`'s engine.
-    pub fn room(&self, w: usize, bytes: usize) -> Result<Room, JobError> {
-        let link = self.link(w)?;
+    /// The room `bytes` take on the link to `to`'s engine.
+    pub fn room(&self, to: Target, bytes: usize) -> Result<Room, JobError> {
+        let link = self.link(to)?;
         let n = u32::try_from(bytes).unwrap_or(u32::MAX).clamp(1, link.cap);
         match link.room.clone().try_acquire_many_owned(n) {
             Ok(p) => Ok(Room::Ready(Reserved(p))),
@@ -401,23 +419,25 @@ impl Links {
         }
     }
 
-    /// Queues a frame from the attempt's lane `lane` for its writer lane
-    /// `w`, in the room reserved for it.
+    /// Queues a frame from the attempt's lane `lane` for `to`, in the room
+    /// reserved for it.
     pub fn push(
         &self,
         lane: usize,
-        w: usize,
+        to: Target,
         (kind, stream, payload): (FrameKind, u32, Vec<u8>),
         room: Reserved,
     ) -> Result<(), JobError> {
-        let link = self.link(w)?;
+        let link = self.link(to)?;
         let index = |i: usize| u32::try_from(i).map_err(|_| JobError::internal("a lane past u32"));
+        let (Target::Writer(i) | Target::Keyed(i)) = to;
+        index(i)?;
         link.queued
             .fetch_add(payload.len() as u64, Ordering::Relaxed);
         link.queue
             .send(Item {
                 lane: index(lane)?,
-                writer: index(w)?,
+                to,
                 kind,
                 stream,
                 payload,
@@ -766,13 +786,22 @@ async fn send<W: AsyncWrite + Unpin>(
             }
             Err(TryRecvError::Disconnected) => break,
         };
-        if route != Some((item.lane, item.writer)) {
-            let r = Route {
-                lane: item.lane,
-                writer_lane: item.writer,
+        if route != Some((item.lane, item.to)) {
+            // push checked both fit.
+            let r = match item.to {
+                Target::Writer(w) => Route {
+                    lane: item.lane,
+                    writer_lane: w as u32,
+                    keyed_lane: None,
+                },
+                Target::Keyed(k) => Route {
+                    lane: item.lane,
+                    writer_lane: 0,
+                    keyed_lane: Some(k as u32),
+                },
             };
             frame::write(&mut w, FrameKind::Route, 0, &r.encode_to_vec()).await?;
-            route = Some((item.lane, item.writer));
+            route = Some((item.lane, item.to));
         }
         frame::write(&mut w, item.kind, item.stream, &item.payload).await?;
         queued.fetch_sub(item.payload.len() as u64, Ordering::Relaxed);
@@ -841,14 +870,16 @@ async fn answer<W: AsyncWrite + Unpin>(
 }
 
 /// Takes a connection from each of the mesh's other engines, and gives
-/// what each sends to the writer lanes, `tx`. Done once each has ended
-/// every stream; fails if one doesn't connect in time, or its connection
-/// breaks before. Connections that aren't of the attempt's other engines,
-/// or that repeat one, are refused, and none of their frames read.
+/// what each sends to the writer lanes, `tx`, and the keyed lanes, `keyed`.
+/// Done once each has ended every stream; fails if one doesn't connect in
+/// time, or its connection breaks before. Connections that aren't of the
+/// attempt's other engines, or that repeat one, are refused, and none of
+/// their frames read.
 pub async fn inbound(
     plan: Arc<Plan>,
     listener: TcpListener,
     tx: Vec<mpsc::Sender<(usize, Out)>>,
+    keyed: Vec<mpsc::Sender<(usize, keyed::In)>>,
 ) -> Result<(), JobError> {
     let Some((m, id)) = plan
         .mesh
@@ -886,7 +917,7 @@ pub async fn inbound(
             },
             Some(h) = handshakes.join_next() => match h {
                 Ok(Ok((e, c))) if waiting.remove(&e) => {
-                    receivers.spawn(receive(plan.clone(), e, c, tx.clone()));
+                    receivers.spawn(receive(plan.clone(), e, c, tx.clone(), keyed.clone()));
                 }
                 Ok(Ok((e, mut c))) => {
                     let plan = plan.clone();
@@ -916,13 +947,15 @@ pub async fn inbound(
     }
 }
 
-/// Gives what engine `from` sends on `c` to the writer lanes, until it has
-/// ended every exchanged stream from each of its lanes on each of them.
+/// Gives what engine `from` sends on `c` to the writer lanes and keyed
+/// lanes, until it has ended every exchanged stream from each of its lanes
+/// on each writer lane, and every window's statement on each keyed lane.
 async fn receive(
     plan: Arc<Plan>,
     from: usize,
     mut c: Incoming,
     tx: Vec<mpsc::Sender<(usize, Out)>>,
+    keyed: Vec<mpsc::Sender<(usize, keyed::In)>>,
 ) -> Result<(), JobError> {
     let m = plan
         .mesh
@@ -941,10 +974,12 @@ async fn receive(
         .map_err(|e| lost(e.to_string()))?;
     let me = m.me();
     let exchanged: Vec<bool> = plan.exchanges.iter().map(Option::is_some).collect();
-    let want = peer.lanes * me.writers * exchanged.iter().filter(|e| **e).count();
+    let windows = keyed::statements(&plan);
+    let want = peer.lanes * me.writers * exchanged.iter().filter(|e| **e).count()
+        + peer.lanes * keyed.len() * windows.len();
     let mut ended = HashSet::new();
     let mut r = BufReader::with_capacity(1 << 16, c);
-    let mut route: Option<(usize, usize)> = None;
+    let mut route: Option<(usize, Target)> = None;
     loop {
         let f = match frame::read(&mut r).await {
             Ok(Some(f)) => f,
@@ -961,32 +996,61 @@ async fn receive(
         };
         if f.kind == FrameKind::Route {
             let rt = Route::decode(f.payload.as_slice()).map_err(|e| protocol(e.to_string()))?;
-            let (lane, w) = (rt.lane as usize, rt.writer_lane as usize);
-            if !(peer.first_lane..peer.first_lane + peer.lanes).contains(&lane)
-                || !(me.first_writer..me.first_writer + me.writers).contains(&w)
-            {
-                return Err(protocol(format!(
-                    "a route from lane {lane} to writer lane {w}"
-                )));
-            }
-            route = Some((lane, w - me.first_writer));
+            let lane = rt.lane as usize;
+            let to = match rt.keyed_lane {
+                Some(k) => Target::Keyed(k as usize),
+                None => Target::Writer(rt.writer_lane as usize),
+            };
+            let local = match to {
+                Target::Writer(w) => (me.first_writer..me.first_writer + me.writers)
+                    .contains(&w)
+                    .then(|| Target::Writer(w - me.first_writer)),
+                Target::Keyed(k) => (me.first_lane..me.first_lane + keyed.len())
+                    .contains(&k)
+                    .then(|| Target::Keyed(k - me.first_lane)),
+            };
+            let Some(local) =
+                local.filter(|_| (peer.first_lane..peer.first_lane + peer.lanes).contains(&lane))
+            else {
+                return Err(protocol(format!("a route from lane {lane} to {to:?}")));
+            };
+            route = Some((lane, local));
             continue;
         }
-        let Some((lane, w)) = route else {
+        let Some((lane, to)) = route else {
             return Err(protocol("a frame before its route".into()));
         };
         let s = f.stream as usize;
-        if !exchanged.get(s).copied().unwrap_or(false) {
-            return Err(protocol(format!("stream {s}, which isn't exchanged")));
+        match to {
+            Target::Writer(w) => {
+                if !exchanged.get(s).copied().unwrap_or(false) {
+                    return Err(protocol(format!("stream {s}, which isn't exchanged")));
+                }
+                let out = unwire(f, plan.generation).map_err(protocol)?;
+                if matches!(out, Out::End(_)) {
+                    ended.insert((lane, to, s));
+                }
+                tx[w]
+                    .send((lane, out))
+                    .await
+                    .map_err(|_| JobError::stopped("the writer lane stopped"))?;
+            }
+            Target::Keyed(k) => {
+                if !windows.contains(&s) {
+                    return Err(protocol(format!(
+                        "statement {s} to a keyed lane, which isn't a group window's"
+                    )));
+                }
+                let item = keyed::unwire(f, plan.generation).map_err(protocol)?;
+                if matches!(item, keyed::In::End(_)) {
+                    ended.insert((lane, to, s));
+                }
+                keyed[k]
+                    .send((lane, item))
+                    .await
+                    .map_err(|_| JobError::stopped("the keyed lane stopped"))?;
+            }
         }
-        let out = unwire(f, plan.generation).map_err(protocol)?;
-        if matches!(out, Out::End(_)) {
-            ended.insert((lane, w, s));
-        }
-        tx[w]
-            .send((lane, out))
-            .await
-            .map_err(|_| JobError::stopped("the writer lane stopped"))?;
     }
 }
 

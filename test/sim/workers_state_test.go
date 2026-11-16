@@ -266,6 +266,8 @@ func intersect(a, b checkpoint.KeyGroupRange) (checkpoint.KeyGroupRange, bool) {
 type wNamed struct {
 	Sections []wSection
 	Pending  []wStEntry
+	// The keyed operator's watermark at the barrier.
+	Mark int64
 }
 
 // wMerged is a merge's output, nil if every entry it read was a deletion,
@@ -1132,7 +1134,7 @@ func (l *wLane) snapshot(d decision) {
 	w, m := l.w, l.w.m
 	e := l.kcur
 	run, url, sections, pend := l.nextNames(e)
-	named := wNamed{Sections: sections, Pending: sortedEntries(pend)}
+	named := wNamed{Sections: sections, Pending: sortedEntries(pend), Mark: l.opWM}
 	if m.cfg.broken == "pending-epoch-only" {
 		named.Pending = nil
 		for _, x := range sortedEntries(pend) {

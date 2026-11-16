@@ -47,7 +47,7 @@ use tracing::{Instrument as _, Span, debug_span, info_span};
 use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
-use crate::mesh::{Links, Room};
+use crate::mesh::{Links, Room, Target};
 use crate::plan::{Exchange, InputPlan, Plan, Sink};
 use crate::remote::{Holding, RemoteStream};
 use crate::replay::Replayer;
@@ -56,7 +56,7 @@ use crate::staging::Staging;
 use crate::transform::Route;
 use crate::watermark::{self, Senders, Splits};
 
-mod keyed;
+pub(crate) mod keyed;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
 
@@ -872,10 +872,23 @@ where
         };
         writers.spawn(task.in_current_span());
     }
+    // A keyed lane for each lane, which other engines' lanes reach too.
+    let mut keyed = Vec::new();
+    let mut keyed_rx = Vec::new();
+    if windowed {
+        for _ in 0..inbound.len() {
+            let (tx, rx) = mpsc::channel(16);
+            keyed.push(tx);
+            keyed_rx.push(rx);
+        }
+    }
     let mut readers = JoinSet::new();
     let mesh = Links::start(&plan, &mut readers).and_then(|m| match (&m, listener) {
         (Some(_), Some(l)) => {
-            readers.spawn(crate::mesh::inbound(plan.clone(), l, senders.clone()).in_current_span());
+            readers.spawn(
+                crate::mesh::inbound(plan.clone(), l, senders.clone(), keyed.clone())
+                    .in_current_span(),
+            );
             Ok(m)
         }
         (None, None) => Ok(m),
@@ -891,21 +904,19 @@ where
             return Err(e);
         }
     };
-    let mut keyed = Vec::new();
-    if windowed {
-        for lane in 0..inbound.len() {
-            let (tx, rx) = mpsc::channel(16);
-            keyed.push(tx);
-            let k = Lane {
-                flow: flow.clone(),
-                lane,
-                clock: inbound.len() + lane,
-                tx: senders.clone(),
-                keyed: Vec::new(),
-                mesh: None,
-            };
-            readers.spawn(keyed::run(flow.clone(), k, rx).in_current_span());
-        }
+    // A keyed lane sends its output on to the writer lane its lane feeds, in
+    // its own engine (the plan has no exchange after a window), so it never
+    // waits on a link while a connection's reader waits on it.
+    for (lane, rx) in keyed_rx.into_iter().enumerate() {
+        let k = Lane {
+            flow: flow.clone(),
+            lane,
+            clock: inbound.len() + lane,
+            tx: senders.clone(),
+            keyed: Vec::new(),
+            mesh: None,
+        };
+        readers.spawn(keyed::run(flow.clone(), k, rx).in_current_span());
     }
     for (lane, r) in inbound.into_iter().enumerate() {
         let lane = Lane {
@@ -1121,13 +1132,18 @@ impl Lane {
     async fn send_to(&self, w: usize, out: Out) -> Result<(), JobError> {
         let stopped = |_| JobError::stopped("the outbound edge stopped");
         let from = self.flow.plan.first_lane + self.lane;
-        let out = match self.tx[w].try_send((from, out)) {
+        let Some(tx) = self.tx.get(w) else {
+            return Err(JobError::internal(format!(
+                "lane {from} sent to writer lane {w}, which this engine doesn't have"
+            )));
+        };
+        let out = match tx.try_send((from, out)) {
             Ok(()) => return Ok(()),
             Err(mpsc::error::TrySendError::Full(out)) => out,
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(stopped(())),
         };
         self.enter(Doing::Backpressured);
-        let sent = self.tx[w].send(out).await.map_err(|_| stopped(()));
+        let sent = tx.send(out).await.map_err(|_| stopped(()));
         self.enter(Doing::Busy);
         sent
     }
@@ -1141,8 +1157,19 @@ impl Lane {
         if let Some(local) = mesh.local(w) {
             return self.send_to(local, out).await;
         }
-        let frame = crate::mesh::wire(out)?;
-        let room = match mesh.room(w, frame.2.len())? {
+        self.remote(Target::Writer(w), crate::mesh::wire(out)?)
+            .await
+    }
+
+    /// Queues a frame for another engine's writer lane or keyed lane, on
+    /// the link to it, once there's room.
+    async fn remote(&self, to: Target, frame: (FrameKind, u32, Vec<u8>)) -> Result<(), JobError> {
+        let Some(mesh) = &self.mesh else {
+            return Err(JobError::internal(format!(
+                "{to:?} is another engine's, and the lane has no mesh"
+            )));
+        };
+        let room = match mesh.room(to, frame.2.len())? {
             Room::Ready(r) => r,
             wait => {
                 self.enter(Doing::Backpressured);
@@ -1151,7 +1178,7 @@ impl Lane {
                 r.ok_or_else(|| JobError::stopped("the link stopped"))?
             }
         };
-        mesh.push(self.flow.plan.first_lane + self.lane, w, frame, room)
+        mesh.push(self.flow.plan.first_lane + self.lane, to, frame, room)
     }
 
     /// Sends to the lane's own writer lane.
@@ -1170,14 +1197,15 @@ impl Lane {
 
     /// Sends a batch's rows to their writer lanes: those the stream keeps.
     /// `key` is the stream's key columns, as the batch names them, where it
-    /// keeps some key groups or has an exchange.
+    /// keeps some key groups or has an exchange. A group window's output
+    /// kept its rows before the window.
     async fn rows(
         &self,
         stream: usize,
         key: &[String],
         batch: RecordBatch,
     ) -> Result<(), JobError> {
-        let batch = match self.flow.plan.keep[stream] {
+        let batch = match self.flow.plan.kept(stream) {
             None => batch,
             Some((first, last)) => {
                 match in_key_groups(&batch, key, self.flow.plan.key_groups, first..=last).map_err(
@@ -1965,7 +1993,7 @@ async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Re
         lane.send(Out::Held(stream, b)).await?;
     }
     if n.batch.num_rows() > 0 {
-        let key = match lane.exchange(stream).is_some() || lane.flow.plan.keep[stream].is_some() {
+        let key = match lane.exchange(stream).is_some() || lane.flow.plan.kept(stream).is_some() {
             true => ls.shaper.key_columns(),
             false => Vec::new(),
         };
@@ -2272,6 +2300,9 @@ struct Pieces {
     held: Vec<StagedStream>,
     /// Each keyed lane's state, of each of its operators.
     snapshots: Vec<openetl_proto::engine::v1::StateSnapshot>,
+    /// By stream a group window reads: the least of its keyed lanes'
+    /// watermarks at the barrier.
+    window_marks: BTreeMap<String, i64>,
     /// What each operator's keyed lanes did, by operator.
     operators: BTreeMap<String, OperatorEpoch>,
 }
@@ -2426,6 +2457,7 @@ impl Flow {
             files,
             held,
             snapshots,
+            window_marks,
             operators,
         } = align.pieces.remove(&n).unwrap_or_default();
         let mut operators: Vec<OperatorEpoch> = operators.into_values().collect();
@@ -2498,6 +2530,7 @@ impl Flow {
                 delivered,
                 output_schemas,
                 watermarks,
+                window_watermarks: window_marks.into_iter().collect(),
                 operators,
             })),
         })
@@ -2929,11 +2962,11 @@ pub(crate) mod tests {
         }
     }
 
-    async fn put(w: &mut DuplexStream, kind: FrameKind, stream: u32, payload: Vec<u8>) {
+    pub(crate) async fn put(w: &mut DuplexStream, kind: FrameKind, stream: u32, payload: Vec<u8>) {
         frame::write(w, kind, stream, &payload).await.unwrap();
     }
 
-    fn rows(rows: &[&str]) -> Vec<u8> {
+    pub(crate) fn rows(rows: &[&str]) -> Vec<u8> {
         Rows {
             rows: rows.iter().map(|r| r.as_bytes().to_vec()).collect(),
         }
@@ -2955,14 +2988,14 @@ pub(crate) mod tests {
         out
     }
 
-    struct LaneHarness {
-        ins: Vec<DuplexStream>,
+    pub(crate) struct LaneHarness {
+        pub(crate) ins: Vec<DuplexStream>,
         outs: Vec<BufReader<DuplexStream>>,
         events: mpsc::Receiver<Result<EventsResponse, Status>>,
         job: tokio::task::JoinHandle<Result<(), JobError>>,
     }
 
-    fn start_lanes(req: openetl_proto::engine::v1::StartJobRequest) -> LaneHarness {
+    pub(crate) fn start_lanes(req: openetl_proto::engine::v1::StartJobRequest) -> LaneHarness {
         let plan = Arc::new(Plan::from_request(req).unwrap());
         let (mut ins, mut readers, mut outs, mut writers) = (vec![], vec![], vec![], vec![]);
         for _ in 0..plan.inbound.len() {
@@ -2988,7 +3021,7 @@ pub(crate) mod tests {
     }
 
     impl LaneHarness {
-        async fn end_all(&mut self, streams: u32) {
+        pub(crate) async fn end_all(&mut self, streams: u32) {
             for w in &mut self.ins {
                 for s in 0..streams {
                     put(w, FrameKind::EndOfStream, s, vec![]).await;
@@ -2997,7 +3030,7 @@ pub(crate) mod tests {
             }
         }
 
-        async fn finish(self) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
+        pub(crate) async fn finish(self) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
             let (out, mut events) = self.finish_events().await;
             (out, ready(&mut events).await)
         }
@@ -5588,7 +5621,7 @@ pub(crate) mod tests {
     /// event time, `at`, its watermark trails them by `delay` seconds, and
     /// `lanes` lanes and writer lanes read them. Stream b passes through.
     /// A job of `sql` over stream a, which keeps its state below `state`.
-    fn window_request(
+    pub(crate) fn window_request(
         state: &std::path::Path,
         sql: &str,
         lanes: u32,
@@ -5663,12 +5696,12 @@ pub(crate) mod tests {
         req.streams[0].event_time.as_mut().unwrap()
     }
 
-    const MINUTES: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
+    pub(crate) const MINUTES: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
                            FROM a GROUP BY tumble(at, INTERVAL '1 minute'), email";
 
-    const SEC: i64 = 1_000_000;
+    pub(crate) const SEC: i64 = 1_000_000;
 
-    fn barrier_of(generation: u64, n: u64) -> Vec<u8> {
+    pub(crate) fn barrier_of(generation: u64, n: u64) -> Vec<u8> {
         Barrier {
             epoch: Some(Epoch { generation, n }),
         }
@@ -5676,7 +5709,7 @@ pub(crate) mod tests {
     }
 
     /// A row of a at `second` seconds past the Unix epoch.
-    fn minute_row(id: i64, email: &str, second: i64) -> String {
+    pub(crate) fn minute_row(id: i64, email: &str, second: i64) -> String {
         format!(
             r#"{{"id": {id}, "email": "{email}", "v": {id}, "at": "1970-01-01T{:02}:{:02}:{:02}Z"}}"#,
             second / 3600,
@@ -5694,16 +5727,16 @@ pub(crate) mod tests {
     /// A window's row as a writer lane gave it: its start in seconds, its
     /// key, its count, and the epoch it came in.
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    struct WindowRow {
-        start: i64,
-        email: String,
-        n: i64,
-        epoch: u64,
+    pub(crate) struct WindowRow {
+        pub start: i64,
+        pub email: String,
+        pub n: i64,
+        pub epoch: u64,
     }
 
     /// Each writer lane's window rows, in order. `first` is the epoch the
     /// job starts at.
-    fn window_rows(outs: &[Vec<frame::Frame>], first: u64) -> Vec<Vec<WindowRow>> {
+    pub(crate) fn window_rows(outs: &[Vec<frame::Frame>], first: u64) -> Vec<Vec<WindowRow>> {
         outs.iter()
             .map(|frames| {
                 let mut epoch = first;
@@ -5746,7 +5779,7 @@ pub(crate) mod tests {
         all
     }
 
-    fn row(start: i64, email: &str, n: i64, epoch: u64) -> WindowRow {
+    pub(crate) fn row(start: i64, email: &str, n: i64, epoch: u64) -> WindowRow {
         WindowRow {
             start,
             email: email.into(),
@@ -6487,40 +6520,42 @@ pub(crate) mod tests {
         );
     }
 
-    /// A group window runs in one engine with every lane of the attempt, so
-    /// an engine with a part of one is refused.
+    /// A group window's keyed lanes take its stream from every lane of the
+    /// attempt, so an engine with a part of one runs it only in a mesh of
+    /// the attempt's engines, which reaches the others' keyed lanes.
     #[test]
-    fn a_group_window_runs_in_one_engine() {
+    fn a_part_of_an_attempt_runs_a_group_window_only_in_a_mesh() {
         type Change = Box<dyn Fn(&mut openetl_proto::engine::v1::StartJobRequest)>;
+        let mesh = |r: &mut openetl_proto::engine::v1::StartJobRequest| {
+            r.attempt_writer_lanes = 2;
+            r.mesh = Some(openetl_proto::engine::v1::Mesh {
+                engine: 0,
+                engines: (0..2)
+                    .map(|i| openetl_proto::engine::v1::MeshEngine {
+                        address: format!("127.0.0.1:{}", 7000 + i),
+                        lanes: 1,
+                        writer_lanes: 1,
+                    })
+                    .collect(),
+                listen: "127.0.0.1:7000".into(),
+                certificate: vec![1],
+                key: vec![1],
+                secret: vec![1],
+            });
+        };
         let refused: Vec<(&str, Change)> = vec![
             ("a worker's part", Box::new(|r| r.attempt_writer_lanes = 2)),
             ("a later worker's lanes", Box::new(|r| r.first_lane = 1)),
-            (
-                "a mesh",
-                Box::new(|r| {
-                    r.attempt_writer_lanes = 2;
-                    r.mesh = Some(openetl_proto::engine::v1::Mesh {
-                        engine: 0,
-                        engines: (0..2)
-                            .map(|i| openetl_proto::engine::v1::MeshEngine {
-                                address: format!("127.0.0.1:{}", 7000 + i),
-                                lanes: 1,
-                                writer_lanes: 1,
-                            })
-                            .collect(),
-                        listen: "127.0.0.1:7000".into(),
-                        certificate: vec![1],
-                        key: vec![1],
-                        secret: vec![1],
-                    });
-                }),
-            ),
         ];
         let state = tempfile::tempdir().unwrap();
         assert!(Plan::from_request(window_request(state.path(), MINUTES, 1, 1, 1)).is_ok());
         let mut redo = window_request(state.path(), MINUTES, 1, 1, 1);
         (redo.first_lane, redo.state_read_only) = (3, true);
         assert!(Plan::from_request(redo).is_ok(), "a redo runs on one lane");
+        let mut meshed = window_request(state.path(), MINUTES, 1, 1, 1);
+        mesh(&mut meshed);
+        let p = Plan::from_request(meshed).unwrap();
+        assert_eq!(p.attempt_lanes, [0..=127, 128..=255]);
         for (name, change) in refused {
             let mut req = window_request(state.path(), MINUTES, 1, 1, 1);
             change(&mut req);
@@ -6528,7 +6563,7 @@ pub(crate) mod tests {
                 panic!("{name}: planned");
             };
             assert!(
-                e.message.contains("runs in one engine"),
+                e.message.contains("runs it only in a mesh"),
                 "{name}: {}",
                 e.message
             );

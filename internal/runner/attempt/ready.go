@@ -27,6 +27,9 @@ type Ready struct {
 	Holds         map[string]*Holds
 	// Each split's watermark at its lane's barrier, by stream and split.
 	Watermarks map[string]map[string]int64
+	// By stream a group window reads: its watermark past the exchange at
+	// the keyed lanes' barrier.
+	WindowMarks map[string]int64
 	// As openetl.engine.v1.EpochReady's.
 	Operators []checkpoint.OperatorPart
 }
@@ -51,7 +54,8 @@ type ReplayProgress struct {
 
 // EpochReady is r as a share of epoch e carries it.
 func (r Ready) EpochReady(e *protocolv1.Epoch) *enginev1.EpochReady {
-	p := &enginev1.EpochReady{Epoch: e, Schemas: r.Schemas, OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: holdsProto(r.Holds), Watermarks: watermarksProto(r.Watermarks)}
+	p := &enginev1.EpochReady{Epoch: e, Schemas: r.Schemas, OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: holdsProto(r.Holds), Watermarks: watermarksProto(r.Watermarks),
+		WindowWatermarks: r.WindowMarks}
 	for _, s := range r.Snapshots {
 		p.Snapshots = append(p.Snapshots, SnapshotProto(s))
 	}
@@ -94,7 +98,8 @@ func ReadyOf(p *enginev1.EpochReady) (Ready, error) {
 	if len(p.GetFiles()) > 0 || len(p.GetStaged()) > 0 {
 		return Ready{}, errors.New("a worker's share holds what runs on one pod: staged files")
 	}
-	r := Ready{Schemas: p.GetSchemas(), OutputSchemas: p.GetOutputSchemas(), Delivered: p.GetDelivered(), Holds: HoldsOf(p.GetHolds()), Watermarks: WatermarksOf(p.GetWatermarks())}
+	r := Ready{Schemas: p.GetSchemas(), OutputSchemas: p.GetOutputSchemas(), Delivered: p.GetDelivered(), Holds: HoldsOf(p.GetHolds()), Watermarks: WatermarksOf(p.GetWatermarks()),
+		WindowMarks: WindowMarksOf(p.GetWindowWatermarks())}
 	for _, s := range p.GetSnapshots() {
 		r.Snapshots = append(r.Snapshots, SnapshotOf(s))
 	}
@@ -141,6 +146,15 @@ func SnapshotOf(p *enginev1.StateSnapshot) checkpoint.Snapshot {
 	kg := p.GetKeyGroups()
 	return checkpoint.Snapshot{Operator: p.GetOperator(), KeyGroups: checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())},
 		Layout: p.GetLayout(), Data: p.GetData(), Runs: p.GetRuns()}
+}
+
+// WindowMarksOf are the windows' watermarks as the engine reports them at
+// their keyed lanes' barriers, by stream; nil for none.
+func WindowMarksOf(m map[string]int64) map[string]int64 {
+	if len(m) == 0 {
+		return nil
+	}
+	return maps.Clone(m)
 }
 
 // WatermarksOf are the splits' watermarks as the engine reports them at

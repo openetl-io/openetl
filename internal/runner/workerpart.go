@@ -790,7 +790,7 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 	r := e.ready
 	s := &attemptv1.Share{Epoch: epoch, Rows: e.rows, Ready: attempt.Ready{
 		Schemas: r.Schemas, Snapshots: r.Snapshots, Quarantine: r.Quarantine,
-		OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: r.Holds, Watermarks: r.Watermarks, Operators: r.Operators,
+		OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: r.Holds, Watermarks: r.Watermarks, WindowMarks: r.WindowMarks, Operators: r.Operators,
 	}.EpochReady(epoch)}
 	for _, name := range slices.Sorted(maps.Keys(e.splits)) {
 		for _, sp := range e.splits[name] {
@@ -811,16 +811,17 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 			// Each of the destination's streams it reaches holds its rows:
 			// all of them from a lane that feeds the writer lane, and those
 			// of the writer lane's key groups from any lane, through an
-			// exchange.
+			// exchange before the writer or before a stateful statement.
 			for _, d := range p.job.fedBy(ref.Stream) {
 				r := &attemptv1.SplitRef{Stream: ref.Stream, Split: ref.ID, From: read.from, Rows: read.rows}
 				if p.job.SQL != nil {
 					r.Output = d.Name
 				}
+				_, keyed := p.job.keyedBy(d.Name)
 				switch {
-				case plan.Exchanges[d.Name] != nil && k < len(layout.Writers):
+				case (plan.Exchanges[d.Name] != nil || keyed) && k < len(layout.Writers):
 					kg := layout.Writers[k]
-					r.KeyGroups, r.Key = attempt.KeyGroups(kg.First, kg.Last), d.PrimaryKey
+					r.KeyGroups, r.Key = attempt.KeyGroups(kg.First, kg.Last), p.job.exchangeKey(d)
 				case !feeds:
 					continue
 				}

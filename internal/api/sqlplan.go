@@ -101,7 +101,13 @@ func (s *Server) planSQLWith(ctx context.Context, p *planned, cat *apiv1.Catalog
 		case ok && f.Code == contract.NoRunner:
 			notPlanned("no runner of data plane %q took it within %s", p.v.dataPlane, contract.PlanPickup)
 		case ok:
+			// The request is the catalog's and the history's, not the
+			// user's, so its failure is ours: apply and plan print it.
 			notPlanned("a runner of data plane %q failed to plan it: %s: %s", p.v.dataPlane, f.Code, f.Message)
+			out.Warnings = append(out.Warnings, &apiv1.PlanWarning{Message: fmt.Sprintf(
+				"OpenETL failed to plan transform.sql, so nothing checked its statements; the fault is OpenETL's, not theirs: "+
+					"a runner of data plane %q failed: %s: %s. The sync plans them when it starts, and fails with CONFIG_INVALID if they have errors.",
+				p.v.dataPlane, f.Code, f.Message)})
 		default:
 			s.log().Error("planning transform.sql failed", "pipeline", p.name, "err", err)
 			notPlanned("sending it to a runner of data plane %q failed: %v", p.v.dataPlane, err)

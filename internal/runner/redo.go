@@ -155,6 +155,28 @@ func (j *Job) redoFloors(rec, start *checkpoint.Record) map[string]int64 {
 	return floors(j.Streams, splits)
 }
 
+// redoMarks are where a redo of rec's epoch, which starts from start
+// (redoStart's), starts each stream's watermark past an exchange, and where
+// its group windows close at the barrier: as the record has them where it
+// does, the windows' watermarks at the epoch's start and barrier, and
+// otherwise the floors redoFloors gives, with the windows going by the
+// watermarks of what's read again.
+func (j *Job) redoMarks(rec, start *checkpoint.Record) (floors, closes map[string]int64) {
+	floors, closes = j.redoFloors(rec, start), map[string]int64{}
+	if floors == nil {
+		floors = map[string]int64{}
+	}
+	for name, st := range rec.Streams {
+		if st.Floor != nil {
+			floors[name] = *st.Floor
+		}
+		if st.Closed != nil {
+			closes[name] = *st.Closed
+		}
+	}
+	return floors, closes
+}
+
 // redoRead is a covered split read again: from where its part of the epoch
 // began, to where the record has it, and the rows it emitted on the way; 0
 // if not known. It's read on the redo's lane of the destination's streams
@@ -181,6 +203,10 @@ type redoPart struct {
 	// an exchange brought there only those of the streams exchanged. At
 	// least one lane.
 	keeps []map[string]bool
+	// The outputs of stateful statements the committable holds, whose keyed
+	// lanes may give their rows to any lane's writer lane: the engine keeps
+	// only those of their key groups in ranges.
+	keyed []string
 }
 
 // redoReads are what committable i of rec holds, read again: its splits,
@@ -209,13 +235,13 @@ func (j *Job) redoReads(rec *checkpoint.Record, i int) (redoPart, error) {
 		if err != nil {
 			return part, err
 		}
-		if cs.KeyGroups != nil && !slices.Equal(cs.Key, d.PrimaryKey) {
+		if key := j.exchangeKey(d); cs.KeyGroups != nil && !slices.Equal(cs.Key, key) {
 			what := fmt.Sprintf("stream %q", cs.Stream)
 			if cs.Output != "" {
 				what = fmt.Sprintf("output %q", cs.Output)
 			}
 			return part, errs.New(errs.ConfigInvalid, "runner: epoch %d split %s between writer lanes by its primary key %s, and the pipeline now keys it by %s, so writer lane %d's part can't be written again as it was: apply the pipeline with the key %s until the epoch is settled, then change it",
-				rec.Epoch, what, keyName(cs.Key), keyName(d.PrimaryKey), i, keyName(cs.Key))
+				rec.Epoch, what, keyName(cs.Key), keyName(key), i, keyName(cs.Key))
 		}
 		r, ranged := part.ranges[d.Name]
 		switch {
@@ -259,6 +285,21 @@ func (j *Job) redoReads(rec *checkpoint.Record, i int) (redoPart, error) {
 	}
 	if len(part.keeps) == 0 {
 		part.keeps = []map[string]bool{{}}
+	}
+	// A stateful statement's output holds the rows its windows gave of the
+	// writer lane's key groups, from state, whether or not a split read rows
+	// of them.
+	if kg := rec.Coverage[i].KeyGroups; kg != nil && j.SQL != nil {
+		for _, e := range j.SQL.Expected {
+			if e.Operator == "" {
+				continue
+			}
+			if r, ok := part.ranges[e.Name]; ok && r != *kg {
+				return part, errs.New(errs.Internal, "runner: a committable of epoch %d holds rows of %q in key groups %d to %d, and its writer lane owned %d to %d", rec.Epoch, e.Name, r.First, r.Last, kg.First, kg.Last)
+			}
+			part.ranges[e.Name] = *kg
+			part.keyed = append(part.keyed, e.Name)
+		}
 	}
 	return part, nil
 }
@@ -334,7 +375,7 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	// Each lane writes its own writer lane.
 	plan.KeyGroupRanges, plan.FirstLane, plan.Exchanges = part.ranges, i, nil
 	plan.StateReadOnly = true
-	plan.Floors = j.redoFloors(rec, before)
+	plan.Floors, plan.Closes = j.redoMarks(rec, before)
 	if plan.Sink != (SinkPlan{}) {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
 	}
@@ -357,7 +398,10 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	// one each.
 	keeps := make([]map[string]bool, lanes)
 	for l, w := range plan.laidOut().WriterOf {
-		keeps[w] = part.keeps[l]
+		keeps[w] = maps.Clone(part.keeps[l])
+		for _, o := range part.keyed {
+			keeps[w][o] = true
+		}
 	}
 
 	g, gctx := errgroup.WithContext(ctx)

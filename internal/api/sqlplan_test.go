@@ -80,7 +80,8 @@ func TestPlanSQL(t *testing.T) {
 }
 
 // Where the statements can't be planned, a note says why, and the plan
-// goes on.
+// goes on. Where a runner failed to plan them, a warning, which apply
+// prints too, says the fault is OpenETL's.
 func TestPlanSQLNotPlanned(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -107,6 +108,11 @@ func TestPlanSQLNotPlanned(t *testing.T) {
 		}
 		if len(out.GetNotes()) != 1 || !strings.HasPrefix(out.GetNotes()[0], "transform.sql wasn't planned: "+c.want) || len(out.GetProblems()) != 0 {
 			t.Errorf("%s: notes %q", c.name, out.GetNotes())
+		}
+		w := out.GetWarnings()
+		if failed := c.name == "refused"; failed != (len(w) == 1) || failed && (!strings.HasPrefix(w[0].GetMessage(), "OpenETL failed to plan transform.sql") ||
+			!strings.Contains(w[0].GetMessage(), `a runner of data plane "dp1" failed: CONFIG_INVALID: stream orders column id: x isn't a type the engine knows.`)) {
+			t.Errorf("%s: warnings %v", c.name, w)
 		}
 	}
 	// The pipeline's schema history gives a stream the catalog lists no

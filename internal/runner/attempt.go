@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -831,6 +832,7 @@ func (j *Job) restart(rec *checkpoint.Record, streams []string) *checkpoint.Reco
 			continue
 		}
 		st.State, st.Splits, st.Complete, st.ReadStart, st.Watermark = nil, nil, false, 0, nil
+		st.Floor, st.Closed = nil, nil
 		cp.Streams[name] = st
 		cp.Forced = slices.DeleteFunc(cp.Forced, func(s string) bool { return s == name })
 		cp.Reread = slices.DeleteFunc(cp.Reread, func(s string) bool { return s == name })
@@ -1405,6 +1407,11 @@ type coordinator struct {
 	holdPlans map[string]*HoldPlan
 	// A release is being patched in, so barriers go on after the read ends.
 	replaying bool
+	// Owned by the committer: by stream with event time, where its
+	// watermark past an exchange starts the next epoch: the attempt's
+	// floor, then where a group window's keyed lanes had it at the last
+	// barrier.
+	windowFloors map[string]int64
 	// Nil: the attempt has no workers, and its lanes run here. Set: w is the
 	// workers' first writer lane, through them.
 	fleet *fleet
@@ -1431,6 +1438,7 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 	c.pump = newSourcePump(gctx, c.job, c.committed, splits, canForce, done, ends, toFlow, c.events)
 	plan := c.job.plan(c.sess.Generation(), c.next, restored, c.readStarts, schemas, c.outputSchemas, c.holdPlans)
 	plan.Floors = floors(c.job.Streams, splits)
+	c.windowFloors = maps.Clone(plan.Floors)
 	var staging Staging
 	if c.job.staged() {
 		staging = c.job.Staging
@@ -1510,10 +1518,17 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 }
 
 // exchanges are the columns each of the destination's streams is exchanged
-// by before the writer, on writers writer lanes; nil for none.
+// by before the writer, on writers writer lanes; nil for none. A stateful
+// statement's output never is: its keyed lanes, which own their key groups
+// by the statement's keys, give its rows to their own writer lanes, and its
+// primary key holds those keys. So a writer lane's part of an epoch is of
+// the key groups of the statement's keys, which a redo reads it again by.
 func (j *Job) exchanges(writers int) map[string][]string {
 	var out map[string][]string
 	for _, s := range j.sinkStreams() {
+		if _, keyed := j.keyedBy(s.Name); keyed {
+			continue
+		}
 		if cols := exchange(s, writers); cols != nil {
 			if out == nil {
 				out = map[string][]string{}
@@ -1540,9 +1555,38 @@ func exchange(s Stream, writers int) []string {
 // group window.
 func (j *Job) stateful() bool { return j.SQL != nil && len(j.SQL.Operators) > 0 }
 
+// keyedBy is the columns a stateful statement that writes output exchanges
+// its input's rows by, to the keyed lanes that keep its state; false where
+// none writes it.
+func (j *Job) keyedBy(output string) ([]string, bool) {
+	if j.SQL == nil {
+		return nil, false
+	}
+	for _, e := range j.SQL.Expected {
+		if e.Name == output && e.Operator != "" {
+			return e.Need, true
+		}
+	}
+	return nil, false
+}
+
+// exchangeKey is the columns whose key groups an exchange sends d's rows
+// by, on their way to its writer lanes: those of the stateful statement
+// that writes it, before the statement, or else d's primary key.
+func (j *Job) exchangeKey(d Stream) []string {
+	if need, ok := j.keyedBy(d.Name); ok {
+		return need
+	}
+	return d.PrimaryKey
+}
+
 // keyGrouped says a stream's rows meet the writer through an exchange by key
-// group when there is more than one writer lane.
-func (j *Job) keyGrouped(s Stream) bool { return exchange(s, 2) != nil }
+// group when there is more than one writer lane; a stateful statement's
+// output's never do (exchanges).
+func (j *Job) keyGrouped(s Stream) bool {
+	_, keyed := j.keyedBy(s.Name)
+	return !keyed && exchange(s, 2) != nil
+}
 
 // sinkStarts are the starts of the reads of the destination's streams that
 // the attempt reads, and where their reads end.
@@ -1929,6 +1973,13 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 			ReadStart: c.readStarts[name],
 			Rows:      st.rows[name],
 		}
+		if closed, ok := st.flow.WindowMarks[name]; ok {
+			floor, ok := c.windowFloors[name]
+			if !ok {
+				floor = math.MinInt64
+			}
+			s.Floor, s.Closed = &floor, &closed
+		}
 		if sinks {
 			s.Delivered, s.Holds = st.flow.Delivered[name], holds[name]
 		}
@@ -1957,6 +2008,12 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	}
 	for name := range c.holds {
 		c.holds[name] = holds[name]
+	}
+	for name, closed := range st.flow.WindowMarks {
+		if c.windowFloors == nil {
+			c.windowFloors = map[string]int64{}
+		}
+		c.windowFloors[name] = closed
 	}
 	for _, o := range rec.Operators {
 		c.windows[o.Operator] = o.Windows

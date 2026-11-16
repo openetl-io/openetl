@@ -297,6 +297,13 @@ message EventTime {
   // come, giving the window's row again, in microseconds. A row later than
   // that is quarantined.
   int64 lateness_micros = 5;
+  // A redo's (state_read_only): where the stream's watermark past the
+  // exchange into a group window's keyed lanes was at the barrier of the
+  // epoch it redoes, as EpochReady.window_watermarks gave it. The keyed
+  // lanes stay at the floor while the epoch is read again, whatever their
+  // senders' watermarks, and close the windows up to this one at the
+  // barrier. Unset: they go by their senders'.
+  optional int64 closes_at = 6;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -545,6 +552,11 @@ message EpochReady {
   // Each stateful operator's part of the epoch on this engine's lanes.
   // Every engine of an attempt reports its own, which add up.
   repeated OperatorEpoch operators = 11;
+  // Each stream a group window reads: its watermark past the exchange into
+  // the window's keyed lanes at their barrier, the least of every sender's
+  // of the attempt and never below the floor, which the windows closed up
+  // to; the least int64 where it has none.
+  map<string, int64> window_watermarks = 12;
 }
 
 // OperatorEpoch is what an engine's lanes of one stateful operator did in

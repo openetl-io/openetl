@@ -3,7 +3,6 @@ package plan
 import (
 	"cmp"
 	"fmt"
-	"slices"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/sqlplan"
@@ -18,15 +17,14 @@ type WorkerJob struct {
 	Caps    destination.Capabilities
 	// The engine writes the destination's data.
 	EngineWritten bool
-	// A SQL statement keeps state, as a group window does.
-	Stateful bool
 }
 
 // OnePod says why a job that asks for workers runs on one pod; empty if it
 // can run on them. What needs one writer, or what only one pod runs, stays
-// on one pod. A SQL transform of row-wise statements runs on workers, and
-// so do holds: the attempt's coordinator owns each stream's schema and what
-// it holds.
+// on one pod. A SQL transform runs on workers, a group window's too, whose
+// rows the workers' engines exchange by key group to the keyed lanes that
+// keep its state; and so do holds: the attempt's coordinator owns each
+// stream's schema and what it holds.
 func OnePod(j WorkerJob) string {
 	caps := j.Caps
 	switch {
@@ -38,10 +36,6 @@ func OnePod(j WorkerJob) string {
 		return fmt.Sprintf("the destination takes %d writer lanes, fewer than %d workers", caps.Lanes(), j.Workers)
 	case caps.Class == destination.TransactionalStream && !caps.LaneCommits:
 		return "a transactional destination runs on one pod unless its writer lanes commit on their own"
-	case j.Stateful:
-		// Its exchange runs inside one engine, and its state restores where
-		// the record's lanes were, until engines exchange rows between pods.
-		return "a SQL statement with state, as a group window, runs on one pod"
 	case caps.Delivery == destination.DeliveryStaged:
 		return "a destination that loads staged epochs runs on one pod"
 	case j.EngineWritten:
@@ -81,8 +75,7 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 	if asked <= 1 {
 		return 0, "", nil
 	}
-	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec),
-		Stateful: a != nil && slices.ContainsFunc(a.Statements, func(st sqlplan.Statement) bool { return st.Operator != "" })}
+	j := WorkerJob{Workers: asked, Caps: caps, EngineWritten: engineWritten, OwnCode: ownCode(spec)}
 	if why := OnePod(j); why != "" {
 		return 0, why, nil
 	}

@@ -100,6 +100,14 @@ type StreamState struct {
 	// The whole stream's watermark, as SplitState's, where it has no other
 	// splits.
 	Watermark *int64 `json:"watermark,omitempty"`
+	// A stream a group window reads: its watermark past the exchange into
+	// the window's keyed lanes, where the epoch started it and where its
+	// barrier found it, which the windows closed up to, in microseconds
+	// since the Unix epoch; the least int64 where it had none. A redo of
+	// the epoch starts its windows at Floor and closes them at Closed. Nil:
+	// not known.
+	Floor  *int64 `json:"floor,omitempty"`
+	Closed *int64 `json:"closed,omitempty"`
 }
 
 // WholeStream is the ID of the split that is the whole stream. A stream
@@ -405,6 +413,11 @@ type FlinkCheckpoint struct {
 // committable holds.
 type Coverage struct {
 	Splits []CoveredSplit `json:"splits,omitempty"`
+	// With a SQL transform that keeps state: the key groups its writer lane
+	// owned, of whose state the committable holds what the stateful
+	// statements' outputs gave, windows the epoch closed with no row read
+	// among them. Nil without one.
+	KeyGroups *KeyGroupRange `json:"key_groups,omitempty"`
 }
 
 // CoveredSplit is a split whose rows in KeyGroups a committable holds.

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,12 +30,16 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/plan"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner/pods"
 	"github.com/openetl-io/openetl/internal/runner/worker"
 	sdk "github.com/openetl-io/openetl/sdk/go"
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // What this test binary runs as, when it's started as one of the processes
@@ -50,6 +55,9 @@ func TestMain(m *testing.M) {
 	switch os.Getenv(processEnv) {
 	case "connector":
 		sdk.Serve(laneFiles)
+		return
+	case "timed":
+		sdk.Serve(timedEvents)
 		return
 	case "locked":
 		sdk.Serve(lockedSource)
@@ -157,14 +165,13 @@ func (a *workersAPI) ReportAttemptFailure(context.Context, *connect.Request[data
 	return connect.NewResponse(&dataplanev1.ReportAttemptFailureResponse{}), nil
 }
 
-// An attempt on two workers, each a process the process launcher starts as
-// it would a pod: the coordinator tells the API where they join, they find
-// it there, read and write their parts with connectors and engines of their
-// own, whose exchange sends each keyed row over TLS to the writer lane that
-// owns its key group, in either worker, and every row lands once. The
-// coordinator closes the connectors it discovered with and reads and writes
-// nothing.
-func TestAnAttemptOnWorkerProcesses(t *testing.T) {
+// onWorkerProcesses runs an attempt of pipeline, from src into the lanes
+// destination in its out directory, on two workers, each a process the
+// process launcher starts as it would a pod, through the activities a
+// runner runs: this process is their coordinator. The attempt's result, the
+// API it ran against, its work and its out directory.
+func onWorkerProcesses(t *testing.T, src *apiv1.ConnectorConfig, pipeline *apiv1.PipelineSpec) (contract.AttemptResult, *workersAPI, *worker.Work, string, error) {
+	t.Helper()
 	engine := os.Getenv("OPENETL_ENGINE")
 	if _, err := os.Stat(engine); engine == "" || err != nil {
 		t.Skip("OPENETL_ENGINE names no engine binary")
@@ -180,13 +187,11 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	script := fmt.Sprintf("#!/bin/sh\n%s=connector exec %q -test.run='^$'\n", processEnv, exe)
-	if err := os.WriteFile(filepath.Join(connectors, "destination-lanes"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	src, err := structpb.NewStruct(map[string]any{"seed": 4, "count": 3000, "batchSize": 100})
-	if err != nil {
-		t.Fatal(err)
+	for name, as := range map[string]string{"destination-lanes": "connector", "source-timed": "timed"} {
+		script := fmt.Sprintf("#!/bin/sh\n%s=%s exec %q -test.run='^$'\n", processEnv, as, exe)
+		if err := os.WriteFile(filepath.Join(connectors, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	dst, err := structpb.NewStruct(map[string]any{"dir": out})
 	if err != nil {
@@ -199,11 +204,7 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 	api := &workersAPI{
 		spec: &dataplanev1.GetSyncSpecResponse{
 			OrgId: "org", PipelineId: "p", Version: "v1",
-			Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: src},
-			Destination: &apiv1.ConnectorConfig{Connector: "lanes", Config: dst},
-			Pipeline: &apiv1.PipelineSpec{Delivery: &apiv1.Delivery{Commit: &apiv1.Commit{
-				MaxBytes: 64 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE,
-			}}},
+			Source: src, Destination: &apiv1.ConnectorConfig{Connector: "lanes", Config: dst}, Pipeline: pipeline,
 		},
 		work: &dataplanev1.Work{Id: "run/attempt/1", Kind: contract.RunSyncAttempt, Input: input, Size: &dataplanev1.Resources{CpuMillis: 1000, MemoryBytes: 1 << 30}, Workers: 2},
 	}
@@ -238,6 +239,23 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(worker.NewContext(t.Context(), wk), 3*time.Minute)
 	defer cancel()
 	res, err := s.RunSyncAttempt(ctx, contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
+	return res, api, wk, out, err
+}
+
+// An attempt on two workers: the coordinator tells the API where they join,
+// they find it there, read and write their parts with connectors and engines
+// of their own, whose exchange sends each keyed row over TLS to the writer
+// lane that owns its key group, in either worker, and every row lands once.
+// The coordinator closes the connectors it discovered with and reads and
+// writes nothing.
+func TestAnAttemptOnWorkerProcesses(t *testing.T) {
+	src, err := structpb.NewStruct(map[string]any{"seed": 4, "count": 3000, "batchSize": 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, api, wk, out, err := onWorkerProcesses(t, &apiv1.ConnectorConfig{Connector: "faker", Config: src}, &apiv1.PipelineSpec{
+		Delivery: &apiv1.Delivery{Commit: &apiv1.Commit{MaxBytes: 64 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,6 +294,360 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 			t.Errorf("%s's rows were staged on writer lanes %v, want both workers'", stream, lanes)
 		}
 	}
+}
+
+// A group window's job runs on the workers it was placed on, through the
+// activities a runner runs: the coordinator's job has the engine's dataflow
+// when it decides, so it isn't placed again on one pod. The workers'
+// engines send each row to the keyed lane that owns its region, on either
+// worker, and each window lands once, from both workers' writer lanes,
+// with every row.
+func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
+	sql := "INSERT INTO tens SELECT window_start, region, count(*) AS n FROM events GROUP BY tumble(at, INTERVAL '10 seconds'), region"
+	res, api, _, out, err := onWorkerProcesses(t, &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}}, &apiv1.PipelineSpec{
+		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at"}}},
+		Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
+		Delivery:  &apiv1.Delivery{Commit: &apiv1.Commit{MaxBytes: 16 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE}},
+	})
+	if onePod := (*worker.OnePod)(nil); errors.As(err, &onePod) {
+		t.Fatalf("the job was placed again on one pod: %s", onePod.Why)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Committed < 2 {
+		t.Errorf("committed %d epochs, want several", res.Committed)
+	}
+	api.mu.Lock()
+	joined := len(api.joined)
+	api.mu.Unlock()
+	if joined != 2 {
+		t.Errorf("%d workers joined, want 2", joined)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "tens.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := map[string][]string{}
+	got := map[string]int{}
+	for line := range strings.Lines(string(b)) {
+		var r struct {
+			Start  string `json:"window_start"`
+			Region string
+			N      int
+		}
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatal(err)
+		}
+		w := r.Start + "/" + r.Region
+		if _, ok := got[w]; ok {
+			t.Fatalf("window %s landed twice", w)
+		}
+		got[w] = r.N
+		starts[r.Region] = append(starts[r.Region], r.Start)
+	}
+	// Each region's windows, in the order they start.
+	want := timedWindows()
+	for region, counts := range want {
+		ss := starts[region]
+		slices.Sort(ss)
+		var ns []int
+		for _, s := range ss {
+			ns = append(ns, got[s+"/"+region])
+		}
+		if !slices.Equal(ns, counts) {
+			t.Errorf("region %s's windows counted %v, want %v", region, ns, counts)
+		}
+	}
+	if len(starts) != len(want) {
+		t.Errorf("%d regions' windows landed, want %d", len(starts), len(want))
+	}
+	// Each worker writes with a destination process of its own.
+	procs := writerProcesses(t, filepath.Join(out, ".epochs"))
+	wrote := map[string]bool{}
+	for l := range stagedLanes(t, filepath.Join(out, ".epochs"))["tens"] {
+		wrote[procs[l]] = true
+	}
+	if len(wrote) != 2 {
+		t.Errorf("the windows were staged from %d of the workers' processes %v, want both", len(wrote), procs)
+	}
+}
+
+// A Spark or Flink transform's attempt placed on workers goes back to one
+// pod before its transform is set up: this runner, which can run neither,
+// would fail at that setup.
+func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	connectors, store := filepath.Join(dir, "connectors"), filepath.Join(dir, "store")
+	for _, d := range []string{connectors, store} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := fmt.Sprintf("#!/bin/sh\n%s=connector exec %q -test.run='^$'\n", processEnv, exe)
+	if err := os.WriteFile(filepath.Join(connectors, "destination-lanes"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	dst, err := structpb.NewStruct(map[string]any{"dir": filepath.Join(dir, "out")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := checkpoint.NewFSStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tr := range map[string]*apiv1.Transform{
+		"spark": {Engine: &apiv1.Transform_Spark{Spark: &apiv1.SparkTransform{Cluster: "c"}}},
+		"flink": {Engine: &apiv1.Transform_Flink{Flink: &apiv1.FlinkTransform{Cluster: "c"}}},
+	} {
+		api := &workersAPI{spec: &dataplanev1.GetSyncSpecResponse{
+			OrgId: "org", PipelineId: "p", Version: "v1",
+			Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: &structpb.Struct{}},
+			Destination: &apiv1.ConnectorConfig{Connector: "lanes", Config: dst},
+			Pipeline:    &apiv1.PipelineSpec{Transform: tr},
+		}}
+		mux := http.NewServeMux()
+		mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+		srv := httptest.NewServer(mux)
+		s := &Sync{
+			API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), Checkpoints: checkpoints, Storage: store,
+			Connectors: connectorhost.Env{Connectors: connectors},
+		}
+		wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: 2, Size: resources.S, Received: time.Now()}, nil)
+		_, err := s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
+		srv.Close()
+		var onePod *worker.OnePod
+		if !errors.As(err, &onePod) || onePod.Why != "a Spark or Flink transform runs on one pod" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A statement tier 3 takes, as a dedupe by ROW_NUMBER() = 1, is refused
+// as its sync's job is built, before the attempt is placed: on workers as on
+// one pod.
+func TestATier3StatementIsRefusedOnWorkersAsOnOnePod(t *testing.T) {
+	engine := os.Getenv("OPENETL_ENGINE")
+	if _, err := os.Stat(engine); engine == "" || err != nil {
+		t.Skip("OPENETL_ENGINE names no engine binary")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	connectors, store := filepath.Join(dir, "connectors"), filepath.Join(dir, "store")
+	for _, d := range []string{connectors, store} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, as := range map[string]string{"destination-lanes": "connector", "source-timed": "timed"} {
+		script := fmt.Sprintf("#!/bin/sh\n%s=%s exec %q -test.run='^$'\n", processEnv, as, exe)
+		if err := os.WriteFile(filepath.Join(connectors, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst, err := structpb.NewStruct(map[string]any{"dir": filepath.Join(dir, "out")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := checkpoint.NewFSStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := "INSERT INTO firsts SELECT id, region, at FROM events QUALIFY row_number() OVER (PARTITION BY region ORDER BY at) = 1"
+	api := &workersAPI{spec: &dataplanev1.GetSyncSpecResponse{
+		OrgId: "org", PipelineId: "p", Version: "v1",
+		Source:      &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}},
+		Destination: &apiv1.ConnectorConfig{Connector: "lanes", Config: dst},
+		Pipeline: &apiv1.PipelineSpec{
+			Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at"}}},
+			Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
+		},
+	}}
+	mux := http.NewServeMux()
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	s := &Sync{
+		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), Checkpoints: checkpoints, Storage: store,
+		Engine: engineclient.Options{Binary: engine}, Connectors: connectorhost.Env{Connectors: connectors},
+	}
+	for _, workers := range []int{0, 2} {
+		wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: workers, Size: resources.S, Received: time.Now()}, nil)
+		_, err := s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
+		if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "transform.sql:1:62: OVER: transforms don't run window functions yet (tier 3)") {
+			t.Errorf("on %d workers: %v", workers, err)
+		}
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if api.opened > 0 {
+		t.Error("the coordinator opened its workers")
+	}
+}
+
+// A count over windows of a topic's records, by their own columns, as a
+// Kafka source declares them, its headers JSON, plans for two workers
+// through the catalog: one exchange, on the window's key, before the
+// statement, and none before the writer.
+func TestAWindowOverARecordsOwnColumnsPlansForWorkers(t *testing.T) {
+	bin := os.Getenv("OPENETL_ENGINE")
+	if _, err := os.Stat(bin); bin == "" || err != nil {
+		t.Skip("OPENETL_ENGINE names no engine binary")
+	}
+	raw, err := arrowipc.EncodeSchema(arrow.NewSchema([]arrow.Field{
+		{Name: "_kafka_partition", Type: arrow.PrimitiveTypes.Int32},
+		{Name: "_kafka_offset", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "_kafka_timestamp", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}},
+		{Name: "_kafka_key", Type: arrow.BinaryTypes.String, Nullable: true},
+		{Name: "_kafka_headers", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: arrow.NewMetadata([]string{"ARROW:extension:name"}, []string{"arrow.json"})},
+	}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := arrowipc.DecodeSchema(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat := catalogProto(source.Catalog{Streams: []source.CatalogStream{{
+		Name: "topic", CursorField: "_kafka_offset", Replay: source.Exact, Schema: discovered, SyncModes: []source.SyncMode{source.Stream},
+	}}})
+	sql := "INSERT INTO tens\nSELECT window_start, _kafka_key AS k, count(*) AS n, sum(_kafka_offset) AS total, min(_kafka_offset) AS first\n" +
+		"FROM topic\nGROUP BY tumble(_kafka_timestamp, INTERVAL '10 seconds'), _kafka_key"
+	spec := &apiv1.PipelineSpec{
+		Mode:      apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
+		Resources: &apiv1.JobResources{Workers: 2},
+		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "topic", EventTime: "_kafka_timestamp"}}},
+		Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
+	}
+	req, unknown := plan.SQLRequest(spec, cat, nil)
+	if len(unknown) > 0 {
+		t.Fatal(unknown)
+	}
+	a, err := engineclient.Plan(t.Context(), engineclient.Options{Binary: bin}, req)
+	if err != nil || len(a.Errors) > 0 {
+		t.Fatalf("%v, %v", err, a.Errors)
+	}
+	caps := destination.Capabilities{Class: destination.TransactionalStream, Scopes: []destination.Scope{destination.ScopePipeline}, WriterLanes: 64, LaneCommits: true}
+	streams, problems, _ := plan.PipelineSQL(spec, cat, caps, &a)
+	if len(problems) > 0 {
+		t.Fatal(problems)
+	}
+	if workers, onePod, warnings := plan.Workers(spec, cat, caps, false, &a); workers != 2 || onePod != "" || len(warnings) > 0 {
+		t.Errorf("%d workers, on one pod because %q, warned %v", workers, onePod, warnings)
+	}
+	var exchanges []string
+	for _, st := range streams {
+		for _, op := range st.GetOperators() {
+			if op.GetExchange() {
+				exchanges = append(exchanges, fmt.Sprintf("%s %s %v", st.GetName(), op.GetKind(), op.GetNeeds()))
+			}
+		}
+	}
+	if want := []string{"tens PLAN_OPERATOR_KIND_STATEMENT [_kafka_key]"}; !slices.Equal(exchanges, want) {
+		t.Errorf("the plan exchanges %v, want %v", exchanges, want)
+	}
+}
+
+// timedEvents is a source of one stream, events, in timedSplits splits,
+// whose columns it declares. Split k's chunk c holds timedRows rows at c
+// seconds and r milliseconds, the rth of region timedRegions[(k+r)%16], so
+// each split's rows come in the order of their time.
+var timedEvents = sdk.Connector{
+	Name:         "timed",
+	ConfigSchema: []byte(`{"type": "object"}`),
+	Egress:       sdk.Egress{Tier: sdk.EgressRaw},
+	Splits:       true,
+	Source:       func([]byte, host.Host) (source.Source, error) { return timedSource{}, nil },
+}
+
+const (
+	timedSplits = 4
+	timedChunks = 30
+	timedRows   = 16
+)
+
+var timedRegions = func() []string {
+	out := make([]string, 16)
+	for i := range out {
+		out[i] = fmt.Sprintf("r%d", i)
+	}
+	return out
+}()
+
+// timedWindows are the counts of each region's ten-second windows of
+// timedEvents' rows, in the order the windows start.
+func timedWindows() map[string][]int {
+	out := map[string][]int{}
+	for k := range timedSplits {
+		for c := range timedChunks {
+			for r := range timedRows {
+				region := timedRegions[(k+r)%len(timedRegions)]
+				if out[region] == nil {
+					out[region] = make([]int, timedChunks/10)
+				}
+				out[region][c/10]++
+			}
+		}
+	}
+	return out
+}
+
+type timedSource struct{}
+
+func (timedSource) Discover(context.Context) (source.Catalog, error) {
+	return source.Catalog{Streams: []source.CatalogStream{{
+		Name: "events", Replay: source.Exact, SyncModes: []source.SyncMode{source.FullRefresh},
+		Schema: arrow.NewSchema([]arrow.Field{
+			{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "region", Type: arrow.BinaryTypes.String, Nullable: true},
+			{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
+		}, nil),
+	}}}, nil
+}
+
+func (timedSource) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
+	out := make([]source.Split, timedSplits)
+	for i := range out {
+		out[i] = source.Split{ID: strconv.Itoa(i)}
+	}
+	return out, nil
+}
+
+func (timedSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	return source.ReadSplits(ctx, req, out, func(_ context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		k, err := strconv.Atoi(sp.ID)
+		if err != nil {
+			return err
+		}
+		from := 0
+		if sp.State != nil {
+			if from, err = strconv.Atoi(string(sp.State)); err != nil {
+				return err
+			}
+		}
+		for c := from; c < timedChunks; c++ {
+			rows := make([]json.RawMessage, timedRows)
+			for r := range rows {
+				at := start.Add(time.Duration(c)*time.Second + time.Duration(r)*time.Millisecond)
+				rows[r] = fmt.Appendf(nil, `{"id": %d, "region": %q, "at": %q}`, (k*timedChunks+c)*timedRows+r, timedRegions[(k+r)%len(timedRegions)], at.Format(time.RFC3339Nano))
+			}
+			if err := e.Rows(rows); err != nil {
+				return err
+			}
+			if err := e.ResumePoint([]byte(strconv.Itoa(c + 1))); err != nil {
+				return err
+			}
+		}
+		return e.Complete([]byte(strconv.Itoa(timedChunks)))
+	})
 }
 
 // stagedLanes are the writer lanes that staged rows of each stream, as
@@ -379,8 +751,41 @@ type laneDir struct{ dir string }
 
 func (d *laneDir) Capabilities() destination.Capabilities { return destination.Capabilities{} }
 
+// Open keeps, as .epochs/writer-LANE, the process the lane writes from: one
+// per worker, whose destination is its own.
 func (d *laneDir) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
-	return &laneWriter{dir: d.dir, gen: cfg.Generation, lane: cfg.Lane, pending: map[string][]json.RawMessage{}}, os.MkdirAll(filepath.Join(d.dir, ".epochs"), 0o750)
+	w := &laneWriter{dir: d.dir, gen: cfg.Generation, lane: cfg.Lane, pending: map[string][]json.RawMessage{}}
+	if err := os.MkdirAll(filepath.Join(d.dir, ".epochs"), 0o750); err != nil {
+		return nil, err
+	}
+	return w, os.WriteFile(w.path(fmt.Sprintf("writer-%d", cfg.Lane)), []byte(strconv.Itoa(os.Getpid())), 0o600)
+}
+
+// writerProcesses are the processes that opened each writer lane, as
+// laneDir keeps them in dir.
+func writerProcesses(t *testing.T, dir string) map[int]string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[int]string{}
+	for _, e := range entries {
+		lane, ok := strings.CutPrefix(e.Name(), "writer-")
+		if !ok {
+			continue
+		}
+		l, err := strconv.Atoi(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[l] = string(b)
+	}
+	return out
 }
 
 type laneWriter struct {

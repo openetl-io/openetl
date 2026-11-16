@@ -19,7 +19,7 @@ Some work does not spread:
 
 - A stream that one worker reads is read no faster. [Streams that one worker reads](#streams-that-one-worker-reads) lists them.
 - A keyed stream that the source does not split by key sends rows between the workers. [The exchange between workers](#the-exchange-between-workers) says what that costs.
-- A pipeline whose SQL has a [group window](../reference/sql.md#group-windows) runs on one pod.
+- A [group window](../reference/sql.md#group-windows) sends the rows of the stream it reads between the workers too. [Group windows on workers](#group-windows-on-workers) says how.
 - The first worker commits each checkpoint for all the workers, so a job whose time goes to commits gains little. A destination with lane commits is different: each worker commits its own part.
 - Each attempt starts more pods. The coordinator also starts the source and destination connectors to set them up before the workers start.
 
@@ -80,7 +80,6 @@ The pipeline still applies, and its jobs run on one pod. These are the reasons, 
 | `the destination declares one writer lane` | Nothing: the destination takes one writer lane, so its jobs run on one pod. |
 | `the destination takes N writer lanes, fewer than M workers` | Set `resources.workers` to `N` or fewer. |
 | `a transactional destination runs on one pod unless its writer lanes commit on their own` | Nothing today: a transactional destination runs on workers only if its connector declares lane commits. Its documentation says whether it does. |
-| `a SQL statement with state, as a group window, runs on one pod` | Nothing today: a pipeline whose SQL has a [group window](../reference/sql.md#group-windows) runs on one pod. |
 | `a destination that loads staged epochs runs on one pod` | Nothing today: a destination that loads files that OpenETL stages runs on one pod. |
 | `a destination the engine writes runs on one pod` | Nothing today: the built-in `parquet` destination runs on one pod. |
 | `no pod launcher of data plane "PLANE" and pool "POOL" has reported in the last ten minutes, and an attempt runs on workers only in pods` | Run the pipeline in a pool that has a pod launcher, or ask your operator to add one. |
@@ -129,6 +128,19 @@ The exchange costs a job on workers more than an exchange in one pod:
 
 If a connection between workers breaks, or a worker cannot reach another within a minute, the attempt fails with `TRANSIENT`, and OpenETL retries it from the last checkpoint. If the other worker failed with an error of its own, such as `SCHEMA_DRIFT`, within 5 seconds, the attempt fails with that error instead.
 
+## Group windows on workers
+
+A [group window](./sql-transforms.md#aggregate-rows-by-windows-of-time) needs every row of a key in one place. In the plan, its statement has an exchange on the columns that it groups by. On workers, that exchange sends each row to the worker that owns the key group of the row's keys, whichever worker read the row. That worker keeps the state of its key groups, closes their windows, and writes the windows' rows with its own writer lanes. The output's key holds the columns that the window groups by, so the window's rows need no second exchange before the writer:
+
+```text
+  partitioning:
+    minutes  split by id -> exchange by key group on region -> statement 1:1, needs region -> writer, needs window_start, region
+```
+
+The exchange costs what [The exchange between workers](#the-exchange-between-workers) says. A window closes when the watermark of every lane of every worker has passed its end, so the slowest split of the stream holds every worker's windows open.
+
+At each checkpoint, each worker writes the state that changed in its key groups, and the checkpoint names the state of every worker. A later attempt restores that state on any number of workers and lanes. Each worker opens the state of the key groups that it owns now. So you can change `resources.workers` without a reset.
+
 ## Schema changes and holds
 
 Each worker reads different rows, so one worker can see a schema change before the others. The coordinator decides each stream's schema for all the workers:
@@ -155,10 +167,18 @@ Some transactional destinations commit each writer lane in a transaction of its 
 - It commits the copy that the lane kept, if the destination keeps one.
 - It reads that lane's part of the epoch again from the source, from the same positions, and commits it. With an exchange, the lane's part holds its keys' rows of every split that the epoch read, on any worker, so the next attempt reads all those splits again.
 
+If that attempt is stopped while it reads a lane's part again, the lane stays uncommitted, and the attempt after it reads the part again.
+
 With a [SQL transform](./sql-transforms.md), the next attempt runs the statements again on what it reads. It commits each output's rows that the lane wrote, and no others:
 
 - Of an output without an exchange, the rows of the splits that the lane's own worker read and wrote to that lane.
 - Of an output with an exchange, the rows of the lane's keys, from every split that the statement read in the epoch, on any worker.
+- Of a group window's output, the rows of the windows of the lane's keys that the epoch closed. The next attempt starts from the state of the checkpoint before the epoch, and reads every split that the epoch read again, on any worker. It closes the windows where the epoch's checkpoint says that the epoch closed them, not where the rows that it reads again would close them. It holds the windows open while it reads, so it takes every row of the part as on time.
+
+The window rows that the next attempt writes are the ones that the lane wrote in the epoch, unless a row of the part came behind the window's watermark in the epoch. A row comes behind it when it is out of order by more than `watermark.delay`, when it comes after its split was idle, or when it is of a split that the source added behind the others. A destination with lane commits only appends, so `watermark.lateness` is 0, and such a row changes what the next attempt writes:
+
+- A tumbling or hopping window that closed earlier in the epoch counts the row. If no window took the row in the epoch, the epoch's quarantine still holds it with the code `late`, so the row is counted in the window's row and quarantined.
+- The sessions that the row meets merge into one session. If they all closed in the epoch, the next attempt writes one row for them, which counts the row. If one of them was still open, the next attempt writes no row for them in this epoch, and the merged session's row comes when it closes.
 
 > [!IMPORTANT]
 > Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records from a saved position. If the part ended at a resume point, the source must also return the resume point the epoch recorded; the resume points before it may differ. A source that stops where OpenETL asks sends that resume point as it stops, and a source that doesn't must arrive at it by itself. The source's documentation says whether it stops where OpenETL asks. If the part ended its read in the epoch, OpenETL asks for no stop. It reads that part to its end, and the source must complete it at the same position as the first read, with no fewer records. You make sure that the records are the same through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read where OpenETL asks, or once it has caught up. The attempt fails with `POSITION_LOST` in these cases:

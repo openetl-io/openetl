@@ -11,6 +11,7 @@ import (
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // A join timeout long enough that an attempt waiting it out fails the
@@ -65,6 +66,91 @@ func TestAStopWhileAWorkerHasntJoinedDrains(t *testing.T) {
 	j.Workers.Launch = func(ctx context.Context, targets []attempt.Target) error { return launch(ctx, targets[:1]) }
 	stopAt(&j, "assign")
 	drainsAtOnce(ctx, t, p, j)
+}
+
+// A group window's attempt on workers, whose engines would exchange rows to
+// keyed lanes that keep its state, stopped as it waits for its first
+// worker to join, or for its second once the first has joined and
+// recovered, ends drained at once, and the worker that joined ends.
+func TestAStopWhileAStatefulJobsWorkersJoinDrains(t *testing.T) {
+	for _, step := range []string{"recover", "assign"} {
+		t.Run(step, func(t *testing.T) {
+			ctx, p := stopPool(t)
+			j := onStopWorkers(p, "a1", 2)
+			j.SQL = &runner.SQLTransform{SQL: "…", Operators: []string{"window-1"},
+				Expected: []runner.ExpectedOutput{{Name: "w", Input: "s", Operator: "window-1", Need: []string{"id"}}}}
+			j.Outputs = []runner.Stream{{Name: "w", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"window_start", "id"}, From: "s", Transformed: true}}
+			j.Dataflow, j.StateURL = meshingPassthrough{}, "file://"+t.TempDir()
+			launch := j.Workers.Launch
+			j.Workers.Launch = func(ctx context.Context, targets []attempt.Target) error {
+				if step == "recover" {
+					return nil
+				}
+				return launch(ctx, targets[:1])
+			}
+			stopAt(&j, step)
+			drainsAtOnce(ctx, t, p, j)
+		})
+	}
+}
+
+// A stop while the workers redo a lost lane's part of an epoch, from the
+// state of the record before it, ends the attempt drained at once, with
+// the lane uncommitted; the next attempt redoes it, and every row lands
+// once.
+func TestAStopDuringAStatefulRedoLeavesTheLaneToRedo(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	var mu sync.Mutex
+	var plans []runner.Plan
+	s := newTxnStore(t)
+	p := txnPool(t, s, ranges(6, 100, 5))
+	stateful := func(j *runner.Job) { j.Dataflow = statePlans{inner: j.Dataflow, mu: &mu, plans: &plans} }
+	p.change = stateful
+	head := p.lose(t, s, 2, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+	lost := laneMark{head.Generation, head.Epoch, 0}
+
+	redoing := make(chan struct{}, 4)
+	p.change = func(j *runner.Job) {
+		stateful(j)
+		j.Dataflow = redoBlocks{Dataflow: j.Dataflow, entered: redoing}
+	}
+	j := p.workers("a2", 2)
+	j.Workers.Options = stopOpts
+	stopWhen(&j, redoing)
+	drainsAtOnce(ctx, t, p, j)
+	s.mu.Lock()
+	marked := s.marked[lost]
+	s.mu.Unlock()
+	if marked {
+		t.Fatalf("the stopped redo committed lane %d of epoch %d", lost.Lane, lost.N)
+	}
+
+	p.change = stateful
+	if res := p.settle(t, s, "a3", 2, head); res.Recovery != destination.Redone {
+		t.Errorf("the attempt after the stop recovered %s", res.Recovery)
+	}
+	s.check(t, 600)
+}
+
+// redoBlocks is a dataflow whose redos say so and wait until they're
+// stopped.
+type redoBlocks struct {
+	runner.Dataflow
+	entered chan<- struct{}
+}
+
+func (f redoBlocks) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	if !plan.StateReadOnly {
+		return f.Dataflow.Run(ctx, plan, in, out)
+	}
+	defer close(out)
+	select {
+	case f.entered <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // stopPool is a pool of two splits of ten rows, and the test's bound.

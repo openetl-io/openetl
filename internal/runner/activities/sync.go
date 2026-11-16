@@ -29,6 +29,7 @@ import (
 	"github.com/openetl-io/openetl/internal/connectorhost/hostservices"
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
@@ -265,12 +266,10 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 			return out, errs.Wrap(errs.ConfigInvalid, err, "state's location")
 		}
 	}
-	if workers := worker.From(ctx).Workers; workers > 0 {
-		srv, err := a.coordinate(ctx, &job, workers, log)
-		if err != nil {
-			return out, err
-		}
-		defer srv.Close()
+	workers := worker.From(ctx).Workers
+	// Before a Spark or Flink transform's setup, which only one pod uses.
+	if t := spec.GetPipeline().GetTransform(); workers > 0 && (t.GetSpark() != nil || t.GetFlink() != nil) {
+		return out, &worker.OnePod{Why: plan.OnePod(plan.WorkerJob{Workers: workers, OwnCode: true})}
 	}
 	if job.Destination.Capabilities().Delivery == destination.DeliveryStaged {
 		area, err := openStaging(ctx, a.Storage, job, log)
@@ -312,6 +311,14 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	job.Meter = meter
 	job.Dataflow = &engineclient.Dataflow{Options: engine}
 	job.Logger = log
+	// Whether it runs on workers depends on its dataflow and transform.
+	if workers > 0 {
+		srv, err := a.coordinate(ctx, &job, workers, log)
+		if err != nil {
+			return out, err
+		}
+		defer srv.Close()
+	}
 	job.Drain = p.drain
 	job.OnCommit = p.onCommit
 	reports := newReporter(ctx, a.API, spec.GetPipelineId(), p.sync, log)

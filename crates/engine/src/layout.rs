@@ -97,16 +97,14 @@ impl Layout {
         self.lanes[lane].clone()
     }
 
-    /// The lane that owns key group `group`.
-    pub fn lane_of(&self, group: u32) -> usize {
-        self.lanes
-            .partition_point(|r| *r.end() < group)
-            .min(self.lanes.len().saturating_sub(1))
-    }
-
     /// The lanes that feed writer lane `writer`, in order.
     pub fn feeders(&self, writer: usize) -> impl Iterator<Item = usize> + '_ {
         (0..self.writer_of.len()).filter(move |&l| self.writer_of[l] == writer)
+    }
+
+    /// Every lane's key groups, in order.
+    pub fn lanes(&self) -> &[RangeInclusive<u32>] {
+        &self.lanes
     }
 
     #[cfg(test)]

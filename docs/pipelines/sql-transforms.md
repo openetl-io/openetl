@@ -266,7 +266,7 @@ FROM orders
 GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 ```
 
-The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. With `incremental`, a window that is open at the end of a sync goes on in the next sync, from the state that the checkpoint keeps. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions.
+The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. With `incremental`, a window that is open at the end of a sync goes on in the next sync, from the state that the checkpoint keeps. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. On [workers](./workers.md#group-windows-on-workers), each worker keeps the windows of the keys that it owns.
 
 [Aggregate by windows of time](./windows.md) explains event time and watermarks, when each window's row is written, late rows, the state that windows keep, and how to change a window's statement. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates and the rules.
 
@@ -397,6 +397,8 @@ openetl: the plan has problems, so apply would refuse it
 Statements that the engine does not run, such as `GROUP BY` without a window, joins and window functions, are problems too. [What's refused](../reference/sql.md#whats-refused) lists them with their messages.
 
 If no runner takes the statements within 30 seconds, or a stream's columns are not known yet, the plan has a note that starts with `transform.sql wasn't planned`. The sync plans the statements when it starts, and fails with `CONFIG_INVALID` if they have errors.
+
+If a runner takes the statements and fails to plan them, the fault is in OpenETL, not in the statements. The plan has a warning that starts with `OpenETL failed to plan transform.sql` and says what failed. If `openetl apply` creates or changes the pipeline, it prints the warning too. Apply still accepts the pipeline.
 
 ## In the console
 

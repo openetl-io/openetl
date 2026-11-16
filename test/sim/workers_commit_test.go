@@ -130,6 +130,8 @@ var variantShapes = map[string]wShape{
 	"routed-own-splits":          {dest: "txn", staging: "none", exchange: "on"},
 	"routed-redo-whole":          {dest: "txn", staging: "none", exchange: "on"},
 	"redo-every-output":          {dest: "txn", staging: "none", exchange: "on"},
+	"redo-closes-at-floor":       {dest: "txn", staging: "none", exchange: "on"},
+	"floor-not-carried":          {exchange: "on"},
 	// State's.
 	"state-before-record":    {exchange: "on"},
 	"restore-by-listing":     {exchange: "on"},
@@ -608,6 +610,18 @@ func (m *wModel) replay(w *wWorker, c wTxnStaged, rec *wRecord, lay wLayout) (ma
 			}
 		}
 		wm = min(wm, at.Watermark)
+	}
+	// The windows close where the record says the epoch's keyed operator
+	// closed them at its barrier.
+	switch {
+	case m.cfg.broken == "replay-own-watermarks":
+	case rec.Closed == nil:
+		m.problem("restore", "%s can't redo %v: the record doesn't say where the epoch closed its windows", w.name(), c.marker())
+		return nil, fmt.Errorf("%w: no closed watermark in %v", errRedo, rec)
+	case m.cfg.broken == "redo-closes-at-floor" && rec.Floor != nil:
+		wm = *rec.Floor
+	default:
+		wm = *rec.Closed
 	}
 	for _, k := range slices.SortedFunc(maps.Keys(acc), cmpWKey) {
 		if k.W+size > wm {

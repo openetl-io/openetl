@@ -173,7 +173,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 		if err != nil {
 			return nil, nil, errs.Wrap(errs.Internal, err, fmt.Sprintf("runner: output %s's schema", o.Name))
 		}
-		expected = append(expected, runner.ExpectedOutput{Name: o.Name, Schema: schema, PrimaryKey: o.PrimaryKey, Input: s.Name, Operator: st.Operator})
+		expected = append(expected, runner.ExpectedOutput{Name: o.Name, Schema: schema, PrimaryKey: o.PrimaryKey, Input: s.Name, Operator: st.Operator, Need: st.Need})
 		out := runner.Stream{
 			Name:                 o.Name,
 			Replay:               s.Replay,

@@ -87,6 +87,9 @@ type ExpectedOutput struct {
 	// The statement's stateful operator's ID, as in Operators; empty for
 	// none.
 	Operator string
+	// With Operator: the columns of the stream it reads whose key groups
+	// its rows are exchanged by, to the keyed lanes that keep its state.
+	Need []string
 }
 
 // Metadata columns the second dataflow computes again, so it drops an

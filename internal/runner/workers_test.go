@@ -730,6 +730,20 @@ func drains(j *runner.Job) {
 	j.Drain, j.OnCommit = ch, func(uint64) { once.Do(func() { close(ch) }) }
 }
 
+// drainsHolding drains j once a commit leaves s holding n rows.
+func drainsHolding(j *runner.Job, s *laneStore, n int) {
+	ch := make(chan struct{})
+	var once sync.Once
+	j.Drain, j.OnCommit = ch, func(uint64) {
+		s.mu.Lock()
+		held := len(s.rows)
+		s.mu.Unlock()
+		if held >= n {
+			once.Do(func() { close(ch) })
+		}
+	}
+}
+
 // Attempts on one runner, three workers and one restore from each other's
 // records, whatever the layout that wrote them. Each but the last keeps its
 // read open, so it ends only by draining.
@@ -1061,7 +1075,7 @@ func TestStreamsReadWithCDCShareOneWorker(t *testing.T) {
 		}
 	}
 	j := p.workers("a1", 2)
-	drains(&j)
+	drainsHolding(&j, p.store, 40)
 	if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
 		t.Fatalf("the attempt: %v", err)
 	}
@@ -1117,9 +1131,16 @@ func TestAFlinkJobIsRefusedWorkers(t *testing.T) {
 	}
 }
 
-// What only one pod runs is refused workers; a SQL transform of row-wise
-// statements, into a destination whose lanes commit on their own too, and
-// holds aren't.
+// meshingPassthrough is Passthrough as a dataflow whose engines exchange
+// rows between workers.
+type meshingPassthrough struct{ runner.Passthrough }
+
+func (meshingPassthrough) Meshes() bool { return true }
+
+// What only one pod runs is refused workers; a SQL transform, into a
+// destination whose lanes commit on their own too, and holds aren't. A
+// group window takes its rows from every worker, so it runs on workers
+// whose engines exchange rows between them, and on one pod otherwise.
 func TestWhatRunsOnOnePod(t *testing.T) {
 	p := newPool(t, ranges(1, 1, 1))
 	for name, c := range map[string]struct {
@@ -1142,11 +1163,21 @@ func TestWhatRunsOnOnePod(t *testing.T) {
 			j.SQL = &runner.SQLTransform{Operators: []string{"window-1"}}
 			j.Outputs = j.Streams
 			j.Destination = txnDest{s: newTxnStore(t)}
-		}, true},
+			j.Dataflow = meshingPassthrough{}
+		}, false},
 		"a group window": {2, func(j *runner.Job) {
 			j.SQL = &runner.SQLTransform{Operators: []string{"window-1"}}
 			j.Outputs = j.Streams
+			j.Dataflow = meshingPassthrough{}
+		}, false},
+		"a group window on engines that don't exchange rows": {2, func(j *runner.Job) {
+			j.SQL = &runner.SQLTransform{Operators: []string{"window-1"}}
+			j.Outputs = j.Streams
 		}, true},
+		"a group window on one worker": {1, func(j *runner.Job) {
+			j.SQL = &runner.SQLTransform{Operators: []string{"window-1"}}
+			j.Outputs = j.Streams
+		}, false},
 		"holds": {2, func(j *runner.Job) {
 			j.Destination = holdingStagingDest{stagingDest{s: p.store, t: t}}
 			j.HeldURL = "file:///held"

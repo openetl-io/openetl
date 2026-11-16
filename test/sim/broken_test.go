@@ -42,6 +42,8 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"routed-own-splits", "exactly-once", "a committable names only its own worker's splits for an exchanged row-wise output, so a redo misses the rows the exchange brought from other workers"},
 	{"routed-redo-whole", "exactly-once", "a redo of an exchanged row-wise output keeps the rows of every key group, not only the lane's"},
 	{"redo-every-output", "exactly-once", "a redo writes every output's rows of every split the committable names, so a split that reached the lane only through the exchange gives it rows of an output its own lane didn't write there"},
+	{"redo-closes-at-floor", "restore", "a redo from the source closes the windows where the record says its epoch's keyed operator started, not where it closed them at the barrier"},
+	{"floor-not-carried", "watermark", "the coordinator records every epoch's keyed operator as starting where the attempt's first did, not where the epoch before closed its windows"},
 	// State's runs (workers_state_test.go, variantShapes).
 	{"state-before-record", "restore", "a lane's state commits when its run is written, in a manifest of its key groups that a restore reads instead of the record"},
 	{"restore-by-listing", "restore", "a restore takes every run in the store for its key groups, not the sections the record names"},

@@ -17,7 +17,8 @@ option go_package = "github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev
 // Engines of one attempt (StartJobRequest.mesh) send each other the same
 // frames over TLS 1.3, on a connection from each engine to each other:
 // MESH_HELLO each way first, then the dialing engine's lanes' frames to the
-// listening engine's writer lanes, each after the ROUTE it goes by. Every
+// listening engine's writer lanes and keyed lanes, each after the ROUTE it
+// goes by. Every
 // engine presents the attempt's certificate and trusts no other.
 enum FrameKind {
   FRAME_KIND_UNSPECIFIED = 0;
@@ -94,7 +95,7 @@ message Watermark {
 
 // MeshHello opens a connection from one engine of an attempt to another,
 // which carries the dialing engine's lanes' frames to the other's writer
-// lanes. The dialer's says which engine it is and carries the attempt's
+// lanes and keyed lanes. The dialer's says which engine it is and carries the attempt's
 // secret. The listener answers with its own, without the secret, once it
 // takes the connection; or with refused set, and closes it. It refuses a
 // connection of another attempt or generation, with another secret, of an
@@ -114,10 +115,17 @@ message MeshHello {
 // from one of the dialer's lanes to one of the listener's writer lanes,
 // each by its index in the attempt. Only frames of streams with an exchange
 // follow, their stream an index into the destination's streams: BATCH,
-// SCHEMA_CHANGE, BARRIER, WATERMARK and END_OF_STREAM. The dialer closes the
-// connection once each of its lanes has ended every such stream on each of
-// the listener's writer lanes; closed before, it fails the job.
+// SCHEMA_CHANGE, BARRIER, WATERMARK and END_OF_STREAM. With keyed_lane,
+// they go to the listener's keyed lane of that lane of the attempt, which
+// runs the group windows, and their stream is a window's statement, by its
+// index in the transform: BATCH (the columns the statement reads, then two
+// strings a row, the column and the reason of a cell the stream holds,
+// which the statement can't read), BARRIER, WATERMARK and END_OF_STREAM. The
+// dialer closes the connection once each of its lanes has ended every such
+// stream on each of the listener's writer lanes, and every window's
+// statement on each of its keyed lanes; closed before, it fails the job.
 message Route {
   uint32 lane = 1;
   uint32 writer_lane = 2;
+  optional uint32 keyed_lane = 3;
 }
