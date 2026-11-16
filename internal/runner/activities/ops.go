@@ -15,6 +15,7 @@ import (
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
 	"github.com/openetl-io/openetl/internal/connectorhost/external"
+	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/flink"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -22,7 +23,7 @@ import (
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/secretstore"
 	"github.com/openetl-io/openetl/internal/streamschema"
-	"github.com/openetl-io/openetl/sdk/go/destination"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
@@ -44,6 +45,8 @@ type Ops struct {
 	// Assumes the aws roles that sources and destinations name. Nil: none
 	// can be.
 	AWSRoles *awsroles.Broker
+	// Plans a preflight's SQL transform, as Sync's.
+	Engine engineclient.Options
 }
 
 // CheckConnector checks a source or destination. A failed check is a result,
@@ -59,13 +62,27 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 	if err == nil {
 		err = readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets())
 	}
+	var items []check.Item
 	if err == nil {
-		err = check(ctx, in, cfg.GetConfig(), env)
+		items, err = checkConnection(ctx, in, cfg.GetConfig(), env)
 	}
 	if err != nil {
 		res.Code, res.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
 	}
+	res.Checks = checkItems(items)
 	return res, nil
+}
+
+func checkItems(items []check.Item) []contract.CheckItem {
+	var out []contract.CheckItem
+	for _, it := range items {
+		c := contract.CheckItem{Name: it.Name, Title: it.Title, Status: it.Status.String(), Message: it.Message, Fix: it.Fix, Field: it.Field}
+		if it.Err != nil {
+			c.Code, c.Message = errs.CodeOf(it.Err).String(), errs.ToProto(it.Err).GetMessage()
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // opEnv is what an op's connector gets: its version's env, and the aws role
@@ -93,32 +110,48 @@ func opDigests(in contract.ConnectorOpInput, digest string) (source, destination
 	return "", digest
 }
 
-func check(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) error {
+// checkConnection runs a source's or destination's check: its items, if it
+// says what it looked at, and its error.
+func checkConnection(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) ([]check.Item, error) {
 	raw, err := protojson.Marshal(cfg.GetConfig())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	name, _ := connectorhost.SplitRef(cfg.GetConnector())
 	if in.SourceID != "" {
 		src, err := connectorhost.NewSource(name, raw, env)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		defer connectorhost.Close(src)
-		if c, ok := src.(source.Checker); ok {
-			return c.Check(ctx)
-		}
-		return nil
+		return runCheck(ctx, src)
 	}
 	dst, err := connectorhost.NewDestination(name, raw, env)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer connectorhost.Close(dst)
-	if c, ok := dst.(destination.Checker); ok {
-		return c.Check(ctx)
+	return runCheck(ctx, dst)
+}
+
+// runCheck runs c's check, a source or a destination's: an external one's
+// items, or a built-in one's report, or its error alone.
+func runCheck(ctx context.Context, c any) ([]check.Item, error) {
+	switch c := c.(type) {
+	case interface {
+		CheckItems(context.Context) ([]check.Item, error)
+	}:
+		return c.CheckItems(ctx)
+	case interface {
+		CheckReport(context.Context, *check.Report)
+	}:
+		var r check.Report
+		c.CheckReport(ctx, &r)
+		return r.Items(), r.Err()
+	case interface{ Check(context.Context) error }:
+		return nil, c.Check(ctx)
 	}
-	return nil
+	return nil, nil
 }
 
 // DiscoverSource discovers a source's catalog and reports it to the API,

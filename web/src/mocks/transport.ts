@@ -12,7 +12,7 @@ import { WebhookService } from "@/gen/openetl/api/v1/webhook_pb";
 import { PipelineService } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { destinations, pipelines, sources, syncs } from "./fixtures";
-import { checkpoints, holds, log, plan, quarantineFiles, quarantineLines, schemas, versions } from "./detail";
+import { checkResult, checkpoints, preflightResult, holds, log, plan, quarantineFiles, quarantineLines, schemas, versions } from "./detail";
 import {
   auditEntries,
   dataPlanes,
@@ -70,14 +70,17 @@ export const mockTransport = createRouterTransport(({ service }) => {
     resumePipeline: async ({ name, stream }) => (await latency(), setPaused(find(pipelines, name), false, stream)),
     removePipelineOverride: async ({ name, field }) => (await latency(), removeOverride(find(pipelines, name), field)),
     syncPipeline: async ({ name }) => (await latency(), startSync(find(pipelines, name))),
+    preflightPipeline: async ({ name }) => (await latency(), await latency(), await latency(), { result: preflightResult(find(pipelines, name)) }),
   });
   service(SourceService, {
     listSources: async () => (await latency(), { sources }),
     getSource: async ({ name }) => (await latency(), { source: find(sources, name) }),
+    checkSource: async ({ name }) => (await latency(), await latency(), { result: checkResult(find(sources, name).spec?.connector ?? "") }),
   });
   service(DestinationService, {
     listDestinations: async () => (await latency(), { destinations }),
     getDestination: async ({ name }) => (await latency(), { destination: find(destinations, name) }),
+    checkDestination: async ({ name }) => (await latency(), await latency(), { result: checkResult(find(destinations, name).spec?.connector ?? "") }),
   });
   service(SyncService, {
     listSyncs: async ({ parent, pageSize }) => (await latency(), { syncs: (syncs.get(parent) ?? []).slice(0, pageSize || 50) }),

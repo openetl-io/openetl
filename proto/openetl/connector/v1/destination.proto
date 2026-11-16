@@ -4,6 +4,7 @@ package openetl.connector.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "openetl/connector/v1/check.proto";
 import "openetl/connector/v1/errors.proto";
 
 option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
@@ -28,6 +29,30 @@ service DestinationService {
   // other. A failed schema or commit is answered with its error; any other
   // failure ends the stream.
   rpc Write(stream WriteRequest) returns (stream WriteResponse);
+  // Whether a pipeline's writes would work, for its streams as a sync would
+  // write them, without writing: each target there or creatable, writable,
+  // and in a write mode the destination has. The platform calls it after
+  // Check passes. A destination without one answers with no items.
+  rpc PreflightDestination(PreflightDestinationRequest) returns (PreflightDestinationResponse);
+}
+
+message PreflightDestinationRequest {
+  bytes config = 1;
+  string pipeline = 2;
+  // As WriteOpen's.
+  string namespace = 3;
+  repeated WriteStream streams = 4;
+  // Each stream's schema as a sync's first ApplySchema would give it, its
+  // table among its metadata.
+  repeated StreamSchema schemas = 5;
+}
+
+message PreflightDestinationResponse {
+  // Unset when nothing failed; otherwise the first failed item's error. A
+  // failed preflight is reported here, not as an RPC error.
+  Error error = 1;
+  // In the order they ran.
+  repeated CheckItem items = 2;
 }
 
 message DestinationCapabilities {

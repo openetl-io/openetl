@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package openetl.connector.v1;
+
+import "openetl/connector/v1/errors.proto";
+
+option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
+
+// CheckItem is one thing a check or a preflight looked at, such as
+// reaching the service, a permission, or one stream. Its text never holds secrets or records.
+message CheckItem {
+  // Unique within the response and the same from one check to the next,
+  // such as stream.clicks.read, so a client can follow an item.
+  string name = 1;
+  // What was checked, for people: "Read stream clicks".
+  string title = 2;
+  CheckStatus status = 3;
+  // What it found. For a failure, what failed.
+  string message = 4;
+  // When failed: the classified error.
+  Error error = 5;
+  // For a failure or a warning: what to do about it, such as the IAM
+  // action to allow.
+  string fix = 6;
+  // The config field it concerns, as a dotted path such as
+  // consumer.name; empty if none.
+  string field = 7;
+}
+
+enum CheckStatus {
+  CHECK_STATUS_UNSPECIFIED = 0;
+  CHECK_STATUS_PASSED = 1;
+  // Works, but not as configured or not as well as it could: a pipeline can
+  // still run.
+  CHECK_STATUS_WARNING = 2;
+  CHECK_STATUS_FAILED = 3;
+  // Not checked: an earlier item failed, or it can't be checked without
+  // changing something, such as writing a record.
+  CHECK_STATUS_SKIPPED = 4;
+}

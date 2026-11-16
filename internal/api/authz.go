@@ -25,6 +25,9 @@ var permissions = map[string]auth.Role{
 	"pipelines.get":   auth.Viewer,
 	"pipelines.pause": auth.Operator,
 	"pipelines.sync":  auth.Operator,
+	// Starts both connectors on a runner and refreshes the source's catalog,
+	// as checking each and discovering do.
+	"pipelines.preflight": auth.Operator,
 	// Rescaling spends the data plane's room, as a sync does.
 	"pipelines.rescale": auth.Operator,
 	// Removing one of heal's overrides gives the spec back its say.
@@ -134,6 +137,7 @@ var rules = map[string]rule{
 	apiv1connect.PipelineServiceListPipelineVersionsProcedure:   {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceGetPipelineVersionProcedure:     {"pipelines.get", inName, false},
 	apiv1connect.PipelineServiceGetPipelinePlanProcedure:        {"pipelines.get", inName, false},
+	apiv1connect.PipelineServicePreflightPipelineProcedure:      {"pipelines.preflight", inName, false},
 	apiv1connect.PipelineServiceListStreamSchemasProcedure:      {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceListCheckpointsProcedure:        {"pipelines.get", inParent, false},
 	apiv1connect.PipelineServiceListHoldsProcedure:              {"pipelines.get", inParent, false},

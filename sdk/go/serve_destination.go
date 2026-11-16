@@ -8,11 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/internal/ints"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -50,12 +52,7 @@ func (d *destinationServer) Write(stream grpc.BidiStreamingServer[protocolv1.Wri
 		CommitInterval: open.GetCommitInterval().AsDuration(),
 		Lane:           int(open.GetLane()),
 	}
-	for _, s := range open.GetStreams() {
-		cfg.Streams = append(cfg.Streams, destination.Stream{
-			Name: s.GetName(), Mode: destination.WriteMode(s.GetMode()), PrimaryKey: s.GetPrimaryKey(),
-			Dedupe: destination.Dedupe(s.GetDedupe()), Deletes: destination.DeleteMode(s.GetDeletes()), AllowTypeChanges: s.GetAllowTypeChanges(),
-		})
-	}
+	cfg.Streams = writeStreams(open.GetStreams())
 	w, err := dst.Open(ctx, cfg)
 	if err != nil {
 		return status(err)
@@ -263,4 +260,42 @@ func capabilitiesToProto(c destination.Capabilities) *protocolv1.DestinationCapa
 		p.MaxCommitInterval = durationpb.New(c.MaxCommitInterval)
 	}
 	return p
+}
+
+func writeStreams(ws []*protocolv1.WriteStream) []destination.Stream {
+	var out []destination.Stream
+	for _, s := range ws {
+		out = append(out, destination.Stream{
+			Name: s.GetName(), Mode: destination.WriteMode(s.GetMode()), PrimaryKey: s.GetPrimaryKey(),
+			Dedupe: destination.Dedupe(s.GetDedupe()), Deletes: destination.DeleteMode(s.GetDeletes()), AllowTypeChanges: s.GetAllowTypeChanges(),
+		})
+	}
+	return out
+}
+
+// PreflightDestination runs the destination's preflight, if it has one; without one,
+// it answers with no items.
+func (d *destinationServer) PreflightDestination(ctx context.Context, req *protocolv1.PreflightDestinationRequest) (*protocolv1.PreflightDestinationResponse, error) {
+	dst, err := d.destination(ctx, req.GetConfig())
+	if err != nil {
+		return &protocolv1.PreflightDestinationResponse{Error: protoError(err)}, nil
+	}
+	p, ok := dst.(destination.Preflighter)
+	if !ok {
+		return &protocolv1.PreflightDestinationResponse{}, nil
+	}
+	pr := destination.PreflightRequest{Pipeline: req.GetPipeline(), Namespace: req.GetNamespace(), Streams: writeStreams(req.GetStreams())}
+	for _, sc := range req.GetSchemas() {
+		schema, err := arrowipc.DecodeSchema(sc.GetArrowSchema())
+		if err != nil {
+			return nil, status(fmt.Errorf("preflight: stream %s's schema: %w", sc.GetName(), err))
+		}
+		if pr.Schemas == nil {
+			pr.Schemas = map[string]*arrow.Schema{}
+		}
+		pr.Schemas[sc.GetName()] = schema
+	}
+	var r check.Report
+	p.Preflight(ctx, pr, &r)
+	return &protocolv1.PreflightDestinationResponse{Error: protoError(r.Err()), Items: checkItems(&r)}, nil
 }

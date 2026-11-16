@@ -237,7 +237,9 @@ type SpecResponse struct {
 	// "v1".
 	ProtocolVersion string        `protobuf:"bytes,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	Kind            ConnectorKind `protobuf:"varint,2,opt,name=kind,proto3,enum=openetl.connector.v1.ConnectorKind" json:"kind,omitempty"`
-	// A JSON Schema. Fields marked "x-secret": true hold secret names.
+	// A JSON Schema. Fields marked "x-secret": true hold secret names. The
+	// x- keywords a form reads, such as x-group and x-when, are in
+	// docs/build-connectors.
 	ConfigSchema []byte                   `protobuf:"bytes,3,opt,name=config_schema,json=configSchema,proto3" json:"config_schema,omitempty"`
 	Egress       *Egress                  `protobuf:"bytes,4,opt,name=egress,proto3" json:"egress,omitempty"`
 	Setup        bool                     `protobuf:"varint,5,opt,name=setup,proto3" json:"setup,omitempty"`
@@ -435,8 +437,12 @@ func (x *CheckRequest) GetConfig() []byte {
 
 type CheckResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unset when the check passed.
-	Error         *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	// Unset when the check passed. With items, the first failed item's error.
+	Error *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	// What the check looked at, one item each, in the order it ran, such as
+	// reaching the service and signing in. Empty from a connector that
+	// reports only error.
+	Items         []*CheckItem `protobuf:"bytes,2,rep,name=items,proto3" json:"items,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -474,6 +480,13 @@ func (*CheckResponse) Descriptor() ([]byte, []int) {
 func (x *CheckResponse) GetError() *Error {
 	if x != nil {
 		return x.Error
+	}
+	return nil
+}
+
+func (x *CheckResponse) GetItems() []*CheckItem {
+	if x != nil {
+		return x.Items
 	}
 	return nil
 }
@@ -658,7 +671,7 @@ var File_openetl_connector_v1_connector_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_connector_proto_rawDesc = "" +
 	"\n" +
-	"$openetl/connector/v1/connector.proto\x12\x14openetl.connector.v1\x1a&openetl/connector/v1/destination.proto\x1a!openetl/connector/v1/errors.proto\x1a!openetl/connector/v1/source.proto\"=\n" +
+	"$openetl/connector/v1/connector.proto\x12\x14openetl.connector.v1\x1a openetl/connector/v1/check.proto\x1a&openetl/connector/v1/destination.proto\x1a!openetl/connector/v1/errors.proto\x1a!openetl/connector/v1/source.proto\"=\n" +
 	"\vSpecRequest\x12.\n" +
 	"\x04host\x18\x01 \x01(\v2\x1a.openetl.connector.v1.HostR\x04host\"X\n" +
 	"\x04Host\x12\x18\n" +
@@ -678,9 +691,10 @@ const file_openetl_connector_v1_connector_proto_rawDesc = "" +
 	"\x04tier\x18\x01 \x01(\x0e2 .openetl.connector.v1.EgressTierR\x04tier\x12\x14\n" +
 	"\x05allow\x18\x02 \x03(\tR\x05allow\"&\n" +
 	"\fCheckRequest\x12\x16\n" +
-	"\x06config\x18\x01 \x01(\fR\x06config\"B\n" +
+	"\x06config\x18\x01 \x01(\fR\x06config\"y\n" +
 	"\rCheckResponse\x121\n" +
-	"\x05error\x18\x01 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\"B\n" +
+	"\x05error\x18\x01 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x125\n" +
+	"\x05items\x18\x02 \x03(\v2\x1f.openetl.connector.v1.CheckItemR\x05items\"B\n" +
 	"\fSetupRequest\x12\x16\n" +
 	"\x06config\x18\x01 \x01(\fR\x06config\x12\x1a\n" +
 	"\bpipeline\x18\x02 \x01(\tR\bpipeline\"\x0f\n" +
@@ -735,6 +749,7 @@ var file_openetl_connector_v1_connector_proto_goTypes = []any{
 	(*SourceCapabilities)(nil),      // 12: openetl.connector.v1.SourceCapabilities
 	(*DestinationCapabilities)(nil), // 13: openetl.connector.v1.DestinationCapabilities
 	(*Error)(nil),                   // 14: openetl.connector.v1.Error
+	(*CheckItem)(nil),               // 15: openetl.connector.v1.CheckItem
 }
 var file_openetl_connector_v1_connector_proto_depIdxs = []int32{
 	3,  // 0: openetl.connector.v1.SpecRequest.host:type_name -> openetl.connector.v1.Host
@@ -744,19 +759,20 @@ var file_openetl_connector_v1_connector_proto_depIdxs = []int32{
 	13, // 4: openetl.connector.v1.SpecResponse.destination:type_name -> openetl.connector.v1.DestinationCapabilities
 	1,  // 5: openetl.connector.v1.Egress.tier:type_name -> openetl.connector.v1.EgressTier
 	14, // 6: openetl.connector.v1.CheckResponse.error:type_name -> openetl.connector.v1.Error
-	2,  // 7: openetl.connector.v1.ConnectorService.Spec:input_type -> openetl.connector.v1.SpecRequest
-	6,  // 8: openetl.connector.v1.ConnectorService.Check:input_type -> openetl.connector.v1.CheckRequest
-	8,  // 9: openetl.connector.v1.ConnectorService.Setup:input_type -> openetl.connector.v1.SetupRequest
-	10, // 10: openetl.connector.v1.ConnectorService.Teardown:input_type -> openetl.connector.v1.TeardownRequest
-	4,  // 11: openetl.connector.v1.ConnectorService.Spec:output_type -> openetl.connector.v1.SpecResponse
-	7,  // 12: openetl.connector.v1.ConnectorService.Check:output_type -> openetl.connector.v1.CheckResponse
-	9,  // 13: openetl.connector.v1.ConnectorService.Setup:output_type -> openetl.connector.v1.SetupResponse
-	11, // 14: openetl.connector.v1.ConnectorService.Teardown:output_type -> openetl.connector.v1.TeardownResponse
-	11, // [11:15] is the sub-list for method output_type
-	7,  // [7:11] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	15, // 7: openetl.connector.v1.CheckResponse.items:type_name -> openetl.connector.v1.CheckItem
+	2,  // 8: openetl.connector.v1.ConnectorService.Spec:input_type -> openetl.connector.v1.SpecRequest
+	6,  // 9: openetl.connector.v1.ConnectorService.Check:input_type -> openetl.connector.v1.CheckRequest
+	8,  // 10: openetl.connector.v1.ConnectorService.Setup:input_type -> openetl.connector.v1.SetupRequest
+	10, // 11: openetl.connector.v1.ConnectorService.Teardown:input_type -> openetl.connector.v1.TeardownRequest
+	4,  // 12: openetl.connector.v1.ConnectorService.Spec:output_type -> openetl.connector.v1.SpecResponse
+	7,  // 13: openetl.connector.v1.ConnectorService.Check:output_type -> openetl.connector.v1.CheckResponse
+	9,  // 14: openetl.connector.v1.ConnectorService.Setup:output_type -> openetl.connector.v1.SetupResponse
+	11, // 15: openetl.connector.v1.ConnectorService.Teardown:output_type -> openetl.connector.v1.TeardownResponse
+	12, // [12:16] is the sub-list for method output_type
+	8,  // [8:12] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_connector_proto_init() }
@@ -764,6 +780,7 @@ func file_openetl_connector_v1_connector_proto_init() {
 	if File_openetl_connector_v1_connector_proto != nil {
 		return
 	}
+	file_openetl_connector_v1_check_proto_init()
 	file_openetl_connector_v1_destination_proto_init()
 	file_openetl_connector_v1_errors_proto_init()
 	file_openetl_connector_v1_source_proto_init()

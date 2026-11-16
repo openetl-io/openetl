@@ -221,6 +221,26 @@ message CheckResult {
   string message = 3;
   // The source or destination version checked.
   string version = 4;
+  // What the connector checked, item by item; empty if it reports only a
+  // result.
+  repeated CheckItem items = 5;
+}
+
+// CheckItem is one thing a connector's check looked at: reaching the
+// service, a permission, a stream.
+message CheckItem {
+  // Unique within the result, such as stream.clicks.read.
+  string name = 1;
+  string title = 2;
+  // passed, warning, failed or skipped.
+  string status = 3;
+  string message = 4;
+  // When failed: a code of the error taxonomy.
+  string code = 5;
+  // What to do about a failure or a warning.
+  string fix = 6;
+  // The config field it concerns, as a dotted path; empty if none.
+  string field = 7;
 }
 
 message DiscoverSourceRequest {

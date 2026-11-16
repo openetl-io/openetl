@@ -24,6 +24,7 @@ import (
 	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/spec"
+	"github.com/openetl-io/openetl/sdk/go/configschema"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -502,6 +503,9 @@ func Package(ctx context.Context, name, version string, info spec.Info, roles ma
 			return nil, fmt.Errorf("the %s role's executable is a %s", role, spec.RoleOf(r.Spec))
 		case r.Spec != nil:
 			r.Requires.Protocol, r.Requires.Features = r.Spec.GetProtocolVersion(), r.Spec.GetRequiredFeatures()
+			if problems := configschema.Lint(r.Spec.GetConfigSchema()); len(problems) > 0 {
+				return nil, fmt.Errorf("the %s role's config schema: %w", role, errors.Join(problems...))
+			}
 		}
 		d.Roles[role] = r
 	}

@@ -1915,6 +1915,49 @@ paths:
                         application/json:
                             schema:
                                 $ref: '#/components/schemas/Status'
+    /v1/workspaces/{workspace}/pipelines/{pipeline}:preflight:
+        post:
+            tags:
+                - PipelineService
+            description: |-
+                Whether the current version would run, without reading or writing
+                 records. On a runner of the pipeline's data plane it checks the source's
+                 and the destination's connections, settles what a sync would read and
+                 write, and runs both connectors' preflights for that; then it refreshes
+                 the source's catalog and plans the pipeline. It waits for all of it.
+            operationId: PipelineService_PreflightPipeline
+            parameters:
+                - name: workspace
+                  in: path
+                  description: The workspace id.
+                  required: true
+                  schema:
+                    type: string
+                - name: pipeline
+                  in: path
+                  description: The pipeline id.
+                  required: true
+                  schema:
+                    type: string
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/PreflightPipelineRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/PreflightPipelineResponse'
+                default:
+                    description: Default error response
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/Status'
     /v1/workspaces/{workspace}/pipelines/{pipeline}:removeOverride:
         post:
             tags:
@@ -3119,6 +3162,12 @@ components:
                     type: array
                     items:
                         $ref: '#/components/schemas/ConfigField'
+                    description: Its top-level fields, in the schema's order.
+                groups:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ConfigGroup'
+                    description: In the order a form shows them.
         CatalogStream:
             type: object
             properties:
@@ -3187,6 +3236,31 @@ components:
             properties:
                 result:
                     $ref: '#/components/schemas/CheckResult'
+        CheckItem:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: Unique within the result, such as stream.clicks.read.
+                title:
+                    type: string
+                status:
+                    type: string
+                    description: passed, warning, failed or skipped.
+                message:
+                    type: string
+                code:
+                    type: string
+                    description: 'When failed: a code of the error taxonomy.'
+                fix:
+                    type: string
+                    description: What to do about a failure or a warning.
+                field:
+                    type: string
+                    description: The config field it concerns, as a dotted path; empty if none.
+            description: |-
+                CheckItem is one thing a connector's check looked at: reaching the
+                 service, a permission, a stream.
         CheckResult:
             type: object
             properties:
@@ -3200,6 +3274,13 @@ components:
                 version:
                     type: string
                     description: The source or destination version checked.
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CheckItem'
+                    description: |-
+                        What the connector checked, item by item; empty if it reports only a
+                         result.
             description: |-
                 CheckResult is a connector's answer to Check. A connector without a check
                  of its own only validates its config.
@@ -3341,6 +3422,19 @@ components:
                     description: 'Unset: pipeline where the destination can, otherwise stream.'
                     format: enum
             description: Commit is when a pipeline commits what it has read.
+        ConfigCondition:
+            type: object
+            properties:
+                field:
+                    type: string
+                values:
+                    type: array
+                    items:
+                        type: string
+                    description: JSON.
+            description: |-
+                ConfigCondition holds when the field at path has one of values. A field
+                 that isn't set has its default.
         ConfigField:
             type: object
             properties:
@@ -3360,9 +3454,83 @@ components:
                 secret:
                     type: boolean
                     description: Its value is a secret's name, never the secret.
+                path:
+                    type: string
+                    description: Dotted from the config's root, such as consumer.name.
+                default:
+                    type: string
+                    description: The default, as JSON; empty when there's none.
+                options:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ConfigOption'
+                    description: The values it takes; for an array, its items'.
+                group:
+                    type: string
+                    description: |-
+                        The id of the group it shows in, from CatalogRole.groups; empty: before
+                         every group.
+                advanced:
+                    type: boolean
+                    description: Folded away until asked for.
+                deprecated:
+                    type: boolean
+                when:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ConfigCondition'
+                    description: It applies only when every condition holds; a form hides it otherwise.
+                format:
+                    type: string
+                    description: |-
+                        duration (Go's syntax: 500ms, 1m30s), date-time (RFC 3339), uri,
+                         regex, multiline and the like; empty: none.
+                minimum:
+                    type: number
+                    format: double
+                maximum:
+                    type: number
+                    format: double
+                pattern:
+                    type: string
+                examples:
+                    type: array
+                    items:
+                        type: string
+                    description: Values as JSON.
+                items:
+                    type: string
+                    description: An array's items' type.
+                fields:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/ConfigField'
+                    description: An object's fields, in the schema's order.
             description: |-
-                ConfigField is a top-level field of a role's config, from its JSON
-                 Schema.
+                ConfigField is a field of a role's config, or of an object in it, from
+                 its JSON Schema and the x- keywords forms read.
+        ConfigGroup:
+            type: object
+            properties:
+                id:
+                    type: string
+                title:
+                    type: string
+                description:
+                    type: string
+            description: ConfigGroup is a section of a role's config form.
+        ConfigOption:
+            type: object
+            properties:
+                value:
+                    type: string
+                    description: JSON.
+                title:
+                    type: string
+                    description: 'Empty: show the value.'
+                description:
+                    type: string
+            description: ConfigOption is a value an enum field takes.
         ConnectorConfig:
             type: object
             properties:
@@ -5397,6 +5565,71 @@ components:
                     $ref: '#/components/schemas/DbtStep'
                 spark:
                     $ref: '#/components/schemas/SparkStep'
+        PreflightPart:
+            type: object
+            properties:
+                role:
+                    type: string
+                    description: source, destination or sync.
+                stage:
+                    type: string
+                    description: check, preflight or plan.
+                resource:
+                    type: string
+                    description: |-
+                        workspaces/{workspace}/sources/{source}, or destinations; empty for the
+                         sync's plan.
+                version:
+                    type: string
+                    description: |-
+                        The connector version that answered, by digest; empty for a built-in
+                         connector and for the plan.
+                ok:
+                    type: boolean
+                code:
+                    type: string
+                    description: 'When not ok: a code of the error taxonomy, and what failed.'
+                message:
+                    type: string
+                skipped:
+                    type: string
+                    description: |-
+                        Why it didn't run, such as a check before it that failed; empty if it
+                         ran.
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/CheckItem'
+            description: |-
+                PreflightPart is one part of a pipeline's preflight: a connection's
+                 check, a connector's preflight for the pipeline's streams, or the plan.
+        PreflightPipelineRequest:
+            type: object
+            properties:
+                name:
+                    type: string
+                    description: workspaces/{workspace}/pipelines/{pipeline}
+        PreflightPipelineResponse:
+            type: object
+            properties:
+                result:
+                    $ref: '#/components/schemas/PreflightResult'
+        PreflightResult:
+            type: object
+            properties:
+                ok:
+                    type: boolean
+                    description: No part failed; warnings don't count.
+                version:
+                    type: string
+                    description: The pipeline version checked.
+                parts:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/PreflightPart'
+            description: |-
+                PreflightResult is a pipeline's preflight: its parts, in the order they
+                 ran.
         Principal:
             type: object
             properties:

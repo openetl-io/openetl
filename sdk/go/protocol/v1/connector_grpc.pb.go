@@ -34,7 +34,11 @@ const (
 // secret fields hold secret names, not values.
 type ConnectorServiceClient interface {
 	Spec(ctx context.Context, in *SpecRequest, opts ...grpc.CallOption) (*SpecResponse, error)
-	// A failed check is reported in CheckResponse, not as an RPC error.
+	// Whether the config reaches the source or destination: a light check of
+	// the connection alone, such as signing in, with no pipeline. A failed
+	// check is reported in CheckResponse, not as an RPC error. A pipeline's
+	// deeper checks are its preflight, SourceService.PreflightSource and
+	// DestinationService.PreflightDestination.
 	Check(ctx context.Context, in *CheckRequest, opts ...grpc.CallOption) (*CheckResponse, error)
 	// Setup and Teardown must be idempotent. They're called only when
 	// SpecResponse.setup is set: Setup before each attempt that reads or
@@ -101,7 +105,11 @@ func (c *connectorServiceClient) Teardown(ctx context.Context, in *TeardownReque
 // secret fields hold secret names, not values.
 type ConnectorServiceServer interface {
 	Spec(context.Context, *SpecRequest) (*SpecResponse, error)
-	// A failed check is reported in CheckResponse, not as an RPC error.
+	// Whether the config reaches the source or destination: a light check of
+	// the connection alone, such as signing in, with no pipeline. A failed
+	// check is reported in CheckResponse, not as an RPC error. A pipeline's
+	// deeper checks are its preflight, SourceService.PreflightSource and
+	// DestinationService.PreflightDestination.
 	Check(context.Context, *CheckRequest) (*CheckResponse, error)
 	// Setup and Teardown must be idempotent. They're called only when
 	// SpecResponse.setup is set: Setup before each attempt that reads or

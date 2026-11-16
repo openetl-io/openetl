@@ -11,6 +11,15 @@ A **source** is a configured connection that pipelines read from. A **destinatio
 
 Connection details include the server, database and account. Passwords and keys use a **secret** reference instead of a value in the configuration. OpenETL encrypts stored secret values.
 
+## Checks and preflights
+
+OpenETL can test a connection or a pipeline before any data moves.
+
+- A **check** tests one source or destination: OpenETL connects with its configuration, for example to sign in. A check does not need a pipeline.
+- A **preflight** tests a pipeline. It runs the checks of the pipeline's source and destination first. Then each connector examines the streams the pipeline reads or writes, for example each stream's permissions. Last, OpenETL plans the sync.
+
+Each check or preflight lists the items it examined. An item is **Passed**, **Warning**, **Failed** or **Skipped**, and a failed item tells you how to fix it. A connector selects the items that apply to its configuration. Neither a check nor a preflight reads or writes records.
+
 ## Connectors
 
 A **connector** implements how to read from or write to a system. It can provide a source role, a destination role, or both. Its config, supported read and write modes, type mappings and limits belong to that connector. OpenETL runs connectors through a shared contract.

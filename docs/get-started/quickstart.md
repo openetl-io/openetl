@@ -237,7 +237,7 @@ created workspaces/default/pipelines/faker-to-postgres (version 60a7c76ede3e)
 
 warnings for workspaces/default/pipelines/faker-to-postgres:
   destination "local-postgres" names connector postgres without a version, so applying it again may pin a newer one; postgres@MAJOR keeps to one major version
-checked source faker, destination local-postgres
+checked pipeline faker-to-postgres
 ```
 
 A new pipeline starts its first sync immediately.

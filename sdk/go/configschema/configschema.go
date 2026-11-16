@@ -1,5 +1,5 @@
 // Package configschema reads what the platform needs from a connector's
-// config schema: which values are secrets.
+// config schema: which values are secrets, and what a form shows.
 package configschema
 
 import (

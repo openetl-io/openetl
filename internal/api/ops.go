@@ -161,7 +161,7 @@ func (s *Server) mayNeedSetup(ctx context.Context, role, connector, digest strin
 }
 
 func checkResult(r contract.ConnectorOpResult) *apiv1.CheckResult {
-	return &apiv1.CheckResult{Ok: r.Code == "", Code: r.Code, Message: r.Message, Version: r.Version}
+	return &apiv1.CheckResult{Ok: r.Code == "", Code: r.Code, Message: r.Message, Version: r.Version, Items: apiItems(r.Checks)}
 }
 
 // runOp runs a connector operation on c, on the data plane dp or the

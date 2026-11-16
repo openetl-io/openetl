@@ -103,6 +103,17 @@ service PipelineService {
   rpc GetPipelinePlan(GetPipelinePlanRequest) returns (GetPipelinePlanResponse) {
     option (google.api.http) = {get: "/v1/{name=workspaces/*/pipelines/*}/plan"};
   }
+  // Whether the current version would run, without reading or writing
+  // records. On a runner of the pipeline's data plane it checks the source's
+  // and the destination's connections, settles what a sync would read and
+  // write, and runs both connectors' preflights for that; then it refreshes
+  // the source's catalog and plans the pipeline. It waits for all of it.
+  rpc PreflightPipeline(PreflightPipelineRequest) returns (PreflightPipelineResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=workspaces/*/pipelines/*}:preflight"
+      body: "*"
+    };
+  }
   // Each stream's schema history, by stream, then version.
   rpc ListStreamSchemas(ListStreamSchemasRequest) returns (ListStreamSchemasResponse) {
     option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/streamSchemas"};
@@ -1094,6 +1105,48 @@ message JobPlan {
   // The workers each attempt runs on, with their coordinator; 0: one pod.
   // A warning says why a job that asks for workers runs on one pod.
   uint32 workers = 4;
+}
+
+message PreflightPipelineRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string name = 1;
+}
+
+message PreflightPipelineResponse {
+  PreflightResult result = 1;
+}
+
+// PreflightResult is a pipeline's preflight: its parts, in the order they
+// ran.
+message PreflightResult {
+  // No part failed; warnings don't count.
+  bool ok = 1;
+  // The pipeline version checked.
+  string version = 2;
+  repeated PreflightPart parts = 3;
+}
+
+// PreflightPart is one part of a pipeline's preflight: a connection's
+// check, a connector's preflight for the pipeline's streams, or the plan.
+message PreflightPart {
+  // source, destination or sync.
+  string role = 1;
+  // check, preflight or plan.
+  string stage = 2;
+  // workspaces/{workspace}/sources/{source}, or destinations; empty for the
+  // sync's plan.
+  string resource = 3;
+  // The connector version that answered, by digest; empty for a built-in
+  // connector and for the plan.
+  string version = 4;
+  bool ok = 5;
+  // When not ok: a code of the error taxonomy, and what failed.
+  string code = 6;
+  string message = 7;
+  // Why it didn't run, such as a check before it that failed; empty if it
+  // ran.
+  string skipped = 8;
+  repeated CheckItem items = 9;
 }
 
 message PlanWarning {

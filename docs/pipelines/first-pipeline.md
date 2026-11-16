@@ -158,7 +158,7 @@ A failed check identifies the missing requirement. For example, the default dest
 openetl: workspaces/default/destinations/warehouse failed its check: PERMISSION_DENIED: postgres: no CREATE on schema "public"
 ```
 
-Correct the database privileges or connection configuration. If you changed `app-db.yaml`, apply it again. Repeat both connection checks before continuing.
+A connector that says what its check looked at lists each item under that line, with a fix and the config field for each one that failed or warned. Correct the database privileges or connection configuration. If you changed `app-db.yaml`, apply it again. Repeat both connection checks before continuing.
 
 ## 5. Look at the source's streams
 
@@ -269,8 +269,10 @@ openetl apply -f app-db.yaml
 unchanged workspaces/default/sources/app-db (version 5e1d0feeafb7)
 unchanged workspaces/default/destinations/warehouse (version f9aec669685a)
 created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
-checked source app-db, destination warehouse
+checked pipeline app-db-to-warehouse
 ```
+
+The apply also ran the pipeline's [preflight](../get-started/concepts.md#checks-and-preflights): the checks of both connections, each connector's checks of the tables the pipeline reads and writes, and the plan. `checked` means it passed. To run it again, for example after you change a grant, use `openetl preflight app-db-to-warehouse`.
 
 A new pipeline starts its first sync immediately. List its syncs:
 

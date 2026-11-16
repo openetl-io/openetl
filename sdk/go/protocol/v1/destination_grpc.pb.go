@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DestinationService_Write_FullMethodName = "/openetl.connector.v1.DestinationService/Write"
+	DestinationService_Write_FullMethodName                = "/openetl.connector.v1.DestinationService/Write"
+	DestinationService_PreflightDestination_FullMethodName = "/openetl.connector.v1.DestinationService/PreflightDestination"
 )
 
 // DestinationServiceClient is the client API for DestinationService service.
@@ -46,6 +47,11 @@ type DestinationServiceClient interface {
 	// other. A failed schema or commit is answered with its error; any other
 	// failure ends the stream.
 	Write(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WriteRequest, WriteResponse], error)
+	// Whether a pipeline's writes would work, for its streams as a sync would
+	// write them, without writing: each target there or creatable, writable,
+	// and in a write mode the destination has. The platform calls it after
+	// Check passes. A destination without one answers with no items.
+	PreflightDestination(ctx context.Context, in *PreflightDestinationRequest, opts ...grpc.CallOption) (*PreflightDestinationResponse, error)
 }
 
 type destinationServiceClient struct {
@@ -68,6 +74,16 @@ func (c *destinationServiceClient) Write(ctx context.Context, opts ...grpc.CallO
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DestinationService_WriteClient = grpc.BidiStreamingClient[WriteRequest, WriteResponse]
+
+func (c *destinationServiceClient) PreflightDestination(ctx context.Context, in *PreflightDestinationRequest, opts ...grpc.CallOption) (*PreflightDestinationResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreflightDestinationResponse)
+	err := c.cc.Invoke(ctx, DestinationService_PreflightDestination_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 // DestinationServiceServer is the server API for DestinationService service.
 // All implementations must embed UnimplementedDestinationServiceServer
@@ -93,6 +109,11 @@ type DestinationServiceServer interface {
 	// other. A failed schema or commit is answered with its error; any other
 	// failure ends the stream.
 	Write(grpc.BidiStreamingServer[WriteRequest, WriteResponse]) error
+	// Whether a pipeline's writes would work, for its streams as a sync would
+	// write them, without writing: each target there or creatable, writable,
+	// and in a write mode the destination has. The platform calls it after
+	// Check passes. A destination without one answers with no items.
+	PreflightDestination(context.Context, *PreflightDestinationRequest) (*PreflightDestinationResponse, error)
 	mustEmbedUnimplementedDestinationServiceServer()
 }
 
@@ -105,6 +126,9 @@ type UnimplementedDestinationServiceServer struct{}
 
 func (UnimplementedDestinationServiceServer) Write(grpc.BidiStreamingServer[WriteRequest, WriteResponse]) error {
 	return status.Error(codes.Unimplemented, "method Write not implemented")
+}
+func (UnimplementedDestinationServiceServer) PreflightDestination(context.Context, *PreflightDestinationRequest) (*PreflightDestinationResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PreflightDestination not implemented")
 }
 func (UnimplementedDestinationServiceServer) mustEmbedUnimplementedDestinationServiceServer() {}
 func (UnimplementedDestinationServiceServer) testEmbeddedByValue()                            {}
@@ -134,13 +158,36 @@ func _DestinationService_Write_Handler(srv interface{}, stream grpc.ServerStream
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DestinationService_WriteServer = grpc.BidiStreamingServer[WriteRequest, WriteResponse]
 
+func _DestinationService_PreflightDestination_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreflightDestinationRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DestinationServiceServer).PreflightDestination(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DestinationService_PreflightDestination_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DestinationServiceServer).PreflightDestination(ctx, req.(*PreflightDestinationRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DestinationService_ServiceDesc is the grpc.ServiceDesc for DestinationService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var DestinationService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "openetl.connector.v1.DestinationService",
 	HandlerType: (*DestinationServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "PreflightDestination",
+			Handler:    _DestinationService_PreflightDestination_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Write",
