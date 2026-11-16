@@ -223,7 +223,8 @@ func runPreflight(ctx context.Context, args []string, out io.Writer) error {
 		fmt.Fprintln(fs.Output(), "usage: openetl preflight [flags] PIPELINE")
 		fmt.Fprint(fs.Output(), "\nChecks that a pipeline would run, on a runner of its own data plane: both\n"+
 			"connections, then both connectors for the streams it reads and writes. As\n"+
-			"text, it then prints the pipeline's plan.\n"+exitStatusUsage+"\n")
+			"text, it then prints the pipeline's plan, or, if an apply has changed the\n"+
+			"pipeline since, the version it checked and the current one.\n"+exitStatusUsage+"\n")
 		fs.PrintDefaults()
 	}
 	conn := apiFlags(fs)
@@ -254,13 +255,20 @@ func runPreflight(ctx context.Context, args []string, out io.Writer) error {
 	} else {
 		printPreflight(out, o.preflight)
 		plan, err := c.pipelines.GetPipelinePlan(ctx, connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: name}))
-		if err != nil && o.err != nil {
-			return checkFailed("%s failed its preflight: %w; and its plan: %w", name, o.err, err)
+		switch {
+		case err != nil && o.err != nil:
+			return checkFailed("%s failed its preflight: %w; and its plan couldn't be fetched: %w", name, o.err, err)
+		case err != nil:
+			return fmt.Errorf("%s passed its preflight, but its plan couldn't be fetched: %w", name, err)
 		}
-		if err != nil {
-			return err
+		// The plan is the current version's, which an apply since the
+		// preflight may have replaced.
+		if checked, current := o.preflight.GetVersion(), plan.Msg.GetPlan().GetVersion(); checked != current {
+			fmt.Fprintf(out, "\n%s changed after its preflight: version %.12s was checked, and version %.12s is current\n",
+				name, printable(checked), printable(current))
+		} else {
+			printPlan(out, plan.Msg.GetPlan())
 		}
-		printPlan(out, plan.Msg.GetPlan())
 	}
 	if o.err != nil {
 		return checkFailed("%s failed its preflight: %w", name, o.err)

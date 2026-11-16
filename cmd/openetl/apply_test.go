@@ -170,6 +170,10 @@ type fakeChecks struct {
 	problems    []string
 	mu          sync.Mutex
 	calls       []string
+	// What GetPipelinePlan answers in place of a plan, with problems, of the
+	// version preflight gives: another plan, or an error.
+	plan    *apiv1.PipelinePlan
+	planErr error
 }
 
 func (f *fakeChecks) called(what string) {
@@ -244,7 +248,14 @@ func preflight(code, message string, items ...*apiv1.CheckItem) *apiv1.Preflight
 }
 
 func (f *fakeChecks) GetPipelinePlan(_ context.Context, r *connect.Request[apiv1.GetPipelinePlanRequest]) (*connect.Response[apiv1.GetPipelinePlanResponse], error) {
-	return connect.NewResponse(&apiv1.GetPipelinePlanResponse{Plan: &apiv1.PipelinePlan{Pipeline: r.Msg.GetName(), Version: "0123456789abcdef", Problems: f.problems}}), nil
+	if f.planErr != nil {
+		return nil, f.planErr
+	}
+	plan := f.plan
+	if plan == nil {
+		plan = &apiv1.PipelinePlan{Pipeline: r.Msg.GetName(), Version: "abababababababab", Problems: f.problems}
+	}
+	return connect.NewResponse(&apiv1.GetPipelinePlanResponse{Plan: plan}), nil
 }
 
 func checksServer(t *testing.T, f *fakeChecks) string {
@@ -342,7 +353,7 @@ func TestPreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "source shop's check: passed\ndestination lake's check: passed\nthe sync's plan: passed\n  passed   The plan\n           2 streams, no problems\n" +
-		"source shop's preflight: passed\n  passed   Read orders\ndestination lake's preflight: passed\n\nworkspaces/default/pipelines/shop-to-lake (version 0123456789ab)\n"
+		"source shop's preflight: passed\n  passed   Read orders\ndestination lake's preflight: passed\n\nworkspaces/default/pipelines/shop-to-lake (version abababababab)\n"
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
 	}

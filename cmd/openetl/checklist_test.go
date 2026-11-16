@@ -14,6 +14,7 @@ import (
 	"testing"
 	"unicode"
 
+	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
@@ -161,7 +162,7 @@ func TestPreflightChecklist(t *testing.T) {
 		"source shop's preflight: passed\n" +
 		"  passed   Read orders\n" +
 		"destination lake's preflight: skipped, the destination's check failed\n" +
-		"\nworkspaces/default/pipelines/shop-to-lake (version 0123456789ab)\n"
+		"\nworkspaces/default/pipelines/shop-to-lake (version abababababab)\n"
 	if out != want {
 		t.Errorf("printed\n%s\nwant\n%s", out, want)
 	}
@@ -191,7 +192,7 @@ func TestPreflightChecklist(t *testing.T) {
 		"the sync's plan: failed: CONFIG_INVALID: the source has no stream \"s\"\n" +
 		"source shop's preflight: skipped, a sync can't be planned\n" +
 		"destination lake's preflight: skipped, a sync can't be planned\n" +
-		"\nworkspaces/default/pipelines/shop-to-lake (version 0123456789ab)\n"
+		"\nworkspaces/default/pipelines/shop-to-lake (version abababababab)\n"
 	if out != want || exitStatus(err) != 1 ||
 		err.Error() != `workspaces/default/pipelines/shop-to-lake failed its preflight: the sync's plan failed: CONFIG_INVALID: the source has no stream "s"` {
 		t.Errorf("a sync that can't be planned: %v\n%s\nwant\n%s", err, out, want)
@@ -224,6 +225,33 @@ func TestPreflightChecklist(t *testing.T) {
 	if _, _, err := runCLI(t, "preflight", "--api-url", url, "shop-to-lake"); exitStatus(err) != 1 ||
 		err.Error() != "workspaces/default/pipelines/shop-to-lake failed its preflight: it failed, though none of its parts did; run it again" {
 		t.Errorf("a failure without a part: %v", err)
+	}
+}
+
+// The plan after a preflight's parts is of the version it checked. A plan
+// that can't be fetched leaves the preflight's verdict, and says so.
+func TestPreflightPlan(t *testing.T) {
+	const name = "workspaces/default/pipelines/shop-to-lake"
+	f := &fakeChecks{preflight: preflight("", ""), plan: &apiv1.PipelinePlan{Pipeline: name, Version: "cdcdcdcdcdcdcdcd", Problems: []string{"the current version's"}}}
+	url := checksServer(t, f)
+	out, _, err := runCLI(t, "preflight", "--api-url", url, "shop-to-lake")
+	want := "destination lake's preflight: passed\n" +
+		"\n" + name + " changed after its preflight: version abababababab was checked, and version cdcdcdcdcdcd is current\n"
+	if err != nil || !strings.HasSuffix(out, want) || strings.Contains(out, "the current version's") {
+		t.Errorf("a pipeline applied since: %v\n%s\nwant it to end\n%s", err, out, want)
+	}
+	t.Logf("a pipeline applied since:\n%s", out)
+
+	f.plan, f.planErr = nil, connect.NewError(connect.CodeUnavailable, errors.New("the API went away"))
+	out, _, err = runCLI(t, "preflight", "--api-url", url, "shop-to-lake")
+	if exitStatus(err) != 2 || !strings.HasSuffix(out, "destination lake's preflight: passed\n") ||
+		err.Error() != name+" passed its preflight, but its plan couldn't be fetched: unavailable: the API went away" {
+		t.Errorf("a passed preflight without its plan: %v, status %d\n%s", err, exitStatus(err), out)
+	}
+	f.preflight = preflight("AUTH_INVALID", "no")
+	if _, _, err := runCLI(t, "preflight", "--api-url", url, "shop-to-lake"); exitStatus(err) != 1 ||
+		err.Error() != name+" failed its preflight: destination lake's check failed: AUTH_INVALID: no; and its plan couldn't be fetched: unavailable: the API went away" {
+		t.Errorf("a failed preflight without its plan: %v, status %d", err, exitStatus(err))
 	}
 }
 
