@@ -31,6 +31,7 @@ import (
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/plan"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner/pods"
 	"github.com/openetl-io/openetl/internal/runner/worker"
@@ -423,6 +424,71 @@ func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
 		if !errors.As(err, &onePod) || onePod.Why != "a Spark or Flink transform runs on one pod" {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// A statement tier 3 takes, as a dedupe by ROW_NUMBER() = 1, is refused
+// as its sync's job is built, before the attempt is placed: on workers as on
+// one pod.
+func TestATier3StatementIsRefusedOnWorkersAsOnOnePod(t *testing.T) {
+	engine := os.Getenv("OPENETL_ENGINE")
+	if _, err := os.Stat(engine); engine == "" || err != nil {
+		t.Skip("OPENETL_ENGINE names no engine binary")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	connectors, store := filepath.Join(dir, "connectors"), filepath.Join(dir, "store")
+	for _, d := range []string{connectors, store} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, as := range map[string]string{"destination-lanes": "connector", "source-timed": "timed"} {
+		script := fmt.Sprintf("#!/bin/sh\n%s=%s exec %q -test.run='^$'\n", processEnv, as, exe)
+		if err := os.WriteFile(filepath.Join(connectors, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dst, err := structpb.NewStruct(map[string]any{"dir": filepath.Join(dir, "out")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := checkpoint.NewFSStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := "INSERT INTO firsts SELECT id, region, at FROM events QUALIFY row_number() OVER (PARTITION BY region ORDER BY at) = 1"
+	api := &workersAPI{spec: &dataplanev1.GetSyncSpecResponse{
+		OrgId: "org", PipelineId: "p", Version: "v1",
+		Source:      &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}},
+		Destination: &apiv1.ConnectorConfig{Connector: "lanes", Config: dst},
+		Pipeline: &apiv1.PipelineSpec{
+			Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at"}}},
+			Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
+		},
+	}}
+	mux := http.NewServeMux()
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	s := &Sync{
+		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), Checkpoints: checkpoints, Storage: store,
+		Engine: engineclient.Options{Binary: engine}, Connectors: connectorhost.Env{Connectors: connectors},
+	}
+	for _, workers := range []int{0, 2} {
+		wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: workers, Size: resources.S, Received: time.Now()}, nil)
+		_, err := s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
+		if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "transform.sql:1:62: OVER: transforms don't run window functions yet (tier 3)") {
+			t.Errorf("on %d workers: %v", workers, err)
+		}
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if api.opened > 0 {
+		t.Error("the coordinator opened its workers")
 	}
 }
 

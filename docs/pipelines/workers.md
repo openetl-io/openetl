@@ -167,6 +167,8 @@ Some transactional destinations commit each writer lane in a transaction of its 
 - It commits the copy that the lane kept, if the destination keeps one.
 - It reads that lane's part of the epoch again from the source, from the same positions, and commits it. With an exchange, the lane's part holds its keys' rows of every split that the epoch read, on any worker, so the next attempt reads all those splits again.
 
+If that attempt is stopped while it reads a lane's part again, the lane stays uncommitted, and the attempt after it reads the part again.
+
 With a [SQL transform](./sql-transforms.md), the next attempt runs the statements again on what it reads. It commits each output's rows that the lane wrote, and no others:
 
 - Of an output without an exchange, the rows of the splits that the lane's own worker read and wrote to that lane.
