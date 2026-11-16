@@ -189,6 +189,8 @@ These jobs run on one pod:
 
 `plan.OnePod` ([`internal/plan`](../../internal/plan)) is the one check behind these cases, for the plan, for `EnqueueWork` and for `Job.OnWorkers`. `EnqueueWork` works out an attempt's workers when it sizes the attempt, so the workflows and their histories do not change. The placer sends an attempt on workers only to a pod launcher of its pool, all of its pods or none, and the launcher's `--max-pods` and `--max-pod-cpu` count every pod. The launcher ([`internal/runner/pods`](../../internal/runner/pods)) makes the workers' pods, then the coordinator's.
 
+A placement on a launcher holds its pods, CPU and memory in the `launches` table from the pass that places it. The room stays held after the placement ends or the attempt is placed again, until the launcher's report says that no pod of it is left that has not ended. The report lists the placements with such a pod, or whose pods it is still making, and `listed` says it could list its pods. A report that could not list them frees nothing. `PlacementRunners` counts the rows of placements that have ended as the launcher's unreaped pods, which `fits` adds to its caps.
+
 The coordinator listens at `--attempt-listen` with a certificate that it makes, claims the pipeline, and makes a token for the attempt. `OpenWorkers` gives the API its address, certificate and token, which the dispatcher keeps in `dispatches.worker_target`. Each worker's pod calls `PollWork` with its index until the API has them, then joins with the token. Workers take no part in the attempt's lease or result. If the coordinator finds that the job cannot run on workers, it reports `one_pod`, and the dispatcher places the same attempt again on one pod.
 
 ### The exchange between engines
