@@ -443,6 +443,10 @@ func TestCheckPipelineIsPreflight(t *testing.T) {
 	for _, args := range [][]string{
 		{"check", "--api-url", url, "pipeline", "--workspace", "default", "shop-to-lake"},
 		{"check", "--api-url", url, "--workspace", "default", "pipeline", "shop-to-lake"},
+		// What check pipeline took before; the pipeline's own data plane
+		// runs a preflight.
+		{"check", "--api-url", url, "--data-plane", "dp1", "pipeline", "shop-to-lake"},
+		{"check", "--api-url=" + url, "-data-plane=dp1", "--format", "text", "pipeline", "shop-to-lake"},
 	} {
 		out, errOut, err := runCLI(t, args...)
 		if out != want || err == nil || err.Error() != wantErr.Error() || exitStatus(err) != 1 {

@@ -756,7 +756,15 @@ func runCheck(ctx context.Context, args []string, out io.Writer) error {
 	kind := fs.Arg(0)
 	if kind == "pipeline" {
 		fmt.Fprintln(stderr, "openetl: check pipeline is deprecated; use openetl preflight NAME")
-		return runPreflight(ctx, slices.Concat(args[:len(args)-fs.NArg()], fs.Args()[1:]), out)
+		// It took --data-plane before preflight replaced it; a preflight
+		// runs on the pipeline's own data plane, so it drops the flag.
+		var flags []string
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name != "data-plane" {
+				flags = append(flags, "-"+f.Name+"="+f.Value.String())
+			}
+		})
+		return runPreflight(ctx, slices.Concat(flags, fs.Args()[1:]), out)
 	}
 	if err := checkFormat(*format); err != nil {
 		return err
