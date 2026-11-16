@@ -172,7 +172,7 @@ func TestAGroupWindowSpansScheduledSyncs(t *testing.T) {
 	var windows, rowsIn []int64
 	counted := func(j runner.Job) runner.Job {
 		windows, rowsIn = append(windows, -1), append(rowsIn, 0)
-		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 			mu.Lock()
 			defer mu.Unlock()
 			for _, o := range rec.Operators {
