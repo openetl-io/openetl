@@ -103,7 +103,7 @@ func TestPlanErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(a.Statements) != 0 || len(a.Errors) != 1 || a.Errors[0].Kind != "later_tier" || a.Errors[0].Tier != 3 || a.Errors[0].At == nil || a.Errors[0].At.Line != 3 {
+	if len(a.Statements) != 0 || len(a.Errors) != 1 || a.Errors[0].Kind != "later_tier" || a.Errors[0].Tier != 5 || a.Errors[0].At == nil || a.Errors[0].At.Line != 3 {
 		t.Errorf("%+v", a)
 	}
 	keyless := sqlplan.Stream{Name: "events", Changelog: true, Columns: []sqlplan.Column{{Name: "id", Type: "int64"}, {Name: "kind", Type: "utf8"}}}

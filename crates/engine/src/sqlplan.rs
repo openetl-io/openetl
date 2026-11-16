@@ -203,7 +203,9 @@ pub fn plan(req: &Request) -> Result<Answer, String> {
             .insert(s.name.clone(), stream(s)?)
             .map_err(|e| e.message)?;
     }
-    let planned = match openetl_sql::plan(&req.sql, &catalog) {
+    let planned = match openetl_sql::plan(&req.sql, &catalog)
+        .and_then(|p| p.refuse_unless(transform::runs))
+    {
         Ok(p) => p,
         Err(errors) => {
             return Ok(Answer {
@@ -677,6 +679,33 @@ mod tests {
         assert_eq!(e[1]["at"]["line"], 4);
         assert!(e[1].get("tier").is_none());
         assert!(e[1]["message"].as_str().unwrap().contains("nope"));
+    }
+
+    /// OVER and dedupe plan, and the answer refuses each as a tier 3
+    /// statement at its first OVER, as a job's start does.
+    #[test]
+    fn over_and_dedupe_are_refused_as_tier_3s() {
+        let mut stream = customers();
+        stream["event_time"] = json!("created_at");
+        stream["changelog"] = json!(false);
+        let got = answer(json!({
+            "sql": "INSERT INTO running\nSELECT id, count(*) OVER (PARTITION BY email ORDER BY created_at) AS n FROM customers;\n\
+                    INSERT INTO latest SELECT id, email FROM customers\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY created_at DESC) = 1",
+            "streams": [stream],
+        }));
+        assert_eq!(got["statements"], json!([]));
+        let refused = json!({"kind": "later_tier", "class": "over", "tier": 3, "message": "OVER: transforms don't run window functions yet (tier 3)"});
+        for (e, at) in got["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip([(2, 12), (4, 9)])
+        {
+            let mut want = refused.clone();
+            want["at"] = json!({"line": at.0, "column": at.1});
+            assert_eq!(*e, want);
+        }
+        assert_eq!(got["errors"].as_array().map(Vec::len), Some(2));
     }
 
     /// `openetl-engine plan` plans the deepest chain of views on a small

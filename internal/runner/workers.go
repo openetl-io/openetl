@@ -52,11 +52,45 @@ type Workers struct {
 	// Starts a worker for each target, each running RunWorker with the job,
 	// and returns once they're started. Called once the attempt is claimed.
 	Launch func(ctx context.Context, targets []attempt.Target) error
+	// A test's: called as the coordinator starts to wait on its workers,
+	// with the step: "recover", then "assign".
+	onWait func(step string)
+}
+
+func (w *Workers) waiting(step string) {
+	if w.onWait != nil {
+		w.onWait(step)
+	}
 }
 
 // endTimeout bounds how long ending an attempt waits for its workers to
 // close their calls.
 const endTimeout = 30 * time.Second
+
+// errStopped is why a stop cancelled what an attempt on workers waited on,
+// and what its workers' calls end with then, which stop as they would for a
+// failure: their answers would reach nobody.
+var errStopped = errs.New(errs.Draining, "runner: the attempt was stopped before its workers had their assignment")
+
+// untilStop is ctx, cancelled with errStopped when drain closes. Until an
+// attempt on workers runs its loop, which heeds a stop at its checkpoints,
+// it waits on its workers, and they leave an attempt that's stopped: this
+// is what those waits watch.
+func untilStop(ctx context.Context, drain <-chan struct{}) (context.Context, func()) {
+	sctx, cancel := context.WithCancelCause(ctx)
+	go func() {
+		select {
+		case <-drain:
+			cancel(errStopped)
+		case <-sctx.Done():
+		}
+	}()
+	return sctx, func() { cancel(nil) }
+}
+
+// stopCancelled reports whether a stop cancelled sctx, from untilStop: what
+// failed then ends the attempt as a stop at a checkpoint does.
+func stopCancelled(sctx context.Context) bool { return errors.Is(context.Cause(sctx), errStopped) }
 
 // OnWorkers says why the job can't run on workers; nil if it can. What
 // needs one writer, or what the platform doesn't run, stays on one pod.
@@ -733,15 +767,27 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	if err != nil {
 		return res, err
 	}
+	stoppedEarly := false
 	defer func() {
 		ectx, cancel := context.WithTimeout(context.WithoutCancel(ctx), endTimeout)
 		defer cancel()
 		cause := err
-		if errors.Is(err, ErrDrained) {
+		switch {
+		case stoppedEarly:
+			cause = errStopped
+		case errors.Is(err, ErrDrained):
 			cause = nil
 		}
 		if eerr := co.End(ectx, cause); eerr != nil {
 			log.Warn("the workers didn't close their calls", "err", eerr)
+		}
+	}()
+	rctx, unstop := untilStop(rctx, j.Drain)
+	defer unstop()
+	waiting := true
+	defer func() {
+		if waiting && err != nil && stopCancelled(rctx) {
+			err, stoppedEarly = ErrDrained, true
 		}
 	}()
 	targets := make([]attempt.Target, n)
@@ -786,6 +832,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 			return res, err
 		}
 	}
+	j.Workers.waiting("recover")
 	ans, err := co.Call(rctx, 0, &attemptv1.Call{Call: &attemptv1.Call_Recover{Recover: settle}})
 	if err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
@@ -873,6 +920,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	for _, p := range holdPlans {
 		c.replaying = c.replaying || p.Replay != nil
 	}
+	waiting = false
 	err = c.runFleet(ctx, restored, a)
 	return res, err
 }
@@ -1253,7 +1301,14 @@ func (c *coordinator) runFleet(ctx context.Context, restored *checkpoint.Record,
 	c.events = make(chan event, 64)
 	c.commits = make(chan commitReq, 1)
 	f.events = c.events
-	if err := f.co.Assign(gctx, a); err != nil {
+	c.job.Workers.waiting("assign")
+	actx, unstop := untilStop(gctx, c.job.Drain)
+	err := f.co.Assign(actx, a)
+	unstop()
+	switch {
+	case err != nil && stopCancelled(actx):
+		return ErrDrained
+	case err != nil:
 		return err
 	}
 	// The workers' side ends with the loop, or with the error that ended it.

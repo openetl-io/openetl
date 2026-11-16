@@ -32,23 +32,48 @@ SELECT count(*) AS n FROM orders GROUP BY hop(created_at, INTERVAL '1 minute', I
 unsupported 1:43 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
 
-# Window functions: tier 3.
+# Window functions: OVER and dedupe by ROW_NUMBER() … = 1 plan, and the
+# engine doesn't run them yet (tier 3). Others are refused as they plan.
+statement ok
+CREATE TABLE clicks (id BIGINT NOT NULL, region TEXT, amount DECIMAL(12, 2), at TIMESTAMPTZ, PRIMARY KEY (id))
+
+statement ok
+ALTER TABLE clicks SET EVENT TIME at
+
+query error
+SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY at) AS total FROM clicks
+----
+later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
+
+
+query error
+SELECT id, amount FROM clicks QUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1
+----
+later_tier over 1:39 OVER: transforms don't run window functions yet (tier 3)
+
+
 query error
 SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total FROM orders
 ----
-later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
+unsupported 1:12 orders has no event time, which OVER goes by: set eventTime on the stream in source.streams
 
 
 query error
-SELECT id, row_number() OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders
+SELECT id, row_number() OVER (PARTITION BY region ORDER BY at) AS n FROM clicks
 ----
-later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
+unsupported 1:12 ROW_NUMBER() deduplicates, keeping the rows where it's 1: compare it = 1 in QUALIFY, or in the WHERE of a SELECT that reads it; count(*) OVER (… ROWS UNBOUNDED PRECEDING) numbers every row
+
+
+query error
+SELECT id, rank() OVER (PARTITION BY region ORDER BY at) AS r FROM clicks
+----
+later_tier updating 1:12 rank(): transforms don't run updating statements yet (tier 5)
 
 
 query error
 SELECT id, rank() AS r FROM orders
 ----
-later_tier over 1:12 a window function: transforms don't run window functions yet (tier 3)
+unsupported 1:12 rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)
 
 
 # Joins and subqueries: tier 4.
@@ -121,7 +146,6 @@ not_deterministic 1:43 random() isn't deterministic, so it can't feed a group's 
 query error
 SELECT id, sum(amount) OVER (PARTITION BY uuid()) AS total FROM orders
 ----
-later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
 not_deterministic 1:43 uuid() isn't deterministic, so it can't feed a window's partition
 
 

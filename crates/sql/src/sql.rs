@@ -270,6 +270,26 @@ impl Sql {
                                     });
                                 }
                             }
+                            Ok(Lowered::Over(o)) => {
+                                let o = *o;
+                                if let Some((output, replaces)) = output {
+                                    statements.push(Statement {
+                                        at: *at,
+                                        output,
+                                        replaces,
+                                        class: Class::Over,
+                                        inputs: check.inputs.clone(),
+                                        views: check
+                                            .views
+                                            .iter()
+                                            .map(|&v| views[v].name.clone())
+                                            .collect(),
+                                        schema: o.schema,
+                                        key: o.key,
+                                        operator: o.operator,
+                                    });
+                                }
+                            }
                             Err(e) => errors.push(e),
                         }
                     }
@@ -649,7 +669,7 @@ const AGGREGATES: &[&str] = &[
     "variance",
 ];
 
-/// Functions that only run over a window, which a later tier runs.
+/// Functions that only run `OVER` a window of rows.
 const WINDOW_FUNCTIONS: &[&str] = &[
     "cume_dist",
     "dense_rank",
@@ -690,12 +710,15 @@ struct Check<'a> {
     view: bool,
     /// Where the outermost SELECT's GROUP BY has its window.
     window: Option<Position>,
+    /// Where the first window function computed OVER is, in any SELECT.
+    over: Option<Position>,
 }
 
 /// A statement's query, lowered.
 enum Lowered {
     RowWise(lower::Lowered),
     GroupWindow(Box<crate::window::Lowered>),
+    Over(Box<crate::over::Lowered>),
 }
 
 struct Top {
@@ -729,6 +752,7 @@ impl<'a> Check<'a> {
             qualified_as: None,
             view: false,
             window: None,
+            over: None,
         }
     }
 
@@ -746,15 +770,7 @@ impl<'a> Check<'a> {
     fn later_tier(&mut self, class: Class, span: Span, what: &str) {
         if self.later_tiers.insert(class) {
             let at = self.at(span);
-            self.errors.push(Error::at(
-                ErrorKind::LaterTier(class),
-                at,
-                format!(
-                    "{what}: transforms don't run {} yet (tier {})",
-                    class.description(),
-                    class.tier()
-                ),
-            ));
+            self.errors.push(Error::later_tier(class, at, what));
         }
     }
 
@@ -880,6 +896,8 @@ impl<'a> Check<'a> {
         for (span, m) in crate::zone::rewrite(s) {
             self.unsupported(span, m);
         }
+        let _ = ast::visit_expressions_mut(&mut s.projection, count_rows);
+        let _ = ast::visit_expressions_mut(&mut s.qualify, count_rows);
         let from = &read.nondeterministic;
 
         // Aggregates, windows and subqueries, wherever they are.
@@ -889,13 +907,16 @@ impl<'a> Check<'a> {
         let mut over_specs = Vec::new();
         let mut subquery = None;
         let mut window_only = None;
+        let mut over_in_where = None;
         {
             let mut look = |e: &ast::Expr| {
                 match e {
                     ast::Expr::Function(f) => {
                         let name = function_name(f);
                         match &f.over {
-                            Some(w) => over_specs.push((f.span(), w.clone())),
+                            Some(w) => {
+                                over_specs.push((f.span(), name, f.filter.is_some(), w.clone()))
+                            }
                             None if AGGREGATES.contains(&name.as_str()) => {
                                 aggregate.get_or_insert(f.span());
                                 if !crate::window::AGGREGATES.contains(&name.as_str()) {
@@ -903,7 +924,7 @@ impl<'a> Check<'a> {
                                 }
                             }
                             None if WINDOW_FUNCTIONS.contains(&name.as_str()) => {
-                                window_only.get_or_insert(f.span());
+                                window_only.get_or_insert((f.span(), name));
                             }
                             None => {}
                         }
@@ -920,23 +941,54 @@ impl<'a> Check<'a> {
             let _ = ast::visit_expressions(&s.projection, &mut look);
             let _ = ast::visit_expressions(&s.selection, &mut look);
             let _ = ast::visit_expressions(&s.having, &mut look);
+            let _ = ast::visit_expressions(&s.qualify, &mut look);
         }
+        let _ = ast::visit_expressions(&s.selection, |e| {
+            if let ast::Expr::Function(f) = e
+                && f.over.is_some()
+            {
+                over_in_where = Some(f.span());
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        });
         if let Some(span) = subquery {
             self.later_tier(Class::Join, span, "a subquery");
         }
-        for (span, _) in &over_specs {
-            self.later_tier(Class::Over, *span, "OVER");
+        for (span, name, filtered, _) in &over_specs {
+            self.over_function(*span, name, *filtered);
         }
-        if let Some(span) = window_only {
-            self.later_tier(Class::Over, span, "a window function");
+        if let Some((span, name)) = window_only {
+            self.unsupported(
+                span,
+                format!(
+                    "{name} is a window function, which takes OVER: {name}(…) OVER (PARTITION BY … ORDER BY …)"
+                ),
+            );
         }
         if let Some(w) = s.named_window.first() {
-            self.later_tier(Class::Over, w.0.span, "WINDOW");
+            self.unsupported(
+                w.0.span,
+                "WINDOW isn't supported: write each OVER (…) in full",
+            );
         }
-        if let Some(q) = &s.qualify {
-            self.later_tier(Class::Over, q.span(), "QUALIFY");
+        if let Some(span) = over_in_where {
+            self.unsupported(
+                span,
+                "WHERE runs before OVER, so it can't read OVER's values: compare them in QUALIFY, or in the WHERE of a SELECT that reads this one",
+            );
         }
-        for (_, w) in &over_specs {
+        if let Some(first) = over_specs.iter().map(|(span, ..)| self.at(*span)).min() {
+            if self.view {
+                self.errors.push(Error::at(
+                    ErrorKind::Unsupported,
+                    first,
+                    "a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view",
+                ));
+            }
+            self.over = Some(self.over.map_or(first, |o| o.min(first)));
+        }
+        for (.., w) in &over_specs {
             if let ast::WindowType::WindowSpec(spec) = w {
                 self.deterministic(&spec.partition_by, from, "a window's partition");
                 let order: Vec<ast::Expr> = spec.order_by.iter().map(|o| o.expr.clone()).collect();
@@ -1122,7 +1174,7 @@ impl<'a> Check<'a> {
         }
     }
 
-    /// Gives each unquoted column name in a SELECT's list and WHERE the
+    /// Gives each unquoted column name in a SELECT's clauses the
     /// spelling of the one column of what FROM reads that it fits without
     /// regard to case, quoted, so binding takes it as it is. A name that fits
     /// none is left for binding to refuse; one that fits several is refused
@@ -1171,9 +1223,33 @@ impl<'a> Check<'a> {
             let _ = ast::visit_expressions_mut(exprs, &mut visit);
         }
         let _ = ast::visit_expressions_mut(&mut s.having, &mut visit);
+        let _ = ast::visit_expressions_mut(&mut s.qualify, &mut visit);
         for (span, m) in refused {
             let at = self.at(span);
             self.errors.push(Error::at(ErrorKind::Name, at, m));
+        }
+    }
+
+    /// Refuses a function OVER doesn't take.
+    fn over_function(&mut self, span: Span, name: &str, filtered: bool) {
+        match name {
+            "lag" | "first_value" | "row_number" if filtered => self.unsupported(
+                span,
+                format!("{name} takes no FILTER, which is for aggregates"),
+            ),
+            n if crate::over::FUNCTIONS.contains(&n) => {}
+            "rank" | "dense_rank" => self.later_tier(Class::Updating, span, &format!("{name}()")),
+            "lead" => self.unsupported(
+                span,
+                "lead reads rows after the current one, and OVER's frames end at the current row: lag reads the rows before it",
+            ),
+            _ => self.unsupported(
+                span,
+                format!(
+                    "{name} isn't a function OVER takes: OVER takes {}",
+                    crate::over::NAMED
+                ),
+            ),
         }
     }
 
@@ -1443,9 +1519,26 @@ impl<'a> Check<'a> {
     }
 
     /// Binds a statement's query and lowers it: a group window where its
-    /// SELECT groups by one, which writes `output`, or else a row-wise
-    /// statement.
+    /// SELECT groups by one, which writes `output`; `OVER` or dedupe where
+    /// it computes a window function; or else a row-wise statement.
     fn lower(&mut self, query: &ast::Query, at: Position, output: &str) -> Result<Lowered, Error> {
+        if let Some(over) = self.over {
+            if let Some(window) = self.window {
+                return Err(Error::at(
+                    ErrorKind::Unsupported,
+                    window,
+                    "a statement groups by a window or computes OVER, not both: compute OVER in a statement of its own",
+                ));
+            }
+            let plan = self.bind(query, at)?;
+            let o = crate::over::At {
+                statement: at,
+                over,
+            };
+            if let Some(o) = crate::over::lower(&plan, self.catalog, &o, output)? {
+                return Ok(Lowered::Over(Box::new(o)));
+            }
+        }
         let Some(window) = self.window else {
             return self
                 .lower_row_wise(query, at)
@@ -1660,6 +1753,7 @@ fn unqualify(s: &mut ast::Select, from: &[ast::Ident], alias: &ast::Ident) -> Ve
     };
     let _ = ast::visit_expressions_mut(&mut s.projection, &mut replace);
     let _ = ast::visit_expressions_mut(&mut s.selection, &mut replace);
+    let _ = ast::visit_expressions_mut(&mut s.qualify, &mut replace);
     refused
 }
 
@@ -1685,6 +1779,21 @@ fn rewrite(
             at: None,
         });
     }
+}
+
+/// `count(*) OVER (…)` as `count(1) OVER (…)`, which binding takes as a
+/// window function.
+fn count_rows(e: &mut ast::Expr) -> ControlFlow<()> {
+    if let ast::Expr::Function(f) = e
+        && f.over.is_some()
+        && function_name(f) == "count"
+        && let ast::FunctionArguments::List(l) = &mut f.args
+        && let [ast::FunctionArg::Unnamed(a @ ast::FunctionArgExpr::Wildcard)] =
+            l.args.as_mut_slice()
+    {
+        *a = ast::FunctionArgExpr::Expr(ast::Expr::value(ast::Value::Number("1".into(), false)));
+    }
+    ControlFlow::Continue(())
 }
 
 fn function_name(f: &ast::Function) -> String {
