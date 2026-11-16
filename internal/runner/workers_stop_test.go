@@ -3,6 +3,7 @@ package runner_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,43 +20,17 @@ var stopOpts = attempt.Options{Heartbeat: 50 * time.Millisecond, Timeout: 2 * ti
 // stopSoon is how soon an attempt stopped before its loop must end.
 const stopSoon = 5 * time.Second
 
-// An attempt on workers that's stopped before its workers join, which
-// leave an attempt that's stopped, ends drained at once rather than
-// waiting out the join timeout; and the next attempt commits every row.
+// An attempt on workers that's stopped as it waits for its first worker to
+// join, which a stopped attempt's workers never do, ends drained at once
+// rather than waiting out the join timeout; the next attempt commits every
+// row.
 func TestAStopBeforeTheWorkersJoinDrains(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	p := newPool(t, ranges(2, 10, 5))
+	ctx, p := stopPool(t)
 	j := p.job("a1", noSource{t}, p.destination(true))
-	launched, drain := make(chan struct{}), make(chan struct{})
-	j.Workers = &runner.Workers{Count: 2, Server: p.srv, Options: stopOpts, Launch: func(context.Context, []attempt.Target) error {
-		close(launched)
-		return nil
-	}}
-	j.Drain = drain
-	go func() {
-		<-launched
-		close(drain)
-	}()
-	start := time.Now()
-	if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
-		t.Fatalf("got %v, want ErrDrained", err)
-	}
-	if d := time.Since(start); d > stopSoon {
-		t.Fatalf("the stopped attempt ended after %v", d)
-	}
-
-	next := p.workers("a2", 2)
-	next.Workers.Options = stopOpts
-	if _, err := runner.RunAttempt(ctx, next); err != nil {
-		t.Fatal(err)
-	}
-	for i, err := range p.wait("a2") {
-		if err != nil {
-			t.Errorf("worker %d: %v", i, err)
-		}
-	}
-	p.store.check(t, 20)
+	j.Workers = &runner.Workers{Count: 2, Server: p.srv, Options: stopOpts, Launch: func(context.Context, []attempt.Target) error { return nil }}
+	stopAt(&j, "recover")
+	drainsAtOnce(ctx, t, p, j)
+	commitsEveryRow(ctx, t, p, "a2")
 }
 
 // An attempt on workers that's stopped while its first worker recovers the
@@ -63,27 +38,89 @@ func TestAStopBeforeTheWorkersJoinDrains(t *testing.T) {
 // worker's call stops rather than holding the attempt's end. Its workers
 // end, and the next attempt recovers and commits every row.
 func TestAStopDuringRecoveryOnWorkersDrains(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	p := newPool(t, ranges(2, 10, 5))
+	ctx, p := stopPool(t)
 	recovering := make(chan struct{}, 4)
 	var block atomic.Bool
 	block.Store(true)
-	p.dest = func(coordinator bool) destination.Destination {
-		d := stagingDest{s: p.store, t: t, coordinator: coordinator}
-		if coordinator || !block.Load() {
+	workerDest(t, p, func(d stagingDest) destination.Destination {
+		if !block.Load() {
 			return d
 		}
 		return openBlocks{stagingDest: d, entered: recovering}
-	}
-	j := p.workers("a1", 2)
+	})
+	j := onStopWorkers(p, "a1", 2)
+	stopWhen(&j, recovering)
+	drainsAtOnce(ctx, t, p, j)
+	block.Store(false)
+	commitsEveryRow(ctx, t, p, "a2")
+}
+
+// An attempt on workers whose first worker joined and recovered, and whose
+// second never joins, is stopped as it waits to assign their work: it ends
+// drained at once, and its first worker ends.
+func TestAStopWhileAWorkerHasntJoinedDrains(t *testing.T) {
+	ctx, p := stopPool(t)
+	j := onStopWorkers(p, "a1", 2)
+	launch := j.Workers.Launch
+	j.Workers.Launch = func(ctx context.Context, targets []attempt.Target) error { return launch(ctx, targets[:1]) }
+	stopAt(&j, "assign")
+	drainsAtOnce(ctx, t, p, j)
+}
+
+// stopPool is a pool of two splits of ten rows, and the test's bound.
+func stopPool(t *testing.T) (context.Context, *pool) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	t.Cleanup(cancel)
+	return ctx, newPool(t, ranges(2, 10, 5))
+}
+
+// onStopWorkers is the pool's job for attempt owner on n workers, which
+// join within stopOpts' timeout.
+func onStopWorkers(p *pool, owner string, n int) runner.Job {
+	j := p.workers(owner, n)
 	j.Workers.Options = stopOpts
+	return j
+}
+
+// workerDest makes each worker's destination wrap of the pool's staging
+// one, and leaves the coordinator's as it is.
+func workerDest(t *testing.T, p *pool, wrap func(stagingDest) destination.Destination) {
+	p.dest = func(coordinator bool) destination.Destination {
+		d := stagingDest{s: p.store, t: t, coordinator: coordinator}
+		if coordinator {
+			return d
+		}
+		return wrap(d)
+	}
+}
+
+// stopAt stops j's attempt as its coordinator starts to wait on its
+// workers at step.
+func stopAt(j *runner.Job, step string) {
+	drain := make(chan struct{})
+	var once sync.Once
+	j.Drain = drain
+	runner.OnWait(j.Workers, func(s string) {
+		if s == step {
+			once.Do(func() { close(drain) })
+		}
+	})
+}
+
+// stopWhen stops j's attempt once signal says.
+func stopWhen(j *runner.Job, signal <-chan struct{}) {
 	drain := make(chan struct{})
 	j.Drain = drain
 	go func() {
-		<-recovering
+		<-signal
 		close(drain)
 	}()
+}
+
+// drainsAtOnce runs j's attempt, which must end drained within stopSoon,
+// as must the workers it launched.
+func drainsAtOnce(ctx context.Context, t *testing.T, p *pool, j runner.Job) {
+	t.Helper()
 	start := time.Now()
 	if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
 		t.Fatalf("got %v, want ErrDrained", err)
@@ -91,89 +128,37 @@ func TestAStopDuringRecoveryOnWorkersDrains(t *testing.T) {
 	if d := time.Since(start); d > stopSoon {
 		t.Fatalf("the stopped attempt ended after %v", d)
 	}
+	p.mu.Lock()
+	_, launched := p.done[j.Owner]
+	p.mu.Unlock()
+	if !launched {
+		return
+	}
 	ended := make(chan struct{})
 	go func() {
 		defer close(ended)
-		p.wait("a1")
+		p.wait(j.Owner)
 	}()
 	select {
 	case <-ended:
 	case <-time.After(stopSoon):
 		t.Fatal("the stopped attempt's workers didn't end")
 	}
+}
 
-	block.Store(false)
-	next := p.workers("a2", 2)
-	next.Workers.Options = stopOpts
-	if _, err := runner.RunAttempt(ctx, next); err != nil {
+// commitsEveryRow runs attempt owner on two workers, which commits all 20
+// rows.
+func commitsEveryRow(ctx context.Context, t *testing.T, p *pool, owner string) {
+	t.Helper()
+	if _, err := runner.RunAttempt(ctx, onStopWorkers(p, owner, 2)); err != nil {
 		t.Fatal(err)
 	}
-	for i, err := range p.wait("a2") {
+	for i, err := range p.wait(owner) {
 		if err != nil {
 			t.Errorf("worker %d: %v", i, err)
 		}
 	}
 	p.store.check(t, 20)
-}
-
-// An attempt on workers whose first worker joined and recovered, and whose
-// second never joins, is stopped while it waits to assign their work: it
-// ends drained at once, and its first worker ends.
-func TestAStopWhileAWorkerHasntJoinedDrains(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	p := newPool(t, ranges(2, 10, 5))
-	opened := make(chan struct{}, 4)
-	p.dest = func(coordinator bool) destination.Destination {
-		d := stagingDest{s: p.store, t: t, coordinator: coordinator}
-		if coordinator {
-			return d
-		}
-		return openSays{stagingDest: d, opened: opened}
-	}
-	j := p.workers("a1", 2)
-	j.Workers.Options = stopOpts
-	launch := j.Workers.Launch
-	j.Workers.Launch = func(ctx context.Context, targets []attempt.Target) error { return launch(ctx, targets[:1]) }
-	drain := make(chan struct{})
-	j.Drain = drain
-	go func() {
-		<-opened
-		time.Sleep(100 * time.Millisecond)
-		close(drain)
-	}()
-	start := time.Now()
-	if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
-		t.Fatalf("got %v, want ErrDrained", err)
-	}
-	if d := time.Since(start); d > stopSoon {
-		t.Fatalf("the stopped attempt ended after %v", d)
-	}
-	ended := make(chan struct{})
-	go func() {
-		defer close(ended)
-		p.wait("a1")
-	}()
-	select {
-	case <-ended:
-	case <-time.After(stopSoon):
-		t.Fatal("the stopped attempt's worker didn't end")
-	}
-}
-
-// openSays is a worker's destination that says when it has opened.
-type openSays struct {
-	stagingDest
-	opened chan<- struct{}
-}
-
-func (d openSays) Open(ctx context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
-	w, err := d.stagingDest.Open(ctx, cfg)
-	select {
-	case d.opened <- struct{}{}:
-	default:
-	}
-	return w, err
 }
 
 // openBlocks is a worker's destination whose Open, which recovery does

@@ -52,6 +52,15 @@ type Workers struct {
 	// Starts a worker for each target, each running RunWorker with the job,
 	// and returns once they're started. Called once the attempt is claimed.
 	Launch func(ctx context.Context, targets []attempt.Target) error
+	// A test's: called as the coordinator starts to wait on its workers,
+	// with the step: "recover", then "assign".
+	onWait func(step string)
+}
+
+func (w *Workers) waiting(step string) {
+	if w.onWait != nil {
+		w.onWait(step)
+	}
 }
 
 // endTimeout bounds how long ending an attempt waits for its workers to
@@ -806,6 +815,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 			return res, err
 		}
 	}
+	j.Workers.waiting("recover")
 	ans, err := co.Call(rctx, 0, &attemptv1.Call{Call: &attemptv1.Call_Recover{Recover: settle}})
 	if err != nil {
 		return res, fmt.Errorf("runner: recover epoch %d: %w", e.N, err)
@@ -1260,6 +1270,7 @@ func (c *coordinator) runFleet(ctx context.Context, restored *checkpoint.Record,
 	c.events = make(chan event, 64)
 	c.commits = make(chan commitReq, 1)
 	f.events = c.events
+	c.job.Workers.waiting("assign")
 	actx, unstop := untilStop(gctx, c.job.Drain)
 	err := f.co.Assign(actx, a)
 	unstop()
