@@ -1436,13 +1436,25 @@ mod windows {
     /// the rows read before, and a row of the first, which closed, is late.
     #[tokio::test]
     async fn a_window_restores_onto_another_mesh() {
+        restore_onto_another_mesh(true).await;
+    }
+
+    /// Without a floor, each key group's horizon, which the state restored
+    /// from the other engines' lanes keeps, closes what closed before.
+    #[tokio::test]
+    async fn a_restored_key_groups_horizon_keeps_its_windows_closed() {
+        restore_onto_another_mesh(false).await;
+    }
+
+    async fn restore_onto_another_mesh(floored: bool) {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         let (_, first) = two_epochs(&state).await;
         let snapshots: Vec<StateSnapshot> =
             first.iter().flat_map(|r| r[0].snapshots.clone()).collect();
-        let floor = first[0][0].window_watermarks["a"];
-        assert_eq!(floor, 91 * SEC);
+        let marked = first[0][0].window_watermarks["a"];
+        assert_eq!(marked, 91 * SEC);
+        let floor = floored.then_some(marked);
 
         let parts = [(2, 1), (1, 1), (1, 1)];
         let mut es = start_mesh(
@@ -1450,7 +1462,7 @@ mod windows {
                 let mut req = window_mesh(&state, &parts, me, addrs, 2, 2);
                 req.restored_snapshots = snapshots.clone();
                 req.quarantine_url = format!("file://{}", dir.path().display());
-                req.streams[0].event_time.as_mut().unwrap().floor = Some(floor);
+                req.streams[0].event_time.as_mut().unwrap().floor = floor;
                 req
             },
             3,
@@ -1464,7 +1476,7 @@ mod windows {
         for e in &mut es {
             for w in &mut e.ins {
                 let id = format!("r{lane}");
-                put_on(w, FrameKind::Split, 0, split(&id, Some(floor))).await;
+                put_on(w, FrameKind::Split, 0, split(&id, floor)).await;
                 // One row of the second minute, and on the first lane one of
                 // the first.
                 let mut rs = vec![minute_row(1000 + lane, "y", 70)];
