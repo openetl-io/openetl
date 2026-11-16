@@ -41,7 +41,7 @@ pub use layer::{Layer, Memory};
 pub use layout::{LAYOUT, SectionKind};
 pub use memory::MemoryBucket;
 pub use runs::{ObjectStorage, Objects, RunConfig, RunStores};
-pub use store::{BoxFuture, Change, Snapshot, Store, Stores};
+pub use store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
 
 /// A key's group, out of the pipeline's key groups, as routing gives it.
 /// The layer takes groups up to `u16::MAX`.
@@ -146,7 +146,8 @@ pub trait StateBackend: Send {
     fn delete(&mut self, op: OperatorId, key: KeyRef<'_>);
 
     /// Adds `row` to the key's rows at `time`, the time it falls due: a
-    /// window's end, a row's event time.
+    /// window's end, a row's event time. A row at or before the operator's
+    /// horizon is gone at once.
     fn append(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64, row: Bytes);
 
     /// The rows of each key at each time, in the order appended. They stay.
@@ -180,12 +181,21 @@ pub trait StateBackend: Send {
     ) -> impl Future<Output = Result<Vec<bool>>> + Send;
 
     /// Moves the operator's horizon to `horizon` in the lane's key groups,
-    /// if it's later: entries that expire at or before it are gone for
-    /// every later call, whatever its `at`, and the store may drop them.
+    /// if it's later: its rows and timers at or before it, and its set's
+    /// entries that expire at or before it, are gone for every later call,
+    /// whatever its `at`, and the store may drop them. A consumer moves it
+    /// with its watermark, once it has taken the rows and fired the timers
+    /// it wants. `i64::MIN` is no horizon.
     fn expire(&mut self, op: OperatorId, horizon: i64);
 
+    /// The operator's latest horizon in the lane's key groups, or
+    /// `i64::MIN` for none. A consumer that restores goes on from at least
+    /// it, so that it sets no timer and appends no row the horizon passed.
+    fn horizon(&self, op: OperatorId) -> i64;
+
     /// Sets a timer for the key at `time`. A timer is set or not: setting
-    /// it again changes nothing.
+    /// it again changes nothing. A timer at or before the operator's
+    /// horizon is gone at once.
     fn set_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64);
 
     fn delete_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64);

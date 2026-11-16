@@ -44,12 +44,17 @@ impl Logical {
         self.horizons.get(&(op, g)).copied().unwrap_or(i64::MIN)
     }
 
+    /// Whether the horizon has passed `time`.
+    fn gone(&self, op: OperatorId, g: u32, time: i64) -> bool {
+        let h = self.horizon(op, g);
+        h > i64::MIN && time <= h
+    }
+
     /// Whether it holds anything in `range` that a store must keep: all
-    /// but set entries the horizon has expired.
+    /// but what the horizons passed, and the horizons.
     fn holds(&self, range: KeyGroupRange) -> bool {
         self.values.keys().any(|k| range.contains(k.1))
             || self.rows.keys().any(|k| range.contains(k.1))
-            || self.horizons.keys().any(|k| range.contains(k.1))
             || self.timers.iter().any(|k| range.contains(k.2))
             || self.set.iter().any(|((op, g, _), &e)| {
                 range.contains(*g) && (e == NEVER || e > self.horizon(*op, *g))
@@ -84,6 +89,9 @@ impl StateBackend for View<'_> {
     }
 
     fn append(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64, row: Bytes) {
+        if self.s.gone(op, key.group, time) {
+            return;
+        }
         let k = (op, key.group, time, key.key.len(), kid(&key));
         self.s.rows.entry(k).or_default().push(row);
     }
@@ -163,9 +171,31 @@ impl StateBackend for View<'_> {
                 self.s.horizons.insert((op, g), horizon);
             }
         }
+        // What the horizon passed is gone.
+        let s = self.s.clone();
+        let mine = |o: OperatorId, g: u32| o == op && self.range.contains(g);
+        self.s
+            .rows
+            .retain(|k, _| !(mine(k.0, k.1) && s.gone(k.0, k.1, k.2)));
+        self.s
+            .timers
+            .retain(|k| !(mine(k.0, k.2) && s.gone(k.0, k.2, k.1)));
+        self.s
+            .set
+            .retain(|k, e| *e == NEVER || !(mine(k.0, k.1) && s.gone(k.0, k.1, *e)));
+    }
+
+    fn horizon(&self, op: OperatorId) -> i64 {
+        (self.range.first..=self.range.last)
+            .map(|g| self.s.horizon(op, g))
+            .max()
+            .unwrap_or(i64::MIN)
     }
 
     fn set_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64) {
+        if self.s.gone(op, key.group, time) {
+            return;
+        }
         self.s
             .timers
             .insert((op, time, key.group, key.key.len(), kid(&key)));
@@ -434,6 +464,7 @@ impl World {
                 let h = self.rng.watermark();
                 l.layer.expire(op, h);
                 m.expire(op, h);
+                assert_eq!(l.layer.horizon(op), m.horizon(op), "{ctx}: horizon");
             }
             56..=62 => {
                 let time = self.rng.time();
@@ -594,6 +625,7 @@ fn runs(seed: u64) -> Arc<dyn Stores> {
         gap_bytes: rng.pick(&[0, 100, 1 << 16]),
         max_read_bytes: rng.pick(&[1, 300, 1 << 20]),
         concurrency: rng.pick(&[1, 4]),
+        drop: rng.below(4) != 0,
     };
     let objects = ObjectStorage::new(Arc::new(InMemory::new()), Path::from("state"));
     Arc::new(RunStores::new(Arc::new(objects), config))

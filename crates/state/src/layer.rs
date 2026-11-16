@@ -5,8 +5,8 @@ use std::ops::Bound;
 
 use bytes::Bytes;
 
-use crate::layout;
-use crate::store::{Snapshot, Store, Stores};
+use crate::layout::{self, SectionKind};
+use crate::store::{Horizons, Snapshot, Store, Stores};
 use crate::{
     DueRow, Error, KeyGroup, KeyGroupRange, KeyRef, LAYOUT, NEVER, OperatorId, Result,
     StateBackend, Timer,
@@ -46,8 +46,11 @@ pub struct Layer {
     /// The open epoch's changes by key: a value, or `None` for a delete.
     changes: BTreeMap<Bytes, Option<Bytes>>,
     change_bytes: usize,
-    /// Each operator's horizon in each group as the store has it, as read.
-    horizons: HashMap<(OperatorId, u16), i64>,
+    /// Each operator's horizon in each group, as the store keeps it.
+    horizons: Horizons,
+    /// The set's horizons a store of layout 1 kept as values, by operator
+    /// and group, as read.
+    kept: HashMap<(OperatorId, u16), i64>,
     /// Horizons the open epoch moved, for every group of the range.
     moved: HashMap<OperatorId, i64>,
     /// Rows appended in the open epoch.
@@ -88,13 +91,16 @@ impl Layer {
             )));
         }
         let store = stores.open(generation, range, snapshots).await?;
+        let mut horizons = store.horizons();
+        horizons.retain(|(_, g), h| range.contains(*g) && *h > i64::MIN);
         Ok(Layer {
             store,
             range,
             epoch,
             changes: BTreeMap::new(),
             change_bytes: 0,
-            horizons: HashMap::new(),
+            horizons,
+            kept: HashMap::new(),
             moved: HashMap::new(),
             appended: 0,
             fault: None,
@@ -135,9 +141,12 @@ impl Layer {
         if let Some(e) = self.fault.take() {
             return Err(e);
         }
-        self.settle_horizons().await?;
-        let changes = std::mem::take(&mut self.changes).into_iter().collect();
-        let snapshots = self.store.commit(epoch, changes).await?;
+        self.settle_horizons();
+        let changes = std::mem::take(&mut self.changes)
+            .into_iter()
+            .filter(|(k, v)| !self.passed(k, v.as_deref()))
+            .collect();
+        let snapshots = self.store.commit(epoch, changes, &self.horizons).await?;
         self.epoch += 1;
         self.change_bytes = 0;
         self.appended = 0;
@@ -171,36 +180,69 @@ impl Layer {
         }
     }
 
-    /// The horizons the epoch moved, as changes, where they're later than
-    /// the store's.
-    async fn settle_horizons(&mut self) -> Result<()> {
-        if self.moved.is_empty() {
-            return Ok(());
-        }
-        let mut moved: Vec<(OperatorId, i64)> = self.moved.drain().collect();
-        moved.sort();
-        let groups = self.groups();
-        let want: Vec<(OperatorId, u16)> = moved
-            .iter()
-            .flat_map(|(op, _)| groups.iter().map(move |g| (*op, *g)))
-            .collect();
-        self.load_horizons(&want).await?;
-        for (op, h) in moved {
-            for &g in &groups {
-                if h > self.horizon(op, g) {
-                    self.horizons.insert((op, g), h);
-                    self.change(layout::horizon(g, op), Some(layout::time_value(h)));
-                }
+    /// Moves the store's horizons as the epoch moved them.
+    fn settle_horizons(&mut self) {
+        for (op, h) in std::mem::take(&mut self.moved) {
+            if h == i64::MIN {
+                continue;
+            }
+            for g in self.range.first..=self.range.last {
+                let at = self.horizons.entry((op, g)).or_insert(h);
+                *at = (*at).max(h);
             }
         }
-        Ok(())
     }
 
-    /// Reads the horizons of `want` that aren't read yet.
+    /// Whether a change is of a row, a timer or a set's entry that its
+    /// operator's horizon has passed, so the store needn't keep it.
+    fn passed(&self, k: &[u8], v: Option<&[u8]>) -> bool {
+        let (Some(kind), Some(op), Some(g)) = (
+            layout::section_of(k),
+            layout::operator_of(k),
+            layout::group_of(k),
+        ) else {
+            return false;
+        };
+        let time = match kind {
+            SectionKind::Values => None,
+            SectionKind::Rows => layout::parse_row(k).map(|r| r.1),
+            SectionKind::Timers => layout::parse_timer(k).map(|t| t.0),
+            SectionKind::Set => v.and_then(layout::parse_time_value).filter(|e| *e != NEVER),
+        };
+        time.is_some_and(|t| self.gone(op, g, t))
+    }
+
+    /// The operator's horizon in a group: the store's, or the open epoch's
+    /// move; `i64::MIN` for none.
+    fn horizon_in(&self, op: OperatorId, g: u16) -> i64 {
+        let stored = self
+            .horizons
+            .get(&(op, g.into()))
+            .copied()
+            .unwrap_or(i64::MIN);
+        stored.max(self.moved.get(&op).copied().unwrap_or(i64::MIN))
+    }
+
+    /// Whether the operator's horizon in a group has passed `time`.
+    fn gone(&self, op: OperatorId, g: u16, time: i64) -> bool {
+        let h = self.horizon_in(op, g);
+        h > i64::MIN && time <= h
+    }
+
+    /// The least horizon the operator has in the lane's groups.
+    fn least_horizon(&self, op: OperatorId) -> i64 {
+        self.groups()
+            .into_iter()
+            .map(|g| self.horizon_in(op, g))
+            .min()
+            .unwrap_or(i64::MIN)
+    }
+
+    /// Reads the layout-1 horizons of `want` that aren't read yet.
     async fn load_horizons(&mut self, want: &[(OperatorId, u16)]) -> Result<()> {
         let mut need: Vec<(OperatorId, u16)> = want
             .iter()
-            .filter(|w| !self.horizons.contains_key(w))
+            .filter(|w| !self.kept.contains_key(w))
             .copied()
             .collect();
         need.sort();
@@ -219,7 +261,7 @@ impl Layer {
                     .ok_or_else(|| Error::Corrupt("a horizon that isn't a time".into()))?,
                 None => i64::MIN,
             };
-            self.horizons.insert(w, h);
+            self.kept.insert(w, h);
         }
         Ok(())
     }
@@ -231,9 +273,11 @@ impl Layer {
             .collect()
     }
 
-    /// The store's horizon, which [`Layer::load_horizons`] read.
-    fn horizon(&self, op: OperatorId, g: u16) -> i64 {
-        self.horizons.get(&(op, g)).copied().unwrap_or(i64::MIN)
+    /// The horizon a set's entry must expire after: the operator's, or the
+    /// one a store of layout 1 kept, which [`Layer::load_horizons`] read.
+    fn set_horizon(&self, op: OperatorId, g: u16) -> i64 {
+        let kept = self.kept.get(&(op, g)).copied().unwrap_or(i64::MIN);
+        self.horizon_in(op, g).max(kept)
     }
 
     /// A read's group, which must be the lane's.
@@ -374,6 +418,9 @@ impl StateBackend for Layer {
         let Some(g) = self.place(key.group) else {
             return;
         };
+        if self.gone(op, g, time) {
+            return;
+        }
         match self.next_seq() {
             Some(seq) => self.change(layout::row(g, op, time, key.key, seq), Some(row)),
             None => {
@@ -395,7 +442,12 @@ impl StateBackend for Layer {
         self.usable()?;
         let mut out = Vec::with_capacity(slots.len());
         for (k, time) in slots {
-            let prefix = layout::row_slot(self.group(k.group)?, op, *time, k.key);
+            let g = self.group(k.group)?;
+            if self.gone(op, g, *time) {
+                out.push(Vec::new());
+                continue;
+            }
+            let prefix = layout::row_slot(g, op, *time, k.key);
             let end = layout::successor(&prefix);
             let got = self.live(&prefix, &end, usize::MAX).await?;
             out.push(got.into_iter().map(|(_, row)| row).collect());
@@ -415,7 +467,11 @@ impl StateBackend for Layer {
             if out.len() >= limit {
                 break;
             }
-            let (start, end) = layout::rows_due(g, op, watermark);
+            let h = self.horizon_in(op, g);
+            if h > i64::MIN && h >= watermark {
+                continue;
+            }
+            let (start, end) = layout::rows_due_after(g, op, h, watermark);
             for (k, row) in self.live(&start, &end, limit - out.len()).await? {
                 let (group, time, key, _) =
                     layout::parse_row(&k).ok_or_else(|| Error::Corrupt("a row's key".into()))?;
@@ -462,10 +518,9 @@ impl StateBackend for Layer {
             .collect();
         let got = self.store.get(&ask).await?;
         let stored: HashMap<Bytes, Option<Bytes>> = ask.into_iter().zip(got).collect();
-        let moved = self.moved.get(&op).copied().unwrap_or(i64::MIN);
         let mut out = Vec::with_capacity(keys.len());
         for (i, k) in keys.into_iter().enumerate() {
-            let now = at[i].max(self.horizon(op, groups[i].1)).max(moved);
+            let now = at[i].max(self.set_horizon(op, groups[i].1));
             let current = match self.changes.get(&k) {
                 Some(v) => v.clone(),
                 None => stored.get(&k).cloned().flatten(),
@@ -491,31 +546,62 @@ impl StateBackend for Layer {
         *h = (*h).max(horizon);
     }
 
+    fn horizon(&self, op: OperatorId) -> i64 {
+        let stored = self
+            .horizons
+            .range((op, 0)..=(op, u32::MAX))
+            .map(|(_, h)| *h)
+            .max()
+            .unwrap_or(i64::MIN);
+        stored.max(self.moved.get(&op).copied().unwrap_or(i64::MIN))
+    }
+
     fn set_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64) {
-        if let Some(g) = self.place(key.group) {
+        if let Some(g) = self.place(key.group)
+            && !self.gone(op, g, time)
+        {
             self.change(layout::timer(op, time, g, key.key), Some(Bytes::new()));
         }
     }
 
     fn delete_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64) {
-        if let Some(g) = self.place(key.group) {
+        if let Some(g) = self.place(key.group)
+            && !self.gone(op, g, time)
+        {
             self.change(layout::timer(op, time, g, key.key), None);
         }
     }
 
     async fn fire(&mut self, op: OperatorId, watermark: i64, limit: usize) -> Result<Vec<Timer>> {
         self.usable()?;
-        let (start, end) = layout::timers_due(op, watermark);
+        let least = self.least_horizon(op);
         let mut out = Vec::new();
-        for (k, _) in self.live(&start, &end, limit).await? {
-            let (time, group, key) =
-                layout::parse_timer(&k).ok_or_else(|| Error::Corrupt("a timer's key".into()))?;
-            out.push(Timer {
-                time,
-                group: group.into(),
-                key: Bytes::copy_from_slice(key),
-            });
-            self.change(k, None);
+        if least > i64::MIN && least >= watermark {
+            return Ok(out);
+        }
+        let (mut from, end) = layout::timers_due_after(op, least, watermark);
+        // Timers a group's later horizon passed are skipped, and more read.
+        while out.len() < limit {
+            let want = limit - out.len();
+            let page = self.live(&from, &end, want).await?;
+            let more = page.len() == want;
+            for (k, _) in page {
+                let (time, group, key) = layout::parse_timer(&k)
+                    .ok_or_else(|| Error::Corrupt("a timer's key".into()))?;
+                from = layout::after(&k);
+                if self.gone(op, group, time) {
+                    continue;
+                }
+                out.push(Timer {
+                    time,
+                    group: group.into(),
+                    key: Bytes::copy_from_slice(key),
+                });
+                self.change(k, None);
+            }
+            if !more {
+                break;
+            }
         }
         Ok(out)
     }
