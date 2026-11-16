@@ -141,6 +141,9 @@ pub struct ReplayPlan {
     pub still_held: u64,
     /// Destination names.
     pub columns: HashSet<String>,
+    /// By column, the index in files of the first file it's read from; the
+    /// first, for a column without one.
+    pub first: HashMap<String, usize>,
     pub chunk_rows: u64,
     /// Released column holds whose values go to a new version.
     pub versioned: Vec<ColumnHold>,
@@ -201,6 +204,11 @@ fn holds(s: &StreamPlan) -> Result<(Option<HoldConfig>, Option<ReplayPlan>), Job
             row: from.row,
             still_held: from.still_held,
             columns: r.columns.iter().cloned().collect(),
+            first: r
+                .first
+                .iter()
+                .map(|(c, i)| (c.clone(), *i as usize))
+                .collect(),
             chunk_rows: match r.chunk_rows {
                 0 => CHUNK_ROWS,
                 n => n,

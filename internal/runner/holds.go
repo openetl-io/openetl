@@ -233,6 +233,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			// hold, released or not, which the replay clears once every cell
 			// fits. A discarded cell hold is gone by now, and isn't read.
 			var from checkpoint.RecordRef
+			starts := make(map[string]checkpoint.RecordRef, len(released))
 			for i, col := range released {
 				at := h.Cells[col].Since
 				if k := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == col }); k >= 0 {
@@ -240,6 +241,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 						at = taken[k].Since
 					}
 				}
+				starts[col] = at
 				if i == 0 || before(at, from) {
 					from = at
 				}
@@ -249,6 +251,24 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				return nil, nil, err
 			}
 			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
+			// A column whose holds started after from isn't read from the
+			// files before them, which may hold values of an earlier hold of
+			// it: patched in since, or discarded.
+			for col, at := range starts {
+				first := slices.IndexFunc(files, func(rel string) bool {
+					ref, ok := checkpoint.HeldFileRef(rel)
+					return !ok || !before(ref, at)
+				})
+				if first < 0 {
+					first = len(files)
+				}
+				if first > 0 {
+					if h.Replay.First == nil {
+						h.Replay.First = map[string]int{}
+					}
+					h.Replay.First[col] = first
+				}
+			}
 			if len(cells) > 0 {
 				h.Replay.CellReleases = cells
 			}
@@ -391,7 +411,7 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 	if h.Replay != nil {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
-		r.Versioned, r.CellReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases)
+		r.Versioned, r.CellReleases, r.First = slices.Clone(r.Versioned), maps.Clone(r.CellReleases), maps.Clone(r.First)
 		out.Replay = &r
 	}
 	return out

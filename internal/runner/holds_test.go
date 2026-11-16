@@ -343,3 +343,48 @@ func TestAReleaseReadsFromTheCellHoldsItClears(t *testing.T) {
 		t.Errorf("the release of x's hold since epoch 5 reads %v, want %v, from x's cell hold", r.Files, want)
 	}
 }
+
+// Columns released together are read from one list of files, each from its
+// own holds' start: a held cells in epochs 1-2, which a release patched in
+// or the user discarded, and holds cells again since epoch 5; b holds since
+// epoch 1. The files before epoch 5 aren't read for a.
+func TestColumnsReleasedTogetherAreEachReadFromTheirStart(t *testing.T) {
+	at := func(n uint64) checkpoint.RecordRef { return checkpoint.RecordRef{Generation: 1, Epoch: n} }
+	store := checkpoint.NewMemStore()
+	var files []string
+	for n := uint64(1); n <= 6; n++ {
+		rel := fmt.Sprintf("1/%d/s/part-00000.parquet", n)
+		if _, err := store.Create(t.Context(), "org/pipe/"+checkpoint.HeldDir+"/"+rel, []byte("PAR1")); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, rel)
+	}
+	h := &checkpoint.Holds{
+		Cells: map[string]checkpoint.CellHold{
+			"a": {Cells: 1, Since: at(5)},
+			"b": {Cells: 9, Since: at(1)},
+		},
+		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
+	}
+	j := &Job{
+		HeldURL:     "file:///held",
+		Log:         checkpoint.NewLog(store, "org", "pipe"),
+		Destination: holdingDest{},
+		Streams:     []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{Cells: true}}},
+		Releases: []Release{
+			{ID: "r1", Stream: "s", Column: "a", Since: at(5)},
+			{ID: "r2", Stream: "s", Column: "b", Since: at(1)},
+		},
+	}
+	holds, _, err := j.startHolds(t.Context(), &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: h}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := holds["s"].Replay
+	if !slices.Equal(r.Files, files) {
+		t.Fatalf("the replay reads %v, want %v", r.Files, files)
+	}
+	if want := map[string]int{"a": 4}; !reflect.DeepEqual(r.First, want) {
+		t.Errorf("the columns' first files are %v, want %v", r.First, want)
+	}
+}

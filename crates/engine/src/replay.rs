@@ -1,6 +1,8 @@
 //! Replays a stream's held values: reads its held files in
 //! order, from where an earlier attempt's replay got, a chunk at a time.
 
+use std::collections::HashSet;
+
 use arrow_array::RecordBatch;
 use object_store::ObjectStoreExt;
 use object_store::path::Path;
@@ -29,8 +31,10 @@ impl Replayer {
         })
     }
 
-    pub fn columns(&self) -> &std::collections::HashSet<String> {
-        &self.plan.columns
+    /// The released columns that are read from held file `file`.
+    pub fn columns(&self, file: usize) -> HashSet<String> {
+        let read = |c: &&String| self.plan.first.get(*c).is_none_or(|first| *first <= file);
+        self.plan.columns.iter().filter(read).cloned().collect()
     }
 
     pub fn done(&self) -> bool {
@@ -51,9 +55,9 @@ impl Replayer {
         self.plan.still_held += n;
     }
 
-    /// The next chunk: whole batches of held values, until it holds about
-    /// the plan's chunk rows or the files end.
-    pub async fn chunk(&mut self) -> Result<Vec<RecordBatch>, JobError> {
+    /// The next chunk: whole batches of held values, each with its file's
+    /// index, until it holds about the plan's chunk rows or the files end.
+    pub async fn chunk(&mut self) -> Result<Vec<(usize, RecordBatch)>, JobError> {
         let mut out = Vec::new();
         let mut rows = 0;
         while rows < self.plan.chunk_rows && !self.done() {
@@ -79,7 +83,7 @@ impl Replayer {
                     let b = b.map_err(|e| self.corrupt(e))?;
                     self.plan.row += b.num_rows() as u64;
                     rows += b.num_rows() as u64;
-                    out.push(b);
+                    out.push((self.plan.file, b));
                 }
                 None => {
                     self.reading = None;
@@ -140,6 +144,20 @@ mod tests {
             ..ReplayPlan::default()
         };
         Replayer::open(&format!("file://{}", dir.display()), plan).unwrap()
+    }
+
+    #[test]
+    fn a_column_is_read_from_its_first_file_on() {
+        let plan = ReplayPlan {
+            files: vec!["1/1/s/part-00000.parquet".into(); 3],
+            columns: HashSet::from(["a".to_owned(), "b".to_owned()]),
+            first: std::collections::HashMap::from([("a".to_owned(), 2)]),
+            ..ReplayPlan::default()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let r = Replayer::open(&format!("file://{}", dir.path().display()), plan).unwrap();
+        assert_eq!(r.columns(1), HashSet::from(["b".to_owned()]));
+        assert_eq!(r.columns(2).len(), 2);
     }
 
     #[tokio::test]
