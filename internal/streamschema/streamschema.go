@@ -72,14 +72,30 @@ func Columns(s *arrow.Schema) []Column {
 	return cols
 }
 
-// typeName is the field's Arrow type, with its extension where the field
-// metadata names one.
+// typeName is the field's Arrow type, named as `openetl-engine plan` reads
+// it: an extension by its name, whether its type or the field's metadata
+// names it, and a list by its item's.
 func typeName(f arrow.Field) string {
-	if _, ok := f.Type.(arrow.ExtensionType); ok {
-		return f.Type.String()
+	if ext, ok := f.Type.(arrow.ExtensionType); ok {
+		return "extension<" + ext.ExtensionName() + ">"
 	}
 	if ext, ok := f.Metadata.GetValue("ARROW:extension:name"); ok {
 		return "extension<" + ext + ">"
 	}
+	switch t := f.Type.(type) {
+	case *arrow.ListType:
+		return "list<" + itemName(t.ElemField()) + ">"
+	case *arrow.LargeListType:
+		return "large_list<" + itemName(t.ElemField()) + ">"
+	case *arrow.StringViewType:
+		return "utf8_view"
+	}
 	return f.Type.String()
+}
+
+func itemName(f arrow.Field) string {
+	if f.Nullable {
+		return f.Name + ": " + typeName(f) + ", nullable"
+	}
+	return f.Name + ": " + typeName(f)
 }

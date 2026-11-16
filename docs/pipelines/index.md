@@ -223,6 +223,7 @@ If the statements cannot be planned, a note that starts with `transform.sql wasn
 - No runner of the pipeline's data plane takes the request within 30 seconds.
 - The source has not been discovered.
 - The catalog declares no columns for a stream that the SQL names, and no sync has recorded its schema yet.
+- A runner takes the request and fails to plan it. This is a fault in OpenETL, so the plan also has a warning that starts with `OpenETL failed to plan transform.sql`, which `openetl apply` prints too.
 
 ### Partitioning in the plan
 

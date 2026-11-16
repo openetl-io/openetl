@@ -407,6 +407,8 @@ Statements that the engine does not run, such as `GROUP BY`, joins and window fu
 
 If no runner takes the statements within 30 seconds, or a stream's columns are not known yet, the plan has a note that starts with `transform.sql wasn't planned`. The sync plans the statements when it starts, and fails with `CONFIG_INVALID` if they have errors.
 
+If a runner takes the statements and fails to plan them, the fault is in OpenETL, not in the statements. The note says what failed, and the plan also has a warning that starts with `OpenETL failed to plan transform.sql`. `openetl apply` prints the warning too. Apply still accepts the pipeline.
+
 ## In the console
 
 A pipeline with a SQL transform has a **SQL** tab on its page. It shows the statements, each output's columns and key, and the plan's notes and errors at their place in the SQL. [Use the console](../use/index.md#sql) describes it.
