@@ -187,7 +187,8 @@ func TestAGroupWindowSpansScheduledSyncs(t *testing.T) {
 // state's storage, named by its records; the next attempt, in an engine
 // of its own, opens it from the record it restores, reads on from the
 // record's position, and closes the minute with every row of it, each
-// once.
+// once. Then the minute's state is dead, and the record names none of the
+// first attempt's runs.
 func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -222,15 +223,13 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	// The second restores it, and goes on.
 	drain := make(chan struct{})
 	var mu sync.Mutex
-	var restored bool
+	var last []string
 	var done sync.Once
 	j = job("a2", "s1", &spanSource{minute: minute, pause: spanRows, closer: 140}, state, dest)
 	j.Drain = drain
 	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		mu.Lock()
-		for _, r := range stateRuns(rec) {
-			restored = restored || slices.Contains(named, r) && strings.Contains(r, "/g1/")
-		}
+		last = stateRuns(rec)
 		mu.Unlock()
 		if len(minuteRows(dest)) > 0 {
 			done.Do(func() { close(drain) })
@@ -244,7 +243,12 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !restored {
-		t.Error("the second attempt's records name none of the runs the first wrote")
+	if len(last) == 0 {
+		t.Error("the second attempt's last record names no state, though the closing row's minute is open")
+	}
+	for _, r := range last {
+		if slices.Contains(named, r) || !strings.Contains(r, "/g2/") {
+			t.Errorf("the second attempt's last record names %s of the closed minute", r)
+		}
 	}
 }
