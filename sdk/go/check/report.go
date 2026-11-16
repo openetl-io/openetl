@@ -30,12 +30,13 @@ type Item struct {
 }
 
 // Rendered is it with its templates and its Failure's filled in from
-// Params.
+// Params. Its Failure has no Params, so that its Error doesn't fill in what
+// a value put there; the item's Params keep them.
 func (it Item) Rendered() Item {
 	it = it.valid()
 	it.Title, it.Description, it.Message = Render(it.Title, it.Params), Render(it.Description, it.Params), Render(it.Message, it.Params)
 	if f := it.Failure; f != nil {
-		f.Message, f.Fix = Render(f.Message, it.Params), Render(f.Fix, it.Params)
+		f.Message, f.Fix, f.Params = Render(f.Message, it.Params), Render(f.Fix, it.Params), nil
 	}
 	return it
 }

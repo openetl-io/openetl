@@ -10,6 +10,7 @@ import (
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
@@ -1376,11 +1377,13 @@ func (x *CheckDestinationResponse) GetResult() *CheckResult {
 }
 
 // CheckResult is a connector's answer to Check. A connector without a check
-// of its own only validates its config.
+// of its own passes with no items.
 type CheckResult struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Ok    bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	// When not ok: a code of the error taxonomy, such as AUTH_INVALID.
+	// It has no code and no item failed; warnings don't count.
+	Ok bool `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	// When not ok: a code of the error taxonomy, such as AUTH_INVALID; the
+	// first failed item's, and its rendered text, if the connector gave none.
 	Code    string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
 	Message string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
 	// The source or destination version checked.
@@ -1457,22 +1460,45 @@ func (x *CheckResult) GetItems() []*CheckItem {
 	return nil
 }
 
-// CheckItem is one thing a connector's check looked at: reaching the
-// service, a permission, a stream.
+// CheckItem is one thing a connector's check or preflight looked at:
+// reaching the service, a permission, a stream.
+//
+// title, message, fix and description are templates, as the connector sent
+// them. A placeholder is {name}, with name matching [a-z][a-z0-9_]*, and
+// params holds its value; a placeholder without a param stays as written,
+// and text without placeholders is plain text. Render them to show an item.
 type CheckItem struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Unique within the result, such as stream.clicks.read.
-	Name  string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// A template.
 	Title string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
 	// passed, warning, failed or skipped.
-	Status  string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	// A template: what it found when passed, why when failed or warning, and
+	// why it wasn't checked when skipped.
 	Message string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	// When failed: a code of the error taxonomy.
+	// When failed or warning: a code of the error taxonomy, if it has one.
 	Code string `protobuf:"bytes,5,opt,name=code,proto3" json:"code,omitempty"`
-	// What to do about a failure or a warning.
+	// A template: what to do about a failure or a warning.
 	Fix string `protobuf:"bytes,6,opt,name=fix,proto3" json:"fix,omitempty"`
 	// The config field it concerns, as a dotted path; empty if none.
-	Field         string `protobuf:"bytes,7,opt,name=field,proto3" json:"field,omitempty"`
+	Field string `protobuf:"bytes,7,opt,name=field,proto3" json:"field,omitempty"`
+	// What it verifies: configuration, connection, authentication,
+	// permission, resource, compatibility, quota or custom; empty if
+	// unspecified.
+	Kind string `protobuf:"bytes,8,opt,name=kind,proto3" json:"kind,omitempty"`
+	// A template: what it verifies, and why the connector needs it.
+	Description string `protobuf:"bytes,9,opt,name=description,proto3" json:"description,omitempty"`
+	// When failed or warning: the kind of failure, lowercase words joined by
+	// _, such as connection_refused or a connector's own; empty if none.
+	Reason string `protobuf:"bytes,10,opt,name=reason,proto3" json:"reason,omitempty"`
+	// The placeholders' values, by name.
+	Params map[string]string `protobuf:"bytes,11,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// The cause's text, such as the upstream's error. Not a template.
+	Detail string `protobuf:"bytes,12,opt,name=detail,proto3" json:"detail,omitempty"`
+	// How long it took; unset if it didn't run.
+	Duration      *durationpb.Duration `protobuf:"bytes,13,opt,name=duration,proto3" json:"duration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1554,6 +1580,48 @@ func (x *CheckItem) GetField() string {
 		return x.Field
 	}
 	return ""
+}
+
+func (x *CheckItem) GetKind() string {
+	if x != nil {
+		return x.Kind
+	}
+	return ""
+}
+
+func (x *CheckItem) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *CheckItem) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *CheckItem) GetParams() map[string]string {
+	if x != nil {
+		return x.Params
+	}
+	return nil
+}
+
+func (x *CheckItem) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *CheckItem) GetDuration() *durationpb.Duration {
+	if x != nil {
+		return x.Duration
+	}
+	return nil
 }
 
 type DiscoverSourceRequest struct {
@@ -1880,7 +1948,7 @@ var File_openetl_api_v1_connection_proto protoreflect.FileDescriptor
 
 const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\n" +
-	"\x1fopenetl/api/v1/connection.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb9\x02\n" +
+	"\x1fopenetl/api/v1/connection.proto\x12\x0eopenetl.api.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb9\x02\n" +
 	"\x06Source\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x123\n" +
 	"\x04spec\x18\x02 \x01(\v2\x1f.openetl.api.v1.ConnectorConfigR\x04spec\x12\x18\n" +
@@ -1977,7 +2045,7 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\x04code\x18\x02 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x18\n" +
 	"\aversion\x18\x04 \x01(\tR\aversion\x12/\n" +
-	"\x05items\x18\x05 \x03(\v2\x19.openetl.api.v1.CheckItemR\x05items\"\xa3\x01\n" +
+	"\x05items\x18\x05 \x03(\v2\x19.openetl.api.v1.CheckItemR\x05items\"\xba\x03\n" +
 	"\tCheckItem\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
@@ -1985,7 +2053,17 @@ const file_openetl_api_v1_connection_proto_rawDesc = "" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12\x12\n" +
 	"\x04code\x18\x05 \x01(\tR\x04code\x12\x10\n" +
 	"\x03fix\x18\x06 \x01(\tR\x03fix\x12\x14\n" +
-	"\x05field\x18\a \x01(\tR\x05field\"J\n" +
+	"\x05field\x18\a \x01(\tR\x05field\x12\x12\n" +
+	"\x04kind\x18\b \x01(\tR\x04kind\x12 \n" +
+	"\vdescription\x18\t \x01(\tR\vdescription\x12\x16\n" +
+	"\x06reason\x18\n" +
+	" \x01(\tR\x06reason\x12=\n" +
+	"\x06params\x18\v \x03(\v2%.openetl.api.v1.CheckItem.ParamsEntryR\x06params\x12\x16\n" +
+	"\x06detail\x18\f \x01(\tR\x06detail\x125\n" +
+	"\bduration\x18\r \x01(\v2\x19.google.protobuf.DurationR\bduration\x1a9\n" +
+	"\vParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"J\n" +
 	"\x15DiscoverSourceRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
@@ -2045,7 +2123,7 @@ func file_openetl_api_v1_connection_proto_rawDescGZIP() []byte {
 }
 
 var file_openetl_api_v1_connection_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_openetl_api_v1_connection_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_openetl_api_v1_connection_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_openetl_api_v1_connection_proto_goTypes = []any{
 	(SyncMode)(0),                     // 0: openetl.api.v1.SyncMode
 	(Replay)(0),                       // 1: openetl.api.v1.Replay
@@ -2077,19 +2155,21 @@ var file_openetl_api_v1_connection_proto_goTypes = []any{
 	(*Catalog)(nil),                   // 27: openetl.api.v1.Catalog
 	(*CatalogStream)(nil),             // 28: openetl.api.v1.CatalogStream
 	(*CatalogColumn)(nil),             // 29: openetl.api.v1.CatalogColumn
-	(*timestamppb.Timestamp)(nil),     // 30: google.protobuf.Timestamp
-	(*structpb.Struct)(nil),           // 31: google.protobuf.Struct
+	nil,                               // 30: openetl.api.v1.CheckItem.ParamsEntry
+	(*timestamppb.Timestamp)(nil),     // 31: google.protobuf.Timestamp
+	(*structpb.Struct)(nil),           // 32: google.protobuf.Struct
+	(*durationpb.Duration)(nil),       // 33: google.protobuf.Duration
 }
 var file_openetl_api_v1_connection_proto_depIdxs = []int32{
 	5,  // 0: openetl.api.v1.Source.spec:type_name -> openetl.api.v1.ConnectorConfig
-	30, // 1: openetl.api.v1.Source.create_time:type_name -> google.protobuf.Timestamp
-	30, // 2: openetl.api.v1.Source.update_time:type_name -> google.protobuf.Timestamp
+	31, // 1: openetl.api.v1.Source.create_time:type_name -> google.protobuf.Timestamp
+	31, // 2: openetl.api.v1.Source.update_time:type_name -> google.protobuf.Timestamp
 	4,  // 3: openetl.api.v1.Source.connector:type_name -> openetl.api.v1.ConnectorVersion
 	5,  // 4: openetl.api.v1.Destination.spec:type_name -> openetl.api.v1.ConnectorConfig
-	30, // 5: openetl.api.v1.Destination.create_time:type_name -> google.protobuf.Timestamp
-	30, // 6: openetl.api.v1.Destination.update_time:type_name -> google.protobuf.Timestamp
+	31, // 5: openetl.api.v1.Destination.create_time:type_name -> google.protobuf.Timestamp
+	31, // 6: openetl.api.v1.Destination.update_time:type_name -> google.protobuf.Timestamp
 	4,  // 7: openetl.api.v1.Destination.connector:type_name -> openetl.api.v1.ConnectorVersion
-	31, // 8: openetl.api.v1.ConnectorConfig.config:type_name -> google.protobuf.Struct
+	32, // 8: openetl.api.v1.ConnectorConfig.config:type_name -> google.protobuf.Struct
 	6,  // 9: openetl.api.v1.ConnectorConfig.aws:type_name -> openetl.api.v1.AWSAccess
 	2,  // 10: openetl.api.v1.GetSourceResponse.source:type_name -> openetl.api.v1.Source
 	2,  // 11: openetl.api.v1.ListSourcesResponse.sources:type_name -> openetl.api.v1.Source
@@ -2098,35 +2178,37 @@ var file_openetl_api_v1_connection_proto_depIdxs = []int32{
 	23, // 14: openetl.api.v1.CheckSourceResponse.result:type_name -> openetl.api.v1.CheckResult
 	23, // 15: openetl.api.v1.CheckDestinationResponse.result:type_name -> openetl.api.v1.CheckResult
 	24, // 16: openetl.api.v1.CheckResult.items:type_name -> openetl.api.v1.CheckItem
-	27, // 17: openetl.api.v1.DiscoverSourceResponse.catalog:type_name -> openetl.api.v1.Catalog
-	28, // 18: openetl.api.v1.Catalog.streams:type_name -> openetl.api.v1.CatalogStream
-	30, // 19: openetl.api.v1.Catalog.discover_time:type_name -> google.protobuf.Timestamp
-	1,  // 20: openetl.api.v1.CatalogStream.replay:type_name -> openetl.api.v1.Replay
-	29, // 21: openetl.api.v1.CatalogStream.columns:type_name -> openetl.api.v1.CatalogColumn
-	0,  // 22: openetl.api.v1.CatalogStream.sync_modes:type_name -> openetl.api.v1.SyncMode
-	7,  // 23: openetl.api.v1.SourceService.GetSource:input_type -> openetl.api.v1.GetSourceRequest
-	9,  // 24: openetl.api.v1.SourceService.ListSources:input_type -> openetl.api.v1.ListSourcesRequest
-	11, // 25: openetl.api.v1.SourceService.DeleteSource:input_type -> openetl.api.v1.DeleteSourceRequest
-	19, // 26: openetl.api.v1.SourceService.CheckSource:input_type -> openetl.api.v1.CheckSourceRequest
-	25, // 27: openetl.api.v1.SourceService.DiscoverSource:input_type -> openetl.api.v1.DiscoverSourceRequest
-	13, // 28: openetl.api.v1.DestinationService.GetDestination:input_type -> openetl.api.v1.GetDestinationRequest
-	15, // 29: openetl.api.v1.DestinationService.ListDestinations:input_type -> openetl.api.v1.ListDestinationsRequest
-	17, // 30: openetl.api.v1.DestinationService.DeleteDestination:input_type -> openetl.api.v1.DeleteDestinationRequest
-	21, // 31: openetl.api.v1.DestinationService.CheckDestination:input_type -> openetl.api.v1.CheckDestinationRequest
-	8,  // 32: openetl.api.v1.SourceService.GetSource:output_type -> openetl.api.v1.GetSourceResponse
-	10, // 33: openetl.api.v1.SourceService.ListSources:output_type -> openetl.api.v1.ListSourcesResponse
-	12, // 34: openetl.api.v1.SourceService.DeleteSource:output_type -> openetl.api.v1.DeleteSourceResponse
-	20, // 35: openetl.api.v1.SourceService.CheckSource:output_type -> openetl.api.v1.CheckSourceResponse
-	26, // 36: openetl.api.v1.SourceService.DiscoverSource:output_type -> openetl.api.v1.DiscoverSourceResponse
-	14, // 37: openetl.api.v1.DestinationService.GetDestination:output_type -> openetl.api.v1.GetDestinationResponse
-	16, // 38: openetl.api.v1.DestinationService.ListDestinations:output_type -> openetl.api.v1.ListDestinationsResponse
-	18, // 39: openetl.api.v1.DestinationService.DeleteDestination:output_type -> openetl.api.v1.DeleteDestinationResponse
-	22, // 40: openetl.api.v1.DestinationService.CheckDestination:output_type -> openetl.api.v1.CheckDestinationResponse
-	32, // [32:41] is the sub-list for method output_type
-	23, // [23:32] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	30, // 17: openetl.api.v1.CheckItem.params:type_name -> openetl.api.v1.CheckItem.ParamsEntry
+	33, // 18: openetl.api.v1.CheckItem.duration:type_name -> google.protobuf.Duration
+	27, // 19: openetl.api.v1.DiscoverSourceResponse.catalog:type_name -> openetl.api.v1.Catalog
+	28, // 20: openetl.api.v1.Catalog.streams:type_name -> openetl.api.v1.CatalogStream
+	31, // 21: openetl.api.v1.Catalog.discover_time:type_name -> google.protobuf.Timestamp
+	1,  // 22: openetl.api.v1.CatalogStream.replay:type_name -> openetl.api.v1.Replay
+	29, // 23: openetl.api.v1.CatalogStream.columns:type_name -> openetl.api.v1.CatalogColumn
+	0,  // 24: openetl.api.v1.CatalogStream.sync_modes:type_name -> openetl.api.v1.SyncMode
+	7,  // 25: openetl.api.v1.SourceService.GetSource:input_type -> openetl.api.v1.GetSourceRequest
+	9,  // 26: openetl.api.v1.SourceService.ListSources:input_type -> openetl.api.v1.ListSourcesRequest
+	11, // 27: openetl.api.v1.SourceService.DeleteSource:input_type -> openetl.api.v1.DeleteSourceRequest
+	19, // 28: openetl.api.v1.SourceService.CheckSource:input_type -> openetl.api.v1.CheckSourceRequest
+	25, // 29: openetl.api.v1.SourceService.DiscoverSource:input_type -> openetl.api.v1.DiscoverSourceRequest
+	13, // 30: openetl.api.v1.DestinationService.GetDestination:input_type -> openetl.api.v1.GetDestinationRequest
+	15, // 31: openetl.api.v1.DestinationService.ListDestinations:input_type -> openetl.api.v1.ListDestinationsRequest
+	17, // 32: openetl.api.v1.DestinationService.DeleteDestination:input_type -> openetl.api.v1.DeleteDestinationRequest
+	21, // 33: openetl.api.v1.DestinationService.CheckDestination:input_type -> openetl.api.v1.CheckDestinationRequest
+	8,  // 34: openetl.api.v1.SourceService.GetSource:output_type -> openetl.api.v1.GetSourceResponse
+	10, // 35: openetl.api.v1.SourceService.ListSources:output_type -> openetl.api.v1.ListSourcesResponse
+	12, // 36: openetl.api.v1.SourceService.DeleteSource:output_type -> openetl.api.v1.DeleteSourceResponse
+	20, // 37: openetl.api.v1.SourceService.CheckSource:output_type -> openetl.api.v1.CheckSourceResponse
+	26, // 38: openetl.api.v1.SourceService.DiscoverSource:output_type -> openetl.api.v1.DiscoverSourceResponse
+	14, // 39: openetl.api.v1.DestinationService.GetDestination:output_type -> openetl.api.v1.GetDestinationResponse
+	16, // 40: openetl.api.v1.DestinationService.ListDestinations:output_type -> openetl.api.v1.ListDestinationsResponse
+	18, // 41: openetl.api.v1.DestinationService.DeleteDestination:output_type -> openetl.api.v1.DeleteDestinationResponse
+	22, // 42: openetl.api.v1.DestinationService.CheckDestination:output_type -> openetl.api.v1.CheckDestinationResponse
+	34, // [34:43] is the sub-list for method output_type
+	25, // [25:34] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_connection_proto_init() }
@@ -2140,7 +2222,7 @@ func file_openetl_api_v1_connection_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_api_v1_connection_proto_rawDesc), len(file_openetl_api_v1_connection_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   28,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

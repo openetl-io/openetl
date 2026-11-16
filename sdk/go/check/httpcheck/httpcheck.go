@@ -32,6 +32,7 @@ import (
 
 	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/host"
+	"github.com/openetl-io/openetl/sdk/go/internal/redact"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -49,25 +50,6 @@ const (
 	maxBodyInDetail = 300
 )
 
-// redacted is u without its user info, query and fragment.
-func redacted(u string) string {
-	if p, err := url.Parse(u); err == nil {
-		p.User, p.RawQuery, p.ForceQuery, p.Fragment, p.RawFragment = nil, "", false, "", ""
-		return p.String()
-	}
-	scheme, rest := "", u
-	if i := strings.Index(u, "://"); i >= 0 {
-		scheme, rest = u[:i+3], u[i+3:]
-	}
-	if i := strings.IndexAny(rest, "?#"); i >= 0 {
-		rest = rest[:i]
-	}
-	if i := strings.LastIndexByte(rest, '@'); i >= 0 {
-		rest = rest[i+1:]
-	}
-	return scheme + rest
-}
-
 var network = map[string]check.Reason{
 	check.ConnectionRefused.Name: check.ConnectionRefused, check.TimedOut.Name: check.TimedOut,
 	check.TLSFailed.Name: check.TLSFailed, check.Unreachable.Name: check.Unreachable,
@@ -76,7 +58,7 @@ var network = map[string]check.Reason{
 var urlInText = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'<>]+`)
 
 // redactText is s with every URL in it redacted.
-func redactText(s string) string { return urlInText.ReplaceAllStringFunc(s, redacted) }
+func redactText(s string) string { return urlInText.ReplaceAllStringFunc(s, redact.URL) }
 
 // address is u's host:port, with the scheme's port when u gives none.
 func address(u string) string {
@@ -117,7 +99,7 @@ func Classify(err error, rawURL string) *check.Failure {
 	if err == nil {
 		return nil
 	}
-	u := redacted(rawURL)
+	u := redact.URL(rawURL)
 	var f *check.Failure
 	if se, ok := errors.AsType[*host.StatusError](err); ok {
 		f = byStatus(err, se)
@@ -267,7 +249,7 @@ func fail(err error, u string) error {
 }
 
 func newCheck(name string, kind check.Kind, title string, req host.Request, run func(context.Context, *check.Probe) error) check.Check {
-	return check.Check{Name: name, Kind: kind, Title: title, Params: check.Params{"url": redacted(req.URL)}, Run: run}
+	return check.Check{Name: name, Kind: kind, Title: title, Params: check.Params{"url": redact.URL(req.URL)}, Run: run}
 }
 
 // Reach is "api.reach", a Connection check that req gets an answer: any
@@ -354,7 +336,7 @@ func undecoded(err error, body []byte) *check.Failure {
 	f.Message = "{url} didn't answer with JSON."
 	f.Fix = "Check the URL in the config: a page in place of the API's JSON often means a wrong base URL, or a proxy or sign-in page in the way."
 	if s := bodyStart(body); s != "" {
-		f.Detail += "; the response starts: " + s
+		f.Detail += "; the response starts: " + redactText(s)
 	}
 	return f
 }

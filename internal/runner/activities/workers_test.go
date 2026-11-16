@@ -51,6 +51,15 @@ func TestMain(m *testing.M) {
 	case "connector":
 		sdk.Serve(laneFiles)
 		return
+	case "locked":
+		sdk.Serve(lockedSource)
+		return
+	case "dies":
+		sdk.Serve(dyingSource)
+		return
+	case "chatty":
+		sdk.Serve(chattySource)
+		return
 	case "worker":
 		os.Exit(workerProcess())
 	}

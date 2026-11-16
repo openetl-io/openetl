@@ -184,7 +184,8 @@ func inUse(err error) *check.Failure {
 
 // acquire takes the kit's turn with the connection, opening the connection
 // if no check has it, and holds the connection until p's run ends. The
-// caller gives the turn back with put once it's done with the connection.
+// caller gives the turn back with put once it's done with the connection;
+// acquire gives it back itself when it fails or panics.
 func (k *Kit) acquire(ctx context.Context, p *check.Probe) (adbc.Connection, error) {
 	select {
 	case k.turn <- struct{}{}:
@@ -195,20 +196,25 @@ func (k *Kit) acquire(ctx context.Context, p *check.Probe) (adbc.Connection, err
 			return nil, inUse(ctx.Err())
 		}
 	}
+	held := false
+	defer func() {
+		if !held {
+			k.put()
+		}
+	}()
 	if k.conn == nil {
 		db, err := k.open(ctx)
 		if err != nil {
-			k.put()
 			return nil, k.fail(err)
 		}
 		conn, err := db.Open(ctx)
 		if err != nil {
 			_ = db.Close()
-			k.put()
 			return nil, k.fail(err)
 		}
 		k.db, k.conn = db, conn
 	}
+	held = true
 	conn := k.conn
 	k.mu.Lock()
 	k.users++

@@ -7,11 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/signal"
 	"slices"
-	"strings"
 	"syscall"
 	"time"
 
@@ -293,58 +291,26 @@ func answer(ctx context.Context, secrets revealed, run func(context.Context) che
 		defer cancel()
 	}
 	items, rerr := run(ctx).Proto()
-	return secrets.items(items), secrets.error(rerr)
+	check.Redact(secrets, items, rerr)
+	return items, rerr
 }
 
 // answerMargin is the most time answer leaves to answer in.
 const answerMargin = time.Second
 
 // revealed are the values of the secrets the SDK put in a bound config in
-// their names' place, with the forms a URL gives them, longest first; none on
-// the host tier, where the connector gets names only. No check's answer
-// shows them.
+// their names' place; none on the host tier, where the connector gets names
+// only. No check's answer shows them, as check.Redact removes them.
 type revealed []string
 
 func (r *revealed) add(value string) {
-	userinfo := strings.TrimPrefix(url.UserPassword("", value).String(), ":")
-	for _, v := range []string{value, url.QueryEscape(value), url.PathEscape(value), userinfo} {
-		if v != "" && !slices.Contains(*r, v) {
-			*r = append(*r, v)
-		}
+	if value != "" && !slices.Contains(*r, value) {
+		*r = append(*r, value)
 	}
-	slices.SortStableFunc(*r, func(a, b string) int { return len(b) - len(a) })
-}
-
-// scrub is s with each value replaced by "[redacted]".
-func (r revealed) scrub(s string) string {
-	for _, v := range r {
-		s = strings.ReplaceAll(s, v, redacted)
-	}
-	return s
-}
-
-// items scrubs every string of items that people see: the templates, the
-// params' values, the detail and the error's message.
-func (r revealed) items(items []*protocolv1.CheckItem) []*protocolv1.CheckItem {
-	if len(r) == 0 {
-		return items
-	}
-	for _, it := range items {
-		it.Title, it.Description, it.Message, it.Fix, it.Detail = r.scrub(it.Title), r.scrub(it.Description), r.scrub(it.Message), r.scrub(it.Fix), r.scrub(it.Detail)
-		for k, v := range it.Params {
-			it.Params[k] = r.scrub(v)
-		}
-		if e := it.GetError(); e != nil {
-			e.Message = r.scrub(e.Message)
-		}
-	}
-	return items
 }
 
 func (r revealed) error(e *protocolv1.Error) *protocolv1.Error {
-	if e != nil {
-		e.Message = r.scrub(e.Message)
-	}
+	check.Redact(r, nil, e)
 	return e
 }
 

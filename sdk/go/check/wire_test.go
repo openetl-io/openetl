@@ -3,6 +3,7 @@ package check
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestProtoRoundTrip(t *testing.T) {
 		t.Errorf("skip: %v", skip)
 	}
 	if items[3].GetStatus() != protocolv1.CheckStatus_CHECK_STATUS_WARNING || items[3].GetError().GetCode() != protocolv1.ErrorCode_ERROR_CODE_INTERNAL ||
-		items[3].GetError().GetMessage() != Unknown.Message || items[3].GetDetail() != "behind" {
+		items[3].GetError().GetMessage() != unknownWarning || items[3].GetDetail() != "behind" {
 		t.Errorf("a warning: %v", items[3])
 	}
 	// The answer's error is the first failed item's, as "title: message",
@@ -134,6 +135,30 @@ func TestFromProtoFailsClosed(t *testing.T) {
 	}
 }
 
+// A warning that arrives with Unknown's reason and no message of its own
+// reads as Run's does; a failed item, and a warning with a message, don't
+// change.
+func TestFromProtoUnknownWarning(t *testing.T) {
+	internal := &protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_INTERNAL}
+	warning, failed := protocolv1.CheckStatus_CHECK_STATUS_WARNING, protocolv1.CheckStatus_CHECK_STATUS_FAILED
+	for name, c := range map[string]struct {
+		p    *protocolv1.CheckItem
+		want string
+	}{
+		"a warning without a message": {&protocolv1.CheckItem{Status: warning, Error: internal, Detail: "one disk"}, unknownWarning},
+		"an older SDK's warning":      {&protocolv1.CheckItem{Status: warning, Error: internal, Message: Unknown.Message, Reason: "unknown"}, unknownWarning},
+		"a warning with a message":    {&protocolv1.CheckItem{Status: warning, Error: internal, Message: "One disk."}, "One disk."},
+		"a failed item":               {&protocolv1.CheckItem{Status: failed, Error: internal, Detail: "one disk"}, Unknown.Message},
+	} {
+		c.p.Name, c.p.Title = "a", "A"
+		r := FromProto(&protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{c.p}})
+		it := r.Items[0]
+		if it.Status != Status(c.p.GetStatus()) || it.Message != c.want || it.Failure.Message != c.want || it.Failure.Reason != "unknown" || r.OK() != (it.Status == Warning) {
+			t.Errorf("%s: %s %q, %+v", name, it.Status, it.Message, it.Failure)
+		}
+	}
+}
+
 // Every string goes on the wire as valid UTF-8.
 func TestProtoUTF8(t *testing.T) {
 	r := Run(t.Context(), []Check{
@@ -187,6 +212,65 @@ func TestProtoItemError(t *testing.T) {
 	}
 	if rerr.GetMessage() != "Use public: etl has no USAGE on schema public: pq: permission denied for schema public" {
 		t.Errorf("the answer's error: %v", rerr)
+	}
+}
+
+// Every text of an answer loses each secret, in each form a URL gives it;
+// the item's name and reason, which a secret isn't, stay.
+func TestRedact(t *testing.T) {
+	const secret = "p@ss word/1"
+	forms := []string{secret, "p%40ss+word%2F1", "p@ss%20word%2F1", "p%40ss%20word%2F1"}
+	text := strings.Join(forms, " | ")
+	want := "[redacted] | [redacted] | [redacted] | [redacted]"
+	items := []*protocolv1.CheckItem{{
+		Name: "auth", Reason: "credentials_rejected", Title: text, Description: text, Message: text, Fix: text, Detail: text, Field: text,
+		Params: map[string]string{secret: text, "dsn": "pg://etl:" + forms[3] + "@db"}, Error: &protocolv1.Error{Message: text},
+	}, {Name: "plain", Title: "Reach db"}}
+	e := &protocolv1.Error{Message: "Sign in: " + text}
+	Redact([]string{"", secret}, items, e)
+	it := items[0]
+	for name, got := range map[string]string{
+		"title": it.GetTitle(), "description": it.GetDescription(), "message": it.GetMessage(), "fix": it.GetFix(), "detail": it.GetDetail(),
+		"field": it.GetField(), "the item's error": it.GetError().GetMessage(), "the param named the secret": it.GetParams()["[redacted]"],
+	} {
+		if got != want {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+	if it.GetName() != "auth" || it.GetReason() != "credentials_rejected" || it.GetParams()["dsn"] != "pg://etl:[redacted]@db" || len(it.GetParams()) != 2 {
+		t.Errorf("the item: %v", it)
+	}
+	if e.GetMessage() != "Sign in: "+want || items[1].GetTitle() != "Reach db" {
+		t.Errorf("the answer's error %q, the other item %v", e.GetMessage(), items[1])
+	}
+	Redact(nil, items, nil)
+	if it.GetTitle() != want {
+		t.Errorf("no secrets changed the title: %q", it.GetTitle())
+	}
+}
+
+// Redact finds a secret in an item's name and reason, and quoted as Go and
+// JSON quote it and with lowercase percent escapes, in one pass, so a short
+// secret isn't found in what replaced a longer one.
+func TestRedactMoreForms(t *testing.T) {
+	const secret = `p"s<s\1/`
+	// Go's quoting, JSON's with < escaped, and percent escapes in lower and
+	// upper case.
+	forms := []string{`p\"s<s\\1/`, `p\"s` + `\` + `u003cs\\1/`, "p%22s%3cs%5c1%2f", "p%22s%3Cs%5C1%2F"}
+	text := strings.Join(forms, " | ")
+	want := "[redacted] | [redacted] | [redacted] | [redacted]"
+	items := []*protocolv1.CheckItem{{Name: "auth." + secret, Reason: "rejected_" + secret, Title: text, Detail: secret, Error: &protocolv1.Error{Message: "red"}}}
+	e := &protocolv1.Error{Message: fmt.Sprintf("Sign in: %q", secret)}
+	Redact([]string{secret, "red"}, items, e)
+	it := items[0]
+	if it.GetName() != "auth.[redacted]" || it.GetReason() != "rejected_[redacted]" || it.GetError().GetMessage() != "[redacted]" || it.GetDetail() != "[redacted]" {
+		t.Errorf("the item: %v", it)
+	}
+	if it.GetTitle() != want {
+		t.Errorf("the title %q", it.GetTitle())
+	}
+	if e.GetMessage() != `Sign in: "[redacted]"` {
+		t.Errorf("the answer's error %q", e.GetMessage())
 	}
 }
 
@@ -265,5 +349,10 @@ func TestRendered(t *testing.T) {
 	}
 	if it.Failure.Fix != "GRANT USAGE ON SCHEMA {schema}" || it.Title != "Use {schema}" {
 		t.Error("Rendered changed the item")
+	}
+	// A value with braces is shown as it is, not filled in again.
+	it = Item{Title: "Find {resource}", Status: Failed, Params: Params{"resource": "{host}", "host": "db"}, Failure: NotFound.Fail()}
+	if got := it.Rendered(); got.Title != "Find {host}" || got.Message != "" || got.Failure.Message != "{host} doesn't exist." || got.Failure.Error() != "{host} doesn't exist." {
+		t.Errorf("%q, %q, %q", got.Title, got.Failure.Message, got.Failure.Error())
 	}
 }

@@ -20,7 +20,7 @@ Every command on this page accepts these optional flags:
 
 `OPENETL_API_KEY` takes precedence over the key file, even if you supply `--api-key-file`. The API URL flag takes precedence over `OPENETL_API_URL`. The key-file flag takes precedence over `OPENETL_API_KEY_FILE`. There is no `--api-key` flag.
 
-Help is written to standard error. Successful commands return exit status 0. Errors return exit status 1. Plan warnings alone do not cause an error.
+Help is written to standard error. Successful commands return exit status 0. Errors return exit status 1. Plan warnings alone do not cause an error. `check`, `preflight` and `openetl connector check` have [exit statuses of their own](#exit-status-of-checks-and-preflights).
 
 ## Apply and plan
 
@@ -42,7 +42,27 @@ After `apply` changes resources, it asks a runner to check them:
 - A preflight of each pipeline that the apply created or updated, as `openetl preflight` runs it.
 - A check of each other source and destination that the apply created or updated.
 
-`apply` discovers each source that passes its check, which refreshes the catalog that plans read. Then it prints the problems in the plans of pipelines that depend on what changed. A failed check, a failed preflight or a plan problem prints a warning and does not change the exit status, because the applied resources stay. The checks stop after 2 minutes. `--dry-run` and `--no-check` skip them.
+`apply` discovers each source that passes its check, which refreshes the catalog that plans read. Then it prints the problems in the plans of pipelines that depend on what changed. The checks stop after 2 minutes. `--dry-run` and `--no-check` skip them.
+
+`apply` prints `checked` and the names of the pipelines, sources and destinations that passed, with or without warnings. Under `the apply stands, but its checks found:`, it lists each one that failed, each one that passed with warnings, and each plan problem. Under a target, it prints each failed or warning item with its message, and the item's fix on the next line. For example, an apply that creates a pipeline whose destination check fails, and updates another destination whose check warns, prints:
+
+```text
+unchanged workspaces/default/sources/app-db (version 5e1d0feeafb7)
+unchanged workspaces/default/destinations/warehouse (version f9aec669685a)
+updated workspaces/default/destinations/lake (version 98fc31616b56)
+created workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
+checked destination lake
+
+the apply stands, but its checks found:
+  pipeline app-db-to-warehouse: destination warehouse's check failed: PERMISSION_DENIED: Create tables in public: openetl_writer has no CREATE on schema public: ERROR: permission denied for schema public (SQLSTATE 42501)
+    failed   Create tables in public: openetl_writer has no CREATE on schema public.
+             fix: Grant CREATE on schema public to openetl_writer.
+  destination lake: passed, with warnings
+    warning  Let a commit run to its end: statement_timeout is 30s, and the connector needs 0, or at least 10min.
+             fix: Set statement_timeout to 0, or at least 10min.
+```
+
+A failed check, a failed preflight or a plan problem does not change the exit status of `apply`, because the applied resources stay. To see every item of a target, run its check or its preflight.
 
 For a pipeline with `transform.sql`, `plan` and `apply` send the statements to a runner of the pipeline's data plane and wait up to 30 seconds for one to take them. Without a runner, the plan has a note instead of the statements' plan.
 
@@ -149,20 +169,195 @@ A cause is a code, the column if one column caused it, and why OpenETL did not h
 
 | Syntax | Result |
 |---|---|
-| `openetl check source SOURCE` | Ask a runner to check a source's connection. |
-| `openetl check destination DESTINATION` | Ask a runner to check a destination's connection. |
-| `openetl preflight PIPELINE` | Ask a runner of the pipeline's data plane to run its preflight, then print the pipeline's plan. |
+| `openetl check source SOURCE` | Ask a runner to check a source's connection, and print the check's items. |
+| `openetl check destination DESTINATION` | Ask a runner to check a destination's connection, and print the check's items. |
+| `openetl preflight PIPELINE` | Ask a runner of the pipeline's data plane to run its preflight, print each part and its items, then print the pipeline's plan. |
+| `openetl check pipeline PIPELINE` | Deprecated. The same as `openetl preflight PIPELINE`. |
 | `openetl discover SOURCE` | Ask a runner to list a source's streams and columns. |
 
-| Flag | Type | Required | Default | Meaning |
-|---|---|---|---|---|
-| `--data-plane` | string | No | The server's default data plane. | The data plane whose runner performs the operation. Available on `check` and `discover` only. |
+| Flag | Commands | Type | Required | Default | Meaning |
+|---|---|---|---|---|---|
+| `--data-plane` | `check`, `discover` | string | No | The server's default data plane | The data plane whose runner performs the operation. `check pipeline` accepts it and ignores it. |
+| `--format` | `check`, `preflight` | `text` or `json` | No | `text` | `text` prints a checklist. `json` prints the API's result as one JSON document. See [JSON output](#json-output). |
 
-Put flags before `source` or `destination` for `check`, and before the pipeline for `preflight`. A [check](../get-started/concepts.md#checks-and-preflights) tests one connection. A preflight tests a pipeline, in these parts, in order:
+Put flags before `source` or `destination` for `check`, and before the pipeline for `preflight`. These commands use connections and pipelines already applied to the API. To test a connector locally with a config file, use `openetl connector check`, in the [connector CLI](./index.md#the-openetl-cli).
 
-1. The check of the pipeline's source, then of its destination.
-2. The source connector's checks of the streams the pipeline reads, with their sync modes and the pipeline's schedule. They are skipped if the source's check failed.
-3. The destination connector's checks of the streams the pipeline writes, with their write modes, keys, columns and tables. They are skipped if the destination's check failed.
-4. The sync's plan, from the source's refreshed catalog: its problems fail it, and its warnings are warnings.
+`openetl check pipeline PIPELINE` takes the flags of `preflight`. It also accepts `--data-plane` before `pipeline`, and ignores it, because a preflight runs on the pipeline's own data plane. It prints `openetl: check pipeline is deprecated; use openetl preflight NAME` on standard error, then runs the preflight.
 
-`preflight` prints each part with `passed`, `failed` or `skipped`, and returns an error if any part fails. When a connector says what it looked at, each command prints one line an item: its status (`passed`, `warning`, `failed` or `skipped`) and title, then its error code and message. Under an item that failed or warned, it prints the config `field` it concerns and its `fix`. After an `apply`, a warning about a failure lists the fixes of its failed items. These commands use connections and pipelines already applied to the API. To test a connector locally with a config file, use the [connector CLI](./index.md#the-openetl-cli).
+A [check](../get-started/concepts.md#checks-and-preflights) tests one connection. A runner starts the connector and runs its check, which has 1 minute. If the connector does not start, or does not answer within 1 minute, the check could not run, and the command exits with `2`.
+
+A preflight tests a pipeline on a runner of the pipeline's data plane. It runs in five parts, and its result lists them in this order:
+
+1. **The source's check.** The runner starts the source connector, then runs its check.
+2. **The destination's check.** The runner starts the destination connector, then runs its check.
+3. **The sync's plan.** The runner settles what a sync reads and writes, as a sync does: it discovers the source's streams and plans the sync. If that passes, the API refreshes the source's catalog and plans the pipeline. A plan problem is a failed item, and a plan warning is a warning item. This part is skipped if the source did not start, the source's check failed, or the destination did not start.
+4. **The source's preflight.** The source connector's checks of the streams the pipeline reads, with their sync modes and the pipeline's schedule. This part is skipped if the source did not start, its check failed, or a sync cannot be planned.
+5. **The destination's preflight.** The destination connector's checks of the streams the pipeline writes, with their write modes, keys, columns and tables. This part is skipped if the destination did not start, its check failed, or a sync cannot be planned.
+
+A skipped part gives its reason: `the source didn't start`, `the source's check failed`, `the destination didn't start`, `the destination's check failed` or `a sync can't be planned`. A skipped part fails the preflight.
+
+A connector that does not start, or does not answer, fails its part with an error code and a message, and no items. Each part has a time limit: 1 minute for a check, and 2 minutes for a preflight. The plan has what is left of the preflight's 10 minutes, less the time kept for the two connectors' preflights. A part that runs out of time fails with the code `TRANSIENT` and a message such as `the source's preflight didn't finish within 2m0s`. The parts that do not need it still run.
+
+### Text output
+
+`check` prints one line for the source or destination, then one line for each item, in the order the connector checked them. A check that passes with a warning:
+
+```sh
+openetl check destination lake
+```
+
+```text
+workspaces/default/destinations/lake passed its check (version f9aec669685a)
+  passed   Resolve lake.internal
+           lake.internal resolves to 10.0.4.12.
+  passed   Reach lake.internal:5432
+  passed   Connect to the database
+  warning  Let a commit run to its end
+           statement_timeout is 30s, and the connector needs 0, or at least 10min.
+           fix: Set statement_timeout to 0, or at least 10min.
+           code: CONFIG_INVALID (setting_mismatch)
+```
+
+A check that fails:
+
+```sh
+openetl check destination warehouse
+```
+
+```text
+workspaces/default/destinations/warehouse failed its check (version f9aec669685a)
+  passed   Resolve warehouse.internal
+           warehouse.internal resolves to 10.0.4.12.
+  passed   Reach warehouse.internal:5432
+  passed   Connect to the database
+  failed   Create tables in public
+           openetl_writer has no CREATE on schema public.
+           detail: ERROR: permission denied for schema public (SQLSTATE 42501)
+           fix: Grant CREATE on schema public to openetl_writer.
+           field: schema
+           code: PERMISSION_DENIED (privilege_missing)
+  skipped  Write to tables in public
+           needs schema.create, which failed
+openetl: workspaces/default/destinations/warehouse failed its check: PERMISSION_DENIED: Create tables in public: openetl_writer has no CREATE on schema public: ERROR: permission denied for schema public (SQLSTATE 42501)
+```
+
+The first line says whether the check passed, and the version of the source or destination that was checked. Each item's line has its status and its title. The lines under an item are:
+
+| Line | Shown for | Meaning |
+|---|---|---|
+| The message | Every item that has one | What the connector found, for a passed item. What is wrong, for a failed or warning item. Why it was not checked, for a skipped item. |
+| `detail:` | Failed and warning items | The cause in the words of the upstream system or its driver, such as a database's error. It can have more than one line. |
+| `fix:` | Failed and warning items | What to do to correct it. |
+| `field:` | Failed and warning items | The config field it concerns, as a dotted path such as `consumer.name`. |
+| `code:` | Failed and warning items | The error code, such as `PERMISSION_DENIED`, then in parentheses the reason: the kind of failure, such as `privilege_missing`. |
+
+A line is left out when the item has no value for it. A connector that does not say what it checked has no items. Then only the first line is printed.
+
+If a check fails and no item failed, the first line ends with the error code and the message. This happens with a connector that reports one error and no items, and with checks that the connector stopped, such as when they ran out of time. For example:
+
+```sh
+openetl check destination archive
+```
+
+```text
+workspaces/default/destinations/archive failed its check (version f9aec669685a): PERMISSION_DENIED: postgres: no CREATE on schema "public"
+openetl: workspaces/default/destinations/archive failed its check: PERMISSION_DENIED: postgres: no CREATE on schema "public"
+```
+
+`preflight` prints one line for each part, in the order of the result: `passed`, `failed` with the error code and message, or `skipped` with the reason. The part's items follow, as `check` prints them. Then the command prints the pipeline's plan, as `openetl plan` prints it. A preflight with a failed part and a skipped part, with the plan cut to its first line:
+
+```sh
+openetl preflight app-db-to-warehouse
+```
+
+```text
+source app-db's check: passed
+  passed   Resolve app-db.internal
+           app-db.internal resolves to 10.0.4.12.
+  passed   Reach app-db.internal:5432
+  passed   Connect to the database
+destination warehouse's check: failed: PERMISSION_DENIED: Create tables in public: openetl_writer has no CREATE on schema public: ERROR: permission denied for schema public (SQLSTATE 42501)
+  passed   Resolve warehouse.internal
+           warehouse.internal resolves to 10.0.4.12.
+  passed   Reach warehouse.internal:5432
+  passed   Connect to the database
+  failed   Create tables in public
+           openetl_writer has no CREATE on schema public.
+           detail: ERROR: permission denied for schema public (SQLSTATE 42501)
+           fix: Grant CREATE on schema public to openetl_writer.
+           field: schema
+           code: PERMISSION_DENIED (privilege_missing)
+  skipped  Write to tables in public
+           needs schema.create, which failed
+the sync's plan: passed
+  passed   The plan
+           2 streams, no problems
+source app-db's preflight: passed
+  passed   Publish public.customers in openetl
+  passed   Publish public.orders in openetl
+destination warehouse's preflight: skipped, the destination's check failed
+
+workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
+openetl: workspaces/default/pipelines/app-db-to-warehouse failed its preflight: destination warehouse's check failed: PERMISSION_DENIED: Create tables in public: openetl_writer has no CREATE on schema public: ERROR: permission denied for schema public (SQLSTATE 42501)
+```
+
+After the preflight, the command gets the plan of the pipeline's current version. If an apply changed the pipeline in between, the command does not print that plan. It prints one line with the version that the preflight checked and the current version:
+
+```text
+workspaces/default/pipelines/app-db-to-warehouse changed after its preflight: version 1e56f1b4d3be was checked, and version 7a0c3f92d8e1 is current
+```
+
+Run the preflight again to check the current version. If the command cannot get the plan, its error says whether the preflight passed or failed, then that the plan could not be fetched, and why.
+
+The last line, which starts with `openetl:`, is on standard error. For a failed preflight, it names the first failed part. If no part failed, it names the first skipped part, such as `source shop's preflight was skipped: the source's check failed`. If no part failed or was skipped, it says `it failed, though none of its parts did; run it again`.
+
+The CLI fills each title, message and fix from the item's params. It removes control characters and bidirectional formatting characters from all text that a connector sent, so that the text cannot change the terminal. A detail keeps its line breaks. OpenETL cuts a connector's long texts, and ends each cut text with `…`. An answer with too many items fails with `INTERNAL`. [What OpenETL does with the answer](../build-connectors/checks.md#what-the-platform-does-with-the-answer) gives the limits.
+
+### JSON output
+
+With `--format json`, `check` and `preflight` print the API's result as one JSON document on standard output, and nothing else there. `check` prints a `CheckResult`, and `preflight` prints a `PreflightResult`. [Check and preflight results](../integrate/index.md#check-and-preflight-results) describes their fields. In JSON, `preflight` does not print the plan. Notes and errors go to standard error.
+
+The document is as the API sends it:
+
+- Titles, messages, fixes and descriptions are templates. Each `{name}` in them is a placeholder for the value of `name` in the item's `params`.
+- Fields with an empty or false value are left out. For example, `ok` is not in the document when the check failed.
+
+This command prints the message of each failed or warning item, with its placeholders filled:
+
+```sh
+openetl check --format json destination lake | jq -r '.items[] | select(.status == "warning" or .status == "failed") | (.params // {}) as $p | .message | gsub("\\{(?<n>[a-z][a-z0-9_]*)\\}"; $p[.n] // "{\(.n)}")'
+```
+
+```text
+statement_timeout is 30s, and the connector needs 0, or at least 10min.
+```
+
+### Exit status of checks and preflights
+
+`check`, `preflight`, `check pipeline` and `openetl connector check` return these exit statuses. Scripts and CI jobs can rely on them:
+
+| Status | Meaning |
+|---|---|
+| `0` | It passed. Warnings do not change the status. |
+| `1` | It ran and failed: an item failed, a part failed or was skipped, or the check or preflight failed with no failed item. In a preflight, a connector that does not start or answer fails its part, so the status is `1`. A failed preflight whose plan cannot be fetched also exits with `1`. |
+| `2` | It could not run: a usage error, an unknown `--format`, the API or a runner that cannot be reached, or an operation that ran out of time. For `check` and `openetl connector check`, also a connector that did not start, or did not answer within 1 minute. For `preflight`, also a source catalog that could not be refreshed after the plan part passed, and a plan that cannot be fetched after the preflight passed. |
+
+A status of `2` says nothing about the connection or the pipeline. The error, after `openetl:`, says why the command could not run:
+
+- A usage error gives the flag or the argument that is wrong, such as `--format yaml: want text or json`.
+- An API call that fails starts with the API's error code, such as `not_found` for a pipeline that does not exist, or `unavailable` for an API that cannot be reached.
+- If the API could not run or finish the check or the preflight on a runner, `the check couldn't run:` or `the preflight couldn't run:` follows the error code. [Check and preflight results](../integrate/index.md#check-and-preflight-results) lists these errors.
+- If the preflight passed but the plan could not be fetched, the error starts with the pipeline's name and `passed its preflight, but its plan couldn't be fetched:`.
+- For `openetl connector check`, a connector that did not start or answer gives an error that names the connector.
+
+For example, if no runner of the data plane takes the check within 1 minute, `check` prints this and exits with `2`:
+
+```text
+openetl: unavailable: the check couldn't run: no runner of data plane "default" took it within 1m0s
+```
+
+A destination whose connector does not answer its check within 1 minute gives:
+
+```text
+openetl: unavailable: the check couldn't run: TRANSIENT: the destination's check didn't answer within 1m0s
+```

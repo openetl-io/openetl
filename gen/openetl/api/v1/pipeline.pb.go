@@ -6124,7 +6124,7 @@ func (x *PreflightPipelineResponse) GetResult() *PreflightResult {
 // ran.
 type PreflightResult struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// No part failed; warnings don't count.
+	// Every part is ok: none failed or was skipped. Warnings don't count.
 	Ok bool `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
 	// The pipeline version checked.
 	Version       string           `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
@@ -6198,11 +6198,14 @@ type PreflightPart struct {
 	// The connector version that answered, by digest; empty for a built-in
 	// connector and for the plan.
 	Version string `protobuf:"bytes,4,opt,name=version,proto3" json:"version,omitempty"`
-	Ok      bool   `protobuf:"varint,5,opt,name=ok,proto3" json:"ok,omitempty"`
-	// When not ok: a code of the error taxonomy, and what failed.
+	// It ran, has no code and no item failed; warnings don't count.
+	Ok bool `protobuf:"varint,5,opt,name=ok,proto3" json:"ok,omitempty"`
+	// When not ok: a code of the error taxonomy, and what failed; the first
+	// failed item's, and its rendered text, if the part has none. A part can
+	// fail with no items, such as a connector that didn't start or answer.
 	Code    string `protobuf:"bytes,6,opt,name=code,proto3" json:"code,omitempty"`
 	Message string `protobuf:"bytes,7,opt,name=message,proto3" json:"message,omitempty"`
-	// Why it didn't run, such as a check before it that failed; empty if it
+	// Why it didn't run, set only when a part before it failed; empty if it
 	// ran.
 	Skipped       string       `protobuf:"bytes,8,opt,name=skipped,proto3" json:"skipped,omitempty"`
 	Items         []*CheckItem `protobuf:"bytes,9,rep,name=items,proto3" json:"items,omitempty"`

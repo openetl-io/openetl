@@ -21,7 +21,10 @@ const (
 var itemSchema = []byte(`{"type": "object", "properties": {
 	"host": {"type": "string"},
 	"password": {"type": "string", "x-secret": true},
-	"auth": {"$ref": "#/$defs/auth"}},
+	"auth": {"$ref": "#/$defs/auth"},
+	"login": {"$ref": "#/$defs/auth/oneOf/0"},
+	"tables": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}}}},
+	"dependentSchemas": {"host": {"properties": {"port": {"type": "integer"}}}},
 	"$defs": {"auth": {"type": "object", "oneOf": [{"properties": {"token": {"type": "string"}}}]}}}`)
 
 // wellFormed is an answer every status of which holds to the protocol.
@@ -96,7 +99,19 @@ func TestCheckItems(t *testing.T) {
 		{"an error of another code", func(r *protocolv1.CheckResponse) { r.Error.Code = protocolv1.ErrorCode_ERROR_CODE_TRANSIENT },
 			`with x, the response's error is ERROR_CODE_TRANSIENT, not ERROR_CODE_AUTH_INVALID of item "auth" (Sign in to db), the first that failed`},
 		{"an error without the title", func(r *protocolv1.CheckResponse) { r.Error.Message = "db said no." },
-			`with x, the response's error message "db said no." doesn't start with "Sign in to db", the title of item "auth" (Sign in to db)`},
+			`with x, the response's error message "db said no." isn't "Sign in to db: db said no: pq: auth failed", the title, message and detail of item "auth" (Sign in to db)`},
+		{"an error of the title alone", func(r *protocolv1.CheckResponse) { r.Error.Message = "Sign in to db" },
+			`with x, the response's error message "Sign in to db" isn't "Sign in to db: db said no: pq: auth failed"`},
+		{"an error that keeps the message's period", func(r *protocolv1.CheckResponse) { r.Error.Message = "Sign in to db: db said no.: pq: auth failed" }, ""},
+		{"an error of an item without a detail", func(r *protocolv1.CheckResponse) {
+			r.Items[1].Detail, r.Error.Message = "", "Sign in to db: db said no."
+		}, ""},
+		{"a field in an array's items", func(r *protocolv1.CheckResponse) { r.Items[1].Field = "tables.0.name" }, ""},
+		{"a field of a dependent schema", func(r *protocolv1.CheckResponse) { r.Items[1].Field = "port" }, ""},
+		{"a secret in a failed item's title", func(r *protocolv1.CheckResponse) { r.Items[1].Title = "Sign in as hunter22" },
+			"with x, item 2's title shows the value of a secret in the config"},
+		{"a secret in an item's error", func(r *protocolv1.CheckResponse) { r.Items[1].Error.Message = "hunter22 said no." },
+			"with x, item 2's error shows the value of a secret in the config"},
 		{"a placeholder without a param in a fix", func(r *protocolv1.CheckResponse) { r.Items[1].Fix = "Raise {limit}." },
 			`flag: with x, item "auth" (Sign in to db)'s fix uses {limit} without a param of that name`},
 		{"what looks like a placeholder in a description", func(r *protocolv1.CheckResponse) { r.Items[1].Description = "{Host} takes it." },
@@ -182,7 +197,7 @@ func TestUnfinishedChecks(t *testing.T) {
 // With the good config, an answer with an error fails, even with no item
 // failed.
 func TestPassed(t *testing.T) {
-	c := &common{}
+	c := &common{spec: &protocolv1.SpecResponse{ConfigSchema: itemSchema}, config: []byte(`{"password": "hunter22"}`)}
 	for _, tc := range []struct {
 		name   string
 		mutate func(r *protocolv1.CheckResponse)
@@ -195,6 +210,10 @@ func TestPassed(t *testing.T) {
 			"Check failed with the good config: ERROR_CODE_AUTH_INVALID: Sign in to db"},
 		{"an error and no items", func(r *protocolv1.CheckResponse) { r.Items = nil },
 			"Check failed with the good config: ERROR_CODE_AUTH_INVALID: Sign in to db"},
+		{"a secret in a failed item's detail", func(r *protocolv1.CheckResponse) { r.Items[1].Detail = "hunter22 rejected" },
+			`with the good config, Check's item "auth" (Sign in to db) failed with ERROR_CODE_AUTH_INVALID: ` + hidden},
+		{"a secret in the error, with no items", func(r *protocolv1.CheckResponse) { r.Items, r.Error.Message = nil, "hunter22 rejected" },
+			"Check failed with the good config: ERROR_CODE_AUTH_INVALID: " + hidden},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := wellFormed()
@@ -204,13 +223,16 @@ func TestPassed(t *testing.T) {
 			if said := slices.ContainsFunc(r.log, func(l string) bool { return strings.HasPrefix(l, tc.says) }); r.failed != (tc.says != "") || tc.says != "" && !said {
 				t.Errorf("failed %v, logged %q; want %q", r.failed, r.log, tc.says)
 			}
+			if slices.ContainsFunc(r.log, func(l string) bool { return strings.Contains(l, "hunter22") }) {
+				t.Errorf("the log shows the secret: %q", r.log)
+			}
 		})
 	}
 }
 
 func TestFieldPaths(t *testing.T) {
 	got := fieldPaths(itemSchema)
-	for _, p := range []string{"host", "password", "auth", "auth.token"} {
+	for _, p := range []string{"host", "password", "auth", "auth.token", "login", "login.token", "tables", "tables.name", "port"} {
 		if !got[p] {
 			t.Errorf("%s isn't among %v", p, got)
 		}
@@ -238,14 +260,25 @@ func TestFailedWith(t *testing.T) {
 		{"the right code without the response's error", func(r *protocolv1.CheckResponse) { r.Error, r.Items[1].Error.Code = nil, transient[0] }, ""},
 		{"passed", func(r *protocolv1.CheckResponse) { r.Error, r.Items = nil, r.Items[:1] }, "with x, Check passed"},
 		{"an error alone", func(r *protocolv1.CheckResponse) { r.Items = nil }, "with x, Check failed with ERROR_CODE_AUTH_INVALID, not [ERROR_CODE_TRANSIENT]"},
+		{"a secret in the item's detail, without the response's error", func(r *protocolv1.CheckResponse) { r.Error, r.Items[1].Detail = nil, "hunter22 rejected" },
+			`with x, item "auth" (Sign in to db) failed with ERROR_CODE_AUTH_INVALID, not [ERROR_CODE_TRANSIENT]: ` + hidden},
+		{"a secret in the response's error", func(r *protocolv1.CheckResponse) { r.Error.Message = "hunter22 rejected" },
+			`with x, item "auth" (Sign in to db) failed with ERROR_CODE_AUTH_INVALID, not [ERROR_CODE_TRANSIENT]: ` + hidden},
+		{"a secret in the error alone", func(r *protocolv1.CheckResponse) { r.Items, r.Error.Message = nil, "hunter22 rejected" },
+			"with x, Check failed with ERROR_CODE_AUTH_INVALID, not [ERROR_CODE_TRANSIENT]: " + hidden},
+		{"a secret in the item's title", func(r *protocolv1.CheckResponse) { r.Items[1].Title = "Sign in as hunter22" },
+			"with x, item 2 failed with ERROR_CODE_AUTH_INVALID, not [ERROR_CODE_TRANSIENT]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := wellFormed()
 			tc.mutate(resp)
 			r := &reporter{ctx: t.Context()}
-			c.failedWith(r, "with x", resp, transient)
+			c.failedWith(r, "with x", resp, transient, []string{"hunter22"})
 			if said := slices.ContainsFunc(r.log, func(l string) bool { return strings.HasPrefix(l, tc.says) }); r.failed != (tc.says != "") || tc.says != "" && !said {
 				t.Errorf("failed %v, logged %q; want %q", r.failed, r.log, tc.says)
+			}
+			if slices.ContainsFunc(r.log, func(l string) bool { return strings.Contains(l, "hunter22") }) {
+				t.Errorf("the log shows the secret: %q", r.log)
 			}
 		})
 	}

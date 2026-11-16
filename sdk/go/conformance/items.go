@@ -6,6 +6,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/openetl-io/openetl/sdk/go/check"
@@ -27,14 +28,32 @@ type answer interface {
 }
 
 // checkAnswer reports what resp, the connector's answer with config, breaks
-// of the protocol, as checkItems does.
-func (c *common) checkAnswer(t T, with string, config []byte, resp answer) {
+// of the protocol, as checkItems does. It gives config's secret values, for
+// shown.
+func (c *common) checkAnswer(t T, with string, config []byte, resp answer) []string {
 	t.Helper()
 	var secrets []string
 	if _, s, err := splitSecrets(c.spec.GetConfigSchema(), config); err == nil {
 		secrets = slices.Collect(maps.Values(s))
 	}
 	checkItems(t, with, resp, secrets, fieldPaths(c.spec.GetConfigSchema()))
+	return secrets
+}
+
+// hidden is what a report shows in place of a connector's text that holds a
+// secret's value, which checkSecrets fails.
+const hidden = "(not shown: it holds the value of a secret)"
+
+// shown is text as a report shows it: hidden if it holds one of secrets.
+func shown(text string, secrets []string) string {
+	if holds(text, secrets) {
+		return hidden
+	}
+	return text
+}
+
+func holds(text string, secrets []string) bool {
+	return slices.ContainsFunc(secrets, func(s string) bool { return s != "" && strings.Contains(text, s) })
 }
 
 // checkItems reports what resp breaks of the protocol; with names the
@@ -52,7 +71,7 @@ func checkItems(t T, with string, resp answer, secrets []string, fields map[stri
 	items := resp.GetItems()
 	seen := map[string]int{}
 	for i, it := range items {
-		name := label(i, it)
+		name := label(i, it, secrets)
 		switch n := it.GetName(); {
 		case n == "":
 			t.Errorf("%s, %s has no name", with, name)
@@ -60,7 +79,7 @@ func checkItems(t T, with string, resp answer, secrets []string, fields map[stri
 			t.Errorf("%s, %s's name isn't lowercase letters and digits in words joined by \".\", \"_\" or \"-\"", with, name)
 		default:
 			if j, ok := seen[n]; ok {
-				t.Errorf("%s, items %d and %d have the same name %q: each needs its own", with, j+1, i+1, n)
+				t.Errorf("%s, items %d and %d have the same name %q: each needs its own", with, j+1, i+1, shown(n, secrets))
 			} else {
 				seen[n] = i
 			}
@@ -81,7 +100,7 @@ func checkItems(t T, with string, resp answer, secrets []string, fields map[stri
 			t.Errorf("%s, %s has the status %d, which CheckStatus doesn't have: a host counts it as FAILED", with, name, st)
 		}
 		if r := it.GetReason(); r != "" && !reasonName.MatchString(r) {
-			t.Errorf("%s, %s's reason %q isn't lowercase words joined by \"_\"", with, name, r)
+			t.Errorf("%s, %s's reason %q isn't lowercase words joined by \"_\"", with, name, shown(r, secrets))
 		}
 		e := it.GetError()
 		switch {
@@ -95,7 +114,7 @@ func checkItems(t T, with string, resp answer, secrets []string, fields map[stri
 				t.Errorf("%s, %s's error has no code", with, name)
 			}
 			if want := check.Render(it.GetMessage(), it.GetParams()); e.GetMessage() != want {
-				t.Errorf("%s, %s's error message is %q, not its message with its params filled in, %q: the detail has a field of its own", with, name, e.GetMessage(), want)
+				t.Errorf("%s, %s's error message is %q, not its message with its params filled in, %q: the detail has a field of its own", with, name, shown(e.GetMessage(), secrets), shown(want, secrets))
 			}
 		}
 		for _, text := range []struct{ field, template string }{
@@ -103,17 +122,17 @@ func checkItems(t T, with string, resp answer, secrets []string, fields map[stri
 		} {
 			for _, m := range nearPlaceholder.FindAllString(text.template, -1) {
 				if !placeholderName.MatchString(m[1 : len(m)-1]) {
-					t.Errorf("%s, %s's %s has %s, which looks like a placeholder but isn't one: a placeholder's name is lowercase letters, digits and \"_\", starting with a letter", with, name, text.field, m)
+					t.Errorf("%s, %s's %s has %s, which looks like a placeholder but isn't one: a placeholder's name is lowercase letters, digits and \"_\", starting with a letter", with, name, text.field, shown(m, secrets))
 				}
 			}
 			for _, p := range check.Placeholders(text.template) {
 				if _, ok := it.GetParams()[p]; !ok {
-					flagf(t, "%s, %s's %s uses {%s} without a param of that name, so it shows as written", with, name, text.field, p)
+					flagf(t, "%s, %s's %s uses {%s} without a param of that name, so it shows as written", with, name, text.field, shown(p, secrets))
 				}
 			}
 		}
-		if f := it.GetField(); f != "" && fields != nil && !fields[f] {
-			t.Errorf("%s, %s's field %q isn't a property of the config schema: name one by its dotted path, such as consumer.name", with, name, f)
+		if f := it.GetField(); f != "" && fields != nil && !fields[f] && !fields[withoutIndexes(f)] {
+			t.Errorf("%s, %s's field %q isn't a property of the config schema: name one by its dotted path, such as consumer.name", with, name, shown(f, secrets))
 		}
 	}
 	i, first := firstFailed(items)
@@ -122,17 +141,33 @@ func checkItems(t T, with string, resp answer, secrets []string, fields map[stri
 	case first == nil && e != nil && len(items) > 0 && !slices.ContainsFunc(items, func(it *protocolv1.CheckItem) bool {
 		return it.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_SKIPPED
 	}):
-		t.Errorf("%s, the response has an error (%s: %s) but every item passed or warned: set it when an item failed, or when the checks couldn't finish, which leaves the items they didn't reach skipped, or no items at all", with, e.GetCode(), e.GetMessage())
+		t.Errorf("%s, the response has an error (%s: %s) but every item passed or warned: set it when an item failed, or when the checks couldn't finish, which leaves the items they didn't reach skipped, or no items at all", with, e.GetCode(), shown(e.GetMessage(), secrets))
 	case first != nil && e == nil:
-		t.Errorf("%s, %s failed but the response has no error: set it to the first failed item's, which a host from before items shows", with, label(i, first))
+		t.Errorf("%s, %s failed but the response has no error: set it to the first failed item's, which a host from before items shows", with, label(i, first, secrets))
 	case first.GetStatus() == protocolv1.CheckStatus_CHECK_STATUS_FAILED:
 		if e.GetCode() != first.GetError().GetCode() {
-			t.Errorf("%s, the response's error is %s, not %s of %s, the first that failed", with, e.GetCode(), first.GetError().GetCode(), label(i, first))
+			t.Errorf("%s, the response's error is %s, not %s of %s, the first that failed", with, e.GetCode(), first.GetError().GetCode(), label(i, first, secrets))
 		}
-		if title := check.Render(first.GetTitle(), first.GetParams()); !strings.HasPrefix(e.GetMessage(), title) {
-			t.Errorf("%s, the response's error message %q doesn't start with %q, the title of %s, the first that failed: a host from before items shows it, as \"title: message\"", with, e.GetMessage(), title, label(i, first))
+		if want := errorMessages(first); !slices.Contains(want, strings.TrimSpace(e.GetMessage())) {
+			t.Errorf("%s, the response's error message %q isn't %q, the title, message and detail of %s, the first that failed: a host from before items shows it, as \"title: message: detail\"", with, shown(e.GetMessage(), secrets), shown(want[0], secrets), label(i, first, secrets))
 		}
 	}
+}
+
+// errorMessages are the messages the response's error may have for it, the
+// first failed item: "title: message", placeholders filled in, then ": "
+// and its detail when it has one, the message's final "." kept or dropped,
+// as the SDK drops it.
+func errorMessages(it *protocolv1.CheckItem) []string {
+	m := check.Render(it.GetMessage(), it.GetParams())
+	if title := check.Render(it.GetTitle(), it.GetParams()); title != "" {
+		m = title + ": " + m
+	}
+	d := it.GetDetail()
+	if d == "" {
+		return []string{strings.TrimSpace(m)}
+	}
+	return []string{strings.TrimSpace(strings.TrimSuffix(m, ".") + ": " + d), strings.TrimSpace(m + ": " + d)}
 }
 
 // checkSecrets fails an answer that shows a secret's value, as it is or
@@ -168,13 +203,15 @@ func checkSecrets(t T, with string, resp answer, secrets []string) {
 	}
 }
 
-// label names item i of an answer to the connector's author: by its name,
-// or by its place when it has none.
-func label(i int, it *protocolv1.CheckItem) string {
-	if it.GetName() == "" {
+// label names item i of an answer to the connector's author: by its name
+// and title, or by its place when it has no name or they hold one of
+// secrets.
+func label(i int, it *protocolv1.CheckItem, secrets []string) string {
+	title := check.Render(it.GetTitle(), it.GetParams())
+	if it.GetName() == "" || holds(it.GetName(), secrets) || holds(title, secrets) {
 		return fmt.Sprintf("item %d", i+1)
 	}
-	return fmt.Sprintf("item %q (%s)", it.GetName(), check.Render(it.GetTitle(), it.GetParams()))
+	return fmt.Sprintf("item %q (%s)", it.GetName(), title)
 }
 
 func statusName(s protocolv1.CheckStatus) string {
@@ -211,8 +248,9 @@ func itemText(it *protocolv1.CheckItem) string {
 }
 
 // fieldPaths are the dotted paths of the properties a config schema
-// declares, at any depth, in its branches and the local definitions it
-// refers to too; nil for a schema that declares none.
+// declares, at any depth, in its branches, dependent schemas, arrays' items
+// and the local definitions it refers to too; nil for a schema that declares
+// none.
 func fieldPaths(schema []byte) map[string]bool {
 	var root any
 	if json.Unmarshal(schema, &root) != nil {
@@ -243,6 +281,22 @@ func fieldPaths(schema []byte) map[string]bool {
 		for _, key := range []string{"if", "then", "else"} {
 			walk(n[key], prefix, depth+1)
 		}
+		if deps, ok := n["dependentSchemas"].(map[string]any); ok {
+			for _, d := range deps {
+				walk(d, prefix, depth+1)
+			}
+		}
+		// An array's items' properties go under the array's path.
+		for _, key := range []string{"items", "prefixItems"} {
+			switch v := n[key].(type) {
+			case map[string]any:
+				walk(v, prefix, depth+1)
+			case []any:
+				for _, b := range v {
+					walk(b, prefix, depth+1)
+				}
+			}
+		}
 	}
 	walk(root, "", 0)
 	if len(paths) == 0 {
@@ -263,11 +317,28 @@ func pointer(root any, ref string) any {
 		if p == "" {
 			continue
 		}
-		m, ok := node.(map[string]any)
-		if !ok {
+		switch n := node.(type) {
+		case map[string]any:
+			node = n[strings.ReplaceAll(strings.ReplaceAll(p, "~1", "/"), "~0", "~")]
+		case []any:
+			i, err := strconv.Atoi(p)
+			if err != nil || i < 0 || i >= len(n) {
+				return nil
+			}
+			node = n[i]
+		default:
 			return nil
 		}
-		node = m[strings.ReplaceAll(strings.ReplaceAll(p, "~1", "/"), "~0", "~")]
 	}
 	return node
+}
+
+// withoutIndexes is a dotted path without its array indexes: tables.0.name
+// is tables.name, as fieldPaths has an array's items' properties.
+func withoutIndexes(path string) string {
+	parts := strings.Split(path, ".")
+	return strings.Join(slices.DeleteFunc(parts, func(p string) bool {
+		_, err := strconv.Atoi(p)
+		return err == nil
+	}), ".")
 }

@@ -132,7 +132,7 @@ The config schema is a JSON Schema, draft 2020-12. OpenETL validates configs aga
 | `x-advanced` | A field | Shown after the others in its section, and marked advanced. |
 | `x-when` | A field | It applies only when other fields have these values: `{"consumer.type": "efo"}`, or a list of values, `{"mode": ["a", "b"]}`. Paths are dotted from the config's root, and a field that isn't set has its default. It hides the field in a form; validate the config in the connector too. |
 | `x-format` | A field | What a text field holds, beyond JSON Schema's `format`: `duration` (Go's syntax, `500ms`, `1m30s`), `date-time` (RFC 3339), `uri`, `email`, `hostname`, `regex` or `multiline`. |
-| `oneOf` of `const` | A field | Values with labels: `"oneOf": [{"const": "efo", "title": "Enhanced fan-out", "description": "…"}]`. A plain `enum` works too, shown as its values. |
+| `oneOf` of `const` | A field | Values with labels: `"oneOf": [{"const": "efo", "title": "Enhanced fan-out", "description": "…"}]`. A plain `enum` works too, shown as its values. A `oneOf` or `anyOf` gives values only when each of its branches has a `const`. |
 | `default`, `examples`, `minimum`, `maximum`, `pattern`, `deprecated` | A field | As in JSON Schema; the form shows each. |
 
 `openetl connector package` refuses a schema that would break a form: an `x-group` the root doesn't declare, an `x-when` on a field that doesn't exist or on a value it can't take, a `default` that isn't one of a field's values, or an `x-format` it doesn't know. The conformance kit's `spec` check finds the same, and flags fields without a description.
@@ -296,7 +296,7 @@ greetings: 3 records, complete
 
 Connectors run as trusted code: `egress` says what yours means to reach, and OpenETL doesn't enforce it yet. [What that means for the people who run them](../self-host/index.md#connectors-are-trusted-code).
 
-`openetl connector check` checks a config reaches the upstream, and prints the check's items. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
+`openetl connector check` checks a config reaches the upstream, and prints the check's items, as [Checks and preflights](./checks.md#with-openetl-connector-check) shows. Each command takes an executable, a descriptor, a declarative source's document, or a package version by reference, as `oci://REGISTRY/REPOSITORY:VERSION` or `github.com/OWNER/REPO[/PACKAGE]@VERSION`. A config names its secrets as `{"secret": NAME}`, whose values come from `--secret NAME=VALUE` or the variable `OPENETL_SECRET_NAME`. `--attach ADDR` waits for a connector you start yourself, under a debugger, say. `openetl connector read -h` has the rest.
 
 ## Test it with the conformance kit
 
