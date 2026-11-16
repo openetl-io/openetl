@@ -1167,6 +1167,15 @@ mod windows {
         }
         assert_eq!(snapshots.len(), 3, "a snapshot a keyed lane");
         assert_every_key_group_once(&snapshots);
+        // Each engine reports its keyed lanes' part of every epoch, and the
+        // parts add up to every row in and every window's row.
+        assert!(ready.iter().flatten().all(|r| r.operators.len() == 1));
+        let ops: Vec<_> = ready.iter().flatten().flat_map(|r| &r.operators).collect();
+        assert_eq!(
+            ops.iter().map(|o| o.rows_in).sum::<u64>(),
+            3 * SECONDS.len() as u64
+        );
+        assert_eq!(ops.iter().map(|o| o.inserts).sum::<u64>(), 7);
         per_lane
     }
 
@@ -1551,6 +1560,7 @@ mod windows {
             assert_eq!(got, wanted, "writer lane {w}");
             assert_eq!(ready.len(), 1);
             assert!(ready[0].snapshots.is_empty(), "a redo writes no state");
+            assert!(ready[0].operators.is_empty(), "a redo reports no numbers");
         }
         let keys: BTreeSet<String> = want.values().flatten().map(|r| r.email.clone()).collect();
         assert!(keys.len() > 1, "{keys:?}");

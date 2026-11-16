@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -179,19 +181,84 @@ func landedOnce(t *testing.T, rows []string, want map[string]int) {
 	}
 }
 
+// windowNumbers checks the window's numbers in each record as its
+// coordinator commits it, its runs below dir.
+type windowNumbers struct {
+	t   *testing.T
+	dir string
+	mu  sync.Mutex
+	ops []checkpoint.Operator
+}
+
+// watch checks each record j commits: the rows the window took in are
+// those the source emitted in the epoch, on every worker; the windows it
+// keeps never fall below 0; and its stored bytes are those of the runs the
+// record names, each once, though lanes on several workers name it.
+func (w *windowNumbers) watch(j *runner.Job) {
+	then := j.OnCheckpoint
+	j.OnCheckpoint = func(rec *checkpoint.Record, collapsed, held map[string]uint64) {
+		w.check(rec)
+		if then != nil {
+			then(rec, collapsed, held)
+		}
+	}
+}
+
+func (w *windowNumbers) check(rec *checkpoint.Record) {
+	if len(rec.Operators) != 1 {
+		w.t.Errorf("epoch %d's record has the numbers of %d operators", rec.Epoch, len(rec.Operators))
+		return
+	}
+	op := rec.Operators[0]
+	if rows := rec.Streams["s"].Rows; op.RowsIn != rows {
+		w.t.Errorf("epoch %d: the window took in %d rows, of %d the source emitted", rec.Epoch, op.RowsIn, rows)
+	}
+	if op.Windows < 0 {
+		w.t.Errorf("epoch %d: the window keeps %d windows", rec.Epoch, op.Windows)
+	}
+	named := map[string]bool{}
+	var stored uint64
+	for _, sn := range rec.Snapshots {
+		for _, r := range sn.Runs {
+			if named[r] {
+				continue
+			}
+			named[r] = true
+			fi, err := os.Stat(filepath.Join(w.dir, r))
+			if err != nil {
+				w.t.Errorf("epoch %d: run %s: %v", rec.Epoch, r, err)
+				continue
+			}
+			stored += uint64(fi.Size())
+		}
+	}
+	if op.StoredBytes != stored {
+		w.t.Errorf("epoch %d: the window stores %d bytes; its record's runs are %d", rec.Epoch, op.StoredBytes, stored)
+	}
+	w.mu.Lock()
+	w.ops = append(w.ops, op)
+	w.mu.Unlock()
+}
+
 // A group window runs on workers, each with an engine of its own: every
 // worker's lanes send each row to the keyed lane owning its region's key
 // group, on whichever worker, whose windows feed its own writer lane. A
 // worker lost after the first commit fails the attempt; the next, on two
 // workers, then one runner, restore the windows' state from the record on
-// their own lanes, and each window lands once, with every row of it.
+// their own lanes, and each window lands once, with every row of it. Each
+// record's numbers of the window add up every worker's: the rows it took
+// in, the windows it wrote, once each, and the windows it keeps, counted on
+// from the record each attempt restored, whatever its workers, to none at
+// the end of input.
 func TestAGroupWindowOnWorkersThroughTheEngine(t *testing.T) {
 	opts := options(t, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
 	dest := newKeyDest(16)
-	base := tensJob(ctx, t, destination.Merge, "file://"+t.TempDir())
+	state := t.TempDir()
+	numbers := &windowNumbers{t: t, dir: state}
+	base := tensJob(ctx, t, destination.Merge, "file://"+state)
 	all := &timedChunks{splits: 4, chunks: 60, rows: 24}
 	job := func(owner string, upTo int) func() runner.Job {
 		return func() runner.Job {
@@ -208,6 +275,7 @@ func TestAGroupWindowOnWorkersThroughTheEngine(t *testing.T) {
 	p := &inProcess{ctx: ctx, mk: job("a1", 20)}
 	j := p.mk()
 	p.on(&j, srv, 3)
+	numbers.watch(&j)
 	var once sync.Once
 	j.OnCommit = func(uint64) { once.Do(func() { p.kill(1) }) }
 	if _, err := runner.RunAttempt(ctx, j); err == nil {
@@ -220,6 +288,7 @@ func TestAGroupWindowOnWorkersThroughTheEngine(t *testing.T) {
 	j = p.mk()
 	p.on(&j, srv, 2)
 	drainOnceRecorded(&j, func(*checkpoint.Record) bool { return len(dest.applied("tens")) > 0 })
+	numbers.watch(&j)
 	res, err := runner.RunAttempt(ctx, j)
 	if !errors.Is(err, runner.ErrDrained) {
 		t.Fatalf("two workers: %v", err)
@@ -242,7 +311,9 @@ func TestAGroupWindowOnWorkersThroughTheEngine(t *testing.T) {
 	}
 
 	// One runner, to the end.
-	last, err := runner.RunAttempt(ctx, job("a3", 0)())
+	j = job("a3", 0)()
+	numbers.watch(&j)
+	last, err := runner.RunAttempt(ctx, j)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +324,15 @@ func TestAGroupWindowOnWorkersThroughTheEngine(t *testing.T) {
 	for _, r := range dest.applied("tens") {
 		rows = append(rows, r.cols["window_start"]+"/"+r.cols["region"]+"/"+r.cols["n"])
 	}
-	landedOnce(t, rows, all.windows())
+	want := all.windows()
+	landedOnce(t, rows, want)
+	var written uint64
+	for _, op := range numbers.ops {
+		written += op.Inserts + op.Updates
+	}
+	if n := len(numbers.ops); n == 0 || written != uint64(len(want)) || numbers.ops[n-1].Windows != 0 {
+		t.Errorf("%d records' numbers wrote %d windows' rows, of %d, and keep %v at the end", n, written, len(want), numbers.ops)
+	}
 }
 
 // txnRows is txnLanes for rows of any shape, as render shows each: a

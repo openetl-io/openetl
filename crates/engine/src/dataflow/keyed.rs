@@ -819,8 +819,9 @@ impl Keyed {
     /// The epoch's state is the layer's barrier: a run of what the epoch
     /// changed, which counts once the record names the lane's snapshot, and
     /// that once every writer lane has passed the epoch; then the output's
-    /// barrier goes on. A read-only job's epoch changes nothing. Each keyed
-    /// lane reports the window's watermark there, the same on all of them.
+    /// barrier goes on. A read-only job's epoch changes nothing, and reports
+    /// no numbers. Each keyed lane reports the window's watermark there, the
+    /// same on all of them.
     async fn barrier(&mut self, lane: &Lane, e: Epoch) -> Result<(), JobError> {
         let flow = lane.flow.clone();
         let plan = &flow.plan;
@@ -842,12 +843,13 @@ impl Keyed {
             let wm = marks.get(input).map_or(self.wm, |m| (*m).min(self.wm));
             marks.insert(input.clone(), wm);
         }
-        let memory = self.layer.memory().total();
         if plan.state.job.as_ref().is_some_and(|j| j.read_only()) {
+            // A redo's epoch is in the record already, numbers and all.
             self.layer.discard();
-            let op = self.epoch(&id, (plan.generation, e.n), &[], memory)?;
-            flow.align.lock().await.pieces(e.n).operator(op);
+            self.counts = Counts::default();
+            (self.op.opened, self.op.dropped) = (0, 0);
         } else {
+            let memory = self.layer.memory().total();
             let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
                 crate::state::state_error(
                     &format!("operator {id}'s state at epoch {}'s barrier", e.n),
