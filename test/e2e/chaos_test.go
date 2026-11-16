@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -369,6 +370,9 @@ type chaosSuite struct {
 
 	pg pgGate
 
+	// The next slot index of a run's own pool.
+	ownSlots atomic.Int64
+
 	mu       sync.Mutex
 	results  []runResult
 	restarts int
@@ -527,7 +531,27 @@ func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 	return s
 }
 
-// poolFor is the pool whose runners run c's pipeline.
+// ownPool starts a pool of one runner like base's, on a data plane of its
+// own, for a run that kills its pipeline's connectors: on a runner other
+// runs share, they can't be told from the other pipelines'. It stops once
+// the run's cleanups that come after it have run.
+func (s *chaosSuite) ownPool(t *testing.T, base *chaosPool) *chaosPool {
+	t.Helper()
+	cfg := base.cfg
+	cfg.runners, cfg.launchers, cfg.first = 1, 0, 1000+int(s.ownSlots.Add(1))
+	cfg.dataPlane, cfg.token = placementPlane(t)
+	ctx, stop := context.WithCancel(context.Background())
+	p := startPool(ctx, t, cfg, base.logs, s.book)
+	t.Cleanup(stop)
+	return p
+}
+
+// killsConnector reports whether fault f kills one of the pipeline's
+// connectors.
+func killsConnector(f string) bool { return f == faultSource || f == faultDestination }
+
+// poolFor is the pool whose runners run c's pipeline, unless the run has
+// one of its own.
 func (s *chaosSuite) poolFor(c chaosConfig) *chaosPool {
 	switch {
 	case c.transform == "spark":
@@ -561,6 +585,12 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		s.flinkRuns <- struct{}{}
 		defer func() { <-s.flinkRuns }()
 	}
+	// A connector's kill must find the pipeline's own: in a pod, or on a
+	// runner of the run's own.
+	pool, own := s.poolFor(c), !c.pods && slices.ContainsFunc(c.faults, killsConnector)
+	if own {
+		s.pg.do(func() { pool = s.ownPool(t, pool) })
+	}
 	var w workload
 	var pipeline string
 	s.pg.do(func() {
@@ -580,12 +610,18 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		if c.pods {
 			dataPlane = s.podPlane
 		}
+		if own {
+			dataPlane = pool.cfg.dataPlane
+		}
 		apply(t,
 			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 			fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
 			c.pipelineDoc(name, pipeSource, pipeDest, transform, dataPlane))
 		pipeline = mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
 	})
+	if own {
+		pool.dedicate(pipeline)
+	}
 	s.book.add(pipeline, c.noise, c.strict)
 	res := runResult{c: c}
 	defer func() {
@@ -621,7 +657,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	}
 	defer stopWrite()
 	var faults sync.WaitGroup
-	faults.Go(func() { s.inject(writeCtx, t.Context(), c, rng, pipeline) })
+	faults.Go(func() { s.inject(writeCtx, t.Context(), c, rng, pool, pipeline) })
 	if c.rescales > 0 {
 		faults.Go(func() { s.rescale(writeCtx, c, rand.New(rand.NewPCG(c.seed, uint64(c.i)<<32|0x5ca1e)), pipeline, name) })
 	}
@@ -838,7 +874,7 @@ func syncedSince(t *testing.T, pipeline string, since time.Time) bool {
 
 // inject arms or makes the run's faults at random times while ctx lasts.
 // Partitions heal by their own clock, within base.
-func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.Rand, pipeline string) {
+func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.Rand, pool *chaosPool, pipeline string) {
 	type event struct {
 		at    time.Duration
 		fault string
@@ -875,7 +911,7 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 				s.book.count(pipeline, "missed "+e.fault)
 				break
 			}
-			what, done, again := s.fault(base, &partitions, c, rng, pipeline, e.fault)
+			what, done, again := s.fault(base, &partitions, c, rng, pool, pipeline, e.fault)
 			if again {
 				continue
 			}
@@ -894,7 +930,7 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 // run is only while the pipeline is ready; else it's to be made again. One
 // that kills the pipeline's attempt is noted as landed, with the death,
 // just before the kill.
-func (s *chaosSuite) fault(base context.Context, partitions *sync.WaitGroup, c chaosConfig, rng *rand.Rand, pipeline, f string) (what string, done, again bool) {
+func (s *chaosSuite) fault(base context.Context, partitions *sync.WaitGroup, c chaosConfig, rng *rand.Rand, pool *chaosPool, pipeline, f string) (what string, done, again bool) {
 	land := func() bool { return s.book.land(pipeline, killsAttempt(f), c.strict) }
 	switch f {
 	case faultDriver, faultTaskManager, faultJobManager:
@@ -903,7 +939,7 @@ func (s *chaosSuite) fault(base context.Context, partitions *sync.WaitGroup, c c
 		}
 		return f, s.clusterFault(base, partitions, f, rng, pipeline), false
 	}
-	sl, engine := s.locate(base, s.poolFor(c), pipeline)
+	sl, engine := s.locate(base, pool, pipeline)
 	if sl == nil {
 		return f, false, false
 	}
@@ -929,7 +965,7 @@ func (s *chaosSuite) fault(base context.Context, partitions *sync.WaitGroup, c c
 		pid := pids[rng.IntN(len(pids))]
 		act = func() bool { return sl.stopWorker(pid) }
 	case faultSource, faultDestination:
-		pids := sl.children(pipeline, strings.TrimPrefix(f, "kill ")+"-")
+		pids := sl.children(base, pipeline, strings.TrimPrefix(f, "kill ")+"-")
 		if len(pids) == 0 {
 			return what, false, false
 		}

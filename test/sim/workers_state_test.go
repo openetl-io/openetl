@@ -35,13 +35,20 @@ import (
 // the set's IDs and the timers the record's horizon hasn't passed: the
 // least of its splits' watermarks, which is the keyed operator's at the
 // barrier. The lane names those sections on, for its own key groups, so a
-// rescale splits and joins ranges of sections and copies nothing.
+// rescale splits and joins ranges of sections and copies nothing. A
+// restored keyed operator goes on from the horizon: what's at or before it
+// is gone, so a timer set there would never fire.
 //
-// Each seed switches on, or not, what the later steps add:
+// What the engine builds, on unless a seed's flag or variant turns it off:
 //   - drop: a set's or timers' section the horizon has passed whole is no
 //     longer named, nor are the pending set's entries it has passed;
 //   - vdrop: nor is a values section each entry of which a newer named one
-//     overrides, or deletes what no older named one holds;
+//     overrides, or deletes what no older named one holds. A section whose
+//     content the lane hasn't read counts as holding everything; a lazy
+//     lane reads each such section it names at its first barrier that
+//     writes a run. A run all of whose sections are dead isn't written.
+//
+// Each seed switches on, or not, what the later steps add:
 //   - merge: a lane that names more than wMergeBound values sections merges
 //     the newest of them, or all, into one; the merge counts only when the
 //     lane's next record names its output in their place, and drops
@@ -89,6 +96,7 @@ func randomState(c *wCfg, rng *rand.Rand) {
 	for _, f := range wFeatures {
 		on[f] = rng.IntN(2) == 0
 	}
+	on["drop"], on["vdrop"] = true, true
 	if rng.IntN(3) != 0 {
 		on["dedupe"] = true
 	}
@@ -675,7 +683,11 @@ func (l *wLane) restoreState(d decision) bool {
 		if sections, pend, err = l.restoreNames(rec, read); err != nil {
 			return err
 		}
-		st, err = viewState(sections, pend, rec.horizon(), l.wants(), kinds, read)
+		h := rec.horizon()
+		if m.cfg.broken == "restore-keeps-passed" {
+			h = wNoMark
+		}
+		st, err = viewState(sections, pend, h, l.wants(), kinds, read)
 		return err
 	})
 	switch {
@@ -824,8 +836,13 @@ func (l *wLane) fold(r wRow) {
 		if l.st.timers[g] == nil {
 			l.st.timers[g] = map[wKey]int64{}
 		}
-		l.st.timers[g][k] = k.W + size
-		l.change(wStEntry{Kind: kTimers, G: g, Key: k.Key, W: k.W, At: k.W + size})
+		// A timer at or before the horizon is gone at once: it never fires.
+		if k.W+size > l.restoreH {
+			l.st.timers[g][k] = k.W + size
+			l.change(wStEntry{Kind: kTimers, G: g, Key: k.Key, W: k.W, At: k.W + size})
+		} else {
+			m.stats["timers gone at once"]++
+		}
 	}
 	a.Sum, a.Count = a.Sum+r.value(), a.Count+1
 	a.Rows = append(a.Rows, wContrib{ID: uid, Gen: r.Gen})
@@ -908,11 +925,40 @@ func (l *wLane) nextNames(e uint64) (run wRun, url string, sections []wSection, 
 		known := maps.Clone(l.known)
 		if url != "" {
 			known[url] = run
+			l.learn(sections, known)
 		}
 		sections = l.liveValues(sections, pend, known)
 	}
+	if url != "" && !slices.ContainsFunc(sections, func(s wSection) bool { return s.URL == url }) {
+		m.stats["runs left unwritten, all dead"]++
+		run, url = wRun{}, ""
+	}
 	slices.SortFunc(sections, cmpSection)
 	return run, url, sections, pend
+}
+
+// learn reads each values section of sections the lane hasn't read, as a
+// lane does at its first barrier that writes a run, into known and the
+// lane's own.
+func (l *wLane) learn(sections []wSection, known map[string]wRun) {
+	w, m := l.w, l.w.m
+	for _, s := range sections {
+		if _, ok := known[s.URL]; ok || s.Kind != kValues {
+			continue
+		}
+		r, err := m.readRun(s.URL)
+		if errors.Is(err, checkpoint.ErrNotFound) {
+			if h, _, _ := m.readHead(); h.Generation == w.gen {
+				m.problem("restore", "%s reads %s, which it names, and it's gone", l.name(), s.URL)
+			}
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		known[s.URL], l.known[s.URL] = r, r
+		m.stats["values sections read to tell if dead"]++
+	}
 }
 
 // liveValues leaves out each values section that's dead: each entry of it,

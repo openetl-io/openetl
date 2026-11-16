@@ -2,17 +2,24 @@
 //! sorted by key, for one range of key groups, and makes each epoch's
 //! changes a version that a snapshot names.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
 use bytes::Bytes;
 
-use crate::{KeyGroupRange, Result};
+use crate::{KeyGroup, KeyGroupRange, OperatorId, Result};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// A key of the layout and its new value, or `None` for a delete.
 pub type Change = (Bytes, Option<Bytes>);
+
+/// Each operator's horizon in each key group that has one, as
+/// [`crate::StateBackend::expire`] moved it: its rows and timers at or
+/// before it, and its set's entries that expire at or before it, are gone.
+/// A version keeps them beside its state.
+pub type Horizons = BTreeMap<(OperatorId, KeyGroup), i64>;
 
 /// One version of a store's state, for a range of key groups: what the
 /// checkpoint record keeps, and a restore opens. `data` means something
@@ -45,7 +52,8 @@ pub trait Store: Send + Sync {
     fn get<'a>(&'a self, keys: &'a [Bytes]) -> BoxFuture<'a, Result<Vec<Option<Bytes>>>>;
 
     /// Up to `limit` entries with `start <= key < end`, in key order. Fewer
-    /// than `limit` means there are no more.
+    /// than `limit` means there are no more. Entries a horizon has passed
+    /// may be among them.
     fn scan<'a>(
         &'a self,
         start: &'a [u8],
@@ -53,11 +61,20 @@ pub trait Store: Send + Sync {
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<(Bytes, Bytes)>>>;
 
+    /// The horizons the version it opened keeps, in its key groups.
+    fn horizons(&self) -> Horizons;
+
     /// Applies epoch `epoch`'s changes, sorted by key with each key once,
-    /// makes the result a version, and returns the snapshots that name it.
-    /// Nothing reads the version until a restore that a record names it
-    /// for. An error leaves the store unusable.
-    fn commit(&mut self, epoch: u64, changes: Vec<Change>) -> BoxFuture<'_, Result<Vec<Snapshot>>>;
+    /// makes the result a version with `horizons`, and returns the
+    /// snapshots that name it. What the horizons have passed the version
+    /// may leave out. Nothing reads the version until a restore that a
+    /// record names it for. An error leaves the store unusable.
+    fn commit<'a>(
+        &'a mut self,
+        epoch: u64,
+        changes: Vec<Change>,
+        horizons: &'a Horizons,
+    ) -> BoxFuture<'a, Result<Vec<Snapshot>>>;
 
     /// The versions this store committed before `epoch` can go: no record
     /// that's kept names them.

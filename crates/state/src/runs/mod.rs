@@ -17,24 +17,36 @@
 //! the blocks a batch of reads needs from a run are read in as few
 //! requests as their gaps allow.
 //!
-//! This step neither merges nor drops sections: a lane's snapshot names
-//! every run it or the lanes before it wrote. Runs that no kept record
-//! names, from a barrier never recorded or an older attempt, are orphans
+//! A snapshot leaves out the sections that are dead, and nothing is
+//! merged. A section of rows, timers or a set is dead once each of its
+//! operators' horizons in each of its key groups has passed its latest
+//! entry: a horizon hides what's at or before it, so a section that holds
+//! some of that and later entries too stays, and reads pass over what it
+//! hid. A values section is dead once each of its entries is overridden,
+//! by the same key in a newer section the lane names, or is a delete that
+//! no older section the lane names may hold the key of. A lane knows what
+//! a values section holds once it writes it, or reads it whole: those it
+//! restored, at its first barrier that writes a run. Until then such a
+//! section may hold anything. A run all of whose sections are dead is
+//! never written. Runs that no kept record names, from a barrier never
+//! recorded, an older attempt, or sections no longer named, are orphans
 //! for retention.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::{Add, Range, Sub};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use bytes::Bytes;
+use futures_util::stream::FuturesUnordered;
 use futures_util::{StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions};
+use twox_hash::XxHash3_128;
 
 use crate::layout::{self, SectionKind};
-use crate::store::{BoxFuture, Change, Snapshot, Store, Stores};
-use crate::{Error, KeyGroupRange, LAYOUT, Result};
+use crate::store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
+use crate::{Error, KeyGroupRange, LAYOUT, NEVER, OperatorId, Result};
 
 mod cache;
 mod codec;
@@ -45,7 +57,10 @@ mod handle;
 use cache::{BlockCache, BlockId};
 pub use format::FORMAT;
 use format::{BlockMeta, OpenSection};
-pub use handle::{RunName, RunRef, SectionRef, encode, named_runs, runs};
+pub use handle::{
+    Horizon, Named, RunName, RunRef, SectionRef, VERSION, encode, encode_named, named, named_runs,
+    runs,
+};
 
 /// How runs are written and read. Every lane of a [`RunStores`] shares it.
 #[derive(Clone, Debug)]
@@ -66,6 +81,9 @@ pub struct RunConfig {
     pub max_read_bytes: u64,
     /// Requests in flight at once, in one call.
     pub concurrency: usize,
+    /// Snapshots leave dead sections out. Off, a lane names every section
+    /// it or the lanes before it wrote.
+    pub drop: bool,
 }
 
 impl Default for RunConfig {
@@ -78,6 +96,7 @@ impl Default for RunConfig {
             gap_bytes: 64 << 10,
             max_read_bytes: 8 << 20,
             concurrency: 32,
+            drop: true,
         }
     }
 }
@@ -103,7 +122,9 @@ pub struct Counts {
     pub barrier: Requests,
     /// Reads of blocks, for lookups and scans.
     pub lookup: Requests,
-    /// Reads of runs' indexes and filters, opening what a record named.
+    /// Reads of runs' indexes and filters, opening what a record named,
+    /// and of the values sections a lane restored, each read whole once to
+    /// tell when it's dead.
     pub restore: Requests,
     /// Keys' and values' bytes that barriers wrote: the changes, before the
     /// format's overhead and compression.
@@ -298,6 +319,8 @@ struct Shared {
     cache: Mutex<BlockCache>,
     /// The next run a lane opens or writes: its blocks' key in the cache.
     next_id: AtomicU64,
+    /// The most bytes a lane held at once reading values sections whole.
+    learn_peak: AtomicU64,
 }
 
 impl Shared {
@@ -327,6 +350,7 @@ impl RunStores {
                 counters: Counters::default(),
                 cache,
                 next_id: AtomicU64::new(0),
+                learn_peak: AtomicU64::new(0),
             }),
         }
     }
@@ -338,6 +362,13 @@ impl RunStores {
     /// The block cache's bytes.
     pub fn cache_bytes(&self) -> usize {
         lock(&self.shared.cache).bytes()
+    }
+
+    /// The most bytes a lane has held at once reading the values sections
+    /// it restored whole, read and decoded: within the block cache's
+    /// bound, or one block where that's larger.
+    pub fn learned_peak(&self) -> u64 {
+        self.shared.learn_peak.load(Ordering::Relaxed)
     }
 
     fn open_store(
@@ -364,8 +395,13 @@ impl RunStores {
             return Err(Error::Snapshot(format!("no snapshot holds key group {g}")));
         }
         let mut runs: BTreeMap<String, RunBuilder> = BTreeMap::new();
+        let mut horizons = Horizons::new();
         for s in snapshots.iter().filter(|s| s.range.overlaps(&range)) {
-            for r in handle::runs(s)? {
+            let named = handle::named(s)?;
+            if let Some(mine) = intersect(s.range, range) {
+                horizons.extend(named.horizons_in(mine));
+            }
+            for r in named.runs {
                 if r.format != FORMAT {
                     return Err(Error::Snapshot(format!(
                         "run {} is of format {}, where this engine reads {FORMAT}",
@@ -425,6 +461,7 @@ impl RunStores {
             sections: Default::default(),
             runs: Vec::new(),
             unopened: AtomicUsize::new(0),
+            horizons,
         };
         for (_, b) in runs {
             if b.sections.is_empty() {
@@ -446,6 +483,7 @@ impl RunStores {
                 store.sections[s.kind.index()].push(Sec {
                     run: run.clone(),
                     handle: s,
+                    content: None,
                 });
             }
             store.runs.push(run);
@@ -534,12 +572,119 @@ struct Sec {
     run: Arc<Run>,
     /// What the lane's snapshot names: its groups are the lane's.
     handle: SectionRef,
+    /// For a values section, what it holds in its groups, once the lane
+    /// knows.
+    content: Option<Content>,
 }
 
 impl Sec {
     fn counts_for(&self, group: u16) -> bool {
         self.handle.groups.contains(group.into())
     }
+}
+
+/// An entry of a [`Content`] that's a delete.
+const DELETE: u8 = 1;
+/// An entry of a [`Content`] that's dead: overridden by a newer section, or
+/// a delete of what no older one may hold.
+const DEAD: u8 = 2;
+
+/// What a lane knows a values section holds, in the key groups it reads it
+/// for: each key's hash, 128 bits so that no two keys share one.
+struct Content {
+    /// Sorted.
+    keys: Vec<u128>,
+    /// Each entry's [`DELETE`] and [`DEAD`].
+    flags: Vec<u8>,
+    /// Entries not dead.
+    alive: usize,
+    /// Known since the lane last looked for dead sections.
+    fresh: bool,
+}
+
+fn key_hash(k: &[u8]) -> u128 {
+    XxHash3_128::oneshot(k)
+}
+
+impl Content {
+    /// Of entries' key hashes, each with whether it's a delete.
+    fn new(mut entries: Vec<(u128, bool)>) -> Content {
+        entries.sort_unstable_by_key(|e| e.0);
+        Content {
+            alive: entries.len(),
+            keys: entries.iter().map(|e| e.0).collect(),
+            flags: entries.iter().map(|e| u8::from(e.1) * DELETE).collect(),
+            fresh: true,
+        }
+    }
+
+    /// Where `h`'s entries are.
+    fn at(&self, h: u128) -> Range<usize> {
+        let lo = self.keys.partition_point(|k| *k < h);
+        let hi = self.keys.partition_point(|k| *k <= h);
+        lo..hi
+    }
+
+    fn holds(&self, h: u128) -> bool {
+        !self.at(h).is_empty()
+    }
+
+    fn kill(&mut self, i: usize) {
+        if self.flags[i] & DEAD == 0 {
+            self.flags[i] |= DEAD;
+            self.alive -= 1;
+        }
+    }
+
+    /// Kills its entries whose keys `newer`, a newer section, holds.
+    fn overridden_by(&mut self, newer: &Content) {
+        if self.keys.len() < newer.keys.len() {
+            for i in 0..self.keys.len() {
+                if newer.holds(self.keys[i]) {
+                    self.kill(i);
+                }
+            }
+        } else {
+            for &h in &newer.keys {
+                for i in self.at(h) {
+                    self.kill(i);
+                }
+            }
+        }
+    }
+
+    /// Its live deletes, of `keys` or of all.
+    fn live_deletes(&self, keys: Option<&BTreeSet<u128>>) -> Vec<usize> {
+        let live = |i: &usize| self.flags[*i] & (DELETE | DEAD) == DELETE;
+        match keys {
+            None => (0..self.keys.len()).filter(live).collect(),
+            Some(keys) => keys.iter().flat_map(|h| self.at(*h)).filter(live).collect(),
+        }
+    }
+
+    fn memory_bytes(&self) -> usize {
+        self.keys.len() * (std::mem::size_of::<u128>() + 1) + std::mem::size_of::<Self>()
+    }
+}
+
+/// Whether a section of rows, timers or a set is dead: each of its
+/// operators' horizons, in each of its groups, has passed its latest
+/// entry. A set's entry that never expires never dies.
+fn passed(s: &SectionRef, horizons: &Horizons) -> bool {
+    let (Some(ops), Some((_, latest))) = (&s.operators, s.times) else {
+        return false;
+    };
+    if s.kind == SectionKind::Values || s.kind == SectionKind::Set && latest == NEVER {
+        return false;
+    }
+    !ops.is_empty()
+        && ops.iter().all(|&op| {
+            (s.groups.first..=s.groups.last).all(|g| {
+                horizons
+                    .get(&(OperatorId(op), g))
+                    .is_some_and(|&h| h > i64::MIN && latest <= h)
+            })
+        })
 }
 
 /// A lane's runs.
@@ -552,6 +697,9 @@ struct RunStore {
     runs: Vec<Arc<Run>>,
     /// Runs not opened yet.
     unopened: AtomicUsize,
+    /// Each operator's horizon in the lane's groups, as its last snapshot
+    /// keeps them.
+    horizons: Horizons,
 }
 
 /// A key a lookup asks for, and how far down its sections it got.
@@ -678,26 +826,15 @@ impl RunStore {
         }
         let config = &self.shared.config;
         let mut reads: Vec<(&Arc<Run>, Range<u64>, Vec<&BlockMeta>)> = Vec::new();
-        for (_, (run, mut blocks)) in misses {
-            blocks.sort_by_key(|b| b.offset);
-            blocks.dedup_by_key(|b| b.offset);
-            for b in blocks {
-                match reads.last_mut() {
-                    Some((r, span, bs))
-                        if r.id == run.id
-                            && b.offset <= span.end + config.gap_bytes
-                            && b.end() - span.start <= config.max_read_bytes =>
-                    {
-                        span.end = span.end.max(b.end());
-                        bs.push(b);
-                    }
-                    _ => reads.push((run, b.offset..b.end(), vec![b])),
-                }
+        for (_, (run, blocks)) in misses {
+            for (span, bs) in self.spans(blocks) {
+                reads.push((run, span, bs));
             }
         }
+        let lookup = &self.counters().lookup;
         let reads: Vec<_> = reads
             .into_iter()
-            .map(|(run, span, bs)| self.read_blocks(run, span, bs))
+            .map(|(run, span, bs)| self.read_blocks(run, span, bs, lookup))
             .collect();
         let read = futures_util::stream::iter(reads)
             .buffer_unordered(config.concurrency.max(1))
@@ -711,19 +848,43 @@ impl RunStore {
         Ok(out)
     }
 
-    /// The blocks `bs` of `run`, all within `span`, in one request.
+    /// Blocks of one run, as reads: those near each other in one, up to
+    /// the most a read takes.
+    fn spans<'b>(&self, mut blocks: Vec<&'b BlockMeta>) -> Vec<(Range<u64>, Vec<&'b BlockMeta>)> {
+        let config = &self.shared.config;
+        blocks.sort_by_key(|b| b.offset);
+        blocks.dedup_by_key(|b| b.offset);
+        let mut out: Vec<(Range<u64>, Vec<&BlockMeta>)> = Vec::new();
+        for b in blocks {
+            match out.last_mut() {
+                Some((span, bs))
+                    if b.offset <= span.end + config.gap_bytes
+                        && b.end() - span.start <= config.max_read_bytes =>
+                {
+                    span.end = span.end.max(b.end());
+                    bs.push(b);
+                }
+                _ => out.push((b.offset..b.end(), vec![b])),
+            }
+        }
+        out
+    }
+
+    /// The blocks `bs` of `run`, all within `span`, in one request, which
+    /// counts as one of `kind`.
     async fn read_blocks(
         &self,
         run: &Run,
         span: Range<u64>,
         bs: Vec<&BlockMeta>,
+        kind: &(AtomicU64, AtomicU64),
     ) -> Result<Vec<(BlockId, Bytes)>> {
         let data = self
             .shared
             .objects
             .get_range(&run.name, span.clone())
             .await?;
-        request(&self.counters().lookup, data.len());
+        request(kind, data.len());
         let mut got = Vec::with_capacity(bs.len());
         for b in bs {
             let at = usize::try_from(b.offset - span.start).unwrap_or(usize::MAX);
@@ -981,7 +1142,12 @@ impl RunStore {
             })
     }
 
-    async fn write(&mut self, epoch: u64, mut changes: Vec<Change>) -> Result<Vec<Snapshot>> {
+    async fn write(
+        &mut self,
+        epoch: u64,
+        mut changes: Vec<Change>,
+        horizons: &Horizons,
+    ) -> Result<Vec<Snapshot>> {
         for (k, _) in &changes {
             if !layout::group_of(k).is_some_and(|g| self.range.contains(g.into())) {
                 return Err(Error::Invalid(format!(
@@ -1002,14 +1168,58 @@ impl RunStore {
             )));
         }
         changes.retain(|(k, v)| v.is_some() || self.may_hold(k));
-        if changes.is_empty() {
-            return Ok(vec![self.snapshot()]);
-        }
-        let changed: usize = changes
+        self.horizons = horizons
             .iter()
-            .map(|(k, v)| k.len() + v.as_ref().map_or(0, |v| v.len()))
-            .sum();
-        let built = format::build(&changes, &self.shared.config)?;
+            .filter(|((_, g), h)| self.range.contains(*g) && **h > i64::MIN)
+            .map(|(k, h)| (*k, *h))
+            .collect();
+        let drop = self.shared.config.drop;
+        let mut written = None;
+        if !changes.is_empty() {
+            let content = drop.then(|| {
+                let values = changes
+                    .iter()
+                    .filter(|(k, _)| layout::section_of(k) == Some(SectionKind::Values));
+                Content::new(values.map(|(k, v)| (key_hash(k), v.is_none())).collect())
+            });
+            written = Some(self.add_run(epoch, &changes, content)?);
+        }
+        if drop {
+            if written.is_some() {
+                self.learn().await?;
+            }
+            self.drop_dead();
+        }
+        if let Some((run, bytes, blocks)) = written
+            && self.runs.iter().any(|r| r.id == run.id)
+        {
+            let size = bytes.len();
+            self.shared.objects.put_new(&run.name, bytes).await?;
+            request(&self.counters().barrier, size);
+            let changed: usize = changes
+                .iter()
+                .map(|(k, v)| k.len() + v.as_ref().map_or(0, |v| v.len()))
+                .sum();
+            add(&self.counters().changed_bytes, changed as u64);
+            let mut cache = lock(&self.shared.cache);
+            for (offset, block) in blocks {
+                cache.put((run.id, offset), block);
+            }
+        }
+        Ok(vec![self.snapshot()])
+    }
+
+    /// Builds the run of epoch `epoch`'s changes, and reads its sections as
+    /// the newest, `content` its values'. Gives the run with its bytes and
+    /// blocks, to write.
+    #[allow(clippy::type_complexity)]
+    fn add_run(
+        &mut self,
+        epoch: u64,
+        changes: &[Change],
+        mut content: Option<Content>,
+    ) -> Result<(Arc<Run>, Bytes, Vec<(u64, Bytes)>)> {
+        let built = format::build(changes, &self.shared.config)?;
         let name = RunName {
             generation: self.generation,
             epoch,
@@ -1017,32 +1227,26 @@ impl RunStore {
         }
         .to_string();
         let size = built.bytes.len();
-        self.shared.objects.put_new(&name, built.bytes).await?;
-        request(&self.counters().barrier, size);
-        add(&self.counters().changed_bytes, changed as u64);
         let id = self.shared.id();
         let mut named = Vec::new();
         let mut opened: [Option<OpenSection>; 4] = Default::default();
         let mut bytes = 0;
-        {
-            let mut cache = lock(&self.shared.cache);
-            for s in built.sections {
-                for (offset, block) in s.blocks {
-                    cache.put((id, offset), block);
-                }
-                named.push(SectionRef {
-                    kind: s.info.kind,
-                    epoch,
-                    groups: s.info.groups,
-                    entries: s.info.entries,
-                    raw_bytes: s.info.raw_bytes,
-                    stored_bytes: s.info.stored_bytes,
-                    times: s.info.times,
-                    meta: s.info.meta,
-                });
-                bytes += s.open.memory_bytes();
-                opened[s.info.kind.index()] = Some(s.open);
-            }
+        let mut blocks = Vec::new();
+        for s in built.sections {
+            blocks.extend(s.blocks);
+            named.push(SectionRef {
+                kind: s.info.kind,
+                epoch,
+                groups: s.info.groups,
+                entries: s.info.entries,
+                raw_bytes: s.info.raw_bytes,
+                stored_bytes: s.info.stored_bytes,
+                times: s.info.times,
+                meta: s.info.meta,
+                operators: Some(s.operators),
+            });
+            bytes += s.open.memory_bytes();
+            opened[s.info.kind.index()] = Some(s.open);
         }
         let open = OnceLock::new();
         let _ = open.set(Opened {
@@ -1062,19 +1266,236 @@ impl RunStore {
             open,
         });
         for s in named {
+            let content = match s.kind {
+                SectionKind::Values => content.take(),
+                _ => None,
+            };
             self.sections[s.kind.index()].insert(
                 0,
                 Sec {
                     run: run.clone(),
                     handle: s,
+                    content,
                 },
             );
         }
-        self.runs.push(run);
-        Ok(vec![self.snapshot()])
+        self.runs.push(run.clone());
+        Ok((run, built.bytes, blocks))
     }
 
-    /// What the lane's next record names: every section it reads.
+    /// Reads whole each values section the lane doesn't know yet, to learn
+    /// what it holds. The reads count as a restore's.
+    async fn learn(&mut self) -> Result<()> {
+        let v = SectionKind::Values.index();
+        let unknown: Vec<usize> = (0..self.sections[v].len())
+            .filter(|&i| self.sections[v][i].content.is_none())
+            .collect();
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let need = self.unopened(unknown.iter().map(|&i| &self.sections[v][i]));
+        self.open_runs(need).await?;
+        // What it reads and decodes at once stays within the block cache's
+        // bound, the share of the job's memory the store's blocks have, or
+        // one block where that's larger. Each read's blocks go once their
+        // keys are taken.
+        let config = &self.shared.config;
+        let budget = u64::try_from(config.cache_bytes).unwrap_or(u64::MAX).max(1);
+        // Each read: a section's blocks near each other, with what reading
+        // and decoding them holds, its weight, within the budget.
+        let mut queue: VecDeque<(usize, Range<u64>, Vec<BlockMeta>, u64)> = VecDeque::new();
+        for &i in &unknown {
+            let sec = &self.sections[v][i];
+            let groups = sec.handle.groups;
+            let open = sec.run.section(SectionKind::Values)?;
+            let mut mine: Vec<&BlockMeta> = open
+                .blocks
+                .iter()
+                .filter(
+                    |b| match (layout::group_of(&b.first), layout::group_of(&b.last)) {
+                        (Some(a), Some(z)) => {
+                            groups.overlaps(&KeyGroupRange::new(a.into(), z.into()))
+                        }
+                        _ => true,
+                    },
+                )
+                .collect();
+            mine.sort_by_key(|b| b.offset);
+            mine.dedup_by_key(|b| b.offset);
+            let mut read: Option<(Range<u64>, Vec<BlockMeta>, u64)> = None;
+            for b in mine {
+                let raw = u64::from(b.raw);
+                if let Some((span, bs, decoded)) = &mut read {
+                    let end = span.end.max(b.end());
+                    if b.offset <= span.end + config.gap_bytes
+                        && end - span.start <= config.max_read_bytes
+                        && end - span.start + *decoded + raw <= budget
+                    {
+                        span.end = end;
+                        bs.push(b.clone());
+                        *decoded += raw;
+                        continue;
+                    }
+                }
+                if let Some((span, bs, decoded)) = read.take() {
+                    let weight = span.end - span.start + decoded;
+                    queue.push_back((i, span, bs, weight));
+                }
+                read = Some((b.offset..b.end(), vec![b.clone()], raw));
+            }
+            if let Some((span, bs, decoded)) = read {
+                let weight = span.end - span.start + decoded;
+                queue.push_back((i, span, bs, weight));
+            }
+        }
+        let mut entries: HashMap<usize, Vec<(u128, bool)>> =
+            unknown.iter().map(|&i| (i, Vec::new())).collect();
+        let peak = {
+            let this: &RunStore = self;
+            let restore = &this.counters().restore;
+            let mut reading = FuturesUnordered::new();
+            let (mut held, mut peak) = (0u64, 0u64);
+            loop {
+                while let Some(&(i, _, _, weight)) = queue.front() {
+                    let full = held.saturating_add(weight) > budget
+                        || reading.len() >= config.concurrency.max(1);
+                    if full && !reading.is_empty() {
+                        break;
+                    }
+                    let Some((_, span, bs, _)) = queue.pop_front() else {
+                        break;
+                    };
+                    held += weight;
+                    peak = peak.max(held);
+                    let run = this.sections[v][i].run.clone();
+                    reading.push(async move {
+                        let refs: Vec<&BlockMeta> = bs.iter().collect();
+                        let blocks = this.read_blocks(&run, span, refs, restore).await?;
+                        Ok::<_, Error>((i, weight, blocks))
+                    });
+                }
+                let Some(done) = reading.next().await else {
+                    break;
+                };
+                let (i, weight, blocks) = done?;
+                let groups = this.sections[v][i].handle.groups;
+                let mine = entries.entry(i).or_default();
+                for (_, block) in blocks {
+                    let mut at = 0;
+                    while at < block.len() {
+                        let (k, val) = format::entry(&block, &mut at)?;
+                        if layout::group_of(&k).is_some_and(|g| groups.contains(g.into())) {
+                            mine.push((key_hash(&k), val.is_none()));
+                        }
+                    }
+                }
+                held -= weight;
+            }
+            peak
+        };
+        self.shared.learn_peak.fetch_max(peak, Ordering::Relaxed);
+        for (i, e) in entries {
+            self.sections[v][i].content = Some(Content::new(e));
+        }
+        Ok(())
+    }
+
+    /// Stops reading the sections that are dead, and the runs that hold no
+    /// other.
+    fn drop_dead(&mut self) {
+        for kind in [SectionKind::Rows, SectionKind::Set, SectionKind::Timers] {
+            let horizons = &self.horizons;
+            self.sections[kind.index()].retain(|s| !passed(&s.handle, horizons));
+        }
+        self.drop_values();
+        let read: HashSet<u64> = self.sections.iter().flatten().map(|s| s.run.id).collect();
+        self.runs.retain(|r| read.contains(&r.id));
+        let unopened = self.runs.iter().filter(|r| r.open.get().is_none()).count();
+        self.unopened.store(unopened, Ordering::Relaxed);
+    }
+
+    /// Stops reading the values sections that are dead, once what the lane
+    /// knows of them has changed: a section it wrote or learned.
+    fn drop_values(&mut self) {
+        let secs = &mut self.sections[SectionKind::Values.index()];
+        let fresh: Vec<usize> = (0..secs.len())
+            .filter(|&i| secs[i].content.as_ref().is_some_and(|c| c.fresh))
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        for &i in &fresh {
+            let (newer, rest) = secs.split_at_mut(i);
+            let (this, older) = rest.split_at_mut(1);
+            let Some(c) = this[0].content.as_mut() else {
+                continue;
+            };
+            for o in older.iter_mut() {
+                if let Some(oc) = o.content.as_mut() {
+                    oc.overridden_by(c);
+                }
+            }
+            // What newer sections hold overrides this one's; a fresh one's
+            // own pass over older sections does so.
+            for w in newer.iter() {
+                if let Some(wc) = &w.content
+                    && !wc.fresh
+                {
+                    c.overridden_by(wc);
+                }
+            }
+        }
+        // A learned section, older than the newest, may tell deletes in
+        // newer ones that it doesn't hold their keys: look at every delete.
+        let mut keys: Option<BTreeSet<u128>> = match fresh.iter().any(|&i| i > 0) {
+            true => None,
+            false => secs[0].content.as_ref().map(|c| {
+                c.live_deletes(None)
+                    .into_iter()
+                    .map(|i| c.keys[i])
+                    .collect()
+            }),
+        };
+        loop {
+            for i in 0..secs.len() {
+                let (head, older) = secs.split_at_mut(i + 1);
+                let Some(c) = head[i].content.as_mut() else {
+                    continue;
+                };
+                for j in c.live_deletes(keys.as_ref()) {
+                    let h = c.keys[j];
+                    let held = older
+                        .iter()
+                        .any(|o| o.content.as_ref().is_none_or(|oc| oc.holds(h)));
+                    if !held {
+                        c.kill(j);
+                    }
+                }
+            }
+            let dead: Vec<usize> = (0..secs.len())
+                .filter(|&i| secs[i].content.as_ref().is_some_and(|c| c.alive == 0))
+                .collect();
+            if dead.is_empty() {
+                break;
+            }
+            let mut gone = BTreeSet::new();
+            for &i in dead.iter().rev() {
+                let s = secs.remove(i);
+                if let Some(c) = s.content {
+                    gone.extend(c.keys);
+                }
+            }
+            keys = Some(gone);
+        }
+        for s in secs.iter_mut() {
+            if let Some(c) = s.content.as_mut() {
+                c.fresh = false;
+            }
+        }
+    }
+
+    /// What the lane's next record names: every section it reads, and its
+    /// operators' horizons.
     fn snapshot(&self) -> Snapshot {
         let mut by_run: BTreeMap<(std::cmp::Reverse<u64>, &str), RunRef> = BTreeMap::new();
         for secs in &self.sections {
@@ -1092,11 +1513,14 @@ impl RunStore {
                     .push(s.handle.clone());
             }
         }
-        let runs: Vec<RunRef> = by_run.into_values().collect();
+        let named = Named {
+            runs: by_run.into_values().collect(),
+            horizons: handle::ranges_of(&self.horizons),
+        };
         Snapshot {
             range: self.range,
             layout: LAYOUT,
-            data: handle::encode(&runs),
+            data: handle::encode_named(&named),
         }
     }
 }
@@ -1131,21 +1555,36 @@ impl Store for RunStore {
         Box::pin(self.scan_range(start, end, limit))
     }
 
-    fn commit(&mut self, epoch: u64, changes: Vec<Change>) -> BoxFuture<'_, Result<Vec<Snapshot>>> {
-        Box::pin(self.write(epoch, changes))
+    fn horizons(&self) -> Horizons {
+        self.horizons.clone()
     }
 
-    /// Nothing goes: every run this lane reads stays named by its next
-    /// record, until sections are merged and dropped.
+    fn commit<'a>(
+        &'a mut self,
+        epoch: u64,
+        changes: Vec<Change>,
+        horizons: &'a Horizons,
+    ) -> BoxFuture<'a, Result<Vec<Snapshot>>> {
+        Box::pin(self.write(epoch, changes, horizons))
+    }
+
+    /// Nothing goes: what retention deletes, no kept record names.
     fn release(&mut self, _epoch: u64) -> BoxFuture<'_, Result<()>> {
         Box::pin(std::future::ready(Ok(())))
     }
 
     fn memory_bytes(&self) -> usize {
-        self.runs
+        let runs: usize = self
+            .runs
             .iter()
             .filter_map(|r| r.open.get())
             .map(|o| o.bytes)
-            .sum()
+            .sum();
+        let known: usize = self.sections[SectionKind::Values.index()]
+            .iter()
+            .filter_map(|s| s.content.as_ref())
+            .map(Content::memory_bytes)
+            .sum();
+        runs + known
     }
 }
