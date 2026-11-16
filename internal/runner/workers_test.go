@@ -457,7 +457,7 @@ func TestWorkersFanOut(t *testing.T) {
 	// Each epoch's rows, by split, and the splits its committables hold.
 	rows, held := map[string]uint64{}, map[string]bool{}
 	var checkpoints []*checkpoint.Record
-	j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		checkpoints = append(checkpoints, rec)
 		rows["s"] += rec.Streams["s"].Rows
 		for _, c := range rec.Coverage {
@@ -949,7 +949,7 @@ func TestHoldsOnWorkers(t *testing.T) {
 	p.flow = flow
 	shares := 0
 	j := p.workers("a1", 2)
-	j.OnCheckpoint = func(*checkpoint.Record, map[string]uint64) { shares += 2 }
+	j.OnCheckpoint = func(_ *checkpoint.Record, _, _ map[string]uint64) { shares += 2 }
 	if _, err := runner.RunAttempt(ctx, j); err != nil {
 		t.Fatal(err)
 	}

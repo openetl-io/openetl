@@ -445,7 +445,7 @@ func runSeed(kind string, seed uint64) (res seedResult) {
 			w.release(attempt)
 		}
 		j := w.job(attempt)
-		j.OnCheckpoint = func(_ *checkpoint.Record, collapsed map[string]uint64) {
+		j.OnCheckpoint = func(_ *checkpoint.Record, collapsed, _ map[string]uint64) {
 			for _, n := range collapsed {
 				res.stats["collapsed rows"] += int(n)
 			}

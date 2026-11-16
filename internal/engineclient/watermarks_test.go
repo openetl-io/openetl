@@ -129,7 +129,7 @@ func TestWatermarksOnWorkersThroughTheEngine(t *testing.T) {
 				SQL:         &runner.SQLTransform{SQL: timedSQL, Expected: exp},
 				Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 2, Logger: opts.Logger.With("job", owner),
 				Settings: delivery.Settings{Require: delivery.AtLeastOnce, CommitMaxBytes: 4 << 10, CommitInterval: 20 * time.Millisecond, Scope: destination.ScopePipeline},
-				OnCheckpoint: func(rec *checkpoint.Record, _ map[string]uint64) {
+				OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
 					mu.Lock()
 					records = append(records, rec)
 					mu.Unlock()
@@ -144,8 +144,8 @@ func TestWatermarksOnWorkersThroughTheEngine(t *testing.T) {
 	p.on(&j, srv, 2)
 	var once sync.Once
 	onCheckpoint := j.OnCheckpoint
-	j.OnCheckpoint = func(rec *checkpoint.Record, c map[string]uint64) {
-		onCheckpoint(rec, c)
+	j.OnCheckpoint = func(rec *checkpoint.Record, c, held map[string]uint64) {
+		onCheckpoint(rec, c, held)
 		once.Do(func() { p.kill(1) })
 	}
 	if _, err := runner.RunAttempt(ctx, j); err == nil {
@@ -157,7 +157,7 @@ func TestWatermarksOnWorkersThroughTheEngine(t *testing.T) {
 	j = p.mk()
 	p.on(&j, srv, 3)
 	drainOnceRecorded(&j, func(rec *checkpoint.Record) bool {
-		onCheckpoint(rec, nil)
+		onCheckpoint(rec, nil, nil)
 		for _, sp := range rec.Splits("s") {
 			if sp.State == nil || string(sp.State) < "5" {
 				return false

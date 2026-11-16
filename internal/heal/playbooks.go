@@ -55,6 +55,13 @@ func describe(o Observation, t target) (summary, next string) {
 				fmt.Sprintf("The epoch of the checkpoint that can't be read is delivered again; its log has why (%s). Look at what "+
 					"deleted or changed the data plane's storage under _checkpoints. The incident resolves once the pipeline commits again.", logs)
 		}
+		// The engine's error for a held file a release can't read.
+		if strings.Contains(o.Message, "held file ") {
+			return fmt.Sprintf("%s can't read a held file that a release patches in", name),
+				fmt.Sprintf("A held file that the release reads is missing or damaged in the data plane's storage. The error names "+
+					"it, below _held (%s). Restore the file, %s. A rewind doesn't bring it back. The incident resolves once a "+
+					"sync succeeds.", logs, resume)
+		}
 		return fmt.Sprintf("%s's latest checkpoint can't be read", name),
 			fmt.Sprintf("The checkpoint the read resumes from is missing or damaged in the data plane's storage. The error says why "+
 				"the pipeline didn't restart from the one before it. To restart from there, which delivers the latest epoch again "+

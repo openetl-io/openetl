@@ -372,10 +372,14 @@ impl Bound {
     ) -> Result<Applied, JobError> {
         self.plan_for(&typed.batch.schema())?;
         let input = self.input(&typed.batch)?;
-        // A row whose stream held a cell, as it passes through too, has no
-        // value there for the statement to evaluate.
+        // A row whose stream held a cell of a column the statement reads,
+        // as it passes through too, has no value there to evaluate.
         let mut held = BTreeMap::new();
-        for c in &typed.cells {
+        for c in typed
+            .cells
+            .iter()
+            .filter(|c| self.op.reads.column_with_name(&c.column).is_some())
+        {
             held.entry(c.row).or_insert_with(|| {
                 let why = self.reason(&format!(
                     "column {} has a value that doesn't fit its type, which the stream holds: {}",
@@ -1178,6 +1182,32 @@ mod tests {
     }
 
     #[test]
+    fn a_held_cell_the_statement_doesnt_read_leaves_its_row_in() {
+        let mut st = stage(
+            "INSERT INTO c SELECT id, upper(email) AS email FROM a",
+            false,
+        );
+        let mut t = typed(
+            batch(&[(1, Some("x"), Some("ann")), (2, Some("y"), Some("bo"))]),
+            Control::default(),
+        );
+        for (row, column) in [(0, "name"), (1, "email")] {
+            t.cells.push(openetl_normalize::hold::HeldCell {
+                row,
+                column: column.into(),
+                reason: "too long".into(),
+                raw: "?".into(),
+            });
+        }
+        let out = st.apply(&t, &[0, 1], None).unwrap();
+        assert_eq!(out.failed.iter().map(|(r, ..)| *r).collect::<Vec<_>>(), [1]);
+        assert_eq!(out.failed[0].2.column.as_deref(), Some("email"));
+        let b = &out.typed.batch;
+        assert_eq!(ints(b, "id"), [Some(1)]);
+        assert_eq!(strs(b.column(1)), [Some("X".into())]);
+    }
+
+    #[test]
     fn a_delete_with_a_held_cell_passes_as_a_delete_of_its_key() {
         let mut st = stage(
             "INSERT INTO a SELECT id, upper(email) AS email FROM a",
@@ -1189,7 +1219,7 @@ mod tests {
         );
         t.cells.push(openetl_normalize::hold::HeldCell {
             row: 0,
-            column: "name".into(),
+            column: "email".into(),
             reason: "too long".into(),
             raw: "?".into(),
         });

@@ -439,7 +439,7 @@ The plan has a problem, and a sync fails with `CONFIG_INVALID`, for each of thes
 
 An output holds as a stream without a transform does. It needs a primary key and a destination that patches its write mode. If a column's type changes and `schemaPolicy` or the destination does not take the change, the engine holds the column. The output's other columns are still written. A new column follows `schemaPolicy`, as in [the table above](#schema): `allow_all` and `allow_columns` add it, `block` holds it, and `ignore_new` drops it. The engine also holds a new column that the destination refuses, or that a destination with no room for more columns cannot add. `openetl holds` lists the hold under the output's name, with the ways to clear it, and `openetl holds release NAME OUTPUT COLUMN` releases it.
 
-With `unfitValues: hold`, a value that does not fit its type holds its cell. This applies where the stream is typed, and where `schemaPolicy: ignore_new` casts an output's values to its columns' types. A statement cannot evaluate a row whose stream holds a cell. The engine quarantines that row as one of the statement output's records.
+With `unfitValues: hold`, a value that does not fit its type holds its cell. This applies where the stream is typed, and where `schemaPolicy: ignore_new` casts an output's values to its columns' types. A statement cannot evaluate a row whose stream holds a cell of a column that the statement reads. The engine quarantines that row as one of the statement output's records.
 
 ### Schema changes
 

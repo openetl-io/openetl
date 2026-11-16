@@ -535,6 +535,17 @@ func holdPlan(h *runner.HoldPlan) *enginev1.HoldPlan {
 		for _, c := range r.Versioned {
 			p.Replay.Versioned = append(p.Replay.Versioned, attempt.ColumnHold(c))
 		}
+		firsts := func(by map[string]int) map[string]uint32 {
+			var out map[string]uint32
+			for col, first := range by {
+				if out == nil {
+					out = map[string]uint32{}
+				}
+				out[col] = ints.Uint32(first)
+			}
+			return out
+		}
+		p.Replay.First, p.Replay.FirstCells = firsts(r.First), firsts(r.FirstCells)
 	}
 	return p
 }

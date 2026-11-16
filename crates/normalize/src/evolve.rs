@@ -170,11 +170,26 @@ impl Evolver {
         &self.versions
     }
 
-    fn current(&self, source: &str) -> String {
+    /// The column a source column's values go to.
+    pub(crate) fn current(&self, source: &str) -> String {
         match self.versions.get(source) {
             Some(k) => format!("{source}__v{k}"),
             None => source.to_owned(),
         }
+    }
+
+    /// The source column whose values go to `column`: `column` itself,
+    /// unless it's a source column's current version.
+    pub(crate) fn source_of<'a>(&'a self, column: &'a str) -> &'a str {
+        self.versions
+            .iter()
+            .find(|(s, k)| {
+                column
+                    .strip_prefix(s.as_str())
+                    .and_then(|v| v.strip_prefix("__v"))
+                    .is_some_and(|v| v == k.to_string())
+            })
+            .map_or(column, |(s, _)| s.as_str())
     }
 
     /// The current version of each source column, under its source name.

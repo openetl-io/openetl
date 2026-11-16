@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -242,4 +243,151 @@ type holdingDest struct{ destination.Destination }
 
 func (holdingDest) Capabilities() destination.Capabilities {
 	return destination.Capabilities{Holds: destination.Holds{ByID: true, Guarded: true}}
+}
+
+// heldEpochs are the held files of stream s in epochs 1 to 6 of generation
+// 1, one each, and start, which is the replay that j's releases start on s
+// with holds h.
+func heldEpochs(t *testing.T) (files []string, start func(h *checkpoint.Holds, j *Job) *checkpoint.Replay) {
+	t.Helper()
+	store := checkpoint.NewMemStore()
+	for n := uint64(1); n <= 6; n++ {
+		rel := fmt.Sprintf("1/%d/s/part-00000.parquet", n)
+		if _, err := store.Create(t.Context(), "org/pipe/"+checkpoint.HeldDir+"/"+rel, []byte("PAR1")); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, rel)
+	}
+	return files, func(h *checkpoint.Holds, j *Job) *checkpoint.Replay {
+		t.Helper()
+		j.HeldURL, j.Log, j.Destination = "file:///held", checkpoint.NewLog(store, "org", "pipe"), holdingDest{}
+		j.Streams = []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{Cells: true}}}
+		holds, _, err := j.startHolds(t.Context(), &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: h}}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return holds["s"].Replay
+	}
+}
+
+func epoch(n uint64) checkpoint.RecordRef { return checkpoint.RecordRef{Generation: 1, Epoch: n} }
+
+// A release reads the held files from the oldest start of the holds it
+// releases. Epochs is the stream's, and keeps the files of cells patched in
+// by an earlier release while another column holds: reading those again
+// would patch back cells since discarded, or changed.
+func TestAReleaseReadsOnlyTheFilesOfTheHoldsItReleases(t *testing.T) {
+	files, start := heldEpochs(t)
+	// b has held cells since epoch 1. A release patched in a's cells of
+	// epochs 1-2, and a holds cells again from epoch 5 on.
+	h := &checkpoint.Holds{
+		Cells: map[string]checkpoint.CellHold{
+			"a": {Cells: 1, Since: epoch(1)},
+			"b": {Cells: 9, Since: epoch(1)},
+		},
+		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 2}},
+		Replay: &checkpoint.Replay{Columns: []string{"a"}, Files: files[:2], CellReleases: map[string]string{"a": "r1"}},
+	}
+	h = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 2, Done: true}}, epoch(3), time.Now())
+	if _, ok := h.Cells["a"]; ok {
+		t.Fatalf("a still held after its replay: %+v", h)
+	}
+	for n := uint64(4); n <= 6; n++ {
+		r := &ReadyHolds{Files: []destination.StagedFile{{Path: "f"}}}
+		if n >= 5 {
+			r.Cells = map[string]checkpoint.CellHold{"a": {Cells: 1}}
+		}
+		h = mergeHolds(h, r, epoch(n), time.Now())
+	}
+	if h.Cells["a"].Since != epoch(5) {
+		t.Fatalf("a's new hold %+v", h.Cells["a"])
+	}
+	r := start(h, &Job{
+		Releases: []Release{{ID: "r2", Stream: "s", Column: "a", Since: epoch(5)}},
+	})
+	if got, want := r.Files, files[4:]; !slices.Equal(got, want) {
+		t.Errorf("the release of a's hold since epoch 5 reads %v, want %v", got, want)
+	}
+}
+
+// A replay that ends with every cell fitting clears the cell holds of the
+// columns it read, released or not, so it reads from the oldest of them: x
+// holds cells since epoch 2, and the release names only its hold held whole
+// since epoch 5. A column the destination refuses again isn't read for.
+func TestAReleaseReadsFromTheCellHoldsItClears(t *testing.T) {
+	files, start := heldEpochs(t)
+	h := &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{{Column: "x", Reason: "refused", Since: epoch(5)}, {Column: "y", Reason: "refused", Since: epoch(1)}},
+		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 3, Since: epoch(2)}},
+		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
+	}
+	r := start(h, &Job{
+		Releases: []Release{
+			{ID: "r1", Stream: "s", Column: "x", Since: epoch(5)},
+			{ID: "r2", Stream: "s", Column: "y", Since: epoch(1)},
+		},
+		refused: []RefusedColumn{{RefusedColumn: destination.RefusedColumn{Stream: "s", Column: "y", Reason: "still too narrow"}}},
+	})
+	if !slices.Equal(r.Columns, []string{"x"}) {
+		t.Fatalf("the replay releases %v", r.Columns)
+	}
+	if want := files[1:]; !slices.Equal(r.Files, want) {
+		t.Errorf("the release of x's hold since epoch 5 reads %v, want %v, from x's cell hold", r.Files, want)
+	}
+}
+
+// Columns released together are read from one list of files, each from its
+// own holds' start: a held cells in epochs 1-2, which a release patched in
+// or the user discarded, and holds cells again since epoch 5; b holds since
+// epoch 1. The files before epoch 5 aren't read for a.
+func TestColumnsReleasedTogetherAreEachReadFromTheirStart(t *testing.T) {
+	files, start := heldEpochs(t)
+	h := &checkpoint.Holds{
+		Cells: map[string]checkpoint.CellHold{
+			"a": {Cells: 1, Since: epoch(5)},
+			"b": {Cells: 9, Since: epoch(1)},
+		},
+		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
+	}
+	r := start(h, &Job{
+		Releases: []Release{
+			{ID: "r1", Stream: "s", Column: "a", Since: epoch(5)},
+			{ID: "r2", Stream: "s", Column: "b", Since: epoch(1)},
+		},
+	})
+	if !slices.Equal(r.Files, files) {
+		t.Fatalf("the replay reads %v, want %v", r.Files, files)
+	}
+	// Neither is held whole, so no file is read for values held whole.
+	if want := map[string]int{"a": 6, "b": 6}; !reflect.DeepEqual(r.First, want) {
+		t.Errorf("the first files of values held whole are %v, want %v", r.First, want)
+	}
+	if want := map[string]int{"a": 4}; !reflect.DeepEqual(r.FirstCells, want) {
+		t.Errorf("the first files of held cells are %v, want %v", r.FirstCells, want)
+	}
+}
+
+// A column's cells and its values held whole are each read from their own
+// hold's start: x is held whole since epoch 2, and its cells of epochs 1-4
+// were discarded, so the release of the hold held whole reads cells from
+// epoch 5 on, where x's cell hold now starts.
+func TestAColumnsCellsAreReadFromItsCellHoldsStart(t *testing.T) {
+	files, start := heldEpochs(t)
+	h := &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{{Column: "x", Reason: "refused", Since: epoch(2)}},
+		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 3, Since: epoch(5)}},
+		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
+	}
+	r := start(h, &Job{
+		Releases: []Release{{ID: "r1", Stream: "s", Column: "x", Since: epoch(2)}},
+	})
+	if want := files[1:]; !slices.Equal(r.Files, want) {
+		t.Fatalf("the replay reads %v, want %v", r.Files, want)
+	}
+	if len(r.First) != 0 {
+		t.Errorf("the first files of values held whole are %v, want the first", r.First)
+	}
+	if want := map[string]int{"x": 3}; !reflect.DeepEqual(r.FirstCells, want) {
+		t.Errorf("the first files of held cells are %v, want %v", r.FirstCells, want)
+	}
 }

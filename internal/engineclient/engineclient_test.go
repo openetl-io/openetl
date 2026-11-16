@@ -27,6 +27,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+	"google.golang.org/protobuf/encoding/protowire"
 
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
@@ -520,6 +521,27 @@ func waitExited(t *testing.T, p *process) {
 	}
 }
 
+// A release's StartJob names every held file it replays, which can take it
+// past gRPC's default limit of 4 MiB.
+func TestStartJobTakesARequestPast4MiB(t *testing.T) {
+	ctx := testContext(t)
+	p, err := start(ctx, options(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.close)
+	req, _, _, err := startRequest(plan("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 5 MiB in a field the engine doesn't know, and skips.
+	pad := protowire.AppendTag(nil, 1<<20, protowire.BytesType)
+	req.ProtoReflect().SetUnknown(protowire.AppendBytes(pad, make([]byte, 5<<20)))
+	if _, err := p.client.StartJob(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEngineExitsWhenTheRunnerCloses(t *testing.T) {
 	t.Run("edge", func(t *testing.T) {
 		p, in, _ := startJob(t)
@@ -766,7 +788,7 @@ func TestRunAttemptForwardsEncodedBatches(t *testing.T) {
 		Destination: dest,
 		Dataflow:    &Dataflow{Options: opts},
 		Settings:    delivery.Settings{Require: delivery.ExactlyOnce, Scope: destination.ScopePipeline},
-		OnCheckpoint: func(rec *checkpoint.Record, _ map[string]uint64) {
+		OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
 			rows += rec.Streams["users"].Rows
 		},
 	}

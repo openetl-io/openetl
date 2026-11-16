@@ -201,7 +201,7 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	var once sync.Once
 	var named []string
 	j := job("a1", "s1", &spanSource{minute: minute, pause: 12}, state, dest)
-	j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		if r := stateRuns(rec); len(r) > 0 {
 			once.Do(func() {
 				named = r
@@ -226,7 +226,7 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	var done sync.Once
 	j = job("a2", "s1", &spanSource{minute: minute, pause: spanRows, closer: 140}, state, dest)
 	j.Drain = drain
-	j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		mu.Lock()
 		for _, r := range stateRuns(rec) {
 			restored = restored || slices.Contains(named, r) && strings.Contains(r, "/g1/")

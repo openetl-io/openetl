@@ -47,7 +47,7 @@ func TestAnEditedWindowStartsFromNowAndItsOldStateGoes(t *testing.T) {
 	var done sync.Once
 	edited.Owner, edited.Sync, edited.Source = "a2", "s1", &spanSource{minute: minute, pause: spanRows, closer: 140}
 	edited.Drain, edited.KeepRecords = drain, 2
-	edited.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+	edited.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		mu.Lock()
 		for _, sn := range rec.Snapshots {
 			named = named || sn.Operator == oldOp
@@ -92,7 +92,7 @@ func TestRemovingTheTransformDropsItsState(t *testing.T) {
 	var done sync.Once
 	plain.Owner, plain.Sync, plain.Source = "a2", "s1", &spanSource{minute: o.minute, pause: spanRows, closer: 140}
 	plain.Drain, plain.KeepRecords = drain, 2
-	plain.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+	plain.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		mu.Lock()
 		named = named || len(rec.Snapshots) > 0
 		mu.Unlock()
@@ -145,7 +145,7 @@ func leaveAWindowOpen(ctx context.Context, t *testing.T) openWindow {
 	first, stop := context.WithCancel(ctx)
 	var once sync.Once
 	old.Owner, old.Sync, old.Source = "a1", "s1", &spanSource{minute: o.minute, pause: 12}
-	old.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+	old.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		if len(stateRuns(rec)) > 0 {
 			once.Do(stop)
 		}

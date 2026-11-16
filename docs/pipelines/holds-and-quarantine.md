@@ -80,7 +80,7 @@ With `unfitValues: hold`, if a row has no safe place to hold its value, OpenETL 
   - a column that the destination reports it cannot hold, such as a partition column;
   - a column that cannot be null, unless `heldValue` gives a value to write in its place;
   - a column whose `heldValue` does not fit the column's type.
-- **A SQL transform reads the row.** A statement cannot compute from a value that OpenETL holds. So OpenETL quarantines a row whose input holds a cell, as one of the statement output's records. A delete is the exception: it passes with its key. OpenETL also quarantines a row that a statement cannot evaluate, whatever `unfitValues` says. Examples are a cast that fails, a division by zero and a row that comes too late for its window ([SQL reference](../reference/sql.md)).
+- **A SQL transform reads the held value.** A statement cannot compute from a value that OpenETL holds. So OpenETL quarantines a row whose input holds a cell in a column that the statement reads, as one of the statement output's records. A delete is the exception: it passes with its key. OpenETL also quarantines a row that a statement cannot evaluate, whatever `unfitValues` says. Examples are a cast that fails, a division by zero and a row that comes too late for its window ([SQL reference](../reference/sql.md)).
 
 In each of these cases, the row's line in the quarantine file has a `notHeld` field. It says why OpenETL did not hold the value: `record`, `key`, `cursor`, `destination`, `not_null`, `held_value` or `transform`. [Quarantine files](../reference/quarantine-files.md#why-a-value-was-not-held) explains each value.
 

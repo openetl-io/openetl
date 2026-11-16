@@ -37,7 +37,7 @@ func TestPausedStreamsCarryTheirState(t *testing.T) {
 				j.Streams, j.Paused = []runner.Stream{a}, []runner.Stream{b}
 			}
 			records = nil
-			j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) { records = append(records, rec) }
+			j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) { records = append(records, rec) }
 			if _, err := runner.RunAttempt(ctx, j); err != nil {
 				t.Fatal(err)
 			}

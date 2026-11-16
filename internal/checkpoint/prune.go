@@ -230,6 +230,18 @@ func (l *Log) heldFiles(ctx context.Context, prefix string) ([]heldFile, error) 
 	return out, nil
 }
 
+// HeldFileRef is the epoch that wrote a held file, from its path below the
+// held prefix; false if rel isn't a held file's path.
+func HeldFileRef(rel string) (RecordRef, bool) {
+	parts := strings.Split(rel, "/")
+	if len(parts) != 4 {
+		return RecordRef{}, false
+	}
+	g, err1 := strconv.ParseUint(parts[0], 10, 64)
+	n, err2 := strconv.ParseUint(parts[1], 10, 64)
+	return RecordRef{Generation: g, Epoch: n}, err1 == nil && err2 == nil
+}
+
 func (h HeldEpochs) holds(g, n uint64) bool { return h.Generation == g && n >= h.From && n <= h.To }
 
 // HeldFiles lists a stream's held files in epochs, by their paths below the

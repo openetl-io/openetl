@@ -227,11 +227,63 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		}
 		if len(released) > 0 {
 			slices.Sort(released)
-			files, err := j.Log.HeldFiles(ctx, s.Name, h.Epochs)
+			released = slices.Compact(released)
+			// The replay reads the epochs from the oldest start of the holds
+			// it ends: each released column's hold held whole, and its cell
+			// hold, released or not, which the replay clears once every cell
+			// fits. A discarded cell hold is gone by now, and isn't read.
+			var from checkpoint.RecordRef
+			// Where each column's hold held whole starts, and its cell hold;
+			// absent for one the replay doesn't end.
+			whole, cellHolds := map[string]checkpoint.RecordRef{}, map[string]checkpoint.RecordRef{}
+			for i, col := range released {
+				var starts []checkpoint.RecordRef
+				if k := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == col }); k >= 0 {
+					whole[col] = taken[k].Since
+					starts = append(starts, taken[k].Since)
+				}
+				if c, ok := h.Cells[col]; ok {
+					cellHolds[col] = c.Since
+					starts = append(starts, c.Since)
+				}
+				for k, at := range starts {
+					if i == 0 && k == 0 || before(at, from) {
+						from = at
+					}
+				}
+			}
+			files, err := j.Log.HeldFiles(ctx, s.Name, heldFrom(h.Epochs, from))
 			if err != nil {
 				return nil, nil, err
 			}
-			h.Replay = &checkpoint.Replay{Columns: slices.Compact(released), Files: files, Versioned: versioned}
+			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
+			// A column isn't read from the files before its hold of a kind
+			// started, or from any for a kind it holds nothing of: those
+			// may hold values of an earlier hold of it, patched in since, or
+			// discarded.
+			first := func(starts map[string]checkpoint.RecordRef) map[string]int {
+				var out map[string]int
+				for _, col := range released {
+					n := len(files)
+					if at, ok := starts[col]; ok {
+						n = slices.IndexFunc(files, func(rel string) bool {
+							ref, ok := checkpoint.HeldFileRef(rel)
+							return !ok || !before(ref, at)
+						})
+						if n < 0 {
+							n = len(files)
+						}
+					}
+					if n > 0 {
+						if out == nil {
+							out = map[string]int{}
+						}
+						out[col] = n
+					}
+				}
+				return out
+			}
+			h.Replay.First, h.Replay.FirstCells = first(whole), first(cellHolds)
 			if len(cells) > 0 {
 				h.Replay.CellReleases = cells
 			}
@@ -240,6 +292,25 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		plans[s.Name] = &HoldPlan{StreamHolds: *s.Holds, Holding: h.Columns, Limits: limits[s.Name], Replay: h.Replay}
 	}
 	return holds, plans, nil
+}
+
+// heldFrom are the epochs of es from at on.
+func heldFrom(es []checkpoint.HeldEpochs, at checkpoint.RecordRef) []checkpoint.HeldEpochs {
+	var out []checkpoint.HeldEpochs
+	for _, e := range es {
+		switch {
+		case e.Generation < at.Generation, e.Generation == at.Generation && e.To < at.Epoch:
+			continue
+		case e.Generation == at.Generation && e.From < at.Epoch:
+			e.From = at.Epoch
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func before(a, b checkpoint.RecordRef) bool {
+	return a.Generation < b.Generation || a.Generation == b.Generation && a.Epoch < b.Epoch
 }
 
 // mergeHolds is a stream's holds once epoch at is recorded: base's, with
@@ -356,6 +427,7 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
 		r.Versioned, r.CellReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases)
+		r.First, r.FirstCells = maps.Clone(r.First), maps.Clone(r.FirstCells)
 		out.Replay = &r
 	}
 	return out

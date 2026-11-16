@@ -153,7 +153,7 @@ func TestSQLKeepsOutputsApart(t *testing.T) {
 		j := sqlJob(log, "a1", flow, dst, map[string]int{"a": 3, "b": 2})
 		var recs []*checkpoint.Record
 		var reported []string
-		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) { recs = append(recs, rec) }
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) { recs = append(recs, rec) }
 		j.OnSchemas = func(_ destination.Epoch, schemas, outputs map[string][]byte) {
 			for _, name := range slices.Sorted(maps.Keys(schemas)) {
 				reported = append(reported, decoded(t, schemas[name]))
@@ -357,7 +357,7 @@ func TestASQLOutputHolds(t *testing.T) {
 		j.Dataflow, j.Destination, j.HeldURL = flow, dst, "file:///held"
 		j.Outputs[0].PrimaryKey, j.Outputs[0].Holds = []string{"n"}, &runner.StreamHolds{}
 		var recs []*checkpoint.Record
-		j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) { recs = append(recs, rec) }
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) { recs = append(recs, rec) }
 		if _, err := runner.RunAttempt(ctx, j); err != nil {
 			t.Fatal(err)
 		}
@@ -536,7 +536,7 @@ func TestAResetDropsTheStateOfWhatReadsItsStream(t *testing.T) {
 			j.Dataflow = flow
 			j.Resets = []runner.Reset{{ID: "0001", Streams: []string{"a"}}}
 			if second == nil {
-				j.OnCheckpoint = func(rec *checkpoint.Record, _ map[string]uint64) {
+				j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 					resetStreams = append(resetStreams, rec.ResetStreams)
 				}
 			}
