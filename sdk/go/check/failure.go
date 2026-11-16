@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/openetl-io/openetl/sdk/go/internal/redact"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -389,31 +390,11 @@ func afterIn(err error) time.Duration {
 func detailOf(err error, text string) string {
 	walk(err, func(e error) bool {
 		if u, ok := any(e).(*url.Error); ok && u != nil && u.URL != "" {
-			r := redactURL(u.URL)
+			r := redact.URL(u.URL)
 			text = strings.ReplaceAll(text, strconv.Quote(u.URL), strconv.Quote(r))
 			text = strings.ReplaceAll(text, u.URL, r)
 		}
 		return false
 	})
 	return clean(strings.TrimSpace(text))
-}
-
-// redactURL is raw without its userinfo, query and fragment.
-func redactURL(raw string) string {
-	if u, err := url.Parse(raw); err == nil {
-		u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
-		return u.String()
-	}
-	// It doesn't parse, so cut by hand: the userinfo ends at the last "@".
-	scheme, rest := "", raw
-	if i := strings.Index(raw, "://"); i >= 0 {
-		scheme, rest = raw[:i+3], raw[i+3:]
-	}
-	if i := strings.LastIndexByte(rest, '@'); i >= 0 {
-		rest = rest[i+1:]
-	}
-	if i := strings.IndexAny(rest, "?#"); i >= 0 {
-		rest = rest[:i]
-	}
-	return scheme + rest
 }

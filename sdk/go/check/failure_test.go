@@ -108,7 +108,9 @@ func TestClassify(t *testing.T) {
 func TestURLSecrets(t *testing.T) {
 	sent := get(t, "http://etl:hunter2@"+closedPort(t)+"/v1/me?api_key=sk_live_SECRET#frag")
 	parsed := parseURL("postgres://etl:p@ss@db:port/x?password=hunter2")
-	for name, err := range map[string]error{"sent": sent, "unparsed": parsed, "wrapped": fmt.Errorf("reach the API: %w", sent)} {
+	// url.Parse reads "etl:123" as the host.
+	marked := &url.Error{Op: "Get", URL: "https://etl:123#hunter2@db.example.com/v1", Err: errors.New("refused")}
+	for name, err := range map[string]error{"sent": sent, "unparsed": parsed, "wrapped": fmt.Errorf("reach the API: %w", sent), "a # in the password": marked} {
 		f := Classify(err)
 		for _, secret := range []string{"hunter2", "sk_live_SECRET", "p@ss", "etl:", "frag"} {
 			if strings.Contains(f.Detail, secret) || strings.Contains(f.Error(), secret) {
@@ -118,9 +120,6 @@ func TestURLSecrets(t *testing.T) {
 		if !strings.Contains(f.Detail, "/") {
 			t.Errorf("%s: the detail %q lost the URL", name, f.Detail)
 		}
-	}
-	if got := redactURL("https://u:p@api.example.com:8443/v1/x?k=v#f"); got != "https://api.example.com:8443/v1/x" {
-		t.Errorf("redactURL: %q", got)
 	}
 }
 
