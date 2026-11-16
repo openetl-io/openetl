@@ -1066,10 +1066,45 @@ mod windows {
     /// all report the same watermark at each barrier.
     #[tokio::test]
     async fn a_window_takes_its_keys_rows_from_every_engine() {
+        let per_lane = window_across_engines(false).await;
+        for key in ["x", "y", "z", "w"] {
+            let lanes = per_lane
+                .iter()
+                .filter(|r| r.iter().any(|w| w.email == key))
+                .count();
+            assert_eq!(lanes, 1, "{key} on {lanes} writer lanes");
+        }
+    }
+
+    /// Where the writer needs another key than the window's, its output is
+    /// exchanged again, from the keyed lanes to the writer lanes of the
+    /// output's key groups, in whichever engine.
+    #[tokio::test]
+    async fn a_windows_output_can_be_exchanged_again_across_engines() {
+        let per_lane = window_across_engines(true).await;
+        let mut at: BTreeMap<(i64, String), usize> = BTreeMap::new();
+        for rows in &per_lane {
+            for r in rows {
+                *at.entry((r.start, r.email.clone())).or_default() += 1;
+            }
+        }
+        assert!(at.values().all(|n| *n == 1), "{at:?}");
+    }
+
+    /// Runs `a_window_takes_its_keys_rows_from_every_engine`'s job, with an
+    /// exchange of the output by its key before the writer where `again`,
+    /// and returns each writer lane's rows.
+    async fn window_across_engines(again: bool) -> Vec<Vec<WindowRow>> {
         let state = tempfile::tempdir().unwrap();
         let parts = [(2, 1), (1, 1)];
         let mut es = start_mesh(
-            |me, addrs| window_mesh(state.path(), &parts, me, addrs, 1, 1),
+            |me, addrs| {
+                let mut req = window_mesh(state.path(), &parts, me, addrs, 1, 1);
+                if again {
+                    req.outputs[0].exchange = exchange_by(&["window_start", "email"]);
+                }
+                req
+            },
             2,
         )
         .await;
@@ -1106,13 +1141,6 @@ mod windows {
                 row(60, "z", 3, 2),
             ]
         );
-        for key in ["x", "y", "z", "w"] {
-            let lanes = per_lane
-                .iter()
-                .filter(|r| r.iter().any(|w| w.email == key))
-                .count();
-            assert_eq!(lanes, 1, "{key} on {lanes} writer lanes");
-        }
         let mut snapshots = Vec::new();
         for (engine, r) in ready.iter().enumerate() {
             let marks: Vec<i64> = r.iter().map(|r| r.window_watermarks["a"]).collect();
@@ -1121,6 +1149,7 @@ mod windows {
         }
         assert_eq!(snapshots.len(), 3, "a snapshot a keyed lane");
         assert_every_key_group_once(&snapshots);
+        per_lane
     }
 
     /// The first part of the job of `a_window_restores_onto_another_mesh`

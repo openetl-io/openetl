@@ -902,6 +902,9 @@ where
             return Err(e);
         }
     };
+    // A keyed lane sends its output on to the writer lane its lane feeds,
+    // or where an exchange follows, to the one owning each row's key group,
+    // in whichever engine.
     for (lane, rx) in keyed_rx.into_iter().enumerate() {
         let k = Lane {
             flow: flow.clone(),
@@ -909,7 +912,7 @@ where
             clock: inbound.len() + lane,
             tx: senders.clone(),
             keyed: Vec::new(),
-            mesh: None,
+            mesh: mesh.clone(),
         };
         readers.spawn(keyed::run(flow.clone(), k, rx).in_current_span());
     }
