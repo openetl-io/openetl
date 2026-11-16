@@ -56,7 +56,7 @@ A stream's **write mode** specifies how to write it:
 
 A pipeline can have a **transform**, which changes rows between the source and the destination. A **SQL transform** is SQL statements that the engine runs as it copies. Each `INSERT INTO` statement reads streams and writes an **output**, which the destination gets as a stream.
 
-A **group window** is a SQL statement that adds up rows by windows of time, such as each minute. It uses each row's **event time**: the time in the row, such as when an order was placed. A **watermark** is the time before which no more rows are expected. When the watermark passes a window's end, the window closes and its row is written. A row whose event time the watermark has already passed is **late**. A late row still counts if its window is open, or closed less than the stream's allowed lateness ago; otherwise OpenETL quarantines it. [Aggregate by windows of time](../pipelines/windows.md) explains them.
+A **group window** is a SQL statement that adds up rows by windows of time, such as each minute. It uses each row's **event time**: the time in the row, such as when an order was placed. A **watermark** is the time before which no more rows are expected. When the watermark passes a window's end, the window closes and its row is written. A row whose event time the watermark has already passed is **late**. A late row still counts until the watermark is past its window's end by more than the stream's allowed lateness. After that, OpenETL quarantines the row. [Aggregate by windows of time](../pipelines/windows.md) explains them.
 
 ## Syncs, schedules and continuous pipelines
 
