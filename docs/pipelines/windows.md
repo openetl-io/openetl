@@ -93,7 +93,7 @@ Take the statement above with `delay: 30s`, over a stream with one split that re
 
 A row is late when the watermark has passed its event time. A late row of a window that is still open goes into the window as usual. A late row of a window that has closed goes into the window only within `watermark.lateness`:
 
-- **Within the lateness**, the window's state is kept, so the late row is added to it. The engine writes the window's row again, as an update of the row with the same key. If the window no longer passes `HAVING`, the engine writes a delete of its row. If a late row moves a session's start, the engine deletes the session's old row and writes the row under its new start.
+- **Within the lateness**, the window's state is kept, so the late row is added to it. The engine writes the window's row again, as an update of the row with the same key. If the window no longer passes `HAVING`, the engine writes a delete of its row. If a late row moves a session's start, the engine deletes the session's old row and writes the row under its new start. A row that would move a session's start is late when its own time plus the gap is past the lateness, as a row with no session to join is. Another session that had gone could have had that start, and its row stays as it is.
 - **After the lateness**, the window's state is gone. The engine quarantines the late row with the code `late`. A row whose event time is null is in no window, and is quarantined with the code `event_time`. A window that is gone stays gone when you change the lateness later ([Change the lateness](#change-the-lateness)).
 
 Updates and deletes need a destination that merges, so a stream with `watermark.lateness` needs `destination.write: merge` for each group window's output. The plan refuses lateness otherwise.
@@ -165,9 +165,9 @@ When you apply a new `watermark.lateness`, the next run uses it for the windows 
 
 The engine keeps a record of how far windows are gone in the window's state, and the checkpoint holds it. So the rule holds after a failure, a restart and a change in the number of workers. After a higher lateness, the late rows of windows that were gone before the change go to quarantine. This continues until the watermark less the new lateness passes the point where those windows had gone.
 
-For a `session` window, the engine judges a row by the session that the row joins or starts. If that session ends at or before the point where windows had gone, the row is late. A row whose gap reaches past that point starts or joins a session, as it does with an unchanged lateness. That session can overlap a session that had gone, and each one has its own row.
+For a `session` window, the engine judges a row by the session that the row joins or starts. If that session ends at or before the point where windows had gone, the row is late. A row that would move a session's start is also late if its own time plus the gap is at or before that point. Other rows start or join a session, as they do with an unchanged lateness. Such a session can overlap a session that had gone, and each one has its own row.
 
-With a lower lateness, the engine can keep the state of a window that had closed before the change until the old lateness passes. It takes no more rows for that window.
+With a lower lateness, the engine can keep the state of a window that had closed before the change until the old lateness passes. Once the new lateness has passed the window, the window takes no more rows.
 
 A change of the lateness never deletes or rewrites a row that a window wrote. To build windows that are gone again, with the rows that came late, read the stream again as [Build the state again](#build-the-state-again) describes. The reset drops the state, and the new read builds each window again from the rows that it returns.
 

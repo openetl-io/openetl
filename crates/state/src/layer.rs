@@ -53,6 +53,8 @@ pub struct Layer {
     kept: HashMap<(OperatorId, u16), i64>,
     /// Horizons the open epoch moved, for every group of the range.
     moved: HashMap<OperatorId, i64>,
+    /// Horizons the open epoch moved in one group.
+    moved_in: HashMap<(OperatorId, u16), i64>,
     /// Rows appended in the open epoch.
     appended: u32,
     /// What fails the open epoch's barrier: the first write it can't keep.
@@ -102,6 +104,7 @@ impl Layer {
             horizons,
             kept: HashMap::new(),
             moved: HashMap::new(),
+            moved_in: HashMap::new(),
             appended: 0,
             fault: None,
             failed: false,
@@ -160,6 +163,7 @@ impl Layer {
         self.changes.clear();
         self.change_bytes = 0;
         self.moved.clear();
+        self.moved_in.clear();
         self.appended = 0;
         self.fault = None;
     }
@@ -191,6 +195,10 @@ impl Layer {
                 *at = (*at).max(h);
             }
         }
+        for ((op, g), h) in std::mem::take(&mut self.moved_in) {
+            let at = self.horizons.entry((op, g.into())).or_insert(h);
+            *at = (*at).max(h);
+        }
     }
 
     /// Whether a change is of a row, a timer or a set's entry that its
@@ -220,7 +228,10 @@ impl Layer {
             .get(&(op, g.into()))
             .copied()
             .unwrap_or(i64::MIN);
-        stored.max(self.moved.get(&op).copied().unwrap_or(i64::MIN))
+        let moved = |h: Option<&i64>| h.copied().unwrap_or(i64::MIN);
+        stored
+            .max(moved(self.moved.get(&op)))
+            .max(moved(self.moved_in.get(&(op, g))))
     }
 
     /// Whether the operator's horizon in a group has passed `time`.
@@ -544,6 +555,14 @@ impl StateBackend for Layer {
     fn expire(&mut self, op: OperatorId, horizon: i64) {
         let h = self.moved.entry(op).or_insert(i64::MIN);
         *h = (*h).max(horizon);
+    }
+
+    fn expire_in(&mut self, op: OperatorId, group: KeyGroup, horizon: i64) {
+        if let Some(g) = self.place(group)
+            && horizon > self.horizon_in(op, g)
+        {
+            self.moved_in.insert((op, g), horizon);
+        }
     }
 
     fn horizon(&self, op: OperatorId, group: KeyGroup) -> i64 {

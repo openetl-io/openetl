@@ -453,7 +453,7 @@ pub(super) async fn run(
         let Some(state) = &plan.state.job else {
             return Err(JobError::internal("a group window without the job's state"));
         };
-        let layer = Layer::open(
+        let mut layer = Layer::open(
             &state.stores(id),
             plan.generation,
             plan.first_epoch,
@@ -465,6 +465,7 @@ pub(super) async fn run(
             let err = crate::state::state_error("its state", &e);
             JobError::new(err.code, cant_open(err.message))
         })?;
+        op.open(&mut layer);
         let event_time = t.inputs[st.input].event_time.as_ref();
         let floor = event_time.map_or(watermark::NONE, |e| e.floor);
         let closes_at = event_time
@@ -863,7 +864,12 @@ impl Keyed {
             let op = self.epoch(&id, (plan.generation, e.n), &snapshots, memory)?;
             let mut align = flow.align.lock().await;
             let pieces = align.pieces(e.n);
-            pieces.snapshots.extend(named);
+            // At the end of input every window has closed and gone, at
+            // every keyed lane's barrier alike, and a later read of the
+            // stream starts them again: the record keeps none of it.
+            if self.wm != watermark::END {
+                pieces.snapshots.extend(named);
+            }
             pieces.operator(op);
         }
         let outputs_q = plan

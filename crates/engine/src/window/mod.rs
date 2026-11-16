@@ -24,17 +24,20 @@
 //!
 //! A window is gone once the watermark has passed its end plus the
 //! lateness in force then, and stays gone when the lateness changes: the
-//! floor, in each key group, is the latest the watermark less the lateness
-//! has been, and a window that ends at or before it is gone. A row of it
-//! is late, and a session there is dropped when its key's sessions are
-//! next read. With a lateness that never changes, the floor is the
-//! watermark less the lateness; after a raise it holds where the old
-//! lateness had it, until the watermark less the new one passes it. A
-//! window takes the lateness in force when it closes, which its expiry
-//! timer is set by: one that fires before a raised lateness has passed is
-//! set again. State keeps the floor as the horizon of an operator of its
-//! own in the window's layer, which keeps nothing else, so it's in every
-//! snapshot, by key group, whether or not any window is left.
+//! floor, in each key group, is the latest the group's watermark less the
+//! lateness has been, and a window that ends at or before it is gone. A
+//! row of it is late, and a session there is dropped when its key's
+//! sessions are next read. A row that would give a session its start is
+//! late too where its own gap ends there: the start could be a gone
+//! session's, whose row the output keeps. With a lateness that never
+//! changes, the floor is the watermark less the lateness; after a raise
+//! it holds where the old lateness had it, until the watermark less the
+//! new one passes it. A window takes the lateness in force when it
+//! closes, which its expiry timer is set by: one that fires before a
+//! raised lateness has passed is set again. State keeps the floor as the
+//! horizon of an operator of its own in the window's layer, which keeps
+//! nothing else, so it's in every snapshot, by key group, whether or not
+//! any window is left.
 //!
 //! Output rows are keyed by `window_start` and the group keys: an insert
 //! the first time, then updates; each has an ID and a seq from its key and
@@ -312,6 +315,19 @@ impl Operator {
     fn watermark_in<S: StateBackend>(&self, state: &S, g: u32) -> i64 {
         let horizon = state.horizon(self.id, g).saturating_mul(self.per_micro);
         self.watermark().max(horizon)
+    }
+
+    /// Takes the state its lane opened. A key group a restore brings a
+    /// horizon has its watermark there until the operator's passes it:
+    /// its floor moves to that horizon less the lateness where that's
+    /// later.
+    pub fn open<S: StateBackend>(&self, state: &mut S) {
+        for g in 0..self.key_groups {
+            let h = state.horizon(self.id, g);
+            if h > i64::MIN {
+                state.expire_in(self.floor, g, h.saturating_sub(self.lateness_micros));
+            }
+        }
     }
 
     /// Where windows in key group `g` stand: its watermark, and its floor,
@@ -719,7 +735,13 @@ impl Operator {
                     .iter()
                     .filter(|s| meets(s))
                     .fold((t, end), |(a, b), s| (a.min(s.start), b.max(s.end)));
-                if self.gone(last.saturating_add(1), at) {
+                // A row that gives a session its start, where its own gap
+                // is gone, could give it a gone session's start, and so
+                // that session's row in the output.
+                let starts = list.iter().filter(|s| meets(s)).all(|s| t < s.start);
+                if self.gone(last.saturating_add(1), at)
+                    || (starts && self.gone(end.saturating_add(1), at))
+                {
                     out.rejected.push((
                         rows_of(r),
                         self.reason("late: its session closed past its allowed lateness"),

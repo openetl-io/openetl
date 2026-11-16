@@ -162,17 +162,18 @@ impl Run {
         let mut ops = Vec::new();
         let mut layers = Vec::new();
         for r in ranges(lanes) {
-            ops.push(operator(sql, lateness));
+            let op = operator(sql, lateness);
             let mine: Vec<Snapshot> = snapshots
                 .iter()
                 .filter(|s| s.range.overlaps(&r))
                 .cloned()
                 .collect();
-            layers.push(
-                Layer::open(bucket, generation, epoch, r, &mine)
-                    .await
-                    .unwrap(),
-            );
+            let mut layer = Layer::open(bucket, generation, epoch, r, &mine)
+                .await
+                .unwrap();
+            op.open(&mut layer);
+            ops.push(op);
+            layers.push(layer);
         }
         Run {
             ops,
@@ -398,6 +399,86 @@ async fn a_window_gone_before_a_raised_lateness_stays_gone() {
     assert_eq!(run.writes[first], 1, "{:?}", run.writes);
     assert_eq!(run.writes[second], 3, "{:?}", run.writes);
     assert_eq!(run.table.0.len(), 2);
+}
+
+/// A row that would give a live session its start, where its own gap has
+/// gone, is late, with an unchanged lateness too: the start is a gone
+/// session's, whose row the output keeps as it was.
+#[tokio::test]
+async fn a_row_that_would_take_a_gone_sessions_start_is_late() {
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(SESSION, 0, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 0)]).await;
+    run.advance(40 * SEC).await;
+    run.rows(&[("eu", 2, 20 * SEC)]).await;
+    assert_eq!(run.rejected, 0);
+    run.rows(&[("eu", 4, 0)]).await;
+    assert_eq!(run.rejected, 1);
+    // One that moves a live session's start where its gap reaches past
+    // the floor still does.
+    run.rows(&[("eu", 3, 15 * SEC)]).await;
+    assert_eq!(run.rejected, 1);
+    run.advance(i64::MAX).await;
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        [
+            "window_start=1970-01-01T00:00:00Z window_end=1970-01-01T00:00:30Z region=eu total=5",
+            "window_start=1970-01-01T00:00:15Z window_end=1970-01-01T00:00:50Z region=eu total=5",
+        ]
+    );
+    assert_eq!(run.writes["1970-01-01T00:00:00Z|eu"], 1);
+}
+
+/// Groups restored with horizons above the lane's watermark keep a floor
+/// of their own: a window gone in one under a lowered lateness, at its
+/// group's watermark, stays gone when a later attempt raises it.
+#[tokio::test]
+async fn each_groups_floor_follows_its_own_watermark() {
+    let objects = Arc::new(ObjectStorage::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        object_store::path::Path::from("state"),
+    ));
+    let stores = || RunStores::new(objects.clone(), RunConfig::default());
+    let s = stores();
+    let mut run = Run::new(TUMBLE, 2 * MIN, &s, 1, 1, 2, &[]).await;
+    let op = &run.ops[0];
+    let group = |region: &'static str| -> u32 {
+        key_groups(&batch(op, &[(region, 1, 1)]), &op.plan.need, GROUPS).unwrap()[0]
+    };
+    const NAMES: [&str; 12] = [
+        "eu", "us", "apac", "latam", "mena", "a", "b", "c", "d", "e", "f", "g",
+    ];
+    let lead = *NAMES.iter().find(|n| group(n) < GROUPS / 2).unwrap();
+    let lag = *NAMES.iter().find(|n| group(n) >= GROUPS / 2).unwrap();
+    run.rows(&[(lead, 1, 70 * SEC), (lag, 1, 70 * SEC)]).await;
+    // The leading lane's second minute closes, within its lateness.
+    run.advance_lane(0, 150 * SEC).await;
+    run.advance_lane(1, 70 * SEC).await;
+    let snaps = run.barrier(1).await;
+    // Lowered to nothing, on one lane at the lagging watermark: the
+    // leading group's minute is gone at its own, 150 seconds.
+    let s = stores();
+    let mut run = run
+        .restore(TUMBLE, 0, &s, (2, 1, 1), &snaps, 70 * SEC)
+        .await;
+    run.rows(&[(lead, 1, 80 * SEC)]).await;
+    assert_eq!(run.rejected, 1);
+    let snaps = run.barrier(2).await;
+    let s = stores();
+    let mut run = run
+        .restore(TUMBLE, 3 * MIN, &s, (3, 2, 2), &snaps, 70 * SEC)
+        .await;
+    run.rows(&[(lead, 1, 90 * SEC)]).await;
+    assert_eq!(run.rejected, 2);
+    run.advance(i64::MAX).await;
+    let k = format!("1970-01-01T00:01:00Z|{lead}");
+    assert!(
+        run.table.0[&k].ends_with("total=1 n=1 hi=1"),
+        "{:?}",
+        run.table
+    );
+    assert_eq!(run.writes[&k], 1);
+    assert_eq!(run.writes[&format!("1970-01-01T00:01:00Z|{lag}")], 1);
 }
 
 /// A window closed and kept at a raise takes the new lateness: its expiry

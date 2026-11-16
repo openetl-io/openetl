@@ -532,9 +532,14 @@ impl Model {
                     .iter()
                     .filter(|s| meets(s))
                     .fold((t, end), |(a, b), s| (a.min(s.start), b.max(s.end)));
-                if self.ended(last + 1, w) {
+                // A row that gives a session its start is late where its
+                // own gap has gone.
+                let starts = list.iter().filter(|s| meets(s)).all(|s| t < s.start);
+                let late = |gone: &dyn Fn(i64) -> bool| gone(last + 1) || (starts && gone(end + 1));
+                if late(&|x| self.ended(x, w)) {
                     self.late.insert(r.id);
-                    self.floored += usize::from((last + 1).saturating_add(self.lateness) > w);
+                    let lateness = self.lateness;
+                    self.floored += usize::from(!late(&|x| x.saturating_add(lateness) <= w));
                     continue;
                 }
                 let mut merged = Session {

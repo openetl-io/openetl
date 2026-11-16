@@ -5803,7 +5803,8 @@ pub(crate) mod tests {
     /// every lane's watermark has passed its end, in the epoch that happens
     /// in, and the rest at the end of input. Each epoch names each keyed
     /// lane's state: a run of what the lane changed in it, while a window is
-    /// open, and nothing once every window has closed.
+    /// open; at the end of input, every window has gone, and no lane names
+    /// any.
     #[tokio::test]
     async fn a_window_closes_once_every_lanes_watermark_passes_it() {
         let state = tempfile::tempdir().unwrap();
@@ -5856,7 +5857,7 @@ pub(crate) mod tests {
         let mut named: Vec<BTreeSet<String>> = Vec::new();
         for (n, r) in ready.iter().enumerate() {
             let epoch = n as u64 + 1;
-            assert_eq!(r.snapshots.len(), 2, "epoch {epoch}");
+            assert_eq!(r.snapshots.len(), [2, 0][n], "epoch {epoch}");
             let mut runs = BTreeSet::new();
             for s in &r.snapshots {
                 let range = s.key_groups.unwrap();
@@ -6065,16 +6066,55 @@ pub(crate) mod tests {
         assert_eq!(all_rows(&outs, 2), [row(60, "y", 2, 3), row(60, "z", 2, 3)]);
         assert_eq!(quarantined(&ready, "minutes"), 1, "x at 30 is late");
         assert_eq!(ready.len(), 2);
-        let named = |r: &EpochReady| -> BTreeSet<String> {
-            assert_eq!(r.snapshots.len(), 3);
-            r.snapshots.iter().flat_map(|s| s.runs.clone()).collect()
-        };
         // Epoch 2's runs hold the open minute's state; the record's runs
         // hold its timers still.
-        let open = named(&ready[0]);
+        assert_eq!(ready[0].snapshots.len(), 3);
+        let open: BTreeSet<String> = ready[0]
+            .snapshots
+            .iter()
+            .flat_map(|s| s.runs.clone())
+            .collect();
         assert!(open.is_superset(&restored), "{open:?}");
         assert!(open.iter().any(|r| r.contains("/g2/e2/")), "{open:?}");
-        assert!(named(&ready[1]).is_empty());
+        // At the end of input every window has gone, and no lane names
+        // any of the window's state.
+        assert!(ready[1].snapshots.is_empty(), "{:?}", ready[1].snapshots);
+    }
+
+    /// A stream read whole closes every window at the end of its read,
+    /// and the record keeps none of their state: the next read of it, as
+    /// a scheduled pipeline's next sync of a stream read with
+    /// full_refresh, starts its windows again from every row it reads.
+    #[tokio::test]
+    async fn a_held_streams_next_read_starts_its_windows_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let mut restored = Vec::new();
+        for (generation, ids) in [(1, 1..=2), (2, 1..=3)] {
+            let mut req = window_request(&state, MINUTES, 1, generation, generation);
+            req.quarantine_url = format!("file://{}", dir.path().display());
+            req.restored_snapshots = std::mem::take(&mut restored);
+            event_time(&mut req).held = true;
+            let mut h = start_lanes(req);
+            let w = &mut h.ins[0];
+            put(w, FrameKind::Split, 0, split("s", None)).await;
+            let rs: Vec<String> = ids.clone().map(|i| minute_row(i, "x", 10 * i)).collect();
+            let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+            put(w, FrameKind::Rows, 0, rows(&refs)).await;
+            put(w, FrameKind::Split, 0, split("s", Some(watermark::END))).await;
+            barriers(w, generation, generation).await;
+            h.end_all(2).await;
+            let (outs, ready) = h.finish().await;
+            let n = *ids.end();
+            assert_eq!(
+                all_rows(&outs, generation),
+                [row(0, "x", n, generation)],
+                "read {generation}"
+            );
+            assert_eq!(quarantined(&ready, "minutes"), 0, "read {generation}");
+            assert_eq!(ready.len(), 1);
+            restored = ready[0].snapshots.clone();
+        }
     }
 
     /// Split `split`'s rows of part `part`, as ID, key and second: part 0
@@ -6217,7 +6257,10 @@ pub(crate) mod tests {
             let (got, ready) =
                 restored_spanning_job(&state, &first[0], lanes, generation, |_| {}).await;
             assert_eq!(got, want, "on {lanes} lanes");
-            assert_eq!(ready[0].snapshots.len(), lanes as usize);
+            assert!(
+                ready[0].snapshots.is_empty(),
+                "the end of input leaves no state"
+            );
             compared += 1;
         }
         assert_eq!(compared, 3);
