@@ -12,6 +12,8 @@ package e2e
 // faults reach the pod, and launchers die while their pods go on. Some of
 // those run each attempt on workers, each in a pod of its own, which die
 // mid-epoch and between a record and its commit, as their coordinator does.
+// Some count and sum Kafka's records in group windows of their times, checked
+// against a model of the windows.
 //
 //	make chaos CHAOS_FLAGS='-chaos.runs=200 -chaos.parallel=6'
 //	go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/0042-' -chaos.seed=7   # one run again
@@ -54,6 +56,9 @@ var (
 	chaosTemporal = flag.Duration("chaos.temporal-restart", 0, "restart compose's Temporal about this often; 0: never")
 	chaosPostgres = flag.Duration("chaos.postgres-restart", 0, "restart or kill compose's Postgres about this often; 0: never")
 	chaosKills    = flag.Duration("chaos.orchestrator-kill", 0, "on DBOS, run two more orchestrators, and kill one about this often, which starts again; 0: neither")
+	// A job with a group window runs on one pod until engines exchange
+	// keyed rows between pods.
+	chaosWindowWorkers = flag.Bool("chaos.window-workers", false, "run group windows on workers too")
 )
 
 type chaosConfig struct {
@@ -64,7 +69,7 @@ type chaosConfig struct {
 	// postgres, iceberg or kafka.
 	dest       string
 	continuous bool
-	// "", flink or spark.
+	// "", flink, spark, sql or window.
 	transform   string
 	parallelism int
 	// merge or append.
@@ -141,6 +146,11 @@ func drawConfig(seed uint64, i int) chaosConfig {
 			c.source, c.continuous = "cdc", rng.IntN(2) == 0
 		}
 	}
+	// Every eighth has group windows over Kafka's records by their times,
+	// merged into Postgres.
+	if i%8 == 5 {
+		c.transform, c.parallelism, c.source, c.continuous, c.dest = "window", 0, "kafka", true, "postgres"
+	}
 	// Kafka only appends, and neither Kafka nor Iceberg dedupes, so a
 	// superset stream is merged into Iceberg.
 	if c.source == "incremental" && c.dest == "kafka" {
@@ -151,6 +161,10 @@ func drawConfig(seed uint64, i int) chaosConfig {
 		c.write = "merge"
 	}
 	if c.source == "incremental" && (c.dest == "iceberg" || c.transform == "spark") {
+		c.write = "merge"
+	}
+	// A window's output is upserts.
+	if c.transform == "window" {
 		c.write = "merge"
 	}
 	// Spark's and Flink's transforms run on one lane, whatever its size.
@@ -206,7 +220,7 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	// pods. A pod takes its launcher's flags, so a Flink bridge's port would
 	// clash, and Spark's runners keep their checkpoints in a directory of
 	// their own.
-	if (c.transform == "" || c.transform == "sql") && rng.IntN(2) == 0 {
+	if c.lanes() && rng.IntN(2) == 0 {
 		c.pods = true
 		if c.size == "" {
 			c.size = pick("m", "l")
@@ -218,7 +232,7 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	// Half the runs in pods run each attempt on workers, holds and SQL among
 	// them. Kafka's transactions run on one pod, so most of them write into
 	// Postgres or Iceberg; the rest show the one pod they fall back to.
-	if c.pods && rng.IntN(2) == 0 {
+	if c.pods && rng.IntN(2) == 0 && (c.transform != "window" || *chaosWindowWorkers) {
 		c.workers = 2 + rng.IntN(2)
 		if c.dest == "kafka" && rng.IntN(4) != 0 {
 			c.dest = pick("postgres", "iceberg")
@@ -237,7 +251,9 @@ func (c chaosConfig) onWorkers() bool {
 
 // lanes reports whether the run's job runs as many lanes as its size: a
 // SQL transform runs in each of them.
-func (c chaosConfig) lanes() bool { return c.transform == "" || c.transform == "sql" }
+func (c chaosConfig) lanes() bool {
+	return c.transform == "" || c.transform == "sql" || c.transform == "window"
+}
 
 func (c chaosConfig) name() string {
 	mode := "scheduled"
@@ -449,6 +465,8 @@ func TestChaosChecks(t *testing.T) {
 		chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", transform: "sql"},
 		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", transform: "sql"},
 		chaosConfig{source: "cdc", write: "append", dest: "kafka", transform: "sql"})
+	// A run with group windows.
+	kinds = append(kinds, chaosConfig{source: "kafka", continuous: true, write: "merge", dest: "postgres", transform: "window"})
 	for i, c := range kinds {
 		plants := []string{plantLoss, plantExtra}
 		if c.holds {
@@ -543,13 +561,19 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	var w workload
 	var pipeline string
 	s.pg.do(func() {
-		if c.source == "kafka" {
+		switch {
+		case c.transform == "window":
+			w = newWindowWork(t, c, name)
+		case c.source == "kafka":
 			w = newKafkaWork(t, c, name, &s.pg)
-		} else {
+		default:
 			w = newPGWork(t, c, name, &s.pg)
 		}
 		src, dst, pipeSource, pipeDest := w.docs()
 		transform, dataPlane := s.transformSpec(c)
+		if ww, ok := w.(*windowWork); ok {
+			transform = ww.transform()
+		}
 		if c.pods {
 			dataPlane = s.podPlane
 		}
