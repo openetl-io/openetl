@@ -97,8 +97,8 @@ impl ContextProvider for Provider<'_> {
         FUNCTIONS.aggregates.get(name).cloned()
     }
 
-    fn get_window_meta(&self, _name: &str) -> Option<Arc<WindowUDF>> {
-        None
+    fn get_window_meta(&self, name: &str) -> Option<Arc<WindowUDF>> {
+        FUNCTIONS.over.get(name).cloned()
     }
 
     fn get_variable_type(&self, _names: &[String]) -> Option<DataType> {
@@ -122,7 +122,7 @@ impl ContextProvider for Provider<'_> {
     }
 
     fn udwf_names(&self) -> Vec<String> {
-        Vec::new()
+        FUNCTIONS.over.keys().cloned().collect()
     }
 }
 

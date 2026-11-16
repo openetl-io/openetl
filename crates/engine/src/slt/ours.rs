@@ -289,6 +289,7 @@ impl Ours {
     fn plan(&self, body: &str, wrap: bool) -> Result<(openetl_sql::Plan, String, u64), Failure> {
         let (text, before) = self.text(body, wrap);
         let plan = openetl_sql::plan(&text, &self.catalog()?)
+            .and_then(|p| p.refuse_unless(crate::transform::runs))
             .map_err(|e| Failure(errors(&e, before, wrap)))?;
         Ok((plan, text, before))
     }

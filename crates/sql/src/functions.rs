@@ -14,7 +14,7 @@ use datafusion_expr::expr_rewriter::FunctionRewrite;
 use datafusion_expr::planner::ExprPlanner;
 use datafusion_expr::{
     AggregateUDF, ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
-    Volatility,
+    Volatility, WindowUDF,
 };
 
 pub(crate) struct Functions {
@@ -26,6 +26,9 @@ pub(crate) struct Functions {
     /// The aggregates a group window runs, by name and by alias. Binding
     /// types them; the engine's accumulators run them.
     pub(crate) aggregates: HashMap<String, Arc<AggregateUDF>>,
+    /// `row_number`, `lag` and `first_value`, which only `OVER` calls.
+    /// Binding types them; the engine's operators run them.
+    pub(crate) over: HashMap<String, Arc<WindowUDF>>,
     /// Syntax that plans to functions, such as `EXTRACT`, `POSITION`,
     /// `SUBSTRING`, `OVERLAY`, `a[i]`, `s['field']` and JSON's `->`. What it
     /// reaches must be in `scalars` too, or binding refuses it.
@@ -78,6 +81,10 @@ pub(crate) static FUNCTIONS: LazyLock<Functions> = LazyLock::new(|| {
             .map(|f| (f.name().to_owned(), f))
             .collect(),
         aggregates,
+        over: crate::over::functions()
+            .into_iter()
+            .map(|f| (f.name().to_owned(), f))
+            .collect(),
         planners,
         rewrites: vec![Arc::new(crate::json::Rewrites)],
     }

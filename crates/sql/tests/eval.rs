@@ -43,7 +43,7 @@ fn plan_one(sql: &str, catalog: &Catalog) -> Statement {
 fn row_wise(s: &Statement) -> &RowWise {
     match &s.operator {
         Operator::RowWise(op) => op,
-        Operator::GroupWindow(_) => panic!("a group window"),
+        other => panic!("not row-wise: {other:?}"),
     }
 }
 

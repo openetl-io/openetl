@@ -932,7 +932,7 @@ fn bounds_read(e: &DfExpr, call: &datafusion_common::Column, at: &At) -> Result<
 
 /// The name a column of the grouped rows has once it passes the steps
 /// unchanged; `None` if it doesn't.
-fn through(name: &str, steps: &[Step]) -> Option<String> {
+pub(crate) fn through(name: &str, steps: &[Step]) -> Option<String> {
     let mut name = name.to_owned();
     for s in steps {
         match s {

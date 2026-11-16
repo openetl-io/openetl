@@ -336,12 +336,79 @@ fn render(p: &Plan) -> String {
                 let _ = writeln!(out, "  passes {}", passes.join(", "));
                 let _ = writeln!(out, "  operator {}", g.id);
             }
+            Operator::Over(o) => {
+                row_wise(&mut out, &o.input);
+                let keys: Vec<&str> = o
+                    .keys
+                    .iter()
+                    .map(|k| o.rows.field(k.column).name().as_str())
+                    .collect();
+                let _ = writeln!(
+                    out,
+                    "  over by {} on {}",
+                    o.rows.field(o.time).name(),
+                    keys.join(", ")
+                );
+                for f in &o.functions {
+                    let arg = f.arg.as_ref().map(|e| e.to_string()).unwrap_or("*".into());
+                    let filter = match &f.filter {
+                        Some(f) => format!(" filter {f}"),
+                        None => String::new(),
+                    };
+                    let frame = match f.frame {
+                        Some(frame) => format!(" {frame:?}"),
+                        None => String::new(),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "  function {:?}({arg}){filter}{frame}: {}",
+                        f.kind, f.data_type
+                    );
+                }
+                let _ = writeln!(out, "  computes {}", o.computes.join("; "));
+                let _ = writeln!(out, "  framed {}", names(&o.framed));
+                steps(&mut out, &o.steps);
+                let _ = writeln!(out, "  need {}", o.need.join(", "));
+                let _ = writeln!(out, "  passes {}", passes(&o.passes));
+                let _ = writeln!(out, "  operator {}", o.id);
+            }
+            Operator::Dedupe(d) => {
+                row_wise(&mut out, &d.input);
+                let keys: Vec<&str> = d
+                    .keys
+                    .iter()
+                    .map(|k| d.rows.field(k.column).name().as_str())
+                    .collect();
+                let _ = writeln!(
+                    out,
+                    "  dedupe {:?} by {} on {}{}",
+                    d.keep,
+                    d.rows.field(d.time).name(),
+                    keys.join(", "),
+                    if d.keep.upserts() {
+                        ", upserts"
+                    } else {
+                        ", appends"
+                    }
+                );
+                steps(&mut out, &d.steps);
+                let _ = writeln!(out, "  need {}", d.need.join(", "));
+                let _ = writeln!(out, "  passes {}", passes(&d.passes));
+                let _ = writeln!(out, "  operator {}", d.id);
+            }
         }
     }
     for n in &p.notes {
         let _ = writeln!(out, "note {} {}", n.at, n.message);
     }
     out.trim_end().to_owned()
+}
+
+fn passes(p: &[(String, String)]) -> String {
+    p.iter()
+        .map(|(a, b)| format!("{a} -> {b}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn row_wise(out: &mut String, op: &RowWise) {

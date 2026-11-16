@@ -639,3 +639,198 @@ fn ids_follow_what_statements_compute() {
     }
     assert!(same > 20 && apart > 20, "{same} pairs alike, {apart} apart");
 }
+
+const OVER: &str = "INSERT INTO running SELECT id, region, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total, \
+    lag(qty) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders";
+
+fn over_id(sql: &str) -> String {
+    id_in(&catalog(DataType::Utf8), sql, "running")
+}
+
+#[test]
+fn an_over_operators_id_keeps_through_edits_that_keep_what_it_computes() {
+    let base = over_id(OVER);
+    assert!(base.starts_with("over-"), "{base}");
+    let same = [
+        (
+            "formatting, keyword case, an alias and other names",
+            "insert into running\n  select o.id, o.region AS r, LAG(o.qty) over (partition BY o.region order by o.created_at) as b,\n  \
+             SUM(o.amount) OVER (PARTITION BY o.region ORDER BY o.created_at) AS t FROM source.orders o",
+        ),
+        (
+            "the default frame written out",
+            "INSERT INTO running SELECT id, region, sum(amount) OVER (PARTITION BY region ORDER BY created_at \
+             RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total, \
+             lag(qty, 1) OVER (PARTITION BY region ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS before FROM orders",
+        ),
+        (
+            "another column passed through, and an expression over the values",
+            "INSERT INTO running SELECT id, region, note, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total, \
+             lag(qty) OVER (PARTITION BY region ORDER BY created_at) + 1 AS before FROM orders",
+        ),
+        (
+            "a filter after it",
+            "INSERT INTO running SELECT * FROM (SELECT id, region, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total, \
+             lag(qty) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders) AS s WHERE total > 0",
+        ),
+        (
+            "a view that renames its columns",
+            "CREATE VIEW o AS SELECT id, region AS r, amount AS a, qty, created_at AS t FROM orders;\n\
+             INSERT INTO running SELECT id, r, sum(a) OVER (PARTITION BY r ORDER BY t) AS total, \
+             lag(qty) OVER (PARTITION BY r ORDER BY t) AS before FROM o",
+        ),
+    ];
+    for (what, sql) in same {
+        assert_eq!(over_id(sql), base, "{what}: {sql}");
+    }
+}
+
+#[test]
+fn an_over_operators_id_changes_with_what_it_computes_or_keeps() {
+    let base = over_id(OVER);
+    let other = [
+        (
+            "another key",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY country ORDER BY created_at) AS total, \
+             lag(qty) OVER (PARTITION BY country ORDER BY created_at) AS before FROM orders",
+        ),
+        (
+            "a key more",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region, country ORDER BY created_at) AS total, \
+             lag(qty) OVER (PARTITION BY country, region ORDER BY created_at) AS before FROM orders",
+        ),
+        (
+            "another frame",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS total, \
+             lag(qty) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders",
+        ),
+        (
+            "a bounded frame",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN INTERVAL '1 hour' PRECEDING AND CURRENT ROW) AS total, \
+             lag(qty) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders",
+        ),
+        (
+            "another offset",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total, \
+             lag(qty, 2) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders",
+        ),
+        (
+            "a default",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total, \
+             lag(qty, 1, 0) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders",
+        ),
+        (
+            "a function less",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total FROM orders",
+        ),
+        (
+            "another function",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total, \
+             first_value(qty) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders",
+        ),
+        (
+            "a filter before it",
+            "INSERT INTO running SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total, \
+             lag(qty) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders WHERE qty > 0",
+        ),
+    ];
+    let mut seen = vec![base];
+    for (what, sql) in other {
+        let got = over_id(sql);
+        assert!(
+            !seen.contains(&got),
+            "{what}: {sql} gave {got}, as another did"
+        );
+        seen.push(got);
+    }
+    assert_eq!(seen.len(), 10, "every edit was compared");
+}
+
+const DEDUPE: &str = "INSERT INTO latest SELECT id, region, amount FROM orders \
+    QUALIFY row_number() OVER (PARTITION BY region, id ORDER BY created_at DESC) = 1";
+
+fn dedupe_id(sql: &str) -> String {
+    id_in(&catalog(DataType::Utf8), sql, "latest")
+}
+
+#[test]
+fn a_dedupes_id_keeps_through_edits_that_keep_what_it_keeps() {
+    let base = dedupe_id(DEDUPE);
+    assert!(base.starts_with("dedupe-"), "{base}");
+    let same = [
+        (
+            "a subquery for QUALIFY, keys in another order and other names",
+            "INSERT INTO latest SELECT id AS i, region AS r, amount, n FROM (\
+             SELECT *, ROW_NUMBER() OVER (PARTITION BY id, region ORDER BY created_at DESC) AS n FROM orders) AS t WHERE n = 1",
+        ),
+        (
+            "another column passed through, and a filter after it",
+            "INSERT INTO latest SELECT id, region, amount, note FROM orders \
+             QUALIFY row_number() OVER (PARTITION BY region, id ORDER BY created_at DESC) = 1 AND amount > 0",
+        ),
+    ];
+    for (what, sql) in same {
+        assert_eq!(dedupe_id(sql), base, "{what}: {sql}");
+    }
+    let other = [
+        (
+            "the first row, not the latest",
+            "INSERT INTO latest SELECT id, region, amount FROM orders \
+             QUALIFY row_number() OVER (PARTITION BY region, id ORDER BY created_at) = 1",
+        ),
+        (
+            "a key less",
+            "INSERT INTO latest SELECT id, region, amount FROM orders \
+             QUALIFY row_number() OVER (PARTITION BY id ORDER BY created_at DESC) = 1",
+        ),
+        (
+            "a filter before it",
+            "INSERT INTO latest SELECT id, region, amount FROM (SELECT *, row_number() OVER \
+             (PARTITION BY region, id ORDER BY created_at DESC) AS n FROM orders WHERE qty > 0) AS t WHERE n = 1",
+        ),
+    ];
+    let mut seen = vec![base];
+    for (what, sql) in other {
+        let got = dedupe_id(sql);
+        assert!(
+            !seen.contains(&got),
+            "{what}: {sql} gave {got}, as another did"
+        );
+        seen.push(got);
+    }
+}
+
+/// An `OVER` operator's keys and functions are in an order of their own;
+/// a dedupe's output is keyed by its partition keys as `PARTITION BY`
+/// writes them, and says whether it upserts.
+#[test]
+fn over_and_dedupe_take_an_order_of_their_own() {
+    let c = catalog(DataType::Utf8);
+    let plan = openetl_sql::plan(
+        "INSERT INTO running SELECT id, max(qty) OVER (PARTITION BY region, country ORDER BY created_at) AS most, \
+         count(*) OVER (PARTITION BY country, region ORDER BY created_at) AS n FROM orders",
+        &c,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let s = &plan.statements[0];
+    let Operator::Over(o) = &s.operator else {
+        panic!("not OVER: {:?}", s.operator)
+    };
+    assert_eq!(o.need, ["country", "region"]);
+    assert_eq!(
+        o.computes,
+        ["count(*) range unbounded", "max(qty) range unbounded"]
+    );
+    assert_eq!(s.key, ["id"]);
+    assert_eq!(s.need().map(<[String]>::to_vec), Some(o.need.clone()));
+
+    let plan = openetl_sql::plan(DEDUPE, &c).unwrap_or_else(|e| panic!("{e}"));
+    let s = &plan.statements[0];
+    let Operator::Dedupe(d) = &s.operator else {
+        panic!("not a dedupe: {:?}", s.operator)
+    };
+    assert_eq!(d.need, ["id", "region"]);
+    assert_eq!(s.key, ["region", "id"]);
+    assert!(d.keep.upserts());
+    assert_eq!(s.class, openetl_sql::Class::Over);
+}

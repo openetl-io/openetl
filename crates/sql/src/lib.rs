@@ -7,9 +7,9 @@
 //! names a source's stream or a view, never an output; `source.` before a
 //! stream's name and `destination.` before an output's are optional. A
 //! stream's name is its whole name, matched as a dotted path or quoted.
-//! Each statement is classified: row-wise statements and group windows
-//! plan, and the other classes are refused as a later tier's, with their
-//! position.
+//! Each statement is classified: row-wise statements, group windows, and
+//! `OVER` and dedupe by `ROW_NUMBER() … = 1` plan, and the other classes
+//! are refused as a later tier's, with their position.
 //!
 //! This is the only crate that uses DataFusion: sqlparser parses, and
 //! DataFusion binds, coerces types, simplifies and evaluates expressions.
@@ -25,6 +25,7 @@ mod expr;
 mod functions;
 mod json;
 mod lower;
+mod over;
 mod plan;
 mod sql;
 mod types;
@@ -34,9 +35,11 @@ mod zone;
 pub use catalog::{Catalog, Stream};
 pub use error::{Error, ErrorKind, Errors, Note, Position};
 pub use expr::Expr;
+pub use over::{DEDUPE_STATE, OVER_STATE};
 pub use plan::{
-    Aggregate, AggregateKind, Class, Column, GroupKey, GroupWindow, Operator, Plan, Projection,
-    RowWise, Statement, Step, Unnest, Unnested, View, Window,
+    Aggregate, AggregateKind, Class, Column, Dedupe, Frame, GroupKey, GroupWindow, Keep, Operator,
+    Over, OverFunction, OverKind, Plan, Projection, RowWise, Statement, Step, Unnest, Unnested,
+    View, Window,
 };
 pub use sql::{Sql, VIEW_DEPTH, plan};
 pub use types::{cast_type, ident};

@@ -107,6 +107,19 @@ impl Error {
         Self::new(kind, Some(at), message)
     }
 
+    /// SQL of a class a later tier runs, at where `what` is written.
+    pub(crate) fn later_tier(class: Class, at: Position, what: &str) -> Self {
+        Self::at(
+            ErrorKind::LaterTier(class),
+            at,
+            format!(
+                "{what}: transforms don't run {} yet (tier {})",
+                class.description(),
+                class.tier()
+            ),
+        )
+    }
+
     pub(crate) fn eval(message: impl Into<String>) -> Self {
         Self::new(ErrorKind::Eval, None, message)
     }

@@ -137,6 +137,57 @@ fn a_group_window_needs_its_keys_and_passes_them() {
     assert!(s.passes().is_empty());
 }
 
+/// OVER and dedupe need their partition keys, as the stream names them,
+/// and pass every column that reaches the output unchanged, as it names
+/// them; OVER without keys needs every row on one lane.
+#[test]
+fn over_and_dedupe_need_their_keys_and_pass_their_rows() {
+    let mut c = Catalog::new();
+    c.insert(
+        "events",
+        Stream {
+            schema: Arc::new(Schema::new(vec![
+                Field::new("user_id", DataType::Int64, true),
+                Field::new("kind", DataType::Utf8, true),
+                Field::new("n", DataType::Int64, true),
+                Field::new(
+                    "at",
+                    DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+                    true,
+                ),
+            ])),
+            key: Vec::new(),
+            changelog: false,
+            event_time: Some("at".into()),
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let one = |sql: &str| {
+        let mut plan = openetl_sql::plan(sql, &c).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        plan.statements.remove(0)
+    };
+    let s = one(
+        "INSERT INTO o SELECT user_id AS uid, kind, lower(kind) AS k, sum(n) OVER (PARTITION BY kind, user_id ORDER BY at) AS total FROM events",
+    );
+    assert_eq!(
+        s.need(),
+        Some(&["kind".to_owned(), "user_id".to_owned()][..])
+    );
+    assert_eq!(s.passes(), pairs(&[("user_id", "uid"), ("kind", "kind")]));
+    assert!(s.key.is_empty());
+    assert!(s.operator_id().is_some_and(|id| id.starts_with("over-")));
+    let s = one("INSERT INTO o SELECT n, count(*) OVER (ORDER BY at) AS c FROM events");
+    assert_eq!(s.need(), Some(&[][..]));
+    assert_eq!(s.passes(), pairs(&[("n", "n")]));
+    let s = one(
+        "INSERT INTO o SELECT kind AS k, at FROM events QUALIFY row_number() OVER (PARTITION BY kind ORDER BY at) = 1",
+    );
+    assert_eq!(s.need(), Some(&["kind".to_owned()][..]));
+    assert_eq!(s.passes(), pairs(&[("kind", "k"), ("at", "at")]));
+    assert_eq!(s.key, ["k"]);
+    assert!(s.operator_id().is_some_and(|id| id.starts_with("dedupe-")));
+}
+
 /// A group window's operator is another where it reads another stream, or
 /// its rows go through other steps first, so it never restores another's
 /// state.
