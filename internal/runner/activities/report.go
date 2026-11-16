@@ -199,7 +199,11 @@ func operatorStats(o checkpoint.Operator) *apiv1.OperatorStats {
 	case *o.Watermark == runner.EndOfInput:
 		s.EndOfInput = true
 	default:
-		s.Watermark = timestamppb.New(time.UnixMicro(*o.Watermark))
+		// A time outside years 1 to 9999 has no Timestamp, and would fail
+		// the whole report: it's left out.
+		if ts := timestamppb.New(time.UnixMicro(*o.Watermark)); ts.CheckValid() == nil {
+			s.Watermark = ts
+		}
 	}
 	return s
 }

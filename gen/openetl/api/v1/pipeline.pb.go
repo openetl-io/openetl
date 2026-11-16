@@ -6881,8 +6881,9 @@ type OperatorStats struct {
 	// The windows, or sessions, whose state it keeps: open, or closed and
 	// kept for their lateness.
 	Windows int64 `protobuf:"varint,7,opt,name=windows,proto3" json:"windows,omitempty"`
-	// Its watermark: the least of its lanes'. Unset while a lane has none,
-	// and at the end of input.
+	// Its watermark: the least of its lanes'. Unset while a lane has none, at
+	// the end of input, and outside the years 1 to 9999, which a Timestamp
+	// holds.
 	Watermark *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=watermark,proto3" json:"watermark,omitempty"`
 	// Its input has ended, and every window closed.
 	EndOfInput bool `protobuf:"varint,9,opt,name=end_of_input,json=endOfInput,proto3" json:"end_of_input,omitempty"`

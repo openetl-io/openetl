@@ -3,6 +3,7 @@ package activities
 import (
 	"bytes"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
@@ -77,6 +79,25 @@ func TestMirroredCheckpoint(t *testing.T) {
 	}
 	if b, c := stats[1], stats[2]; !b.GetEndOfInput() || b.GetWatermark() != nil || c.GetEndOfInput() || c.GetWatermark() != nil {
 		t.Errorf("window-b: %v, window-c: %v", b, c)
+	}
+	// A watermark outside years 1 to 9999 is left out, so the report still
+	// encodes as JSON; one at either end is kept.
+	first := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
+	last := time.Date(9999, 12, 31, 23, 59, 59, 999_999_000, time.UTC).UnixMicro()
+	far := runner.EndOfInput - 1
+	var ranged []checkpoint.Operator
+	for _, wm := range []int64{first - 1, first, last, last + 1, far, math.MinInt64 + 1} {
+		ranged = append(ranged, checkpoint.Operator{Operator: "w", RowsIn: 1, Watermark: &wm})
+	}
+	bounds := r.mirrored(&checkpoint.Record{CreatedAt: created, Operators: ranged}, nil, nil, nil)
+	if _, err := protojson.Marshal(bounds); err != nil {
+		t.Fatalf("the report doesn't encode: %v", err)
+	}
+	for i, kept := range []bool{false, true, true, false, false, false} {
+		s := bounds.GetOperatorStats()[i]
+		if (s.GetWatermark() != nil) != kept || s.GetEndOfInput() || s.GetRowsIn() != 1 {
+			t.Errorf("watermark %d: %v", *ranged[i].Watermark, s)
+		}
 	}
 	slices.SortFunc(streams, func(a, b *dataplanev1.CheckpointStream) int { return strings.Compare(a.GetName(), b.GetName()) })
 	if len(streams) != 2 {

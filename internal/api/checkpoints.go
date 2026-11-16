@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -567,6 +568,12 @@ func marshalOperatorStats(ops []*apiv1.OperatorStats) ([]byte, error) {
 	}
 	raw := make([]json.RawMessage, len(ops))
 	for i, o := range ops {
+		// A watermark JSON can't hold, outside years 1 to 9999, would cost
+		// the checkpoint its mirror: it's left out.
+		if o.GetWatermark() != nil && o.GetWatermark().CheckValid() != nil {
+			o = proto.CloneOf(o)
+			o.Watermark = nil
+		}
 		b, err := protojson.Marshal(o)
 		if err != nil {
 			return nil, err

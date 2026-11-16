@@ -1274,8 +1274,9 @@ message OperatorStats {
   // The windows, or sessions, whose state it keeps: open, or closed and
   // kept for their lateness.
   int64 windows = 7;
-  // Its watermark: the least of its lanes'. Unset while a lane has none,
-  // and at the end of input.
+  // Its watermark: the least of its lanes'. Unset while a lane has none, at
+  // the end of input, and outside the years 1 to 9999, which a Timestamp
+  // holds.
   google.protobuf.Timestamp watermark = 8;
   // Its input has ended, and every window closed.
   bool end_of_input = 9;

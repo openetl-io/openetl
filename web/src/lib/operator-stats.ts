@@ -20,7 +20,7 @@ export function stateBytes(n: bigint) {
 /** Where the operator's watermark was, and how far behind the checkpoint's commit. */
 export function watermark(s: OperatorStats, committed?: Timestamp): { at: string; behind: string } {
   if (s.endOfInput) return { at: "End of input", behind: "Every window closed" };
-  if (!s.watermark) return { at: "None yet", behind: "Part of the stream has had no rows" };
+  if (!s.watermark) return { at: "None", behind: "Part of the stream has had no rows, or it's outside years 1 to 9999" };
   const at = timestampDate(s.watermark);
   const behind = committed ? timestampDate(committed).getTime() - at.getTime() : 0;
   return { at: at.toISOString().replace(/\.\d{3}Z$/, "Z"), behind: behind > 0 ? `${duration(behind)} behind the commit` : "At the commit" };

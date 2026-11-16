@@ -17,7 +17,7 @@ describe("operator stats", () => {
     const at = Date.UTC(2026, 10, 16, 12, 0, 0);
     const s = create(OperatorStatsSchema, { watermark: timestampFromMs(at) });
     expect(watermark(s, timestampFromMs(at + 185_000))).toEqual({ at: "2026-11-16T12:00:00Z", behind: "3m 05s behind the commit" });
-    expect(watermark(create(OperatorStatsSchema, {}), timestampFromMs(at)).at).toBe("None yet");
+    expect(watermark(create(OperatorStatsSchema, {}), timestampFromMs(at)).at).toBe("None");
     expect(watermark(create(OperatorStatsSchema, { endOfInput: true })).at).toBe("End of input");
   });
 

@@ -4803,8 +4803,9 @@ components:
                 watermark:
                     type: string
                     description: |-
-                        Its watermark: the least of its lanes'. Unset while a lane has none,
-                         and at the end of input.
+                        Its watermark: the least of its lanes'. Unset while a lane has none, at
+                         the end of input, and outside the years 1 to 9999, which a Timestamp
+                         holds.
                     format: date-time
                 endOfInput:
                     type: boolean
