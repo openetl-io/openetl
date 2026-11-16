@@ -95,7 +95,9 @@ type chaosConfig struct {
 	// spec.resources.workers, for a run in pods; 0: one pod.
 	workers int
 	// A test's own run, which fails unless each of its faults reached what
-	// it kills, and, if it can, it ran on workers.
+	// it kills, a record followed a kill of its attempt, and, if it can, it
+	// ran on workers. Its faults wait for its second committed record, and
+	// it writes until they have landed and it has resumed.
 	strict bool
 }
 
@@ -607,6 +609,9 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	})
 
 	writeCtx, stopWrite := context.WithTimeout(t.Context(), c.writing())
+	if c.strict {
+		writeCtx, stopWrite = s.strictWrites(t.Context(), c, pipeline)
+	}
 	defer stopWrite()
 	var faults sync.WaitGroup
 	faults.Go(func() { s.inject(writeCtx, t.Context(), c, rng, pipeline) })
@@ -669,19 +674,15 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		if c.onWorkers() && res.onWorkers == 0 {
 			t.Errorf("no attempt of %s ran on workers", name)
 		}
-		// A fault is counted once it has killed: a crash point as "killed at
-		// crash POINT", the others under their names, or a pod's.
 		counts := s.book.counts(pipeline)
 		for _, f := range c.faults {
-			done := f
-			if strings.HasPrefix(f, "crash ") {
-				done = "killed at " + f
-			} else if pod, ok := podFaults[f]; ok && c.pods {
-				done = pod
-			}
-			if counts[done] == 0 {
+			if counts[faultLanded(c, f)] == 0 {
 				t.Errorf("%s never killed anything; faults: %v", f, counts)
 			}
+		}
+		// A kill of its attempt was followed by a record of the next.
+		if heads, resumes, _ := s.book.progress(pipeline); slices.ContainsFunc(c.faults, killsAttempt) && resumes == 0 {
+			t.Errorf("no record after the last kill of %s's attempt: %d records committed, %d resumes", name, heads, resumes)
 		}
 		for what, n := range counts {
 			if strings.HasPrefix(what, "missed ") || strings.HasSuffix(what, " to kill") {
@@ -720,6 +721,44 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	if res.failed != "" {
 		t.Errorf("%s\nconfig: %s\nrerun: go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/%04d-' -chaos.seed=%d", res.failed, c, c.i, c.seed)
 	}
+}
+
+// strictWrites is how long a strict run writes: until each of its faults
+// has landed and the pipeline has written a record after the last kill of
+// its attempt, so that every fault lands while it reads, and the attempt
+// after it reads too; at least the run's writing time, and at most three
+// times that. It stops early on a fault that missed.
+func (s *chaosSuite) strictWrites(base context.Context, c chaosConfig, pipeline string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(base, 3*c.writing())
+	start := time.Now()
+	go func() {
+		for ctx.Err() == nil {
+			pause(ctx, 250*time.Millisecond)
+			counts := s.book.counts(pipeline)
+			if slices.ContainsFunc(slices.Collect(maps.Keys(counts)), func(k string) bool { return strings.HasPrefix(k, "missed ") }) {
+				cancel()
+				return
+			}
+			_, _, resuming := s.book.progress(pipeline)
+			if time.Since(start) >= c.writing() && !resuming && !slices.ContainsFunc(c.faults, func(f string) bool { return counts[faultLanded(c, f)] == 0 }) {
+				cancel()
+				return
+			}
+		}
+	}()
+	return ctx, cancel
+}
+
+// faultLanded is what the fault book counts once f has killed: a crash point as
+// "killed at crash POINT", the others under their names, or a pod's.
+func faultLanded(c chaosConfig, f string) string {
+	if strings.HasPrefix(f, "crash ") {
+		return "killed at " + f
+	}
+	if pod, ok := podFaults[f]; ok && c.pods {
+		return pod
+	}
+	return f
 }
 
 // attemptsOnWorkers is how many of the pipeline's attempts ran on workers.
@@ -795,6 +834,14 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 	defer partitions.Wait()
 	for _, e := range events {
 		pause(ctx, time.Until(start.Add(e.at)))
+		// A strict run's fault lands only once the pipeline has committed
+		// records, so state is behind it.
+		for c.strict && ctx.Err() == nil {
+			if heads, _, _ := s.book.progress(pipeline); heads >= 2 {
+				break
+			}
+			pause(ctx, 250*time.Millisecond)
+		}
 		if ctx.Err() != nil {
 			s.book.count(pipeline, "missed "+e.fault)
 			continue
@@ -827,6 +874,7 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 		case faultDrain:
 			done = sl.stop(pipeline, syscall.SIGTERM)
 		case faultEngine:
+			s.book.attemptDied(pipeline)
 			done = kill(engine)
 		case faultLauncher:
 			done = sl.killLauncher()
@@ -835,6 +883,9 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 			done = len(pids) > 0 && sl.stopWorker(pipeline, pids[rng.IntN(len(pids))])
 		case faultSource, faultDestination:
 			pids := sl.children(pipeline, strings.TrimPrefix(e.fault, "kill ")+"-")
+			if len(pids) > 0 {
+				s.book.attemptDied(pipeline)
+			}
 			done = len(pids) > 0 && kill(pids[rng.IntN(len(pids))])
 		case faultPartition:
 			d := 5*time.Second + upTo(rng, 15*time.Second)
@@ -882,6 +933,15 @@ func (s *chaosSuite) rescale(ctx context.Context, c chaosConfig, rng *rand.Rand,
 }
 
 func kill(pid int) bool { return pid > 0 && syscall.Kill(pid, syscall.SIGKILL) == nil }
+
+// killsAttempt reports whether fault f kills the attempt it lands on.
+func killsAttempt(f string) bool {
+	switch f {
+	case faultKill, faultEngine, faultSource, faultDestination, faultWorker:
+		return true
+	}
+	return strings.HasPrefix(f, "crash ")
+}
 
 // clusterFault kills the pipeline's Spark driver, or takes a Flink
 // container down for a few seconds in the background. A driver waits up to

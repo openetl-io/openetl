@@ -303,7 +303,7 @@ func (s *slot) stop(pipeline string, sig syscall.Signal) bool {
 		return false
 	}
 	if sig == syscall.SIGKILL {
-		s.pool.book.podDied(pipeline)
+		s.pool.book.attemptDied(pipeline)
 	}
 	if syscall.Kill(pod, sig) != nil {
 		return false
@@ -336,7 +336,7 @@ func (s *slot) workerPIDs(pipeline string) []int {
 
 // stopWorker kills a worker's pod of the pipeline, and waits for it to die.
 func (s *slot) stopWorker(pipeline string, pid int) bool {
-	s.pool.book.podDied(pipeline)
+	s.pool.book.attemptDied(pipeline)
 	if syscall.Kill(pid, syscall.SIGKILL) != nil {
 		return false
 	}

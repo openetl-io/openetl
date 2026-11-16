@@ -88,7 +88,9 @@ type pipeFaults struct {
 	lastWrite time.Time
 	// When its host's runner was killed, until a record shows the pipeline
 	// resumed.
-	killed  time.Time
+	killed time.Time
+	// HEAD swaps: records committed.
+	heads   int
 	counts  map[string]int
 	resumes []time.Duration
 }
@@ -229,7 +231,20 @@ func (b *faultBook) wrote(slot int, pipeline string, kind int) {
 		}
 	case reqHead:
 		f.recorded[slot] = false
+		f.heads++
 	}
+}
+
+// progress is how many records the pipeline has committed, how many times
+// it resumed after a kill, and whether it has written no record since its
+// attempt was last killed.
+func (b *faultBook) progress(pipeline string) (heads, resumes int, resuming bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if f := b.pipes[pipeline]; f != nil {
+		return f.heads, len(f.resumes), !f.killed.IsZero()
+	}
+	return 0, 0, false
 }
 
 // died notes that the slot's runner is being killed, which starts the
@@ -246,8 +261,9 @@ func (b *faultBook) died(slot int) {
 	}
 }
 
-// podDied starts the pipeline's resume clock: a pod runs only its own attempt.
-func (b *faultBook) podDied(pipeline string) {
+// attemptDied starts the pipeline's resume clock: its attempt's pod, engine
+// or connector died, which no other pipeline's attempt shares.
+func (b *faultBook) attemptDied(pipeline string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if f := b.pipes[pipeline]; f != nil {
