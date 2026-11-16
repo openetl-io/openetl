@@ -586,7 +586,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 			c.pipelineDoc(name, pipeSource, pipeDest, transform, dataPlane))
 		pipeline = mustQuery[string](t, "SELECT id::text FROM pipelines WHERE name = $1", name)
 	})
-	s.book.add(pipeline, c.noise)
+	s.book.add(pipeline, c.noise, c.strict)
 	res := runResult{c: c}
 	defer func() {
 		res.counts, res.resumes = s.book.remove(pipeline)
@@ -854,70 +854,106 @@ func (s *chaosSuite) inject(ctx, base context.Context, c chaosConfig, rng *rand.
 	defer partitions.Wait()
 	for _, e := range events {
 		pause(ctx, time.Until(start.Add(e.at)))
-		// A strict run's fault lands only once the pipeline has committed
-		// records, so state is behind it, and its newest attempt is writing.
-		for c.strict && ctx.Err() == nil && !s.book.ready(pipeline) {
-			pause(ctx, 250*time.Millisecond)
-		}
 		if ctx.Err() != nil {
 			s.book.count(pipeline, "missed "+e.fault)
 			continue
 		}
+		// It fires at one of the pipeline's requests, and for a strict run
+		// only while the pipeline is ready.
 		if point, ok := strings.CutPrefix(e.fault, "crash "); ok {
 			s.book.arm(pipeline, point)
 			continue
 		}
-		switch e.fault {
-		case faultDriver, faultTaskManager, faultJobManager:
-			if s.clusterFault(base, &partitions, e.fault, rng, pipeline) {
-				s.book.landed(pipeline)
-				s.book.count(pipeline, e.fault)
-			} else {
+		for {
+			// A strict run's fault lands only once the pipeline has
+			// committed records, its attempt one of them, so state is
+			// behind it.
+			for c.strict && ctx.Err() == nil && !s.book.ready(pipeline) {
+				pause(ctx, 250*time.Millisecond)
+			}
+			if ctx.Err() != nil {
 				s.book.count(pipeline, "missed "+e.fault)
+				break
 			}
-			continue
-		}
-		sl, engine := s.locate(base, s.poolFor(c), pipeline)
-		if sl == nil {
-			s.book.count(pipeline, "missed "+e.fault)
-			continue
-		}
-		done, what := true, e.fault
-		if name, ok := podFaults[e.fault]; ok && sl.launcher {
-			what = name
-		}
-		switch e.fault {
-		case faultKill:
-			done = sl.stop(pipeline, syscall.SIGKILL)
-		case faultDrain:
-			done = sl.stop(pipeline, syscall.SIGTERM)
-		case faultEngine:
-			s.book.attemptDied(pipeline)
-			done = kill(engine)
-		case faultLauncher:
-			done = sl.killLauncher()
-		case faultWorker:
-			pids := sl.workerPIDs(pipeline)
-			done = len(pids) > 0 && sl.stopWorker(pipeline, pids[rng.IntN(len(pids))])
-		case faultSource, faultDestination:
-			pids := sl.children(pipeline, strings.TrimPrefix(e.fault, "kill ")+"-")
-			if len(pids) > 0 {
-				s.book.attemptDied(pipeline)
+			what, done, again := s.fault(base, &partitions, c, rng, pipeline, e.fault)
+			if again {
+				continue
 			}
-			done = len(pids) > 0 && kill(pids[rng.IntN(len(pids))])
-		case faultPartition:
-			d := 5*time.Second + upTo(rng, 15*time.Second)
-			partitions.Go(func() { sl.partition(base, d) })
-		case faultResults:
-			sl.results.dropFor(5*time.Second + upTo(rng, 15*time.Second))
-		}
-		if done {
-			s.book.landed(pipeline)
-			s.book.count(pipeline, what)
-		} else {
-			s.book.count(pipeline, "missed "+what)
+			if done {
+				s.book.count(pipeline, what)
+			} else {
+				s.book.count(pipeline, "missed "+what)
+			}
+			break
 		}
 	}
+}
+
+// fault makes one of the run's faults other than a crash point, and says
+// what it was. It lands only if the fault book takes it, which for a strict
+// run is only while the pipeline is ready; else it's to be made again. One
+// that kills the pipeline's attempt is noted as landed, with the death,
+// just before the kill.
+func (s *chaosSuite) fault(base context.Context, partitions *sync.WaitGroup, c chaosConfig, rng *rand.Rand, pipeline, f string) (what string, done, again bool) {
+	land := func() bool { return s.book.land(pipeline, killsAttempt(f), c.strict) }
+	switch f {
+	case faultDriver, faultTaskManager, faultJobManager:
+		if !land() {
+			return f, false, true
+		}
+		return f, s.clusterFault(base, partitions, f, rng, pipeline), false
+	}
+	sl, engine := s.locate(base, s.poolFor(c), pipeline)
+	if sl == nil {
+		return f, false, false
+	}
+	what = f
+	if name, ok := podFaults[f]; ok && sl.launcher {
+		what = name
+	}
+	var act func() bool
+	switch f {
+	case faultKill:
+		act = func() bool { return sl.stop(pipeline, syscall.SIGKILL) }
+	case faultDrain:
+		act = func() bool { return sl.stop(pipeline, syscall.SIGTERM) }
+	case faultEngine:
+		act = func() bool { return kill(engine) }
+	case faultLauncher:
+		act = sl.killLauncher
+	case faultWorker:
+		pids := sl.workerPIDs(pipeline)
+		if len(pids) == 0 {
+			return what, false, false
+		}
+		pid := pids[rng.IntN(len(pids))]
+		act = func() bool { return sl.stopWorker(pid) }
+	case faultSource, faultDestination:
+		pids := sl.children(pipeline, strings.TrimPrefix(f, "kill ")+"-")
+		if len(pids) == 0 {
+			return what, false, false
+		}
+		pid := pids[rng.IntN(len(pids))]
+		act = func() bool { return kill(pid) }
+	case faultPartition:
+		d := 5*time.Second + upTo(rng, 15*time.Second)
+		act = func() bool {
+			partitions.Go(func() { sl.partition(base, d) })
+			return true
+		}
+	case faultResults:
+		d := 5*time.Second + upTo(rng, 15*time.Second)
+		act = func() bool {
+			sl.results.dropFor(d)
+			return true
+		}
+	default:
+		return what, false, false
+	}
+	if !land() {
+		return what, false, true
+	}
+	return what, act(), false
 }
 
 // rescale rescales the pipeline, by its ID and name, through the API at

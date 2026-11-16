@@ -90,16 +90,18 @@ type pipeFaults struct {
 	lastWrite time.Time
 	records   ledger.Records
 	counts    map[string]int
+	// A strict run's: its crash points fire only while it's ready.
+	strict bool
 }
 
 func newFaultBook(seed uint64) *faultBook {
 	return &faultBook{rng: rand.New(rand.NewPCG(seed, 0xfa17)), pipes: map[string]*pipeFaults{}}
 }
 
-func (b *faultBook) add(pipeline string, noise float64) {
+func (b *faultBook) add(pipeline string, noise float64, strict bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.pipes[pipeline] = &pipeFaults{noise: noise, recorded: map[int]bool{}, host: -1, counts: map[string]int{}}
+	b.pipes[pipeline] = &pipeFaults{noise: noise, recorded: map[int]bool{}, host: -1, counts: map[string]int{}, strict: strict}
 }
 
 // remove stops faulting the pipeline, and returns what it injected and the
@@ -166,17 +168,15 @@ func (b *faultBook) decide(slot int, pipeline string, kind int, gen int64) actio
 		f.records.Received(gen)
 	}
 	armed := ""
-	if len(f.armed) > 0 {
+	if len(f.armed) > 0 && (!f.strict || f.records.Ready()) {
 		armed = f.armed[0]
 	}
-	// A runner killed before its write is the pipeline's, though it may
-	// not have written for it yet; died times the others.
+	// Every crash point kills: it lands, and the attempt's death is noted,
+	// as it fires, before the kill.
 	fire := func(a action) action {
 		f.counts["crash "+armed]++
 		f.armed, a.point = f.armed[1:], armed
-		if a.kind == actKillBefore {
-			f.records.Killed(time.Now())
-		}
+		f.records.LandedKill(time.Now())
 		return a
 	}
 	switch {
@@ -231,7 +231,7 @@ func (b *faultBook) wrote(slot int, pipeline string, kind int, gen int64, at tim
 		f.records.Wrote(gen, at, time.Now())
 	case reqHead:
 		f.recorded[slot] = false
-		f.records.Head()
+		f.records.Head(at)
 	}
 }
 
@@ -253,13 +253,25 @@ func (b *faultBook) resuming(pipeline string) bool {
 	return f != nil && f.records.Resuming()
 }
 
-// landed notes that one of the pipeline's run's own faults landed.
-func (b *faultBook) landed(pipeline string) {
+// land notes that one of the pipeline's run's own faults lands now, and
+// with kill, that it kills the pipeline's attempt, before it does. With
+// ready, it lands only while the pipeline is ready (see
+// ledger.Records.Ready). It reports whether it landed.
+func (b *faultBook) land(pipeline string, kill, ready bool) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if f := b.pipes[pipeline]; f != nil {
+	f := b.pipes[pipeline]
+	switch {
+	case f == nil:
+		return true
+	case ready && !f.records.Ready():
+		return false
+	case kill:
+		f.records.LandedKill(time.Now())
+	default:
 		f.records.Landed()
 	}
+	return true
 }
 
 // strict is what a strict run of the pipeline fails of so far: see
@@ -275,7 +287,9 @@ func (b *faultBook) strict(pipeline string, faults, kills int) []string {
 
 // died notes that the slot's runner is being killed, which starts the
 // resume clock of each pipeline it was writing, again if its runner died
-// before, so a resume is timed from its runner's last death.
+// before, so a resume is timed from its runner's last death. It's how a
+// run sees another run's kill of the runner they share; its own kills are
+// noted as they land.
 func (b *faultBook) died(slot int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -284,16 +298,6 @@ func (b *faultBook) died(slot int) {
 		if f.host == slot && now.Sub(f.lastWrite) < 10*time.Second {
 			f.records.Killed(now)
 		}
-	}
-}
-
-// attemptDied starts the pipeline's resume clock: its attempt's pod, engine
-// or connector died, which no other pipeline's attempt shares.
-func (b *faultBook) attemptDied(pipeline string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if f := b.pipes[pipeline]; f != nil {
-		f.records.Killed(time.Now())
 	}
 }
 
