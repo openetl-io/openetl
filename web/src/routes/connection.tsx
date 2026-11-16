@@ -1,11 +1,13 @@
 import { useCallback, useMemo } from "react";
 import { Code } from "@connectrpc/connect";
-import { useQuery } from "@connectrpc/connect-query";
+import { useMutation, useQuery } from "@connectrpc/connect-query";
 import { getRouteApi } from "@tanstack/react-router";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Database, Warehouse } from "lucide-react";
+import { Database, ListChecks, LoaderCircle, Warehouse } from "lucide-react";
 import { stringify } from "yaml";
+import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { CheckResultView } from "@/components/check-result";
 import { CodeBlock } from "@/components/code-block";
 import { ConnectorLogo } from "@/components/connector";
 import { DescriptionItem, DetailHeader, Section } from "@/components/detail-header";
@@ -20,6 +22,7 @@ import { errorCode, errorMessage } from "@/lib/api";
 import { dateOf } from "@/lib/format";
 import { shortDigest } from "@/lib/names";
 import { connectorName } from "@/lib/connectors";
+import { useCan } from "@/lib/caller";
 import type { Kind } from "./connections";
 
 const routes = {
@@ -45,6 +48,19 @@ function UsedByTable({ workspace, kind, id }: { workspace: string; kind: Kind; i
   return <PipelinesTable workspace={workspace} match={match} column={other} empty={`No pipeline uses this ${kind} yet.`} />;
 }
 
+/** Runs the connector's check on a runner of the default data plane, and shows what it looked at. */
+function useCheck(kind: Kind, name: string) {
+  const source = useMutation(SourceService.method.checkSource);
+  const destination = useMutation(DestinationService.method.checkDestination);
+  const m = kind === "source" ? source : destination;
+  return {
+    run: () => (kind === "source" ? source.mutate({ name }) : destination.mutate({ name })),
+    pending: m.isPending,
+    result: m.data?.result,
+    error: m.error,
+  };
+}
+
 function ConnectionPage({ kind }: { kind: Kind }) {
   const params = routes[kind].useParams() as { workspace: string; source?: string; destination?: string };
   const { workspace } = params;
@@ -54,6 +70,8 @@ function ConnectionPage({ kind }: { kind: Kind }) {
   const destination = useQuery(DestinationService.method.getDestination, { name }, { enabled: kind === "destination" });
   const q = kind === "source" ? source : destination;
   const x = kind === "source" ? source.data?.source : destination.data?.destination;
+  const check = useCheck(kind, name);
+  const can = useCan(workspace);
 
   if (q.error) {
     return errorCode(q.error) === Code.NotFound ? (
@@ -67,7 +85,18 @@ function ConnectionPage({ kind }: { kind: Kind }) {
 
   return (
     <div className="grid gap-8">
-      <DetailHeader title={id}>
+      <DetailHeader
+        title={id}
+        actions={
+          x &&
+          can(`${kind}s.check`) && (
+            <Button variant="outline" size="sm" onClick={check.run} disabled={check.pending}>
+              {check.pending ? <LoaderCircle className="animate-spin" aria-hidden /> : <ListChecks aria-hidden />}
+              {check.pending ? "Checking…" : "Check"}
+            </Button>
+          )
+        }
+      >
         {x && (
           <>
             <DescriptionItem label="Connector">
@@ -100,6 +129,17 @@ function ConnectionPage({ kind }: { kind: Kind }) {
           </>
         )}
       </DetailHeader>
+      {(check.result || check.error) && (
+        <Section title="Check">
+          <div className="max-w-4xl">
+            {check.error ? (
+              <ErrorNote title="Couldn't run the check" message={errorMessage(check.error)} />
+            ) : (
+              check.result && <CheckResultView result={check.result} />
+            )}
+          </div>
+        </Section>
+      )}
       <Section title="Pipelines">
         <UsedByTable workspace={workspace} kind={kind} id={id} />
       </Section>

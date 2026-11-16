@@ -67,7 +67,7 @@ Every form accepts `field` to select one top-level field of a JSON object. It do
 
 The runner uses the AWS SDK's default credentials, Google's application default credentials, or Azure's default credential. It needs permission to read the selected secret version and any required decryption permissions.
 
-Creating the OpenETL secret validates the reference syntax. It does not prove that the runner can read the cloud secret. After applying the connection, run its source or destination check from [the pipeline CLI](../reference/pipeline-cli.md#check-connections-and-discover-streams).
+Creating the OpenETL secret validates the reference syntax. It does not prove that the runner can read the cloud secret. After applying the connection, run its source or destination check from [the pipeline CLI](../reference/pipeline-cli.md#check-connections-preflight-pipelines-and-discover-streams).
 
 ## Check what uses a secret
 

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package openetl.connector.v1;
 
+import "openetl/connector/v1/check.proto";
 import "openetl/connector/v1/destination.proto";
 import "openetl/connector/v1/errors.proto";
 import "openetl/connector/v1/source.proto";
@@ -13,7 +14,11 @@ option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1
 // secret fields hold secret names, not values.
 service ConnectorService {
   rpc Spec(SpecRequest) returns (SpecResponse);
-  // A failed check is reported in CheckResponse, not as an RPC error.
+  // Whether the config reaches the source or destination: a light check of
+  // the connection alone, such as signing in, with no pipeline. A failed
+  // check is reported in CheckResponse, not as an RPC error. A pipeline's
+  // deeper checks are its preflight, SourceService.PreflightSource and
+  // DestinationService.PreflightDestination.
   rpc Check(CheckRequest) returns (CheckResponse);
   // Setup and Teardown must be idempotent. They're called only when
   // SpecResponse.setup is set: Setup before each attempt that reads or
@@ -43,7 +48,9 @@ message SpecResponse {
   // "v1".
   string protocol_version = 1;
   ConnectorKind kind = 2;
-  // A JSON Schema. Fields marked "x-secret": true hold secret names.
+  // A JSON Schema. Fields marked "x-secret": true hold secret names. The
+  // x- keywords a form reads, such as x-group and x-when, are in
+  // docs/build-connectors.
   bytes config_schema = 3;
   Egress egress = 4;
   bool setup = 5;
@@ -78,8 +85,12 @@ message CheckRequest {
 }
 
 message CheckResponse {
-  // Unset when the check passed.
+  // Unset when the check passed. With items, the first failed item's error.
   Error error = 1;
+  // What the check looked at, one item each, in the order it ran, such as
+  // reaching the service and signing in. Empty from a connector that
+  // reports only error.
+  repeated CheckItem items = 2;
 }
 
 message SetupRequest {

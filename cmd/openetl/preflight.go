@@ -1,9 +1,9 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"slices"
@@ -27,23 +27,28 @@ const checksAtOnce = 4
 const (
 	checkSource      = "source"
 	checkDestination = "destination"
+	checkPipeline    = "pipeline"
 )
 
-// checkTarget is a source or destination for a runner to reach.
+// checkTarget is a source or destination to check, or a pipeline to
+// preflight.
 type checkTarget struct {
 	kind string
-	// workspaces/{workspace}/sources/{source}, or destinations.
+	// workspaces/{workspace}/sources/{source}, destinations or pipelines.
 	name string
-	// Empty: the server's.
-	dataPlane string
 }
 
-func (t checkTarget) label() string { return t.kind + " " + t.name[strings.LastIndex(t.name, "/")+1:] }
+func (t checkTarget) label() string { return t.kind + " " + shortName(t.name) }
+
+func shortName(name string) string { return name[strings.LastIndex(name, "/")+1:] }
 
 type checkOutcome struct {
-	target  checkTarget
-	streams int
-	err     error
+	target checkTarget
+	err    error
+	// A check's items.
+	items []checkItem
+	// A preflight's result.
+	preflight *apiv1.PreflightResult
 }
 
 type checkClients struct {
@@ -63,8 +68,8 @@ func newCheckClients(conn *api) (c checkClients, err error) {
 	return c, err
 }
 
-// run checks each target on a runner, and discovers each source that passes,
-// which refreshes the catalog plans read.
+// run checks or preflights each target on a runner. A source that passes
+// is discovered too.
 func (c checkClients) run(ctx context.Context, targets []checkTarget) []checkOutcome {
 	out := make([]checkOutcome, len(targets))
 	var g errgroup.Group
@@ -81,94 +86,118 @@ func (c checkClients) run(ctx context.Context, targets []checkTarget) []checkOut
 
 func (c checkClients) check(ctx context.Context, t checkTarget) checkOutcome {
 	o := checkOutcome{target: t}
-	if t.kind == checkDestination {
-		r, err := c.destinations.CheckDestination(ctx, connect.NewRequest(&apiv1.CheckDestinationRequest{Name: t.name, DataPlane: t.dataPlane}))
+	var res *apiv1.CheckResult
+	switch t.kind {
+	case checkPipeline:
+		r, err := c.pipelines.PreflightPipeline(ctx, connect.NewRequest(&apiv1.PreflightPipelineRequest{Name: t.name}))
 		if err != nil {
 			o.err = err
 			return o
 		}
-		o.err = checkFailure(r.Msg.GetResult())
+		o.preflight = r.Msg.GetResult()
+		if !o.preflight.GetOk() {
+			o.err = errors.New(preflightFailure(o.preflight))
+		}
+		return o
+	case checkDestination:
+		r, err := c.destinations.CheckDestination(ctx, connect.NewRequest(&apiv1.CheckDestinationRequest{Name: t.name}))
+		if err != nil {
+			o.err = err
+			return o
+		}
+		res = r.Msg.GetResult()
+	default:
+		r, err := c.sources.CheckSource(ctx, connect.NewRequest(&apiv1.CheckSourceRequest{Name: t.name}))
+		if err != nil {
+			o.err = err
+			return o
+		}
+		res = r.Msg.GetResult()
+	}
+	o.items = apiCheckItems(res.GetItems())
+	if !res.GetOk() {
+		o.err = fmt.Errorf("%s: %s", res.GetCode(), res.GetMessage())
 		return o
 	}
-	r, err := c.sources.CheckSource(ctx, connect.NewRequest(&apiv1.CheckSourceRequest{Name: t.name, DataPlane: t.dataPlane}))
-	if err != nil {
-		o.err = err
-		return o
+	// Discovering refreshes the catalog that plans read.
+	if t.kind == checkSource {
+		_, o.err = c.sources.DiscoverSource(ctx, connect.NewRequest(&apiv1.DiscoverSourceRequest{Name: t.name}))
 	}
-	if o.err = checkFailure(r.Msg.GetResult()); o.err != nil {
-		return o
-	}
-	d, err := c.sources.DiscoverSource(ctx, connect.NewRequest(&apiv1.DiscoverSourceRequest{Name: t.name, DataPlane: t.dataPlane}))
-	if err != nil {
-		o.err = err
-		return o
-	}
-	o.streams = len(d.Msg.GetCatalog().GetStreams())
 	return o
 }
 
-func checkFailure(r *apiv1.CheckResult) error {
-	if r.GetOk() {
-		return nil
+// partLabel names a preflight's part: "source shop's check".
+func partLabel(p *apiv1.PreflightPart) string {
+	if p.GetRole() == "sync" {
+		return "the sync's plan"
 	}
-	return fmt.Errorf("%s: %s", r.GetCode(), r.GetMessage())
+	return fmt.Sprintf("%s %s's %s", p.GetRole(), shortName(p.GetResource()), p.GetStage())
 }
 
-// pipelineTargets are p's source and destination, on dataPlane or else on
-// p's own.
-func pipelineTargets(p *apiv1.Pipeline, dataPlane string) []checkTarget {
-	workspace, _, _ := strings.Cut(p.GetName(), "/pipelines/")
-	dp := cmp.Or(dataPlane, p.GetSpec().GetDataPlane())
-	var out []checkTarget
-	if ref := p.GetSpec().GetSource().GetRef(); ref != "" {
-		out = append(out, checkTarget{kind: checkSource, name: workspace + "/sources/" + ref, dataPlane: dp})
+// preflightFailure is the first part that failed.
+func preflightFailure(r *apiv1.PreflightResult) string {
+	for _, p := range r.GetParts() {
+		if !p.GetOk() && p.GetSkipped() == "" {
+			if p.GetCode() == "" {
+				return partLabel(p) + " failed"
+			}
+			return fmt.Sprintf("%s failed: %s: %s", partLabel(p), p.GetCode(), p.GetMessage())
+		}
 	}
-	if ref := p.GetSpec().GetDestination().GetRef(); ref != "" {
-		out = append(out, checkTarget{kind: checkDestination, name: workspace + "/destinations/" + ref, dataPlane: dp})
-	}
-	return out
+	return "it failed"
 }
 
-// checkPipeline checks a pipeline's connections, refreshes its source's
-// catalog and prints the plan that gives, and fails if any of that does.
-func checkPipeline(ctx context.Context, conn *api, workspace, dataPlane, pipeline string, out io.Writer) error {
+// printPreflight prints each part of a preflight, and its items.
+func printPreflight(out io.Writer, r *apiv1.PreflightResult) {
+	for _, p := range r.GetParts() {
+		switch {
+		case p.GetSkipped() != "":
+			fmt.Fprintf(out, "%s: skipped, %s\n", partLabel(p), p.GetSkipped())
+		case p.GetOk():
+			fmt.Fprintf(out, "%s: passed\n", partLabel(p))
+		case p.GetCode() != "":
+			fmt.Fprintf(out, "%s: failed: %s: %s\n", partLabel(p), p.GetCode(), p.GetMessage())
+		default:
+			fmt.Fprintf(out, "%s: failed\n", partLabel(p))
+		}
+		printCheckItems(out, "  ", apiCheckItems(p.GetItems()))
+	}
+}
+
+func runPreflight(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("openetl preflight", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: openetl preflight [flags] PIPELINE")
+		fmt.Fprintln(fs.Output(), "\nRuns on a runner of the pipeline's own data plane.")
+		fs.PrintDefaults()
+	}
+	conn := apiFlags(fs)
+	workspace := fs.String("workspace", "default", "the pipeline's workspace")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("preflight takes one pipeline name, after its flags")
+	}
 	c, err := newCheckClients(conn)
 	if err != nil {
 		return err
 	}
-	name := "workspaces/" + workspace + "/pipelines/" + pipeline
-	p, err := c.pipelines.GetPipeline(ctx, connect.NewRequest(&apiv1.GetPipelineRequest{Name: name}))
-	if err != nil {
-		return err
+	name := "workspaces/" + *workspace + "/pipelines/" + fs.Arg(0)
+	o := c.check(ctx, checkTarget{kind: checkPipeline, name: name})
+	if o.preflight == nil {
+		return o.err
 	}
-	failed := false
-	for _, o := range c.run(ctx, pipelineTargets(p.Msg.GetPipeline(), dataPlane)) {
-		switch {
-		case o.err != nil:
-			failed = true
-			fmt.Fprintf(out, "%s failed its check: %v\n", o.target.label(), o.err)
-		case o.target.kind == checkSource:
-			fmt.Fprintf(out, "%s passed its check, and offers %s\n", o.target.label(), streamCount(o.streams))
-		default:
-			fmt.Fprintf(out, "%s passed its check\n", o.target.label())
-		}
-	}
+	printPreflight(out, o.preflight)
 	plan, err := c.pipelines.GetPipelinePlan(ctx, connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: name}))
 	if err != nil {
 		return err
 	}
 	printPlan(out, plan.Msg.GetPlan())
-	if failed || len(plan.Msg.GetPlan().GetProblems()) > 0 {
-		return errors.New(name + " failed its checks")
+	if o.err != nil {
+		return fmt.Errorf("%s failed its preflight: %w", name, o.err)
 	}
 	return nil
-}
-
-func streamCount(n int) string {
-	if n == 1 {
-		return "1 stream"
-	}
-	return fmt.Sprintf("%d streams", n)
 }
 
 // resourceCollection is "sources" for workspaces/w/sources/s, and empty for
@@ -180,9 +209,10 @@ func resourceCollection(name string) string {
 	return ""
 }
 
-// checkApplied asks a runner to check what an apply changed: each source and
-// destination it created or updated, and each one a pipeline it created or
-// updated uses. What's applied stands, so a failure only warns.
+// checkApplied asks a runner about what an apply changed: a preflight of
+// each pipeline it created or updated, which checks its source and
+// destination, and a check of each other source and destination it created
+// or updated. What's applied stands, so a failure only warns.
 func checkApplied(ctx context.Context, conn *api, res *apiv1.ApplyResponse, out io.Writer) {
 	ctx, cancel := context.WithTimeout(ctx, applyCheckLimit)
 	defer cancel()
@@ -193,51 +223,54 @@ func checkApplied(ctx context.Context, conn *api, res *apiv1.ApplyResponse, out 
 	}
 	var targets []checkTarget
 	var warnings []string
-	add := func(t checkTarget) {
-		if !slices.ContainsFunc(targets, func(have checkTarget) bool { return have.name == t.name }) {
-			targets = append(targets, t)
-		}
-	}
+	covered := map[string]bool{}
 	changed := func(r *apiv1.AppliedResource) bool { return r.GetAction() != apiv1.ApplyAction_APPLY_ACTION_UNCHANGED }
-	// A pipeline's connections are checked on its data plane, so they go first.
 	for _, r := range res.GetResources() {
 		if !changed(r) || resourceCollection(r.GetName()) != "pipelines" {
 			continue
 		}
+		targets = append(targets, checkTarget{kind: checkPipeline, name: r.GetName()})
 		p, err := c.pipelines.GetPipeline(ctx, connect.NewRequest(&apiv1.GetPipelineRequest{Name: r.GetName()}))
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s: %v", r.GetName(), err))
 			continue
 		}
-		for _, t := range pipelineTargets(p.Msg.GetPipeline(), "") {
-			add(t)
-		}
+		workspace, _, _ := strings.Cut(p.Msg.GetPipeline().GetName(), "/pipelines/")
+		covered[workspace+"/sources/"+p.Msg.GetPipeline().GetSpec().GetSource().GetRef()] = true
+		covered[workspace+"/destinations/"+p.Msg.GetPipeline().GetSpec().GetDestination().GetRef()] = true
 	}
 	for _, r := range res.GetResources() {
-		if !changed(r) {
+		if !changed(r) || covered[r.GetName()] {
 			continue
 		}
 		switch resourceCollection(r.GetName()) {
 		case "sources":
-			add(checkTarget{kind: checkSource, name: r.GetName()})
+			targets = append(targets, checkTarget{kind: checkSource, name: r.GetName()})
 		case "destinations":
-			add(checkTarget{kind: checkDestination, name: r.GetName()})
+			targets = append(targets, checkTarget{kind: checkDestination, name: r.GetName()})
 		}
-	}
-	if len(targets) == 0 {
-		return
 	}
 	var passed []string
 	for _, o := range c.run(ctx, targets) {
-		if o.err != nil {
-			warnings = append(warnings, fmt.Sprintf("%s: %v", o.target.label(), o.err))
+		if o.err == nil {
+			passed = append(passed, o.target.label())
 			continue
 		}
-		passed = append(passed, o.target.label())
+		warnings = append(warnings, fmt.Sprintf("%s: %v", o.target.label(), o.err))
+		items := o.items
+		for _, p := range o.preflight.GetParts() {
+			items = append(items, apiCheckItems(p.GetItems())...)
+		}
+		for _, it := range items {
+			if it.status == "failed" && it.fix != "" {
+				warnings = append(warnings, fmt.Sprintf("  %s: %s", it.title, it.fix))
+			}
+		}
 	}
-	// With its source's catalog fresh, a plan can see what the apply's couldn't.
-	for _, r := range slices.Concat(res.GetResources(), res.GetDependents()) {
-		if !changed(r) || resourceCollection(r.GetName()) != "pipelines" || ctx.Err() != nil {
+	// A pipeline that depends on what changed, without changing itself, gets
+	// its plan looked at, with its source's catalog refreshed above.
+	for _, r := range res.GetDependents() {
+		if !changed(r) || resourceCollection(r.GetName()) != "pipelines" || slices.ContainsFunc(targets, func(t checkTarget) bool { return t.name == r.GetName() }) {
 			continue
 		}
 		plan, err := c.pipelines.GetPipelinePlan(ctx, connect.NewRequest(&apiv1.GetPipelinePlanRequest{Name: r.GetName()}))

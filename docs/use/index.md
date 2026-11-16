@@ -80,13 +80,23 @@ The top of a pipeline's page has its status, and:
 
 Below that, a strip shows its latest syncs, oldest on the left. Each one's color is its status, and its length grows with how long it took. Hover over one for its rows, or click it to open it.
 
+### Preflight
+
+**Preflight** tests whether the pipeline can run, without reading or writing records. It is a [preflight](../get-started/concepts.md#checks-and-preflights). A panel opens and shows each part when it finishes:
+
+1. The source's and the destination's connections.
+2. The source connector's checks of the streams the pipeline reads, and the destination connector's checks of the streams it writes.
+3. The sync's plan, with its problems and warnings.
+
+Each part lists its items, with the config field and a **Fix** for each item that failed or gave a warning. A part is skipped if a part it needs failed. For example, the source's checks of its streams do not run if its connection fails. Select **Run again** after you correct something.
+
 ### Sync now, Pause and Resume
 
 - **Sync now** starts a sync immediately. It is disabled while a sync is running and hidden while the pipeline is paused. Continuous pipelines do not have this action.
 - **Pause** prevents future scheduled syncs. An active scheduled sync continues. For a continuous pipeline, it stops the running job.
 - **Resume** enables scheduled starts again. For a continuous pipeline, it restarts the job from its last checkpoint.
 
-These buttons show only if your role may use them.
+These buttons, and **Preflight**, show only if your role may use them.
 
 ### Overview
 
@@ -249,10 +259,10 @@ For a pipeline that waits, fails repeatedly or stops delivering fresh data, foll
 
 ## Sources, destinations and connectors
 
-- **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values.
+- **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values. **Check** asks a runner to connect with the config: a [check](../get-started/concepts.md#checks-and-preflights) of the connection alone. Connectors that say what they looked at list each item: what **Passed**, what needs attention as a **Warning**, what **Failed** with the config field it concerns and a **Fix**, and what was **Skipped**.
 - **dbt projects** lists the dbt projects that run after pipelines' syncs, and under **Run after**, the pipelines each one runs after.
 - **Clusters** has **Spark** and **Flink** tabs. Each entry shows what the cluster **Runs on**, such as **spark-submit**, **EMR on EC2** or **Kubernetes**. **Used by** lists its pipelines. Open a cluster to inspect **Settings**, defaults, job configuration and **Pipelines**. **Runs** identifies use as a transform or after a sync. Secret settings show references without their values.
-- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, and the command that applies it, which makes it available to sources and destinations. A catalog source is a package registry or repository, separate from a pipeline's data source.
+- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, its config's fields under their sections with their values, defaults and when each applies, and the command that applies it, which makes it available to sources and destinations. A catalog source is a package registry or repository, separate from a pipeline's data source.
 
 Connectors can be official, community maintained or private to your organization. Each has its own versions and releases, separate from OpenETL. Use a package's **Docs** link for its setup, supported modes and limits. An administrator manages installation and upgrades; [Choose and manage connectors](../pipelines/connectors.md) gives the CLI steps.
 
@@ -272,7 +282,7 @@ Each role includes the ones before it. A role is given for one workspace, or for
 | Role | What it adds |
 |---|---|
 | Viewer | Reads resources in their role's scope, including sync logs and incidents. The audit log requires Admin; no role sees secret values. |
-| Operator | **Sync now**, **Pause** and **Resume**; resolving incidents; sending a webhook a test event, and disabling or enabling it. With the CLI, also checking that sources and destinations can be reached, and resizing a pipeline's syncs. |
+| Operator | **Sync now**, **Pause**, **Resume** and **Preflight**; **Check** on a source or destination; resolving incidents; sending a webhook a test event, and disabling or enabling it. With the CLI, also checking that sources and destinations can be reached, and resizing a pipeline's syncs. |
 | Editor | Creating, changing and deleting sources, destinations, pipelines, dbt projects, clusters and webhooks; setting secrets; releasing and discarding holds; reading quarantined records with **Show records**. With the CLI, also reading a pipeline's streams again from the start, and letting it restart from an earlier checkpoint. |
 | Admin | Installing connectors; adding people and service accounts, and giving them roles, API keys and password links; runner tokens; the audit log; signing people out everywhere. |
 | Owner | Managing other owners. |

@@ -13,7 +13,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file openetl/api/v1/connector.proto.
  */
 export const file_openetl_api_v1_connector: GenFile = /*@__PURE__*/
-  fileDesc("Ch5vcGVuZXRsL2FwaS92MS9jb25uZWN0b3IucHJvdG8SDm9wZW5ldGwuYXBpLnYxIkQKE0Nvbm5lY3RvclNvdXJjZVNwZWMSCwoDdXJsGAEgASgJEhAKCHVzZXJuYW1lGAIgASgJEg4KBnNlY3JldBgDIAEoCSLnAQoPQ29ubmVjdG9yU291cmNlEgwKBG5hbWUYASABKAkSMQoEc3BlYxgCIAEoCzIjLm9wZW5ldGwuYXBpLnYxLkNvbm5lY3RvclNvdXJjZVNwZWMSEAoIb2ZmaWNpYWwYAyABKAgSMAoMcmVmcmVzaF90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBINCgVlcnJvchgFIAEoCRIuCgplcnJvcl90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIQCghwYWNrYWdlcxgHIAEoBSIdChtMaXN0Q29ubmVjdG9yU291cmNlc1JlcXVlc3QiUAocTGlzdENvbm5lY3RvclNvdXJjZXNSZXNwb25zZRIwCgdzb3VyY2VzGAEgAygLMh8ub3BlbmV0bC5hcGkudjEuQ29ubmVjdG9yU291cmNlIiwKHERlbGV0ZUNvbm5lY3RvclNvdXJjZVJlcXVlc3QSDAoEbmFtZRgBIAEoCSIfCh1EZWxldGVDb25uZWN0b3JTb3VyY2VSZXNwb25zZSLcAgoOQ2F0YWxvZ1BhY2thZ2USDAoEbmFtZRgBIAEoCRIOCgZzb3VyY2UYAiABKAkSDwoHcGFja2FnZRgDIAEoCRINCgV0aXRsZRgEIAEoCRIPCgd2ZXJzaW9uGAUgASgJEg4KBmF1dGhvchgGIAEoCRITCgtkZXNjcmlwdGlvbhgHIAEoCRIPCgdsaWNlbnNlGAggASgJEhIKCnJlcG9zaXRvcnkYCSABKAkSDAoEZG9jcxgKIAEoCRINCgVyb2xlcxgLIAMoCRIMCgR0YWdzGAwgAygJEgwKBGxvZ28YDSABKAkSEQoJcmVmZXJlbmNlGA4gASgJEhAKCG9mZmljaWFsGA8gASgIEhAKCGltcG9zdG9yGBAgASgIEhcKD2FwcGxpZWRfdmVyc2lvbhgRIAEoCRIOCgZtYW51YWwYEiABKAgSGAoQdXBkYXRlX2F2YWlsYWJsZRgTIAEoCCJvCgtDb25maWdGaWVsZBIMCgRuYW1lGAEgASgJEgwKBHR5cGUYAiABKAkSDQoFdGl0bGUYAyABKAkSEwoLZGVzY3JpcHRpb24YBCABKAkSEAoIcmVxdWlyZWQYBSABKAgSDgoGc2VjcmV0GAYgASgIIkgKC0NhdGFsb2dSb2xlEgwKBHJvbGUYASABKAkSKwoGY29uZmlnGAIgAygLMhsub3BlbmV0bC5hcGkudjEuQ29uZmlnRmllbGQiFAoSTGlzdENhdGFsb2dSZXF1ZXN0IkcKE0xpc3RDYXRhbG9nUmVzcG9uc2USMAoIcGFja2FnZXMYASADKAsyHi5vcGVuZXRsLmFwaS52MS5DYXRhbG9nUGFja2FnZSIoChhHZXRDYXRhbG9nUGFja2FnZVJlcXVlc3QSDAoEbmFtZRgBIAEoCSJ4ChlHZXRDYXRhbG9nUGFja2FnZVJlc3BvbnNlEi8KB3BhY2thZ2UYASABKAsyHi5vcGVuZXRsLmFwaS52MS5DYXRhbG9nUGFja2FnZRIqCgVyb2xlcxgCIAMoCzIbLm9wZW5ldGwuYXBpLnYxLkNhdGFsb2dSb2xlIhcKFVJlZnJlc2hDYXRhbG9nUmVxdWVzdCJKChZSZWZyZXNoQ2F0YWxvZ1Jlc3BvbnNlEjAKB3NvdXJjZXMYASADKAsyHy5vcGVuZXRsLmFwaS52MS5Db25uZWN0b3JTb3VyY2UyvQUKEENvbm5lY3RvclNlcnZpY2USjwEKFExpc3RDb25uZWN0b3JTb3VyY2VzEisub3BlbmV0bC5hcGkudjEuTGlzdENvbm5lY3RvclNvdXJjZXNSZXF1ZXN0Giwub3BlbmV0bC5hcGkudjEuTGlzdENvbm5lY3RvclNvdXJjZXNSZXNwb25zZSIcgtPkkwIWEhQvdjEvY29ubmVjdG9yU291cmNlcxKbAQoVRGVsZXRlQ29ubmVjdG9yU291cmNlEiwub3BlbmV0bC5hcGkudjEuRGVsZXRlQ29ubmVjdG9yU291cmNlUmVxdWVzdBotLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZUNvbm5lY3RvclNvdXJjZVJlc3BvbnNlIiWC0+STAh8qHS92MS97bmFtZT1jb25uZWN0b3JTb3VyY2VzLyp9EmsKC0xpc3RDYXRhbG9nEiIub3BlbmV0bC5hcGkudjEuTGlzdENhdGFsb2dSZXF1ZXN0GiMub3BlbmV0bC5hcGkudjEuTGlzdENhdGFsb2dSZXNwb25zZSITgtPkkwINEgsvdjEvY2F0YWxvZxKKAQoRR2V0Q2F0YWxvZ1BhY2thZ2USKC5vcGVuZXRsLmFwaS52MS5HZXRDYXRhbG9nUGFja2FnZVJlcXVlc3QaKS5vcGVuZXRsLmFwaS52MS5HZXRDYXRhbG9nUGFja2FnZVJlc3BvbnNlIiCC0+STAhoSGC92MS97bmFtZT1jYXRhbG9nLyovKi8qfRJ/Cg5SZWZyZXNoQ2F0YWxvZxIlLm9wZW5ldGwuYXBpLnYxLlJlZnJlc2hDYXRhbG9nUmVxdWVzdBomLm9wZW5ldGwuYXBpLnYxLlJlZnJlc2hDYXRhbG9nUmVzcG9uc2UiHoLT5JMCGDoBKiITL3YxL2NhdGFsb2c6cmVmcmVzaEI4WjZnaXRodWIuY29tL29wZW5ldGwtaW8vb3BlbmV0bC9nZW4vb3BlbmV0bC9hcGkvdjE7YXBpdjFiBnByb3RvMw", [file_google_api_annotations, file_google_protobuf_timestamp]);
+  fileDesc("Ch5vcGVuZXRsL2FwaS92MS9jb25uZWN0b3IucHJvdG8SDm9wZW5ldGwuYXBpLnYxIkQKE0Nvbm5lY3RvclNvdXJjZVNwZWMSCwoDdXJsGAEgASgJEhAKCHVzZXJuYW1lGAIgASgJEg4KBnNlY3JldBgDIAEoCSLnAQoPQ29ubmVjdG9yU291cmNlEgwKBG5hbWUYASABKAkSMQoEc3BlYxgCIAEoCzIjLm9wZW5ldGwuYXBpLnYxLkNvbm5lY3RvclNvdXJjZVNwZWMSEAoIb2ZmaWNpYWwYAyABKAgSMAoMcmVmcmVzaF90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBINCgVlcnJvchgFIAEoCRIuCgplcnJvcl90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBIQCghwYWNrYWdlcxgHIAEoBSIdChtMaXN0Q29ubmVjdG9yU291cmNlc1JlcXVlc3QiUAocTGlzdENvbm5lY3RvclNvdXJjZXNSZXNwb25zZRIwCgdzb3VyY2VzGAEgAygLMh8ub3BlbmV0bC5hcGkudjEuQ29ubmVjdG9yU291cmNlIiwKHERlbGV0ZUNvbm5lY3RvclNvdXJjZVJlcXVlc3QSDAoEbmFtZRgBIAEoCSIfCh1EZWxldGVDb25uZWN0b3JTb3VyY2VSZXNwb25zZSLcAgoOQ2F0YWxvZ1BhY2thZ2USDAoEbmFtZRgBIAEoCRIOCgZzb3VyY2UYAiABKAkSDwoHcGFja2FnZRgDIAEoCRINCgV0aXRsZRgEIAEoCRIPCgd2ZXJzaW9uGAUgASgJEg4KBmF1dGhvchgGIAEoCRITCgtkZXNjcmlwdGlvbhgHIAEoCRIPCgdsaWNlbnNlGAggASgJEhIKCnJlcG9zaXRvcnkYCSABKAkSDAoEZG9jcxgKIAEoCRINCgVyb2xlcxgLIAMoCRIMCgR0YWdzGAwgAygJEgwKBGxvZ28YDSABKAkSEQoJcmVmZXJlbmNlGA4gASgJEhAKCG9mZmljaWFsGA8gASgIEhAKCGltcG9zdG9yGBAgASgIEhcKD2FwcGxpZWRfdmVyc2lvbhgRIAEoCRIOCgZtYW51YWwYEiABKAgSGAoQdXBkYXRlX2F2YWlsYWJsZRgTIAEoCCLUAwoLQ29uZmlnRmllbGQSDAoEbmFtZRgBIAEoCRIMCgR0eXBlGAIgASgJEg0KBXRpdGxlGAMgASgJEhMKC2Rlc2NyaXB0aW9uGAQgASgJEhAKCHJlcXVpcmVkGAUgASgIEg4KBnNlY3JldBgGIAEoCBIMCgRwYXRoGAcgASgJEg8KB2RlZmF1bHQYCCABKAkSLQoHb3B0aW9ucxgJIAMoCzIcLm9wZW5ldGwuYXBpLnYxLkNvbmZpZ09wdGlvbhINCgVncm91cBgKIAEoCRIQCghhZHZhbmNlZBgLIAEoCBISCgpkZXByZWNhdGVkGAwgASgIEi0KBHdoZW4YDSADKAsyHy5vcGVuZXRsLmFwaS52MS5Db25maWdDb25kaXRpb24SDgoGZm9ybWF0GA4gASgJEhQKB21pbmltdW0YDyABKAFIAIgBARIUCgdtYXhpbXVtGBAgASgBSAGIAQESDwoHcGF0dGVybhgRIAEoCRIQCghleGFtcGxlcxgSIAMoCRINCgVpdGVtcxgTIAEoCRIrCgZmaWVsZHMYFCADKAsyGy5vcGVuZXRsLmFwaS52MS5Db25maWdGaWVsZEIKCghfbWluaW11bUIKCghfbWF4aW11bSJBCgxDb25maWdPcHRpb24SDQoFdmFsdWUYASABKAkSDQoFdGl0bGUYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkiMAoPQ29uZmlnQ29uZGl0aW9uEg0KBWZpZWxkGAEgASgJEg4KBnZhbHVlcxgCIAMoCSI9CgtDb25maWdHcm91cBIKCgJpZBgBIAEoCRINCgV0aXRsZRgCIAEoCRITCgtkZXNjcmlwdGlvbhgDIAEoCSJ1CgtDYXRhbG9nUm9sZRIMCgRyb2xlGAEgASgJEisKBmNvbmZpZxgCIAMoCzIbLm9wZW5ldGwuYXBpLnYxLkNvbmZpZ0ZpZWxkEisKBmdyb3VwcxgDIAMoCzIbLm9wZW5ldGwuYXBpLnYxLkNvbmZpZ0dyb3VwIhQKEkxpc3RDYXRhbG9nUmVxdWVzdCJHChNMaXN0Q2F0YWxvZ1Jlc3BvbnNlEjAKCHBhY2thZ2VzGAEgAygLMh4ub3BlbmV0bC5hcGkudjEuQ2F0YWxvZ1BhY2thZ2UiKAoYR2V0Q2F0YWxvZ1BhY2thZ2VSZXF1ZXN0EgwKBG5hbWUYASABKAkieAoZR2V0Q2F0YWxvZ1BhY2thZ2VSZXNwb25zZRIvCgdwYWNrYWdlGAEgASgLMh4ub3BlbmV0bC5hcGkudjEuQ2F0YWxvZ1BhY2thZ2USKgoFcm9sZXMYAiADKAsyGy5vcGVuZXRsLmFwaS52MS5DYXRhbG9nUm9sZSIXChVSZWZyZXNoQ2F0YWxvZ1JlcXVlc3QiSgoWUmVmcmVzaENhdGFsb2dSZXNwb25zZRIwCgdzb3VyY2VzGAEgAygLMh8ub3BlbmV0bC5hcGkudjEuQ29ubmVjdG9yU291cmNlMr0FChBDb25uZWN0b3JTZXJ2aWNlEo8BChRMaXN0Q29ubmVjdG9yU291cmNlcxIrLm9wZW5ldGwuYXBpLnYxLkxpc3RDb25uZWN0b3JTb3VyY2VzUmVxdWVzdBosLm9wZW5ldGwuYXBpLnYxLkxpc3RDb25uZWN0b3JTb3VyY2VzUmVzcG9uc2UiHILT5JMCFhIUL3YxL2Nvbm5lY3RvclNvdXJjZXMSmwEKFURlbGV0ZUNvbm5lY3RvclNvdXJjZRIsLm9wZW5ldGwuYXBpLnYxLkRlbGV0ZUNvbm5lY3RvclNvdXJjZVJlcXVlc3QaLS5vcGVuZXRsLmFwaS52MS5EZWxldGVDb25uZWN0b3JTb3VyY2VSZXNwb25zZSIlgtPkkwIfKh0vdjEve25hbWU9Y29ubmVjdG9yU291cmNlcy8qfRJrCgtMaXN0Q2F0YWxvZxIiLm9wZW5ldGwuYXBpLnYxLkxpc3RDYXRhbG9nUmVxdWVzdBojLm9wZW5ldGwuYXBpLnYxLkxpc3RDYXRhbG9nUmVzcG9uc2UiE4LT5JMCDRILL3YxL2NhdGFsb2cSigEKEUdldENhdGFsb2dQYWNrYWdlEigub3BlbmV0bC5hcGkudjEuR2V0Q2F0YWxvZ1BhY2thZ2VSZXF1ZXN0Gikub3BlbmV0bC5hcGkudjEuR2V0Q2F0YWxvZ1BhY2thZ2VSZXNwb25zZSIggtPkkwIaEhgvdjEve25hbWU9Y2F0YWxvZy8qLyovKn0SfwoOUmVmcmVzaENhdGFsb2cSJS5vcGVuZXRsLmFwaS52MS5SZWZyZXNoQ2F0YWxvZ1JlcXVlc3QaJi5vcGVuZXRsLmFwaS52MS5SZWZyZXNoQ2F0YWxvZ1Jlc3BvbnNlIh6C0+STAhg6ASoiEy92MS9jYXRhbG9nOnJlZnJlc2hCOFo2Z2l0aHViLmNvbS9vcGVuZXRsLWlvL29wZW5ldGwvZ2VuL29wZW5ldGwvYXBpL3YxO2FwaXYxYgZwcm90bzM", [file_google_api_annotations, file_google_protobuf_timestamp]);
 
 /**
  * ConnectorSourceSpec is a ConnectorSource document's spec: an OCI registry
@@ -317,8 +317,8 @@ export const CatalogPackageSchema: GenMessage<CatalogPackage> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_connector, 6);
 
 /**
- * ConfigField is a top-level field of a role's config, from its JSON
- * Schema.
+ * ConfigField is a field of a role's config, or of an object in it, from
+ * its JSON Schema and the x- keywords forms read.
  *
  * @generated from message openetl.api.v1.ConfigField
  */
@@ -357,6 +357,98 @@ export type ConfigField = Message<"openetl.api.v1.ConfigField"> & {
    * @generated from field: bool secret = 6;
    */
   secret: boolean;
+
+  /**
+   * Dotted from the config's root, such as consumer.name.
+   *
+   * @generated from field: string path = 7;
+   */
+  path: string;
+
+  /**
+   * The default, as JSON; empty when there's none.
+   *
+   * @generated from field: string default = 8;
+   */
+  default: string;
+
+  /**
+   * The values it takes; for an array, its items'.
+   *
+   * @generated from field: repeated openetl.api.v1.ConfigOption options = 9;
+   */
+  options: ConfigOption[];
+
+  /**
+   * The id of the group it shows in, from CatalogRole.groups; empty: before
+   * every group.
+   *
+   * @generated from field: string group = 10;
+   */
+  group: string;
+
+  /**
+   * Folded away until asked for.
+   *
+   * @generated from field: bool advanced = 11;
+   */
+  advanced: boolean;
+
+  /**
+   * @generated from field: bool deprecated = 12;
+   */
+  deprecated: boolean;
+
+  /**
+   * It applies only when every condition holds; a form hides it otherwise.
+   *
+   * @generated from field: repeated openetl.api.v1.ConfigCondition when = 13;
+   */
+  when: ConfigCondition[];
+
+  /**
+   * duration (Go's syntax: 500ms, 1m30s), date-time (RFC 3339), uri,
+   * regex, multiline and the like; empty: none.
+   *
+   * @generated from field: string format = 14;
+   */
+  format: string;
+
+  /**
+   * @generated from field: optional double minimum = 15;
+   */
+  minimum?: number | undefined;
+
+  /**
+   * @generated from field: optional double maximum = 16;
+   */
+  maximum?: number | undefined;
+
+  /**
+   * @generated from field: string pattern = 17;
+   */
+  pattern: string;
+
+  /**
+   * Values as JSON.
+   *
+   * @generated from field: repeated string examples = 18;
+   */
+  examples: string[];
+
+  /**
+   * An array's items' type.
+   *
+   * @generated from field: string items = 19;
+   */
+  items: string;
+
+  /**
+   * An object's fields, in the schema's order.
+   *
+   * @generated from field: repeated openetl.api.v1.ConfigField fields = 20;
+   */
+  fields: ConfigField[];
 };
 
 /**
@@ -365,6 +457,95 @@ export type ConfigField = Message<"openetl.api.v1.ConfigField"> & {
  */
 export const ConfigFieldSchema: GenMessage<ConfigField> = /*@__PURE__*/
   messageDesc(file_openetl_api_v1_connector, 7);
+
+/**
+ * ConfigOption is a value an enum field takes.
+ *
+ * @generated from message openetl.api.v1.ConfigOption
+ */
+export type ConfigOption = Message<"openetl.api.v1.ConfigOption"> & {
+  /**
+   * JSON.
+   *
+   * @generated from field: string value = 1;
+   */
+  value: string;
+
+  /**
+   * Empty: show the value.
+   *
+   * @generated from field: string title = 2;
+   */
+  title: string;
+
+  /**
+   * @generated from field: string description = 3;
+   */
+  description: string;
+};
+
+/**
+ * Describes the message openetl.api.v1.ConfigOption.
+ * Use `create(ConfigOptionSchema)` to create a new message.
+ */
+export const ConfigOptionSchema: GenMessage<ConfigOption> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_connector, 8);
+
+/**
+ * ConfigCondition holds when the field at path has one of values. A field
+ * that isn't set has its default.
+ *
+ * @generated from message openetl.api.v1.ConfigCondition
+ */
+export type ConfigCondition = Message<"openetl.api.v1.ConfigCondition"> & {
+  /**
+   * @generated from field: string field = 1;
+   */
+  field: string;
+
+  /**
+   * JSON.
+   *
+   * @generated from field: repeated string values = 2;
+   */
+  values: string[];
+};
+
+/**
+ * Describes the message openetl.api.v1.ConfigCondition.
+ * Use `create(ConfigConditionSchema)` to create a new message.
+ */
+export const ConfigConditionSchema: GenMessage<ConfigCondition> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_connector, 9);
+
+/**
+ * ConfigGroup is a section of a role's config form.
+ *
+ * @generated from message openetl.api.v1.ConfigGroup
+ */
+export type ConfigGroup = Message<"openetl.api.v1.ConfigGroup"> & {
+  /**
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * @generated from field: string title = 2;
+   */
+  title: string;
+
+  /**
+   * @generated from field: string description = 3;
+   */
+  description: string;
+};
+
+/**
+ * Describes the message openetl.api.v1.ConfigGroup.
+ * Use `create(ConfigGroupSchema)` to create a new message.
+ */
+export const ConfigGroupSchema: GenMessage<ConfigGroup> = /*@__PURE__*/
+  messageDesc(file_openetl_api_v1_connector, 10);
 
 /**
  * @generated from message openetl.api.v1.CatalogRole
@@ -378,9 +559,18 @@ export type CatalogRole = Message<"openetl.api.v1.CatalogRole"> & {
   role: string;
 
   /**
+   * Its top-level fields, in the schema's order.
+   *
    * @generated from field: repeated openetl.api.v1.ConfigField config = 2;
    */
   config: ConfigField[];
+
+  /**
+   * In the order a form shows them.
+   *
+   * @generated from field: repeated openetl.api.v1.ConfigGroup groups = 3;
+   */
+  groups: ConfigGroup[];
 };
 
 /**
@@ -388,7 +578,7 @@ export type CatalogRole = Message<"openetl.api.v1.CatalogRole"> & {
  * Use `create(CatalogRoleSchema)` to create a new message.
  */
 export const CatalogRoleSchema: GenMessage<CatalogRole> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connector, 8);
+  messageDesc(file_openetl_api_v1_connector, 11);
 
 /**
  * @generated from message openetl.api.v1.ListCatalogRequest
@@ -401,7 +591,7 @@ export type ListCatalogRequest = Message<"openetl.api.v1.ListCatalogRequest"> & 
  * Use `create(ListCatalogRequestSchema)` to create a new message.
  */
 export const ListCatalogRequestSchema: GenMessage<ListCatalogRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connector, 9);
+  messageDesc(file_openetl_api_v1_connector, 12);
 
 /**
  * @generated from message openetl.api.v1.ListCatalogResponse
@@ -418,7 +608,7 @@ export type ListCatalogResponse = Message<"openetl.api.v1.ListCatalogResponse"> 
  * Use `create(ListCatalogResponseSchema)` to create a new message.
  */
 export const ListCatalogResponseSchema: GenMessage<ListCatalogResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connector, 10);
+  messageDesc(file_openetl_api_v1_connector, 13);
 
 /**
  * @generated from message openetl.api.v1.GetCatalogPackageRequest
@@ -435,7 +625,7 @@ export type GetCatalogPackageRequest = Message<"openetl.api.v1.GetCatalogPackage
  * Use `create(GetCatalogPackageRequestSchema)` to create a new message.
  */
 export const GetCatalogPackageRequestSchema: GenMessage<GetCatalogPackageRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connector, 11);
+  messageDesc(file_openetl_api_v1_connector, 14);
 
 /**
  * @generated from message openetl.api.v1.GetCatalogPackageResponse
@@ -457,7 +647,7 @@ export type GetCatalogPackageResponse = Message<"openetl.api.v1.GetCatalogPackag
  * Use `create(GetCatalogPackageResponseSchema)` to create a new message.
  */
 export const GetCatalogPackageResponseSchema: GenMessage<GetCatalogPackageResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connector, 12);
+  messageDesc(file_openetl_api_v1_connector, 15);
 
 /**
  * @generated from message openetl.api.v1.RefreshCatalogRequest
@@ -470,7 +660,7 @@ export type RefreshCatalogRequest = Message<"openetl.api.v1.RefreshCatalogReques
  * Use `create(RefreshCatalogRequestSchema)` to create a new message.
  */
 export const RefreshCatalogRequestSchema: GenMessage<RefreshCatalogRequest> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connector, 13);
+  messageDesc(file_openetl_api_v1_connector, 16);
 
 /**
  * @generated from message openetl.api.v1.RefreshCatalogResponse
@@ -487,7 +677,7 @@ export type RefreshCatalogResponse = Message<"openetl.api.v1.RefreshCatalogRespo
  * Use `create(RefreshCatalogResponseSchema)` to create a new message.
  */
 export const RefreshCatalogResponseSchema: GenMessage<RefreshCatalogResponse> = /*@__PURE__*/
-  messageDesc(file_openetl_api_v1_connector, 14);
+  messageDesc(file_openetl_api_v1_connector, 17);
 
 /**
  * ConnectorService lists connected sources of connectors and the catalog of

@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/configschema"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
@@ -268,23 +269,38 @@ func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1
 }
 
 func (b *base) Check(ctx context.Context, req *protocolv1.CheckRequest) (*protocolv1.CheckResponse, error) {
+	var c any
 	var err error
 	if b.c.Source != nil {
-		var s source.Source
-		if s, err = b.source(ctx, req.GetConfig()); err == nil {
-			if c, ok := s.(source.Checker); ok {
-				err = c.Check(ctx)
-			}
-		}
+		c, err = b.source(ctx, req.GetConfig())
 	} else {
-		var d destination.Destination
-		if d, err = b.destination(ctx, req.GetConfig()); err == nil {
-			if c, ok := d.(destination.Checker); ok {
-				err = c.Check(ctx)
-			}
-		}
+		c, err = b.destination(ctx, req.GetConfig())
+	}
+	if err != nil {
+		return &protocolv1.CheckResponse{Error: protoError(err)}, nil
+	}
+	switch c := c.(type) {
+	case interface {
+		CheckReport(context.Context, *check.Report)
+	}:
+		var r check.Report
+		c.CheckReport(ctx, &r)
+		return &protocolv1.CheckResponse{Error: protoError(r.Err()), Items: checkItems(&r)}, nil
+	case interface{ Check(context.Context) error }:
+		err = c.Check(ctx)
 	}
 	return &protocolv1.CheckResponse{Error: protoError(err)}, nil
+}
+
+func checkItems(r *check.Report) []*protocolv1.CheckItem {
+	var out []*protocolv1.CheckItem
+	for _, it := range r.Items() {
+		out = append(out, &protocolv1.CheckItem{
+			Name: it.Name, Title: it.Title, Status: ints.Enum[protocolv1.CheckStatus](it.Status), Message: it.Message,
+			Error: protoError(it.Err), Fix: it.Fix, Field: it.Field,
+		})
+	}
+	return out
 }
 
 func (b *base) Setup(ctx context.Context, req *protocolv1.SetupRequest) (*protocolv1.SetupResponse, error) {

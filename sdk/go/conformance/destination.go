@@ -119,6 +119,7 @@ func newDestinationRun(s DestinationSuite) *destinationRun {
 
 func (r *destinationRun) checks() []Check {
 	return append(r.common.checks(),
+		Check{"preflight", r.each(r.checkPreflight)},
 		Check{"write/commit", r.each(r.checkCommit)},
 		Check{"write/crash-after-precommit", r.each(r.checkCrashAfterPreCommit)},
 		Check{"write/crash-after-record", r.each(r.checkCrashAfterRecord)},
@@ -560,6 +561,22 @@ func (s *session) wantRecovery(gen uint64, got protocolv1.Recovery, want ...prot
 
 // Write: commit: nothing is visible before Commit, Commit makes the epoch
 // visible once, and a second Commit of it changes nothing.
+// Preflight: with the good config, a preflight of the suite's streams, with
+// their schemas, passes.
+func (r *destinationRun) checkPreflight(t T, s *session) {
+	req := &protocolv1.PreflightDestinationRequest{Config: r.proc.Config(), Pipeline: s.pipeline, Namespace: s.ns}
+	for _, name := range s.streams {
+		req.Streams = append(req.Streams, &protocolv1.WriteStream{Name: name, Mode: s.mode, PrimaryKey: []string{"id"}})
+		b, err := arrowipc.EncodeSchema(streamSchema(name, s.data))
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		req.Schemas = append(req.Schemas, &protocolv1.StreamSchema{Name: name, ArrowSchema: b})
+	}
+	resp, err := protocolv1.NewDestinationServiceClient(r.proc.Conn()).PreflightDestination(t.Context(), req)
+	preflightResult(t, resp, err)
+}
+
 func (r *destinationRun) checkCommit(_ T, s *session) {
 	w, rec := s.begin(1, nil, nil)
 	s.wantRecovery(1, rec, protocolv1.Recovery_RECOVERY_APPLIED)

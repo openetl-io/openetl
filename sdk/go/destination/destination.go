@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+
+	"github.com/openetl-io/openetl/sdk/go/check"
 )
 
 // Epoch is checkpoint N within the generation that wrote it. Names a sink
@@ -355,6 +357,35 @@ type StreamSchema struct {
 // records.
 type Checker interface {
 	Check(ctx context.Context) error
+}
+
+// CheckReporter is implemented by destinations whose check says what it
+// looked at, item by item, such as reaching the destination and signing in.
+// It takes Checker's place. A check is about the connection alone and is
+// light: the pipeline's targets are its preflight's. It records a failure in
+// r rather than stopping at it, so one check shows everything that's wrong.
+type CheckReporter interface {
+	CheckReport(ctx context.Context, r *check.Report)
+}
+
+// Preflighter is implemented by destinations that can say whether a
+// pipeline's writes would work, without writing: each target there or one
+// it may create, writable, in a write mode it has. The platform runs it
+// after the check passes. Which items apply is the destination's to say
+// from its config, such as a setting only created targets get.
+type Preflighter interface {
+	Preflight(ctx context.Context, req PreflightRequest, r *check.Report)
+}
+
+// PreflightRequest is what a pipeline would write.
+type PreflightRequest struct {
+	Pipeline string
+	// As OpenConfig's.
+	Namespace string
+	Streams   []Stream
+	// Each stream's schema, by name, as a sync's first ApplySchema would
+	// give it, its table among its metadata.
+	Schemas map[string]*arrow.Schema
 }
 
 // Setupper is implemented by destinations that prepare something for a

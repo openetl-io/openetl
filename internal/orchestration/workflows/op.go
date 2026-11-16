@@ -13,7 +13,7 @@ import (
 // with it, and its replacement may take a while.
 const teardownPickup = 5 * time.Minute
 
-// ConnectorOp runs Check, Discover or Teardown on a runner of the data
+// ConnectorOp runs Check, Discover, a pipeline's preflight or Teardown on a runner of the data
 // plane, or cancels a deleted pipeline's Flink jobs. A teardown that a runner
 // took retries until the operation times out; one no runner takes in
 // teardownPickup ends there. Either way ops.Teardowns tries it again, for days.
@@ -26,6 +26,9 @@ func (w Workflows) ConnectorOp(ctx orchestration.Context, in contract.ConnectorO
 	switch in.Op {
 	case contract.OpDiscover:
 		work.Kind, work.Timeout = contract.DiscoverSource, 10*time.Minute
+	case contract.OpPreflight:
+		// It starts both connectors and discovers the source first.
+		work.Kind, work.Timeout = contract.PreflightPipeline, 10*time.Minute
 	case contract.OpTeardown:
 		work.Kind = contract.TeardownSource
 		if in.SourceID == "" {

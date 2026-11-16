@@ -10,10 +10,14 @@ import (
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -61,15 +65,52 @@ func (c *instance) Close() error {
 }
 
 func (c *instance) check(ctx context.Context) error {
+	_, err := c.checkItems(ctx)
+	return err
+}
+
+// checkItems runs the connector's check: what it looked at, item by item,
+// none if it reports only a result, and the check's error.
+func (c *instance) checkItems(ctx context.Context) ([]check.Item, error) {
 	p, err := c.proc(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := protocolv1.NewConnectorServiceClient(p.conn).Check(ctx, &protocolv1.CheckRequest{Config: p.config})
 	if err != nil {
-		return p.failure(errs.FromStatus(err))
+		return nil, p.failure(errs.FromStatus(err))
 	}
-	return errs.FromProto(resp.GetError())
+	return checkItems(resp.GetItems()), errs.FromProto(resp.GetError())
+}
+
+func checkItems(items []*protocolv1.CheckItem) []check.Item {
+	var out []check.Item
+	for _, it := range items {
+		st := check.Status(it.GetStatus())
+		if st < check.Passed || st > check.Skipped {
+			st = check.Skipped
+		}
+		out = append(out, check.Item{
+			Name: it.GetName(), Title: it.GetTitle(), Status: st, Message: it.GetMessage(),
+			Err: errs.FromProto(it.GetError()), Fix: it.GetFix(), Field: it.GetField(),
+		})
+	}
+	return out
+}
+
+// preflightResult is a preflight's items and error. A connector from before
+// preflights has none.
+func preflightResult(p *process, resp interface {
+	GetError() *protocolv1.Error
+	GetItems() []*protocolv1.CheckItem
+}, err error) ([]check.Item, error) {
+	if status.Code(err) == codes.Unimplemented {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, p.failure(errs.FromStatus(err))
+	}
+	return checkItems(resp.GetItems()), errs.FromProto(resp.GetError())
 }
 
 // Source is an external source. It acknowledges upstream only if its spec
@@ -91,6 +132,27 @@ func NewSource(exe string, config []byte, opts Options) *Source {
 }
 
 func (s *Source) Check(ctx context.Context) error { return s.check(ctx) }
+
+// CheckItems is Check, with what the check looked at, item by item.
+func (s *Source) CheckItems(ctx context.Context) ([]check.Item, error) { return s.checkItems(ctx) }
+
+// PreflightItems runs the source's preflight for what a pipeline would
+// read: what it looked at, item by item, and its error.
+func (s *Source) PreflightItems(ctx context.Context, req source.PreflightRequest) ([]check.Item, error) {
+	p, err := s.proc(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pr := &protocolv1.PreflightSourceRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous}
+	if req.Interval > 0 {
+		pr.Interval = durationpb.New(req.Interval)
+	}
+	for _, cs := range req.Streams {
+		pr.Streams = append(pr.Streams, configuredStream(cs))
+	}
+	resp, err := protocolv1.NewSourceServiceClient(p.conn).PreflightSource(ctx, pr)
+	return preflightResult(p, resp, err)
+}
 
 // Setup and Teardown call the connector only when its spec sets setup, as
 // the protocol says.

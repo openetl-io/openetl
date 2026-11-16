@@ -125,8 +125,8 @@ message CatalogPackage {
   bool update_available = 19;
 }
 
-// ConfigField is a top-level field of a role's config, from its JSON
-// Schema.
+// ConfigField is a field of a role's config, or of an object in it, from
+// its JSON Schema and the x- keywords forms read.
 message ConfigField {
   string name = 1;
   // The JSON Schema type, such as string or object; empty when it doesn't
@@ -137,12 +137,65 @@ message ConfigField {
   bool required = 5;
   // Its value is a secret's name, never the secret.
   bool secret = 6;
+  // Dotted from the config's root, such as consumer.name.
+  string path = 7;
+  // The default, as JSON; empty when there's none.
+  string default = 8;
+  // The values it takes; for an array, its items'.
+  repeated ConfigOption options = 9;
+  // The id of the group it shows in, from CatalogRole.groups; empty: before
+  // every group.
+  string group = 10;
+  // Folded away until asked for.
+  bool advanced = 11;
+  bool deprecated = 12;
+  // It applies only when every condition holds; a form hides it otherwise.
+  repeated ConfigCondition when = 13;
+  // duration (Go's syntax: 500ms, 1m30s), date-time (RFC 3339), uri,
+  // regex, multiline and the like; empty: none.
+  string format = 14;
+  optional double minimum = 15;
+  optional double maximum = 16;
+  string pattern = 17;
+  // Values as JSON.
+  repeated string examples = 18;
+  // An array's items' type.
+  string items = 19;
+  // An object's fields, in the schema's order.
+  repeated ConfigField fields = 20;
+}
+
+// ConfigOption is a value an enum field takes.
+message ConfigOption {
+  // JSON.
+  string value = 1;
+  // Empty: show the value.
+  string title = 2;
+  string description = 3;
+}
+
+// ConfigCondition holds when the field at path has one of values. A field
+// that isn't set has its default.
+message ConfigCondition {
+  string field = 1;
+  // JSON.
+  repeated string values = 2;
+}
+
+// ConfigGroup is a section of a role's config form.
+message ConfigGroup {
+  string id = 1;
+  string title = 2;
+  string description = 3;
 }
 
 message CatalogRole {
   // source or destination
   string role = 1;
+  // Its top-level fields, in the schema's order.
   repeated ConfigField config = 2;
+  // In the order a form shows them.
+  repeated ConfigGroup groups = 3;
 }
 
 message ListCatalogRequest {}

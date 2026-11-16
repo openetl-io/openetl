@@ -3,6 +3,8 @@ syntax = "proto3";
 package openetl.connector.v1;
 
 import "google/protobuf/duration.proto";
+import "openetl/connector/v1/check.proto";
+import "openetl/connector/v1/errors.proto";
 
 option go_package = "github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1";
 
@@ -34,6 +36,32 @@ service SourceService {
   // isn't running, such as when it's paused. Called only when
   // SourceCapabilities.retention is set.
   rpc Retention(RetentionRequest) returns (RetentionResponse);
+  // Whether a pipeline's reads would work, for its streams as a sync would
+  // read them, without reading records: each stream there, readable, and
+  // read in a mode the source has, and positions the schedule keeps within
+  // retention. The platform calls it after Check passes. A source without
+  // one answers with no items.
+  rpc PreflightSource(PreflightSourceRequest) returns (PreflightSourceResponse);
+}
+
+message PreflightSourceRequest {
+  bytes config = 1;
+  string pipeline = 2;
+  // The streams a sync would read, with no states or splits.
+  repeated ConfiguredStream streams = 3;
+  // The pipeline reads continuously; otherwise on a schedule, or when asked.
+  bool continuous = 4;
+  // How long a scheduled pipeline goes between syncs at most; unset when
+  // it's continuous, or has no regular schedule.
+  google.protobuf.Duration interval = 5;
+}
+
+message PreflightSourceResponse {
+  // Unset when nothing failed; otherwise the first failed item's error. A
+  // failed preflight is reported here, not as an RPC error.
+  Error error = 1;
+  // In the order they ran.
+  repeated CheckItem items = 2;
 }
 
 message SourceCapabilities {

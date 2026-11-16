@@ -1,6 +1,7 @@
 import { Pause, Play, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { PreflightButton } from "@/components/preflight";
 import { PipelineMode, PipelineService, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { SyncService } from "@/gen/openetl/api/v1/sync_pb";
 import { useAction } from "@/lib/action";
@@ -9,7 +10,7 @@ import { pipelineStatus } from "@/lib/status";
 
 const refresh = [PipelineService, SyncService];
 
-/** Sync now, and pause or resume, each shown only to a role that may. */
+/** Preflight, sync now, and pause or resume, each shown only to a role that may. */
 export function PipelineActions({ workspace, pipeline }: { workspace: string; pipeline: Pipeline }) {
   const can = useCan(workspace);
   const continuous = pipeline.spec?.mode === PipelineMode.CONTINUOUS;
@@ -25,6 +26,7 @@ export function PipelineActions({ workspace, pipeline }: { workspace: string; pi
 
   return (
     <>
+      {can("pipelines.preflight") && <PreflightButton name={pipeline.name} />}
       {can("pipelines.sync") && !continuous && !pipeline.paused && (
         <Tooltip open={running ? undefined : false}>
           <TooltipTrigger asChild>

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 const PROTOS: &[&str] = &[
+    "openetl/connector/v1/check.proto",
     "openetl/connector/v1/connector.proto",
     "openetl/connector/v1/destination.proto",
     "openetl/connector/v1/errors.proto",

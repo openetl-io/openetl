@@ -476,9 +476,11 @@ func runConnectorCheck(ctx context.Context, args []string, out io.Writer) error 
 		return fmt.Errorf("%s's check: %w", t.name, err)
 	}
 	if e := res.GetError(); e != nil {
+		printCheckItems(out, "", protoCheckItems(res.GetItems()))
 		return fmt.Errorf("%s failed its check: %s: %s", t.name, strings.TrimPrefix(e.GetCode().String(), "ERROR_CODE_"), e.GetMessage())
 	}
 	fmt.Fprintf(out, "%s passed its check\n", t.name)
+	printCheckItems(out, "  ", protoCheckItems(res.GetItems()))
 	return nil
 }
 
