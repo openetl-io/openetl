@@ -777,6 +777,8 @@ impl Shaper {
                 .namer
                 .source_of(schema.field(i).name())
                 .unwrap_or(schema.field(i).name());
+            // A version of a column shows what the pipeline chose for it.
+            let src = self.evolver.source_of(src);
             if let Some(v) = shown_value(h, src, schema.field(i)) {
                 let mask = BooleanArray::from(mask);
                 columns[i] = arrow_select::zip::zip(&mask, &broadcast(&v, n)?, &columns[i])?;
@@ -883,22 +885,6 @@ impl Shaper {
                 .as_ref()
                 .is_some_and(|l| l.iter().any(|d| d == name))
         };
-        // Older held files put a row that held a cell of a column held whole
-        // in both batches, listing the column twice: the column's batch has
-        // no value for it, and the cell batch has every row of the column,
-        // null where a row held no cell.
-        let twice = |row: usize, name: &str| {
-            lists[row]
-                .as_ref()
-                .is_some_and(|l| l.iter().filter(|d| *d == name).count() > 1)
-        };
-        let holds = |row: usize, name: &str, k: &str, col: &ArrayRef| {
-            listed(row, name)
-                && match k {
-                    CELL => !col.is_null(row),
-                    _ => !twice(row, name),
-                }
-        };
         let mut still = 0u64;
         let mut filled: Vec<(Field, ArrayRef, Vec<bool>)> = Vec::new();
         for (f, col) in schema.fields().iter().zip(held.columns()) {
@@ -921,7 +907,7 @@ impl Shaper {
                     .any(|c| c.dest == *f.name() || c.dest == into)
             }) {
                 if k == CELL {
-                    still += (0..n).filter(|r| holds(*r, f.name(), k, col)).count() as u64;
+                    still += (0..n).filter(|r| listed(*r, f.name())).count() as u64;
                 }
                 continue;
             }
@@ -941,7 +927,7 @@ impl Shaper {
                 .with_metadata(HashMap::new());
             let (arr, failed): (ArrayRef, HashSet<usize>) = if k == CELL {
                 let Some(t) = Target::of(&target).filter(|t| *t != Target::TypedOnly) else {
-                    still += (0..n).filter(|r| holds(*r, f.name(), k, col)).count() as u64;
+                    still += (0..n).filter(|r| listed(*r, f.name())).count() as u64;
                     continue;
                 };
                 match coerce::text_column(&target, t, col, self.types.infinity) {
@@ -962,10 +948,10 @@ impl Shaper {
                 (a, failed)
             };
             let mask: Vec<bool> = (0..n)
-                .map(|r| holds(r, f.name(), k, col) && !failed.contains(&r))
+                .map(|r| listed(r, f.name()) && !failed.contains(&r))
                 .collect();
             still += (0..n)
-                .filter(|&r| holds(r, f.name(), k, col) && failed.contains(&r))
+                .filter(|&r| listed(r, f.name()) && failed.contains(&r))
                 .count() as u64;
             let target = match version {
                 Some(_) => {
@@ -1033,9 +1019,9 @@ impl Shaper {
         let source = batch.schema();
         let renamed = self.namer.rename(&source);
         let last = |src: &str| {
-            self.holds
-                .as_ref()
-                .is_some_and(|h| matches!(h.config.show(src), Show::Last(_)))
+            self.holds.as_ref().is_some_and(|h| {
+                matches!(h.config.show(self.evolver.source_of(src)), Show::Last(_))
+            })
         };
         let mut fields: Vec<Field> = renamed
             .fields()
@@ -2142,6 +2128,59 @@ mod tests {
     }
 
     #[test]
+    fn a_version_of_a_column_shows_what_the_column_is_set_to() {
+        let schema = |t: DataType| {
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, true),
+                Field::new("price", t, true),
+            ]))
+        };
+        let mut first = keyed(Policy::AllowAll, None, Some(schema(DataType::Int64)));
+        first
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("price", Arc::new(Int64Array::from(vec![10]))),
+            ]))
+            .unwrap();
+        let shaped = |show: Show| {
+            let mut s = keyed(
+                Policy::AllowAll,
+                first.schema(),
+                Some(schema(DataType::Decimal128(10, 2))),
+            )
+            .with_holds(HoldConfig {
+                cells: true,
+                columns: HashMap::from([("price".into(), show)]),
+                ..Default::default()
+            })
+            .unwrap();
+            s.batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
+                (
+                    "price",
+                    Arc::new(StringArray::from(vec!["1.5", "123456789.5"])),
+                ),
+            ]))
+            .unwrap()
+        };
+        let n = shaped(Show::Value("0".into()));
+        assert_eq!(n.cells.len(), 1, "{:?}", n.cells);
+        assert_eq!(
+            n.batch
+                .column_by_name("price__v2")
+                .unwrap()
+                .as_primitive::<arrow_array::types::Decimal128Type>()
+                .iter()
+                .collect::<Vec<_>>(),
+            [Some(150), Some(0)]
+        );
+        let n = shaped(Show::Last(None));
+        let schema = n.batch.schema();
+        let f = schema.field_with_name("price__v2").unwrap();
+        assert_eq!(f.metadata().get(HELD_KEY).map(String::as_str), Some("last"));
+    }
+
+    #[test]
     fn a_key_never_holds_a_cell() {
         let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
         let mut s = keyed(Policy::AllowAll, None, Some(declared))
@@ -2670,71 +2709,6 @@ mod tests {
             held_lists(&n.batch),
             vec![Some(vec!["price".to_owned()]); 5],
             "a row lists a held column once"
-        );
-    }
-
-    #[test]
-    fn older_held_files_that_list_a_cell_twice_patch_the_same() {
-        // Older held files put every row of a column held whole in both
-        // batches: rows 2 and 5 hold cells of price, and list it twice.
-        let lists = [1, 2, 1, 1, 2].map(|k| vec!["price".to_owned(); k]);
-        let batch = |f: Field, a: ArrayRef| {
-            let mut b = ListBuilder::new(StringBuilder::new());
-            for l in &lists {
-                for d in l {
-                    b.values().append_value(d);
-                }
-                b.append(true);
-            }
-            let schema = Schema::new(vec![
-                Field::new("id", DataType::Int64, true),
-                Field::new(HELD_COLUMN, held_type(), true),
-                f,
-            ]);
-            let columns: Vec<ArrayRef> = vec![
-                Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
-                Arc::new(b.finish()),
-                a,
-            ];
-            RecordBatch::try_new(Arc::new(schema), columns).unwrap()
-        };
-        let column = batch(
-            Field::new("price", DataType::Decimal128(12, 2), true).with_metadata(kind(COLUMN)),
-            Arc::new(
-                arrow_array::Decimal128Array::from(vec![Some(150), None, Some(225), None, None])
-                    .with_precision_and_scale(12, 2)
-                    .unwrap(),
-            ),
-        );
-        let cell = batch(
-            Field::new("price", DataType::Utf8, true).with_metadata(kind(CELL)),
-            Arc::new(StringArray::from(vec![
-                None,
-                Some("NaN"),
-                None,
-                None,
-                Some("12345678901.5"),
-            ])),
-        );
-        let mut first = keyed(Policy::AllowAll, None, Some(decimals(10)));
-        first.batch(&priced(vec![Some("1.5")])).unwrap();
-        let mut r = keyed(Policy::AllowAll, first.schema(), Some(decimals(20)))
-            .with_holds(HoldConfig {
-                cells: true,
-                ..Default::default()
-            })
-            .unwrap();
-        r.declare().unwrap();
-        let (patches, still) = patched(&r, &[column, cell], "price", "price");
-        assert_eq!(still, 1, "the NaN stays held");
-        assert_eq!(
-            patches,
-            [
-                (1, Some(150)),
-                (3, Some(225)),
-                (4, None),
-                (5, Some(1_234_567_890_150))
-            ]
         );
     }
 

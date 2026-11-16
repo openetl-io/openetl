@@ -178,6 +178,20 @@ impl Evolver {
         }
     }
 
+    /// The source column whose values go to `column`: `column` itself,
+    /// unless it's a source column's current version.
+    pub(crate) fn source_of<'a>(&'a self, column: &'a str) -> &'a str {
+        self.versions
+            .iter()
+            .find(|(s, k)| {
+                column
+                    .strip_prefix(s.as_str())
+                    .and_then(|v| v.strip_prefix("__v"))
+                    .is_some_and(|v| v == k.to_string())
+            })
+            .map_or(column, |(s, _)| s.as_str())
+    }
+
     /// The current version of each source column, under its source name.
     pub fn live(&self) -> Schema {
         let mut superseded = HashSet::new();
