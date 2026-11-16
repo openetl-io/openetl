@@ -36,7 +36,8 @@ impl Layout {
         let all: usize = engines.iter().map(|e| e.1).sum();
         let bad = |why: &str| {
             Err(format!(
-                "engine {me} of lanes and writer lanes {engines:?} over {groups} key groups: {why}"
+                "engine {} of lanes and writer lanes {engines:?} over {groups} key groups: {why}",
+                me + 1
             ))
         };
         if me >= engines.len() || engines.iter().any(|&(l, w)| w < 1 || l < w) {

@@ -127,7 +127,7 @@ impl MeshPlan {
             if w < 1 || l < w {
                 return Err(JobError::config(format!(
                     "engine {} of the mesh has {l} lanes and {w} writer lanes",
-                    engines.len()
+                    engines.len() + 1
                 )));
             }
             engines.push(Peer {
@@ -142,7 +142,8 @@ impl MeshPlan {
         }
         let Some(own) = engines.get(me) else {
             return Err(JobError::config(format!(
-                "engine {me} of a mesh of {}",
+                "engine {} of a mesh of {}",
+                me + 1,
                 engines.len()
             )));
         };
@@ -154,8 +155,9 @@ impl MeshPlan {
             || first_writer != attempt_writers
         {
             return Err(JobError::config(format!(
-                "engine {me} of the mesh has lanes {} from {} and writer lanes {} from {} of {first_writer}, \
+                "engine {} of the mesh has lanes {} from {} and writer lanes {} from {} of {first_writer}, \
                  and the job {lanes} from {} and {writers} from {} of {attempt_writers}",
+                me + 1,
                 own.lanes,
                 own.first_lane,
                 own.writers,
@@ -180,7 +182,8 @@ impl MeshPlan {
                     (0..engines.len()).find(|&i| i != me && engines[i].address.is_empty())
                 {
                     return Err(JobError::config(format!(
-                        "engine {i} of the mesh has no address"
+                        "engine {} of the mesh has no address",
+                        i + 1
                     )));
                 }
                 Some(Identity {
@@ -687,7 +690,8 @@ async fn try_dial(
     let answer = read_hello(&mut c).await.map_err(failed)?;
     let refused = |why: String| {
         Dialed::Refused(transient(format!(
-            "engine {to} at {} refused the connection: {why}",
+            "engine {} at {} refused the connection: {why}",
+            to + 1,
             peer.address
         )))
     };
@@ -700,7 +704,9 @@ async fn try_dial(
     {
         return Err(refused(format!(
             "it answered as engine {} of attempt {:?}, generation {}",
-            answer.engine, answer.attempt, answer.generation
+            u64::from(answer.engine) + 1,
+            answer.attempt,
+            answer.generation
         )));
     }
     Ok(c)
@@ -724,12 +730,14 @@ async fn dial(
             return Err(JobError::peer_lost(
                 to,
                 format!(
-                    "engine {to} at {} wasn't reached within {:?}: {why}",
-                    m.engines[to].address, m.timeout
+                    "engine {} at {} wasn't reached within {:?}: {why}",
+                    to + 1,
+                    m.engines[to].address,
+                    m.timeout
                 ),
             ));
         }
-        debug!(engine = to, error = %why, "reaching another engine; trying again");
+        debug!(engine = to + 1, error = %why, "reaching another engine; trying again");
         tokio::time::sleep(wait).await;
         wait = (wait * 2).min(Duration::from_secs(1));
     }
@@ -755,7 +763,8 @@ async fn link(
             JobError::peer_lost(
                 to,
                 format!(
-                    "the connection to engine {to} at {} broke: {e}",
+                    "the connection to engine {} at {} broke: {e}",
+                    to + 1,
                     m.engines[to].address
                 ),
             )
@@ -829,7 +838,7 @@ fn refusal(plan: &Plan, m: &MeshPlan, h: &MeshHello) -> Option<String> {
     }
     let e = h.engine as usize;
     if e >= m.engines.len() || e == m.engine {
-        return Some(format!("engine {e} isn't another of the attempt's"));
+        return Some(format!("engine {} isn't another of the attempt's", e + 1));
     }
     None
 }
@@ -923,10 +932,10 @@ pub async fn inbound(
                     let plan = plan.clone();
                     tokio::spawn(async move {
                         if let Some(m) = &plan.mesh {
-                            let _ = answer(&mut c, &plan, m, &format!("engine {e} is connected already")).await;
+                            let _ = answer(&mut c, &plan, m, &format!("engine {} is connected already", e + 1)).await;
                         }
                     });
-                    warn!(engine = e, "refused a second connection from an engine");
+                    warn!(engine = e + 1, "refused a second connection from an engine");
                 }
                 Ok(Err(why)) => warn!(reason = %why, "refused a connection from another engine"),
                 Err(e) => warn!(error = %e, "a connection from another engine failed"),
@@ -938,8 +947,9 @@ pub async fn inbound(
             },
             () = &mut deadline, if !waiting.is_empty() => {
                 let first = waiting.first().copied().unwrap_or_default();
+                let missing: Vec<usize> = waiting.iter().map(|e| e + 1).collect();
                 return Err(JobError::peer_lost(first, format!(
-                    "engines {waiting:?} of the attempt didn't connect within {:?}",
+                    "engines {missing:?} of the attempt didn't connect within {:?}",
                     m.timeout
                 )));
             }
@@ -965,10 +975,10 @@ async fn receive(
     let lost = |why: String| {
         JobError::peer_lost(
             from,
-            format!("engine {from} at {} was lost: {why}", peer.address),
+            format!("engine {} at {} was lost: {why}", from + 1, peer.address),
         )
     };
-    let protocol = |why: String| JobError::internal(format!("engine {from} sent {why}"));
+    let protocol = |why: String| JobError::internal(format!("engine {} sent {why}", from + 1));
     answer(&mut c, &plan, m, "")
         .await
         .map_err(|e| lost(e.to_string()))?;

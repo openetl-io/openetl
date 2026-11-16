@@ -196,17 +196,16 @@ func TestEngineRunsAGroupWindow(t *testing.T) {
 	if len(ready) != 2 {
 		t.Fatalf("ready: %+v", ready)
 	}
-	// Epoch 5 names the lane's run of what it changed; epoch 6 closed every
-	// window, and names none.
-	for i, r := range ready {
-		s := r.Ready.Snapshots
-		if len(s) != 1 || s[0].Operator != a.Statements[0].Operator || len(s[0].Runs) != 1-i || len(s[0].Data) == 0 {
-			t.Fatalf("epoch %d's snapshots: %+v", r.Epoch, s)
-		}
-		for _, run := range s[0].Runs {
-			if _, err := os.Stat(filepath.Join(state, run)); err != nil {
-				t.Errorf("epoch %d names %s: %v", r.Epoch, run, err)
-			}
-		}
+	// Epoch 5 names the lane's run of what it changed; epoch 6 is at the
+	// end of input, which closed every window, and names no state.
+	s := ready[0].Ready.Snapshots
+	if len(s) != 1 || s[0].Operator != a.Statements[0].Operator || len(s[0].Runs) != 1 || len(s[0].Data) == 0 {
+		t.Fatalf("epoch %d's snapshots: %+v", ready[0].Epoch, s)
+	}
+	if _, err := os.Stat(filepath.Join(state, s[0].Runs[0])); err != nil {
+		t.Errorf("epoch %d names %s: %v", ready[0].Epoch, s[0].Runs[0], err)
+	}
+	if s := ready[1].Ready.Snapshots; len(s) != 0 {
+		t.Fatalf("epoch %d's snapshots: %+v", ready[1].Epoch, s)
 	}
 }

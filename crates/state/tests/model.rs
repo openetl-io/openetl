@@ -166,23 +166,11 @@ impl StateBackend for View<'_> {
     }
 
     fn expire(&mut self, op: OperatorId, horizon: i64) {
-        for g in self.range.first..=self.range.last {
-            if horizon > self.s.horizon(op, g) {
-                self.s.horizons.insert((op, g), horizon);
-            }
-        }
-        // What the horizon passed is gone.
-        let s = self.s.clone();
-        let mine = |o: OperatorId, g: u32| o == op && self.range.contains(g);
-        self.s
-            .rows
-            .retain(|k, _| !(mine(k.0, k.1) && s.gone(k.0, k.1, k.2)));
-        self.s
-            .timers
-            .retain(|k| !(mine(k.0, k.2) && s.gone(k.0, k.2, k.1)));
-        self.s
-            .set
-            .retain(|k, e| *e == NEVER || !(mine(k.0, k.1) && s.gone(k.0, k.1, *e)));
+        self.expire_groups(op, self.range, horizon);
+    }
+
+    fn expire_in(&mut self, op: OperatorId, group: u32, horizon: i64) {
+        self.expire_groups(op, KeyGroupRange::new(group, group), horizon);
     }
 
     fn horizon(&self, op: OperatorId, group: u32) -> i64 {
@@ -227,6 +215,29 @@ impl StateBackend for View<'_> {
                 key: Bytes::from(key),
             })
             .collect())
+    }
+}
+
+impl View<'_> {
+    /// The operator's horizon moved to `horizon` in `groups`, if later.
+    fn expire_groups(&mut self, op: OperatorId, groups: KeyGroupRange, horizon: i64) {
+        for g in groups.first..=groups.last {
+            if horizon > self.s.horizon(op, g) {
+                self.s.horizons.insert((op, g), horizon);
+            }
+        }
+        // What the horizon passed is gone.
+        let s = self.s.clone();
+        let mine = |o: OperatorId, g: u32| o == op && groups.contains(g);
+        self.s
+            .rows
+            .retain(|k, _| !(mine(k.0, k.1) && s.gone(k.0, k.1, k.2)));
+        self.s
+            .timers
+            .retain(|k| !(mine(k.0, k.2) && s.gone(k.0, k.2, k.1)));
+        self.s
+            .set
+            .retain(|k, e| *e == NEVER || !(mine(k.0, k.1) && s.gone(k.0, k.1, *e)));
     }
 }
 
@@ -462,8 +473,16 @@ impl World {
             }
             52..=55 => {
                 let h = self.rng.watermark();
-                l.layer.expire(op, h);
-                m.expire(op, h);
+                match self.rng.chance(50) {
+                    true => {
+                        l.layer.expire(op, h);
+                        m.expire(op, h);
+                    }
+                    false => {
+                        l.layer.expire_in(op, g, h);
+                        m.expire_in(op, g, h);
+                    }
+                }
                 assert_eq!(l.layer.horizon(op, g), m.horizon(op, g), "{ctx}: horizon");
             }
             56..=62 => {

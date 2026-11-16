@@ -177,8 +177,8 @@ A window closes when the stream's watermark reaches the window's end: the engine
 - A row is late if it comes after the watermark has passed its time. A late row of a window that has not closed yet goes into the window.
 - `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
 - A delete has the output's key, and the values of the row it deletes. The engine does not evaluate a column that can change between runs, such as one that reads `now()` or `random()`, again for a delete. That column is null in the delete, or its type's zero if the column cannot be null.
-- A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start.
-- The engine quarantines a row that comes later than its window's end and the lateness, with the code `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness.
+- A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start. A row that would move a session's start is late when its own time plus the gap is past the lateness, as a row that joins no session is: a session that had gone could have had that start.
+- The engine quarantines a row that comes later than its window's end and the lateness, with the code `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness. A window that is past its lateness stays past it when `watermark.lateness` changes ([Changing a query](#changing-a-query)).
 - `watermark.lateness` needs `destination.write: merge` for the output.
 - After a restore, the watermark starts where the checkpoint's watermarks are. A window that closed before the checkpoint stays closed, and a row of it is late.
 
@@ -238,7 +238,14 @@ These edits give the operator a new ID:
 - A filter or an `UNNEST` before the window.
 - A change of type of the event-time column, a key or an aggregate's argument, also when the source changes the column's type.
 
-`watermark.lateness` is not part of the ID. A changed lateness keeps the state. A window that is open at the change keeps the time its state expires at, which it got when it opened: a higher lateness does not keep its state longer. A row for that window that comes after its state expired, and within the new lateness, starts a new aggregate without the window's earlier rows. Its row is an insert under the window's key, so `merge` replaces the window's row with it.
+`watermark.lateness` is not part of the ID. A changed lateness keeps the state, and applies from the next run:
+
+- A window that is open at the change, or closed and within its lateness, takes the new lateness. Its state expires when the watermark passes its end plus the lateness in force when it closed, or later if the lateness rises before then.
+- A window whose lateness had passed before the change stays gone. A row of it is late, also within a higher lateness, and the window's row stays as it is.
+- The state keeps, in each key group, the latest point that the group's watermark less the lateness has reached. A tumbling or hopping window that ends at or before that point is gone. A session ends at its last row's time plus the gap. A session's row is late when the session that it joins or starts ends before that point. It is also late when it would move a session's start and its own time plus the gap is before that point.
+- A lower lateness can leave the state of a window that closed before the change until the old lateness passes. Once the new lateness has passed the window, it takes no more rows.
+
+[Change the lateness](../pipelines/windows.md#change-the-lateness) has what each window does.
 
 `openetl plan` and `openetl apply` show each operator in a `state` section of `transform.sql`. Each line has the statement's place, the output, the ID, what the operator is against the pipeline's current version, and what it keeps. Where the pipeline's last checkpoint says which operators' state it names, the line ends with whether it holds the operator's state. In this example, the current version has the statement of [Group windows](#group-windows) and a second statement, `orders_by_hour`, with `tumble(created_at, INTERVAL '1 hour')`. The new version gives the first statement a `FROM` alias and other column names, and changes the second one's window to 30 minutes. The stream has `watermark.lateness: 1m`:
 

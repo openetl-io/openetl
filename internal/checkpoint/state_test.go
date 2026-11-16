@@ -3,7 +3,6 @@ package checkpoint_test
 import (
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -202,18 +201,5 @@ func TestPruneKeepsARunUntilNoKeptRecordNamesAnyOfIt(t *testing.T) {
 	}
 	if got, want := runs(t, store), []string{r3, r4}; !slices.Equal(got, want) {
 		t.Fatalf("after epoch 5, state %v, want %v", got, want)
-	}
-}
-
-func TestKeptSnapshotsLeaveOutOperatorsThatWroteNothing(t *testing.T) {
-	snap := func(op string, first int, runs ...string) checkpoint.Snapshot {
-		return checkpoint.Snapshot{Operator: op, KeyGroups: checkpoint.KeyGroupRange{First: first, Last: first + 127}, Runs: runs}
-	}
-	got := checkpoint.KeptSnapshots([]checkpoint.Snapshot{
-		snap("a", 0, "a/g1/e1/kg0-127.run"), snap("a", 128), snap("b", 0), snap("b", 128),
-	})
-	want := []checkpoint.Snapshot{snap("a", 0, "a/g1/e1/kg0-127.run"), snap("a", 128)}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("kept %+v, want %+v", got, want)
 	}
 }

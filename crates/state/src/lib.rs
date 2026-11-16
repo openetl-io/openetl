@@ -188,6 +188,11 @@ pub trait StateBackend: Send {
     /// it wants. `i64::MIN` is no horizon.
     fn expire(&mut self, op: OperatorId, horizon: i64);
 
+    /// As [`StateBackend::expire`], in key group `group` of the lane alone:
+    /// for a consumer whose groups stand at different times, as lanes
+    /// restored onto one may.
+    fn expire_in(&mut self, op: OperatorId, group: KeyGroup, horizon: i64);
+
     /// The operator's horizon in a key group of the lane, or `i64::MIN` for
     /// none. Lanes restored onto one may bring their groups different
     /// horizons. What's at or before a group's is gone, so a consumer takes

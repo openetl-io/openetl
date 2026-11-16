@@ -475,7 +475,7 @@ async fn an_engine_lost_mid_epoch_fails_the_job_as_transient() {
     let err = failure(e1).await;
     assert_eq!(err.code, ErrorCode::Transient);
     assert!(
-        err.message.contains("engine 0") && err.message.contains("lost"),
+        err.message.contains("engine 1 at") && err.message.contains("lost"),
         "{err}"
     );
     assert!(!reader.await.unwrap().contains(&FrameKind::Barrier));
@@ -1485,8 +1485,9 @@ mod windows {
                 }
                 let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
                 put_on(w, FrameKind::Rows, 0, json_rows(&refs)).await;
-                put_on(w, FrameKind::Split, 0, split(&id, Some(END))).await;
                 barriers(w, 2, 2).await;
+                put_on(w, FrameKind::Split, 0, split(&id, Some(END))).await;
+                barriers(w, 2, 3).await;
                 end_both(w).await;
                 lane += 1;
             }
@@ -1496,8 +1497,11 @@ mod windows {
         // lane of four.
         assert_eq!(
             sorted(window_rows(&outs, 2)),
-            [row(60, "w", 2, 2), row(60, "y", 6, 2), row(60, "z", 2, 2)]
+            [row(60, "w", 2, 3), row(60, "y", 6, 3), row(60, "z", 2, 3)]
         );
+        // At the end of input every window has gone, and no lane names
+        // any of the window's state.
+        assert!(ready.iter().all(|r| r[1].snapshots.is_empty()));
         let late: u64 = ready
             .iter()
             .flatten()

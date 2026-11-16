@@ -71,7 +71,7 @@ Only `record`, and the `reason` of a `statement` line, hold values of the row. I
 | `nan` | A value is NaN, and its column's type cannot hold NaN. | The column |
 | `statement` | A statement of the SQL transform cannot evaluate the row. Examples are a cast that fails, a division by zero, and arithmetic whose result does not fit its type. | None |
 | `unsent` | A change from the source's log updated the row, but did not send a column that the statement needs. | The column that the change did not send |
-| `late` | The row came after its group window closed, later than the window's allowed lateness. | None |
+| `late` | The row came after its group window closed, later than the window's allowed lateness, or after the window had gone under an earlier lateness. | None |
 | `event_time` | The row's event time is null, so the row is in no group window. | None |
 | `aggregate` | An aggregate of a group window does not fit its type, such as a sum past the range of `BIGINT`. | None |
 

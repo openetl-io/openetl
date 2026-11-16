@@ -53,7 +53,7 @@ A SQL transform's group window is a stateful operator: it keeps state between ro
 |---|---|---|
 | `openetl.operator.rows.in` | rows, counter | Rows of the statement's stream that reached the operator. |
 | `openetl.operator.rows.written` | rows, counter | Rows the operator wrote to its output, by `openetl.op`: `insert`, `update` or `delete`. Rows that the output quarantined are not counted. |
-| `openetl.operator.rows.late` | rows, counter | Rows the operator quarantined with the code `late`, as they came after their windows' allowed lateness. |
+| `openetl.operator.rows.late` | rows, counter | Rows the operator quarantined with the code `late`, as they came after their windows' allowed lateness, or after their windows had gone under an earlier lateness. |
 | `openetl.operator.windows` | windows | Windows, or sessions, whose state the operator keeps: open, or closed and within their lateness. A reset, or a version that changes the operator, starts it again from 0. |
 | `openetl.operator.watermark` | seconds since the Unix epoch | The operator's watermark: the least of its lanes'. It is absent until every lane has one, and is not updated at the end of input. |
 | `openetl.operator.watermark.lag` | seconds | How far the watermark was behind the time of the commit. |

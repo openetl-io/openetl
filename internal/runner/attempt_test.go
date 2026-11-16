@@ -135,8 +135,9 @@ func (d *blockingDest) Recover(context.Context, uint64, destination.Epoch, []des
 
 func (d *blockingDest) Close(context.Context) error { return nil }
 
-// Each record keeps what the dataflow reported for its epoch, and the next
-// attempt's dataflow gets it back.
+// Each record keeps what the dataflow reported for its epoch, the snapshot
+// of an operator that names no run too, and the next attempt's dataflow
+// gets it back.
 func TestRecordsCarryTheDataflowsReport(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
@@ -160,7 +161,8 @@ func TestRecordsCarryTheDataflowsReport(t *testing.T) {
 		if got, want := string(rec.Streams["s"].Schema), fmt.Sprintf("schema-%d", last); got != want {
 			t.Errorf("record %d has schema %q, want %q", last, got, want)
 		}
-		if len(rec.Snapshots) != 1 || string(rec.Snapshots[0].Data) != fmt.Sprintf("chk-%d", last) {
+		if len(rec.Snapshots) != 2 || string(rec.Snapshots[0].Data) != fmt.Sprintf("chk-%d", last) ||
+			string(rec.Snapshots[1].Data) != fmt.Sprintf("gone-%d", last) {
 			t.Errorf("record %d has snapshots %+v", last, rec.Snapshots)
 		}
 
@@ -169,7 +171,8 @@ func TestRecordsCarryTheDataflowsReport(t *testing.T) {
 		if got, want := string(first.Schemas["s"]), fmt.Sprintf("schema-%d", restored); got != want {
 			t.Errorf("the second attempt restored schema %q, want %q", got, want)
 		}
-		if len(first.Snapshots) != 1 || string(first.Snapshots[0].Data) != fmt.Sprintf("chk-%d", restored) {
+		if len(first.Snapshots) != 2 || string(first.Snapshots[0].Data) != fmt.Sprintf("chk-%d", restored) ||
+			string(first.Snapshots[1].Data) != fmt.Sprintf("gone-%d", restored) {
 			t.Errorf("the second attempt restored snapshots %+v", first.Snapshots)
 		}
 	})
@@ -471,8 +474,8 @@ func (s ackSource) Committed(_ context.Context, states map[string][]byte, _ map[
 	return nil
 }
 
-// reportingFlow reports a schema for s and one snapshot in each epoch, and
-// keeps the plans it ran.
+// reportingFlow reports a schema for s and two snapshots in each epoch, one
+// of an operator that names no run, and keeps the plans it ran.
 type reportingFlow struct{ plans *[]runner.Plan }
 
 func (f reportingFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
@@ -484,7 +487,10 @@ func (f reportingFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runn
 	for fr := range mid {
 		if fr.Kind == runner.FrameReady {
 			fr.Ready.Schemas = map[string][]byte{"s": fmt.Appendf(nil, "schema-%d", fr.Epoch)}
-			fr.Ready.Snapshots = []checkpoint.Snapshot{{Operator: "op", Data: fmt.Appendf(nil, "chk-%d", fr.Epoch), Runs: []string{fmt.Sprintf("op/g1/e%d/kg0-255.run", fr.Epoch)}}}
+			fr.Ready.Snapshots = []checkpoint.Snapshot{
+				{Operator: "op", Data: fmt.Appendf(nil, "chk-%d", fr.Epoch), Runs: []string{fmt.Sprintf("op/g1/e%d/kg0-255.run", fr.Epoch)}},
+				{Operator: "gone", Data: fmt.Appendf(nil, "gone-%d", fr.Epoch)},
+			}
 		}
 		select {
 		case out <- fr:
