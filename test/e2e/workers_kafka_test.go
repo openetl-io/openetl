@@ -283,6 +283,9 @@ func (l *laneLoss) loseFeeding(t *testing.T, name string, feed func(from int) in
 		select {
 		case <-l.proxy.done:
 		default:
+			if failed := runFailure(t, name); failed != "" {
+				t.Fatalf("waiting for an epoch to stop a worker at, the pipeline's run failed: %s", failed)
+			}
 			if time.Now().After(deadline) {
 				t.Fatalf("no epoch on workers had rows in every writer lane in 3 minutes; attempts on 2 workers: %d", attemptsOnTwoWorkers(t, name))
 			}
@@ -354,6 +357,20 @@ func TestKafkaOnWorkersRedoesALostLane(t *testing.T) {
 	eventually(t, 3*time.Minute, "every record in the output topic", func() bool { return len(topicRecords(t, ns+"."+topic)) >= produced })
 	checkTopics(t, ns, produced, topic)
 	l.finish(t, name, rec)
+}
+
+// runFailure is why the pipeline's latest run failed, or its last attempt
+// failed with a code no retry gets past; empty while neither did.
+func runFailure(t *testing.T, pipeline string) string {
+	t.Helper()
+	v, err := query[string](t, `SELECT s.status || ' ' || coalesce(s.last_attempt_code, '') || ': ' || coalesce(s.error, s.last_attempt_error, '')
+		FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id
+		WHERE p.name = $1 AND (s.status = 'failed' OR s.last_attempt_code IN ('CONFIG_INVALID', 'SCHEMA_DRIFT', 'CHECKPOINT_CORRUPT', 'POSITION_LOST', 'INTERNAL'))
+		ORDER BY s.start_time DESC LIMIT 1`, pipeline)
+	if err != nil {
+		return ""
+	}
+	return v
 }
 
 // attemptsOnTwoWorkers is how many of the pipeline's attempts ran on 2

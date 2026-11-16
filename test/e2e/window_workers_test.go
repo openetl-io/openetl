@@ -21,23 +21,24 @@ import (
 	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
-// A window test's records: id i at windowT0 + i*windowStep, of key
-// k{i % windowKeys}, each partition in turn, so a partition's records come
-// in the order of their time and none is late.
+// A window test's records: record i at windowT0 + i*windowStep, of key
+// k{i % windowKeys}, on partition i % the topic's partitions, at offset i /
+// the partitions there, so a partition's records come in the order of their
+// time and none is late.
 const (
 	windowKeys = 8
 	windowStep = 10 * time.Millisecond
 	windowSize = 10 * time.Second
 )
 
-// produceWindowRound writes ids from..from+n-1 of a window test whose first
-// record is at t0 to topic's partitions.
+// produceWindowRound writes records from..from+n-1 of a window test whose
+// first record is at t0 to topic's partitions.
 func produceWindowRound(t *testing.T, cl *kgo.Client, topic string, t0 time.Time, from, n int, partitions int32) {
 	t.Helper()
 	recs := make([]*kgo.Record, 0, n)
 	for i := from; i < from+n; i++ {
 		recs = append(recs, &kgo.Record{Topic: topic, Partition: int32(i) % partitions, Key: fmt.Appendf(nil, "k%d", i%windowKeys),
-			Value: fmt.Appendf(nil, `{"id": %d}`, i), Timestamp: t0.Add(time.Duration(i) * windowStep)})
+			Value: fmt.Appendf(nil, `{"i": %d}`, i), Timestamp: t0.Add(time.Duration(i) * windowStep)})
 	}
 	if err := cl.ProduceSync(t.Context(), recs...).FirstErr(); err != nil {
 		t.Fatal(err)
@@ -53,7 +54,8 @@ func latestGeneration(t *testing.T, name string) int64 {
 }
 
 // windowRow is one of a window's rows, as the window test's statement
-// writes it: its key, its first id, how many ids and their sum.
+// writes it: its key, its records' least offset, how many records and the
+// sum of their offsets.
 type windowRow struct {
 	k               string
 	first, n, total int
@@ -84,7 +86,9 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 	if _, err := kadm.NewClient(kafkaClient(t)).CreateTopic(t.Context(), laneLossPartitions, 1, map[string]*string{"message.timestamp.after.max.ms": &ahead}, topic); err != nil {
 		t.Fatal(err)
 	}
-	sql, err := json.Marshal(fmt.Sprintf("INSERT INTO tens\nSELECT window_start, _kafka_key AS k, count(*) AS n, sum(id) AS total, min(id) AS first\nFROM %q\nGROUP BY tumble(_kafka_timestamp, INTERVAL '10 seconds'), _kafka_key", topic))
+	// Over the record's own columns: a topic's columns of its values come
+	// from its records, so a job's start doesn't have them yet.
+	sql, err := json.Marshal(fmt.Sprintf("INSERT INTO tens\nSELECT window_start, _kafka_key AS k, count(*) AS n, sum(_kafka_offset) AS total, min(_kafka_offset) AS first\nFROM %q\nGROUP BY tumble(_kafka_timestamp, INTERVAL '10 seconds'), _kafka_key", topic))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +123,7 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 		}
 	}
 	if want := []string{"tens PLAN_OPERATOR_KIND_STATEMENT [_kafka_key]"}; !slices.Equal(exchanges, want) {
-		t.Errorf("the plan exchanges %v; want %v", exchanges, want)
+		t.Errorf("the plan exchanges %v; want %v; its notes: %v", exchanges, want, plan.GetNotes())
 	}
 	// Stop a worker as an epoch that closed windows commits.
 	window := func(us int64) int64 { return (us - t0.UnixMicro()) / windowSize.Microseconds() }
@@ -156,6 +160,9 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 	feedUntil := func(what string, done func() bool) {
 		t.Helper()
 		for deadline := time.Now().Add(3 * time.Minute); !done(); {
+			if failed := runFailure(t, name); failed != "" {
+				t.Fatalf("waiting for a %s, the pipeline's run failed: %s", what, failed)
+			}
 			if time.Now().After(deadline) {
 				t.Fatalf("no %s in 3 minutes", what)
 			}
@@ -173,11 +180,11 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 	feedUntil("record after the killed coordinator's attempt", func() bool { return latestGeneration(t, name) > killed })
 
 	// A record a minute past the last on every partition closes every
-	// window the ids fall in; its own stays open.
+	// window the records fall in; its own stays open.
 	last := t0.Add(time.Duration(produced)*windowStep + time.Minute)
 	var flush []*kgo.Record
 	for p := range int32(laneLossPartitions) {
-		flush = append(flush, &kgo.Record{Topic: topic, Partition: p, Key: []byte("flush"), Value: []byte(`{"id": -1}`), Timestamp: last})
+		flush = append(flush, &kgo.Record{Topic: topic, Partition: p, Key: []byte("flush"), Value: []byte(`{"i": -1}`), Timestamp: last})
 	}
 	if err := producer.ProduceSync(t.Context(), flush...).FirstErr(); err != nil {
 		t.Fatal(err)
@@ -187,13 +194,14 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 	byWindow := map[[2]int]*windowRow{}
 	for i := range produced {
 		w := [2]int{int(time.Duration(i) * windowStep / windowSize), i % windowKeys}
+		offset := i / laneLossPartitions
 		r := byWindow[w]
 		if r == nil {
-			r = &windowRow{k: fmt.Sprintf("k%d", w[1]), first: i}
+			r = &windowRow{k: fmt.Sprintf("k%d", w[1]), first: offset}
 			byWindow[w] = r
 		}
 		r.n++
-		r.total += i
+		r.total += offset
 	}
 	for _, r := range byWindow {
 		want[*r] = true
@@ -213,7 +221,12 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 		}
 		return out
 	}
-	eventually(t, 3*time.Minute, "every window in the output topic", func() bool { return len(read()) >= len(want) })
+	eventually(t, 3*time.Minute, "every window in the output topic", func() bool {
+		if failed := runFailure(t, name); failed != "" {
+			t.Fatalf("the pipeline's run failed: %s", failed)
+		}
+		return len(read()) >= len(want)
+	})
 	// A transaction's commit returns before its markers reach the
 	// partitions; a moment more shows nothing else lands.
 	time.Sleep(3 * time.Second)
@@ -224,7 +237,7 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 		case seen[r]:
 			t.Errorf("window %+v landed twice", r)
 		case !want[r]:
-			t.Errorf("window %+v isn't one written: a key's window of ten seconds, with every id of it", r)
+			t.Errorf("window %+v isn't one written: a key's window of ten seconds, with every record of it", r)
 		}
 		seen[r] = true
 	}
