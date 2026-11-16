@@ -40,7 +40,7 @@ func kinesisConfig(t *testing.T, exe string) string {
 
 func kinesisDest(t *testing.T, namespace string) string {
 	t.Helper()
-	return fmt.Sprintf(`{"connector": "kinesis", "config": {%s, "namespace": %q, "shards": 2}}`, kinesisConfig(t, "destination-kinesis"), namespace)
+	return fmt.Sprintf(`{"connector": "kinesis", "config": {%s, "namespace": %q, "streamMode": "provisioned", "shards": 2}}`, kinesisConfig(t, "destination-kinesis"), namespace)
 }
 
 func kinesisSource(t *testing.T, streams ...string) string {

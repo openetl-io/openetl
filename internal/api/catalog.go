@@ -95,23 +95,30 @@ func (s *Server) applyConnectorSource(ctx context.Context, q *db.Queries, doc *s
 	return res, nil
 }
 
-// listSourcesSoon lists sources an apply connected or changed, in the
-// background, so the catalog shows them before the next refresh.
-func (s *Server) listSourcesSoon(names []string) {
+// ListNewSources lists the connected sources into the catalog, so that names,
+// the ones just connected or changed, show before the next refresh. It logs
+// a failure, unless ctx was canceled.
+func (s *Server) ListNewSources(ctx context.Context, names []string) {
 	if len(names) == 0 || s.Downloads == nil {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		c, err := s.catalog(s.Store.Queries)
-		if err != nil {
-			return
-		}
-		if _, err := c.Refresh(ctx); err != nil {
-			s.log().Warn("listing connector sources failed", "sources", names, "err", err)
-		}
-	}()
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	c, err := s.catalog(s.Store.Queries)
+	if err != nil {
+		return
+	}
+	if _, err := c.Refresh(ctx); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		s.log().Warn("listing connector sources failed", "sources", names, "err", err)
+	}
+}
+
+// listSourcesSoon lists sources an apply connected or changed, in the
+// background.
+func (s *Server) listSourcesSoon(names []string) {
+	if len(names) > 0 {
+		go s.ListNewSources(context.Background(), names)
+	}
 }
 
 func (s *Server) ListConnectorSources(ctx context.Context, _ *connect.Request[apiv1.ListConnectorSourcesRequest]) (*connect.Response[apiv1.ListConnectorSourcesResponse], error) {

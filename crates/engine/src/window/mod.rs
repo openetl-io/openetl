@@ -285,6 +285,15 @@ impl Operator {
         format!("transform.sql {}, writing {}: {why}", self.at, self.output)
     }
 
+    /// The watermark in key group `g`, in the event time's unit: at least
+    /// the state's horizon there. A restore can bring a lane groups whose
+    /// horizons differ, and each closed its windows up to its own: a
+    /// window there whose end that passed is closed, as its timer is gone.
+    fn watermark_in<S: StateBackend>(&self, state: &S, g: u32) -> i64 {
+        let horizon = state.horizon(self.id, g).saturating_mul(self.per_micro);
+        self.watermark().max(horizon)
+    }
+
     /// Takes a batch of the statement's input: the columns it reads.
     pub async fn rows<S: StateBackend>(
         &mut self,
@@ -535,12 +544,12 @@ impl Operator {
         rows_of: &(dyn Fn(usize) -> usize + Sync),
         out: &mut Out,
     ) -> Result<Vec<Emit>, JobError> {
-        let w = self.watermark();
         let size = self.size();
         // Each window's rows, by its group, keys and start.
         let mut slots: BTreeMap<(u32, Vec<u8>, i64), Vec<usize>> = BTreeMap::new();
         for &(r, t) in take {
             let mut placed = false;
+            let w = self.watermark_in(state, groups[r]);
             for s in self.starts(t) {
                 let end = s.saturating_add(size);
                 if end.saturating_add(self.lateness) <= w {
@@ -589,7 +598,7 @@ impl Operator {
                 }
             }
             let name = slot_key(&k, s);
-            let closed = end <= w;
+            let closed = end <= self.watermark_in(state, g);
             if fresh {
                 self.opened += 1;
                 let timer = match closed {
@@ -644,7 +653,6 @@ impl Operator {
         rows_of: &(dyn Fn(usize) -> usize + Sync),
         out: &mut Out,
     ) -> Result<(Vec<Emit>, Lists), JobError> {
-        let w = self.watermark();
         let mut by_key: BTreeMap<Keys, Vec<(usize, i64)>> = BTreeMap::new();
         for &(r, t) in take {
             by_key
@@ -663,6 +671,7 @@ impl Operator {
         let mut emits = Vec::new();
         let mut lists = Vec::new();
         for (((g, k), rs), value) in by_key.into_iter().zip(got) {
+            let w = self.watermark_in(state, g);
             let mut list = match &value {
                 Some(v) => self.decode_sessions(v)?,
                 None => Vec::new(),
@@ -793,7 +802,9 @@ impl Operator {
 
     /// Moves the watermark to `t`, in microseconds, if it's later: closes
     /// every window it reaches the end of, giving its row, and forgets
-    /// those past their allowed lateness.
+    /// those past their allowed lateness. A group whose state's horizon is
+    /// past `t` has fired its timers to there already. Its timers fired, it
+    /// moves state's horizon to `t`: state drops what's at or before it.
     pub async fn advance<S: StateBackend>(
         &mut self,
         state: &mut S,
@@ -823,6 +834,7 @@ impl Operator {
                 break;
             }
         }
+        state.expire(self.id, t);
         Ok(out)
     }
 
