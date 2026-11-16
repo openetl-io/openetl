@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -711,6 +712,54 @@ func TestTidy(t *testing.T) {
 	}
 	if got, want := tidy(s, 100, true), "abcde\nf\ng\nh\ti j k"; got != want {
 		t.Errorf("a detail: %q, want %q", got, want)
+	}
+}
+
+// fit keeps what fitting a text whole keeps, or less, though of a long text
+// it redacts only the start: wherever the cut splits a form of a secret, and
+// however much redacting and cleaning shrink what comes before.
+func TestFit(t *testing.T) {
+	secret, other := "pa55 w0rd/ü+x", "an0ther-s3cret-l0nger-than-redacted"
+	r := newRedactor([]string{secret, other})
+	const limit = 60
+	n := 4 * (limit + r.margin)
+	for _, c := range []struct {
+		name, before string
+		// Whether fit keeps what fitting the text whole keeps; or else only
+		// "…".
+		whole bool
+	}{
+		{"text", strings.Repeat("x", n), true},
+		{"another secret", strings.Repeat(other, n/len(other)+1), true},
+		{"tag characters", strings.Repeat("\U000E0041", n/4+1), false},
+		{"invalid bytes", strings.Repeat("\xff", n), false},
+	} {
+		for _, form := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret), strings.TrimPrefix(url.UserPassword("", secret).String(), ":")} {
+			for at := n - len(form); at <= n; at++ {
+				s := c.before[:at] + form + "yyyy"
+				got, whole := r.fit(s, limit, false), clean(r.redact(s), false)
+				if !r.cuts(s, limit) || len(got) > limit || !strings.HasPrefix(whole, strings.TrimSuffix(got, "…")) ||
+					c.whole && got != tidy(whole, limit, false) || !c.whole && got != "…" {
+					t.Fatalf("%s, then %q at %d: %q", c.name, form, at, got)
+				}
+			}
+		}
+	}
+
+	// answer fits each long text on its own.
+	big := strings.Repeat(secret+" ", 100000)
+	ans := answer([]string{secret, other}, &protocolv1.CheckResponse{Items: []*protocolv1.CheckItem{
+		{Name: "a", Title: "A", Status: protocolv1.CheckStatus_CHECK_STATUS_FAILED, Detail: big, Params: map[string]string{"big": big}},
+	}})
+	if it := ans.Items[0]; !r.cuts(big, maxDetail) || it.Failure == nil || it.Failure.Detail != tidy(r.redact(big), maxDetail, true) ||
+		it.Params["big"] != tidy(r.redact(big), maxParamValue, false) {
+		t.Errorf("an answer's long texts: %+v", it)
+	}
+
+	// A secret that's part of what redacting puts in: no cut.
+	r = newRedactor([]string{"act"})
+	if s := strings.Repeat("act", 10000); r.cuts(s, limit) || r.fit(s, limit, false) != tidy(r.redact(s), limit, false) {
+		t.Errorf("a secret within %q: %d", redacted, r.margin)
 	}
 }
 
