@@ -574,8 +574,12 @@ message OperatorEpoch {
   // The runs its lanes' snapshots name, below the job's state URL, with
   // their bytes: the same run from several lanes or engines is one.
   map<string, uint64> runs = 11;
-  // Its requests to object storage since the engine's last epoch.
+  // The runs its lanes wrote at their barriers of the epoch, and their
+  // bytes.
   StateRequests barrier = 12;
+  // Its reads of blocks and of runs' indexes and filters since the
+  // engine's last ready epoch: one made near a barrier can count in the
+  // epoch next to it, and every one counts once.
   StateRequests lookup = 13;
   StateRequests restore = 14;
 }

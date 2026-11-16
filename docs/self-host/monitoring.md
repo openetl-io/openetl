@@ -59,7 +59,7 @@ A SQL transform's group window is a stateful operator: it keeps state between ro
 | `openetl.operator.watermark.lag` | seconds | How far the watermark was behind the time of the commit. |
 | `openetl.operator.state.memory` | bytes | What the operator's state held in memory at the end of the epoch: the epoch's changes, the indexes and filters of the state files it opened, and its block cache. |
 | `openetl.operator.state.stored` | bytes | The bytes on object storage of the state files that the checkpoint names for the operator. Retention deletes the rest. |
-| `openetl.operator.state.requests` | requests, counter | The operator's requests to object storage, by `openetl.request.kind`: `barrier` writes its state at a checkpoint, `lookup` reads blocks of it, and `restore` opens the files a checkpoint names. |
+| `openetl.operator.state.requests` | requests, counter | The operator's requests to object storage, by `openetl.request.kind`: `barrier` writes its state at a checkpoint, `lookup` reads blocks of it, and `restore` opens the files a checkpoint names. `barrier` counts each epoch's own writes. A `lookup` or `restore` made near a checkpoint can count with the epoch next to it; each counts once. |
 | `openetl.operator.state.request.bytes` | bytes, counter | Those requests' bytes, by `openetl.request.kind`. |
 
 The console's **SQL** tab shows the same numbers for the last checkpoint ([SQL](../use/index.md#sql)).

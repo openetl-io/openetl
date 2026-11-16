@@ -2294,6 +2294,10 @@ impl Pieces {
         to.watermark = to.watermark.zip(op.watermark).map(|(a, b)| a.min(b));
         to.memory_bytes += op.memory_bytes;
         to.runs.extend(op.runs);
+        if let (Some(a), Some(b)) = (to.barrier.as_mut(), op.barrier) {
+            a.count += b.count;
+            a.bytes += b.bytes;
+        }
     }
 }
 
@@ -2433,7 +2437,6 @@ impl Flow {
                     .requests
                     .insert(op.operator.clone(), now)
                     .unwrap_or_default();
-                op.barrier = requests(now.barrier, was.barrier);
                 op.lookup = requests(now.lookup, was.lookup);
                 op.restore = requests(now.restore, was.restore);
                 op.memory_bytes += stores.cache_bytes() as u64;

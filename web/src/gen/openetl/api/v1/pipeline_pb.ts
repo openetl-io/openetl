@@ -3288,7 +3288,8 @@ export type OperatorStats = Message<"openetl.api.v1.OperatorStats"> & {
 
   /**
    * Its requests to object storage in the epoch: writing its state at the
-   * barrier, reading it, and opening what a checkpoint names.
+   * barrier, reading it, and opening what a checkpoint names. A read made
+   * near a barrier can count in the epoch next to it; each counts once.
    *
    * @generated from field: openetl.api.v1.StateRequests barrier_requests = 12;
    */

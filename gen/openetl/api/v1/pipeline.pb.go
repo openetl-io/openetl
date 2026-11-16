@@ -7167,7 +7167,8 @@ type OperatorStats struct {
 	// The bytes on object storage of the state that the checkpoint names.
 	StoredBytes uint64 `protobuf:"varint,11,opt,name=stored_bytes,json=storedBytes,proto3" json:"stored_bytes,omitempty"`
 	// Its requests to object storage in the epoch: writing its state at the
-	// barrier, reading it, and opening what a checkpoint names.
+	// barrier, reading it, and opening what a checkpoint names. A read made
+	// near a barrier can count in the epoch next to it; each counts once.
 	BarrierRequests *StateRequests `protobuf:"bytes,12,opt,name=barrier_requests,json=barrierRequests,proto3" json:"barrier_requests,omitempty"`
 	ReadRequests    *StateRequests `protobuf:"bytes,13,opt,name=read_requests,json=readRequests,proto3" json:"read_requests,omitempty"`
 	RestoreRequests *StateRequests `protobuf:"bytes,14,opt,name=restore_requests,json=restoreRequests,proto3" json:"restore_requests,omitempty"`

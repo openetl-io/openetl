@@ -1341,7 +1341,8 @@ message OperatorStats {
   // The bytes on object storage of the state that the checkpoint names.
   uint64 stored_bytes = 11;
   // Its requests to object storage in the epoch: writing its state at the
-  // barrier, reading it, and opening what a checkpoint names.
+  // barrier, reading it, and opening what a checkpoint names. A read made
+  // near a barrier can count in the epoch next to it; each counts once.
   StateRequests barrier_requests = 12;
   StateRequests read_requests = 13;
   StateRequests restore_requests = 14;

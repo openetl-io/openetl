@@ -2744,8 +2744,12 @@ type OperatorEpoch struct {
 	// The runs its lanes' snapshots name, below the job's state URL, with
 	// their bytes: the same run from several lanes or engines is one.
 	Runs map[string]uint64 `protobuf:"bytes,11,rep,name=runs,proto3" json:"runs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	// Its requests to object storage since the engine's last epoch.
-	Barrier       *StateRequests `protobuf:"bytes,12,opt,name=barrier,proto3" json:"barrier,omitempty"`
+	// The runs its lanes wrote at their barriers of the epoch, and their
+	// bytes.
+	Barrier *StateRequests `protobuf:"bytes,12,opt,name=barrier,proto3" json:"barrier,omitempty"`
+	// Its reads of blocks and of runs' indexes and filters since the
+	// engine's last ready epoch: one made near a barrier can count in the
+	// epoch next to it, and every one counts once.
 	Lookup        *StateRequests `protobuf:"bytes,13,opt,name=lookup,proto3" json:"lookup,omitempty"`
 	Restore       *StateRequests `protobuf:"bytes,14,opt,name=restore,proto3" json:"restore,omitempty"`
 	unknownFields protoimpl.UnknownFields

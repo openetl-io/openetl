@@ -23,7 +23,8 @@ use arrow_array::{RecordBatch, UInt32Array, new_null_array};
 use arrow_schema::{Field, Schema};
 use openetl_normalize::{Cause, Code, NotHeld, Rejected, Typed, key_groups, render_row};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
-use openetl_proto::engine::v1::OperatorEpoch;
+use openetl_proto::engine::v1::{OperatorEpoch, StateRequests};
+use openetl_state::runs::RunName;
 use openetl_state::{KeyGroupRange, Layer};
 use tokio::sync::mpsc;
 
@@ -517,22 +518,33 @@ impl Keyed {
     }
 
     /// What the operator did since its last barrier, and holds at this one,
-    /// whose snapshots are `snapshots`; `memory` is what its state held
-    /// before the barrier wrote the epoch's changes.
+    /// `e` of generation `generation`, whose snapshots are `snapshots`;
+    /// `memory` is what its state held before the barrier wrote the epoch's
+    /// changes. The barrier's request is the run of `e` the lane wrote, if
+    /// any, which its snapshots name.
     fn epoch(
         &mut self,
         id: &str,
+        (generation, e): (u64, u64),
         snapshots: &[openetl_state::Snapshot],
         memory: usize,
     ) -> Result<OperatorEpoch, JobError> {
         let c = std::mem::take(&mut self.counts);
         let dir = crate::state::dir(id);
         let mut runs = HashMap::new();
+        let mut barrier = StateRequests::default();
         for sn in snapshots {
             let named = openetl_state::runs::runs(sn)
                 .map_err(|e| crate::state::state_error(&format!("operator {id}'s state"), &e))?;
             for r in named {
-                runs.insert(format!("{dir}/{}", r.name), r.size);
+                let name = format!("{dir}/{}", r.name);
+                let written = RunName::parse(&r.name)
+                    .is_some_and(|n| n.generation == generation && n.epoch == e);
+                if written && !runs.contains_key(&name) {
+                    barrier.count += 1;
+                    barrier.bytes += r.size;
+                }
+                runs.insert(name, r.size);
             }
         }
         Ok(OperatorEpoch {
@@ -547,6 +559,7 @@ impl Keyed {
             watermark: self.op.watermark_micros(),
             memory_bytes: memory as u64,
             runs,
+            barrier: Some(barrier),
             ..Default::default()
         })
     }
@@ -619,7 +632,7 @@ impl Keyed {
         let memory = self.layer.memory().total();
         if plan.state.job.as_ref().is_some_and(|j| j.read_only()) {
             self.layer.discard();
-            let op = self.epoch(&id, &[], memory)?;
+            let op = self.epoch(&id, (plan.generation, e.n), &[], memory)?;
             flow.align.lock().await.pieces(e.n).operator(op);
         } else {
             let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
@@ -632,7 +645,7 @@ impl Keyed {
                 .iter()
                 .map(|sn| crate::state::named(&id, sn))
                 .collect::<Result<Vec<_>, _>>()?;
-            let op = self.epoch(&id, &snapshots, memory)?;
+            let op = self.epoch(&id, (plan.generation, e.n), &snapshots, memory)?;
             let mut align = flow.align.lock().await;
             let pieces = align.pieces(e.n);
             pieces.snapshots.extend(named);
