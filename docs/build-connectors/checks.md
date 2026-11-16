@@ -492,8 +492,7 @@ A check's `Timeout` limits its `Run`, and the run's context limits every check. 
 - A check that returns nil after its deadline is not a pass.
 - A check that has not returned 100 milliseconds after its deadline is left running, and the run moves on.
 
-Either check fails as `timed_out`, with the message "The check didn't finish in time." and no fix, since the check, not the network, was slow. A timeout error that the check returns itself keeps `timed_out`'s fix.
-- An `Advisory` check that runs out of time warns rather than fails.
+Either check fails as `timed_out`, with the message "The check didn't finish in time." and no fix, since the check, not the network, was slow. A timeout error that the check returns itself keeps `timed_out`'s fix. An `Advisory` check that runs out of time warns and does not fail.
 
 A check left running cannot change its item: once its item is done, `Param` and `Found` do nothing.
 
@@ -790,14 +789,14 @@ On a warning, `unknown`'s message is `The check raised a warning.` `check.Classi
 - **Failing closed.** A host counts an item whose status is not passed, warning or skipped as failed. A failed item fails the answer even if the response has no `error`.
 - **Failures in the answer.** A failed check is an answer, not an RPC error. A connector that answers a preflight RPC with `Unimplemented` has no preflight: no items and no failure.
 - **The deadline.** If the RPC has a deadline, the SDK ends the run earlier: by a quarter of the time left, and by one second at most. It then answers in time with the items that finished, and the rest as [Time limits](#time-limits) describes.
-- **Secrets.** On the `EgressProxy` and `EgressRaw` tiers, the SDK puts the values of the config's `x-secret` fields in the config. It then replaces each such value, and its URL-escaped forms, with `[redacted]` in every item's text, field, param names and values, detail and error. On the `EgressHost` tier, the connector gets only the secrets' names.
+- **Secrets.** On the `EgressProxy` and `EgressRaw` tiers, the SDK puts the values of the config's `x-secret` fields in the config. It then replaces each such value with `[redacted]` in every item's name, text, reason, field, param names and values, detail and error. It finds the value as written, URL-escaped with uppercase or lowercase hex digits, and escaped as in a Go or JSON string, such as `%q` prints it. On the `EgressHost` tier, the connector gets only the secrets' names.
 
-The SDK removes only the values it resolved, as written. It cannot find a secret that your connector changed, such as one encoded or hashed, or one it got another way. Do not put a secret, or anything made from one, in a param, a template or a detail.
+The SDK removes only the values it resolved, in those forms. It cannot find a secret that your connector changed in another way, such as one encoded in base64 or hashed, or one it got another way. Do not put a secret, or anything made from one, in a param, a template or a detail.
 
 The runner's host then takes the answer, whatever language the connector is written in, and applies these rules:
 
 - **Secrets.** The host replaces the values of the secrets that it gave the connector with `[redacted]`, in the same places and forms as the SDK. These are the values of the config's `x-secret` fields, the token of an AWS role that the runner leased for the connector, and the runner's own AWS secret key and session token when the connector inherits them.
-- **Text.** The host makes all text valid UTF-8. It replaces control characters and bidirectional controls with spaces. A detail keeps its line breaks and tabs.
+- **Text.** The host makes all text valid UTF-8. It replaces control characters, and bidirectional and other invisible formatting characters, with spaces. A detail keeps its line breaks and tabs.
 - **Time.** A connector's check has 1 minute, and its preflight has 2 minutes. The host passes the time as the RPC's deadline. In a preflight, a connector that does not answer in time fails its part with `TRANSIENT`, and a message such as `the source's preflight didn't finish within 2m0s`. A check of one source or destination that does not answer in time could not run: people get an error, not a result.
 - **Limits.** The host cuts each text that is longer than its limit, and ends it with `…`. It keeps the first 50 params of an item, in the order of their names. The limits are in bytes:
 
@@ -820,7 +819,7 @@ The runner's host then takes the answer, whatever language the connector is writ
 
   The result of a whole operation has at most 1.5 MiB, as the runner encodes it. A larger result fails the operation, with a message such as `the result of the preflight is N bytes, and a result has at most 1572864: the connectors answered with too much`.
 
-Design your checks for these limits. Report a bounded number of items, such as one item for each stream, not one for each column or file. `openetl connector check` shows the answer as the connector sent it, without the host's limits.
+Design your checks for these limits. Report a bounded number of items, such as one item for each stream, not one for each column or file. `openetl connector check` does not apply the host's limits. It reads the answer as a host does, and fails closed: an item whose status is not passed, warning or skipped shows as failed. A failed item without an error code gets `INTERNAL`, and one without a reason gets `unknown`.
 
 OpenETL keeps each item's templates and params apart, from the connector to the API. The CLI and the console fill the placeholders when they show an item. Under a failed or warning item, they show its message, detail, fix, field, code and reason. The console also shows each item's kind, and its description on request. [Pipeline CLI commands](../reference/pipeline-cli.md#text-output) and [Use the console](../use/index.md#read-a-checks-items) show what people see.
 
@@ -940,7 +939,7 @@ With `--format json`, it prints the answer as one JSON document, in the connecto
 
 The [conformance kit](./index.md#test-it-with-the-conformance-kit) checks every answer to `Check` and to a preflight through the protocol, in any language. Its `check` and `preflight` checks fail if, with the suite's good config, an item fails or the response has an error. They log each warning. A connector that answers a preflight with `Unimplemented` skips the `preflight` check. A connector that answers with no items passes it.
 
-The `errors` check runs `Check` with the suite's bad credentials, which must fail with `AUTH_INVALID`. It also gives `Check` 5 seconds with an upstream that does not answer, which must fail with a code that can be retried. `Check` fails the conformance check if it runs out of time as an RPC, or answers more than 1 second late. Give the suite these configs with `BadCredentials` and `Unreachable`, or with `openetl connector test --bad-credentials` and `--unreachable`.
+The `errors` check runs `Check` with the suite's bad credentials, which must fail with `AUTH_INVALID`, and with an upstream that does not answer, which must fail with a code that can be retried. Each of these calls has 2 minutes. The check then gives `Check` 5 seconds with the upstream that does not answer. `Check` fails the conformance check if it runs out of time as an RPC, or answers more than 1 second late. Give the suite these configs with `BadCredentials` and `Unreachable`, or with `openetl connector test --bad-credentials` and `--unreachable`.
 
 In each of these answers, the kit fails:
 
@@ -951,9 +950,9 @@ In each of these answers, the kit fails:
 - A failed item without an error, or a passed or skipped item with one.
 - An error without a code, or whose message is not the item's message with its placeholders filled in.
 - A title, description, message or fix with what looks like a placeholder but is not one, such as `{Host}`.
-- A field that is not a property of the config schema, by its dotted path.
+- A field that is not a property of the config schema, by its dotted path. A property of an array's items is under the array's path, with or without an index: `tables.name` or `tables.0.name`.
 - A response with an error, no failed item, and no skipped item, when it has items. A response with a failed item but no error.
-- A response's error whose code is not the first failed item's, or whose message does not start with that item's title.
-- Any text, param name or value, detail or error that holds the value of a secret in the suite's config. The kit looks at each template as written and filled in.
+- A response's error whose code is not the first failed item's, or whose message is not that item's `title: message: detail`, with the placeholders filled in.
+- Any text, param name or value, detail or error that holds the value of a secret in the suite's config. The kit looks at each template as written and filled in. Its report does not show such a text.
 
 It flags, and does not fail, a placeholder without a param of its name.
