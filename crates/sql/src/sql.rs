@@ -1174,7 +1174,7 @@ impl<'a> Check<'a> {
         }
     }
 
-    /// Gives each unquoted column name in a SELECT's list and WHERE the
+    /// Gives each unquoted column name in a SELECT's clauses the
     /// spelling of the one column of what FROM reads that it fits without
     /// regard to case, quoted, so binding takes it as it is. A name that fits
     /// none is left for binding to refuse; one that fits several is refused
@@ -1223,6 +1223,7 @@ impl<'a> Check<'a> {
             let _ = ast::visit_expressions_mut(exprs, &mut visit);
         }
         let _ = ast::visit_expressions_mut(&mut s.having, &mut visit);
+        let _ = ast::visit_expressions_mut(&mut s.qualify, &mut visit);
         for (span, m) in refused {
             let at = self.at(span);
             self.errors.push(Error::at(ErrorKind::Name, at, m));
@@ -1752,6 +1753,7 @@ fn unqualify(s: &mut ast::Select, from: &[ast::Ident], alias: &ast::Ident) -> Ve
     };
     let _ = ast::visit_expressions_mut(&mut s.projection, &mut replace);
     let _ = ast::visit_expressions_mut(&mut s.selection, &mut replace);
+    let _ = ast::visit_expressions_mut(&mut s.qualify, &mut replace);
     refused
 }
 

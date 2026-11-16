@@ -79,6 +79,79 @@ statement 1:1 latest over
   passes id -> id, amount -> amount
   operator dedupe-bd9ad3248dbfe379
 
+# The number compared = 1 through a cast that keeps numbers apart is
+# dedupe; '01' isn't any number's text, so comparing with it isn't.
+plan
+INSERT INTO latest SELECT id, amount FROM orders
+QUALIFY CAST(row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS VARCHAR) = '1'
+----
+statement 1:1 latest over
+  inputs orders
+  key id
+  schema id Int64 not null, amount Decimal128(12, 2)
+  reads orders: id, amount, created_at
+  dedupe Latest by created_at on id, upserts
+  project id, amount, row_number() PARTITION BY [orders.id] ORDER BY [orders.created_at DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW := UInt64(1)
+  project id, amount
+  need id
+  passes id -> id, amount -> amount
+  operator dedupe-bd9ad3248dbfe379
+
+plan
+INSERT INTO latest SELECT id, amount FROM orders
+QUALIFY CAST(row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS VARCHAR) = '01'
+----
+error later_tier updating 2:14 ROW_NUMBER() compared other than = 1, as in a top-N: transforms don't run updating statements yet (tier 5)
+
+plan
+INSERT INTO latest SELECT id, amount FROM orders
+QUALIFY CAST(row_number() OVER (PARTITION BY id ORDER BY created_at DESC) AS BOOLEAN) = true
+----
+error later_tier updating 2:14 ROW_NUMBER() compared other than = 1, as in a top-N: transforms don't run updating statements yet (tier 5)
+
+# A partition key the output selects under a second name is its key.
+plan
+INSERT INTO latest SELECT b, amount FROM (
+  SELECT customer AS a, customer AS b, amount FROM orders
+  QUALIFY row_number() OVER (PARTITION BY customer ORDER BY created_at DESC) = 1
+) AS t WHERE a > 0
+----
+statement 1:1 latest over
+  inputs orders
+  key b
+  schema b Int64, amount Decimal128(12, 2)
+  reads orders: customer, amount, created_at
+  dedupe Latest by created_at on customer, upserts
+  project customer, amount, row_number() PARTITION BY [orders.customer] ORDER BY [orders.created_at DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW := UInt64(1)
+  project a := orders.customer, b := orders.customer, amount
+  filter t.a > Int64(0)
+  project b, amount
+  need customer
+  passes customer -> b, amount -> amount
+  operator dedupe-b6c848e954c1018a
+
+# QUALIFY's names match the stream's columns as the SELECT list's do.
+stream accounts time(At)
+  AccountID int64
+  Balance int64
+  At timestamp
+
+plan
+INSERT INTO latest SELECT accountid, balance FROM accounts
+QUALIFY row_number() OVER (PARTITION BY accountid ORDER BY at DESC) = 1
+----
+statement 1:1 latest over
+  inputs accounts
+  key AccountID
+  schema AccountID Int64, Balance Int64
+  reads accounts: AccountID, Balance, At
+  dedupe Latest by At on AccountID, upserts
+  project AccountID, Balance, row_number() PARTITION BY [accounts.AccountID] ORDER BY [accounts.At DESC NULLS FIRST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW := UInt64(1)
+  project AccountID, Balance
+  need AccountID
+  passes AccountID -> AccountID, Balance -> Balance
+  operator dedupe-387287e9e8d04d1f
+
 # What's refused.
 plan
 INSERT INTO x SELECT id, row_number() OVER (PARTITION BY region ORDER BY created_at) AS n FROM orders

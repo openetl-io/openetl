@@ -856,7 +856,9 @@ fn reads(e: &DfExpr, schema: &DFSchema, of: &HashSet<usize>) -> bool {
         .any(|c| schema.index_of_column(c).is_ok_and(|i| of.contains(&i)))
 }
 
-/// Whether `e` is `n = 1` for a column `n` of the columns `of`.
+/// Whether `e` is `n = 1` for a column `n` of the columns `of`: `n`, or a
+/// cast of it that gives each number a value of its own, equals the value
+/// that 1 has there.
 fn is_first(e: &DfExpr, schema: &DFSchema, of: &HashSet<usize>) -> bool {
     let DfExpr::BinaryExpr(b) = e else {
         return false;
@@ -864,25 +866,47 @@ fn is_first(e: &DfExpr, schema: &DFSchema, of: &HashSet<usize>) -> bool {
     if b.op != DfOperator::Eq {
         return false;
     }
-    let column = |e: &DfExpr| {
-        let mut e = e;
-        loop {
-            match e {
-                DfExpr::Cast(c) => e = &c.expr,
-                DfExpr::TryCast(c) => e = &c.expr,
-                DfExpr::Column(c) => {
-                    return schema.index_of_column(c).is_ok_and(|i| of.contains(&i));
-                }
-                _ => return false,
-            }
-        }
+    let first = |n: &DfExpr, value: &DfExpr| {
+        let (Some(n), Some(value)) = (at_one(n, schema, of), constant(value)) else {
+            return false;
+        };
+        n == value
     };
-    let one = |e: &DfExpr| {
-        constant(e)
-            .and_then(|v| v.cast_to(&DataType::Int64).ok())
-            .is_some_and(|v| v == ScalarValue::Int64(Some(1)))
-    };
-    (column(&b.left) && one(&b.right)) || (one(&b.left) && column(&b.right))
+    first(&b.left, &b.right) || first(&b.right, &b.left)
+}
+
+/// What `e` gives where the row number, one of the columns `of`, is 1:
+/// through casts that keep numbers apart, to numbers or their text; `None`
+/// for anything else.
+fn at_one(e: &DfExpr, schema: &DFSchema, of: &HashSet<usize>) -> Option<ScalarValue> {
+    match e {
+        DfExpr::Column(c) => schema
+            .index_of_column(c)
+            .is_ok_and(|i| of.contains(&i))
+            .then_some(ScalarValue::UInt64(Some(1))),
+        DfExpr::Cast(c) => apart(c.field.data_type(), at_one(&c.expr, schema, of)?),
+        DfExpr::TryCast(c) => apart(c.field.data_type(), at_one(&c.expr, schema, of)?),
+        _ => None,
+    }
+}
+
+/// `v` cast to `t`, where the cast gives each whole number a value of its
+/// own.
+fn apart(t: &DataType, v: ScalarValue) -> Option<ScalarValue> {
+    let keeps = t.is_integer()
+        || t.is_floating()
+        || matches!(
+            t,
+            DataType::Decimal128(..)
+                | DataType::Decimal256(..)
+                | DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Utf8View
+        );
+    match keeps {
+        true => v.cast_to(t).ok(),
+        false => None,
+    }
 }
 
 /// `e` with each of the columns `of` read as 1.
