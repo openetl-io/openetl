@@ -16,9 +16,16 @@ Connection details include the server, database and account. Passwords and keys 
 OpenETL can test a connection or a pipeline before any data moves.
 
 - A **check** tests one source or destination: OpenETL connects with its configuration, for example to sign in. A check does not need a pipeline.
-- A **preflight** tests a pipeline. It runs the checks of the pipeline's source and destination first. Then each connector examines the streams the pipeline reads or writes, for example each stream's permissions. Last, OpenETL plans the sync.
+- A **preflight** tests a pipeline. It runs the checks of the pipeline's source and destination first. Then OpenETL plans the sync. Last, each connector examines the streams the pipeline reads or writes, for example each stream's permissions.
 
-Each check or preflight lists the items it examined. An item is **Passed**, **Warning**, **Failed** or **Skipped**, and a failed item tells you how to fix it. A connector selects the items that apply to its configuration. Neither a check nor a preflight reads or writes records.
+An **item** is one thing that a check or a preflight examined, such as one sign-in or the permission to read one table. The connector selects the items that apply to its configuration. Each item has one of four results:
+
+- **Passed:** the item is correct.
+- **Warning:** the pipeline can run, but not as configured or not as well as it could. A warning does not fail the check or the preflight.
+- **Failed:** the pipeline cannot run until you correct it. The item usually tells you what to fix, and which configuration field it concerns.
+- **Skipped:** the item was not examined, for example because an earlier item failed. The item tells you why.
+
+A check or a preflight can also fail with no failed item, for example when it runs out of time. Neither a check nor a preflight reads or writes records.
 
 ## Connectors
 
@@ -48,6 +55,8 @@ A stream's **write mode** specifies how to write it:
 - **Merge** uses the primary key to insert or update each row. The destination keeps the latest version of each row.
 
 A pipeline can have a **transform**, which changes rows between the source and the destination. A **SQL transform** is SQL statements that the engine runs as it copies. Each `INSERT INTO` statement reads streams and writes an **output**, which the destination gets as a stream.
+
+A **group window** is a SQL statement that adds up rows by windows of time, such as each minute. It uses each row's **event time**: the time in the row, such as when an order was placed. A **watermark** is the time before which no more rows are expected. When the watermark passes a window's end, the window closes and its row is written. A row whose event time the watermark has already passed is **late**. A late row still counts until the watermark is past its window's end by more than the stream's allowed lateness. After that, OpenETL quarantines the row. [Aggregate by windows of time](../pipelines/windows.md) explains them.
 
 ## Syncs, schedules and continuous pipelines
 

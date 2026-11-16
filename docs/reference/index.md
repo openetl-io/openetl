@@ -68,7 +68,8 @@ spec:
 | `syncs NAME` | Lists a pipeline's syncs, newest first |
 | `versions NAME` | Lists a pipeline's versions, newest first |
 | `logs NAME` | Prints a sync's log; `-f` follows a running one |
-| `check source NAME`, `check destination NAME` | Checks that a source or destination is reachable |
+| `check source NAME`, `check destination NAME` | Checks that a source's or destination's connection works, on a runner, and prints what its connector checked, item by item |
+| `preflight NAME` | Checks that a pipeline would run: both connections, then both connectors for the streams it reads and writes; then prints its plan. `check pipeline NAME` is a deprecated name for it |
 | `discover NAME` | Lists a source's streams and columns |
 | `connector …` | Packages, publishes, validates, applies, runs and tests connectors; see below |
 | `secret set`, `list`, `delete` | Stores the secrets that configs name |
@@ -94,7 +95,7 @@ spec:
 | `apply` | Applies connector versions: descriptors and manifests in a file, or `oci://REGISTRY/REPOSITORY[:VERSION]` and `github.com/OWNER/REPO[/PACKAGE][@VERSION]` references. A reference without a version applies the newest version that the connected source covering it offers: the highest stable version, or the highest prerelease if there is no stable one. It fails if no connected source covers the reference. See [Choose and manage connectors](../pipelines/connectors.md#list-and-install-packages) |
 | `catalog` | Lists the packages of the connected connector sources, with the reference to apply each by |
 | `spec TARGET` | Prints a connector's spec |
-| `check --config FILE TARGET` | Checks that a connector reaches its upstream with a config |
+| `check --config FILE TARGET` | Checks that a connector reaches its upstream with a config, and prints its items; `--format json` prints the connector's answer in the connector protocol's shape. It exits as [`openetl check`](./pipeline-cli.md#exit-status-of-checks-and-preflights) does |
 | `discover --config FILE TARGET` | Lists a source's streams and columns |
 | `read --config FILE TARGET` | Reads a source's records into a table, JSON lines or Parquet |
 | `test --config FILE TARGET` | Runs the conformance kit's checks against a source or destination |

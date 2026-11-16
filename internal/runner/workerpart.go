@@ -790,7 +790,7 @@ func (p *workerPart) share(gen, n uint64, e *workerEpoch, plan Plan) *attemptv1.
 	r := e.ready
 	s := &attemptv1.Share{Epoch: epoch, Rows: e.rows, Ready: attempt.Ready{
 		Schemas: r.Schemas, Snapshots: r.Snapshots, Quarantine: r.Quarantine,
-		OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: r.Holds, Watermarks: r.Watermarks,
+		OutputSchemas: r.OutputSchemas, Delivered: r.Delivered, Holds: r.Holds, Watermarks: r.Watermarks, Operators: r.Operators,
 	}.EpochReady(epoch)}
 	for _, name := range slices.Sorted(maps.Keys(e.splits)) {
 		for _, sp := range e.splits[name] {

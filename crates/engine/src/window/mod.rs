@@ -202,6 +202,10 @@ pub struct Operator {
     key_groups: u32,
     /// In microseconds; `i64::MIN` until it advances.
     watermark: i64,
+    /// Windows, or sessions, whose state it began keeping, and stopped
+    /// keeping, since its caller last took them.
+    pub opened: u64,
+    pub dropped: u64,
 }
 
 impl Operator {
@@ -252,8 +256,15 @@ impl Operator {
             lateness: lateness.max(0).saturating_mul(per_micro),
             key_groups,
             watermark: i64::MIN,
+            opened: 0,
+            dropped: 0,
             plan,
         })
+    }
+
+    /// Its watermark in microseconds, if it has advanced.
+    pub fn watermark_micros(&self) -> Option<i64> {
+        (self.watermark != i64::MIN).then_some(self.watermark)
     }
 
     /// The watermark, in the event time's unit.
@@ -589,6 +600,7 @@ impl Operator {
             let name = slot_key(&k, s);
             let closed = end <= self.watermark_in(state, g);
             if fresh {
+                self.opened += 1;
                 let timer = match closed {
                     true => EXPIRE,
                     false => CLOSE,
@@ -713,6 +725,8 @@ impl Operator {
             // merged away; closed sessions that changed give their row
             // again.
             let after: BTreeMap<i64, &Session> = list.iter().map(|s| (s.start, s)).collect();
+            self.opened += after.keys().filter(|s| !before.contains_key(s)).count() as u64;
+            self.dropped += before.keys().filter(|s| !after.contains_key(s)).count() as u64;
             for (start, old) in &before {
                 let same = after
                     .get(start)
@@ -858,6 +872,7 @@ impl Operator {
             {
                 state.delete(self.id, KeyRef::new(*g, name));
                 gone.insert(name.clone());
+                self.dropped += 1;
             }
             if *kind == CLOSE {
                 closing.push(Emit {
@@ -914,6 +929,7 @@ impl Operator {
                 let end = list[i].end.saturating_add(1);
                 if kind == EXPIRE || self.lateness == 0 || end.saturating_add(self.lateness) <= w {
                     list.remove(i);
+                    self.dropped += 1;
                 }
             }
             lists.push((g, k, list));

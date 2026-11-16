@@ -45,6 +45,25 @@ These are OpenTelemetry instrument names; Prometheus replaces dots with undersco
 
 Source progress gauges are present only while a job reports them. Missing lag is not zero lag. Freshness is time since commit rather than the age of source records; use it alongside the expected schedule and source-reported lag. A pipeline that has never committed needs a separate check in the console or API, because the freshness series is absent.
 
+## Stateful operators
+
+A SQL transform's group window is a stateful operator: it keeps state between rows ([Aggregate by windows of time](../pipelines/windows.md)). The runner that commits a job records these metrics at each commit, from every worker's lanes of the operator, so a job on several pods reports each number once. Each has the attributes `openetl.org`, `openetl.pipeline` and `openetl.operator`, the operator's ID as `openetl plan` shows it. Counters count committed epochs only, as `openetl.job.rows.committed` does. Gauges hold the values at the operator's last commit.
+
+| Instrument | Unit | Meaning |
+|---|---|---|
+| `openetl.operator.rows.in` | rows, counter | Rows of the statement's stream that reached the operator. |
+| `openetl.operator.rows.written` | rows, counter | Rows the operator wrote to its output, by `openetl.op`: `insert`, `update` or `delete`. Rows that the output quarantined are not counted. |
+| `openetl.operator.rows.late` | rows, counter | Rows the operator quarantined with the code `late`, as they came after their windows' allowed lateness. |
+| `openetl.operator.windows` | windows | Windows, or sessions, whose state the operator keeps: open, or closed and within their lateness. A reset, or a version that changes the operator, starts it again from 0. |
+| `openetl.operator.watermark` | seconds since the Unix epoch | The operator's watermark: the least of its lanes'. It is absent until every lane has one, and is not updated at the end of input. |
+| `openetl.operator.watermark.lag` | seconds | How far the watermark was behind the time of the commit. |
+| `openetl.operator.state.memory` | bytes | What the operator's state held in memory at the end of the epoch: the epoch's changes, the indexes and filters of the state files it opened, the hashes of the windows' keys in the files it names, and its block cache. |
+| `openetl.operator.state.stored` | bytes | The bytes on object storage of the state files that the checkpoint names for the operator. A checkpoint names a file while any of the state in it is still in use, and this counts the whole file. A checkpoint after every window closed names none. Retention deletes the rest. |
+| `openetl.operator.state.requests` | requests, counter | The operator's requests to object storage, by `openetl.request.kind`: `barrier` writes its state at a checkpoint, `lookup` reads blocks of it, and `restore` opens the files a checkpoint names, and reads their windows' values whole at the first checkpoint after a restart that writes state. `barrier` counts each epoch's own writes, none in an epoch whose changes left nothing in use. A `lookup` or `restore` made near a checkpoint can count with the epoch next to it; each counts once. |
+| `openetl.operator.state.request.bytes` | bytes, counter | Those requests' bytes, by `openetl.request.kind`. |
+
+The console's **SQL** tab shows the same numbers for the last checkpoint ([SQL](../use/index.md#sql)).
+
 ## Placement signals
 
 Orchestrators export the same placement view, refreshed every 10 seconds. Use `max`, rather than summing replicas, when aggregating that view.

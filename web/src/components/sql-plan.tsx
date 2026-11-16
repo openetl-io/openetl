@@ -3,7 +3,16 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Callout } from "@/components/callout";
-import { OperatorChange, type OperatorPlan, type SchemaColumn, type StatementPlan, type ViewPlan } from "@/gen/openetl/api/v1/pipeline_pb";
+import {
+  OperatorChange,
+  type Checkpoint,
+  type OperatorPlan,
+  type SchemaColumn,
+  type StatementPlan,
+  type ViewPlan,
+} from "@/gen/openetl/api/v1/pipeline_pb";
+import { full } from "@/lib/format";
+import { requests, stateBytes, watermark, written } from "@/lib/operator-stats";
 import { changeLabel, changeText, classLabel, heldText, operatorComputes, position, span, type SqlMessage } from "@/lib/sql-plan";
 
 /** A place in the SQL, as line:column. */
@@ -216,6 +225,62 @@ export function SqlOperators({ operators }: { operators: OperatorPlan[] }) {
           </TableBody>
         </Table>
       </div>
+    </div>
+  );
+}
+
+/** What each stateful operator did in a checkpoint's epoch, on every worker, and held at its barrier. */
+export function SqlOperatorStats({ checkpoint, operators }: { checkpoint: Checkpoint; operators: OperatorPlan[] }) {
+  if (!checkpoint.operators.length) return null;
+  const output = (id: string) => operators.find((op) => op.id === id)?.output;
+  return (
+    <div className="overflow-x-auto rounded-md border contain-inline-size">
+      <Table aria-label="The stateful operators at the last checkpoint">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Operator</TableHead>
+            <TableHead>Watermark</TableHead>
+            <TableHead className="text-right">Windows</TableHead>
+            <TableHead className="text-right">Rows in</TableHead>
+            <TableHead>Written</TableHead>
+            <TableHead className="text-right">Late</TableHead>
+            <TableHead>State</TableHead>
+            <TableHead>Requests</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {checkpoint.operators.map((s) => {
+            const wm = watermark(s, checkpoint.commitTime);
+            return (
+              <TableRow key={s.operator} className="align-top">
+                <TableCell className="whitespace-normal">
+                  <div className="font-mono text-[0.8125rem]">{s.operator}</div>
+                  <div className="text-[0.8125rem] text-muted-foreground">{output(s.operator) ?? "—"}</div>
+                </TableCell>
+                <TableCell className="whitespace-normal">
+                  <div className="font-mono text-[0.8125rem]">{wm.at}</div>
+                  <div className="text-[0.8125rem] text-muted-foreground">{wm.behind}</div>
+                </TableCell>
+                <TableCell className="text-right tabular-nums">{full(s.windows)}</TableCell>
+                <TableCell className="text-right tabular-nums">{full(s.rowsIn)}</TableCell>
+                <TableCell className="whitespace-normal tabular-nums">{written(s)}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {s.lateRows > 0n ? <span className="text-degraded">{full(s.lateRows)}</span> : "0"}
+                </TableCell>
+                <TableCell className="whitespace-normal tabular-nums">
+                  <div>{stateBytes(s.memoryBytes)} in memory</div>
+                  <div className="text-[0.8125rem] text-muted-foreground">{stateBytes(s.storedBytes)} stored</div>
+                </TableCell>
+                <TableCell className="whitespace-normal text-[0.8125rem] tabular-nums">
+                  <div>Writes {requests(s.barrierRequests)}</div>
+                  <div>Reads {requests(s.readRequests)}</div>
+                  <div>Restores {requests(s.restoreRequests)}</div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
+        </TableBody>
+      </Table>
     </div>
   );
 }

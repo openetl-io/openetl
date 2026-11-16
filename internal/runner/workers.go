@@ -379,6 +379,7 @@ func mergeReady(r *Ready, s *attemptv1.Share) error {
 	}
 	r.Snapshots = append(r.Snapshots, got.Snapshots...)
 	r.Quarantine = append(r.Quarantine, got.Quarantine...)
+	r.Operators = append(r.Operators, got.Operators...)
 	first := func(to *map[string][]byte, from map[string][]byte) {
 		for name, s := range from {
 			if _, ok := (*to)[name]; !ok {
@@ -851,7 +852,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 
 	c := &coordinator{job: j, sess: sess, w: remoteWriter{f}, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reset: reset,
 		resetStreams: resetStreams, reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{}, fleet: f,
-		holds: holds, holdPlans: holdPlans}
+		holds: holds, holdPlans: holdPlans, windows: checkpoint.KeptWindows(restored)}
 	for _, p := range holdPlans {
 		c.replaying = c.replaying || p.Replay != nil
 	}

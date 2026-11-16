@@ -255,6 +255,20 @@ func TestContextDeadline(t *testing.T) {
 	}
 }
 
+// A run whose deadline passes isn't OK, though its last check skips itself
+// once the deadline has passed.
+func TestContextDeadlineThenSkip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	r := Run(ctx, []Check{{Name: "a", Title: "A", Run: func(ctx context.Context, _ *Probe) error {
+		<-ctx.Done()
+		return Skip("no time left")
+	}}})
+	if statuses(r) != "a=skipped" || r.OK() || !errors.Is(r.Err(), context.DeadlineExceeded) {
+		t.Errorf("%s, OK %v, %v", statuses(r), r.OK(), r.Err())
+	}
+}
+
 func TestStatusOutsideTheFourFails(t *testing.T) {
 	for _, s := range []Status{0, 7} {
 		r := Report{Items: []Item{{Name: "a", Title: "A", Status: Passed}, {Name: "b", Title: "B", Status: s}}}
@@ -298,6 +312,44 @@ func TestHungCheckIsAbandoned(t *testing.T) {
 	}
 	if it := r.Items[0]; it.Params["late"] != "" || it.Message == "late" {
 		t.Errorf("the abandoned check changed its item: %+v", it)
+	}
+}
+
+// A warning no reason fits says it warned, not that the check failed, on
+// both sides of the wire; one with a reason or a message of its own, and a
+// failure, read as before. A warning never sets the answer's error.
+func TestUnknownWarning(t *testing.T) {
+	cause := errors.New("a directory is on one disk")
+	r := Run(t.Context(), []Check{
+		{Name: "warn", Title: "W", Run: fails(Warn(cause))},
+		{Name: "advisory", Title: "A", Advisory: true, Run: fails(cause)},
+		{Name: "reason", Title: "R", Run: fails(Warn(RateLimited.Wrap(cause)))},
+		{Name: "message", Title: "M", Advisory: true, Run: fails(&Failure{Message: "One disk.", Detail: cause.Error()})},
+		{Name: "own-reason", Title: "O", Run: fails(Warn(&Failure{Reason: "one_disk", Detail: cause.Error()}))},
+	})
+	want := map[string][2]string{
+		"warn": {"unknown", unknownWarning}, "advisory": {"unknown", unknownWarning},
+		"reason": {"rate_limited", RateLimited.Message}, "message": {"unknown", "One disk."}, "own-reason": {"one_disk", Unknown.Message},
+	}
+	items, rerr := r.Proto()
+	if !r.OK() || r.Err() != nil || rerr != nil {
+		t.Fatalf("warnings set the answer's error: %v, %v", r.Err(), rerr)
+	}
+	if m := items[0].GetError().GetMessage(); m != unknownWarning {
+		t.Errorf("the warning's error on the wire: %q", m)
+	}
+	back := FromProto(&protocolv1.CheckResponse{Items: items})
+	for i, it := range r.Items {
+		w := want[it.Name]
+		for _, got := range []Item{it, back.Items[i]} {
+			if f := got.Failure; got.Status != Warning || got.Message != w[1] || f == nil || f.Message != w[1] || f.Reason != w[0] || f.Detail != cause.Error() ||
+				f.Reason == "unknown" && f.Code != protocolv1.ErrorCode_ERROR_CODE_INTERNAL {
+				t.Errorf("%s: %s %q, %+v", it.Name, got.Status, got.Message, f)
+			}
+		}
+	}
+	if it := one(t, Check{Run: fails(cause)}); it.Status != Failed || it.Message != Unknown.Message || it.Failure.Message != Unknown.Message {
+		t.Errorf("a failure: %s %q", it.Status, it.Message)
 	}
 }
 

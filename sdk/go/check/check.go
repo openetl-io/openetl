@@ -104,7 +104,9 @@ type Check struct {
 	// Names of earlier checks that must have passed or warned; otherwise
 	// this check is Skipped.
 	Needs []string
-	// A failure is a Warning.
+	// A failure is a Warning. An error no standard reason fits reads "The
+	// check raised a warning.", with its text as the detail; for a sentence
+	// of its own, give it a Reason, as with Reason.Wrap.
 	Advisory bool
 	// Zero: only ctx's deadline.
 	Timeout time.Duration
@@ -199,7 +201,10 @@ type warnError struct{ err error }
 func (e *warnError) Error() string { return e.err.Error() }
 func (e *warnError) Unwrap() error { return e.err }
 
-// Warn, returned from Run, makes err a warning. Nil for a nil err.
+// Warn, returned from Run, makes err a warning. Nil for a nil err. An err no
+// standard reason fits reads "The check raised a warning.", with its text as
+// the detail; for a sentence of its own, give it a Reason, as with
+// Reason.Wrap.
 func Warn(err error) error {
 	if isNil(err) {
 		return nil
@@ -427,7 +432,7 @@ func runOne(ctx context.Context, c Check, it *Item) ([]func(context.Context), bo
 		return cleanups, false
 	case o.skip != nil:
 		it.Status, it.Message = Skipped, o.skip.reason
-		return cleanups, false
+		return cleanups, o.stop != nil
 	}
 	f := o.failure
 	for k, v := range f.Params {
@@ -436,10 +441,14 @@ func runOne(ctx context.Context, c Check, it *Item) ([]func(context.Context), bo
 		}
 	}
 	f.Params = params
-	it.Status, it.Message, it.Failure = Failed, f.Message, f
+	it.Status = Failed
 	if o.warn || c.Advisory {
 		it.Status = Warning
+		if f.Reason == Unknown.Name && f.Message == Unknown.Message {
+			f.Message = unknownWarning
+		}
 	}
+	it.Message, it.Failure = f.Message, f
 	return cleanups, o.stop != nil
 }
 

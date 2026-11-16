@@ -42,20 +42,22 @@ func NewDestination(exe string, config []byte, opts Options) *Destination {
 	return &Destination{instance{exe: exe, kind: protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION, config: config, opts: opts}}
 }
 
-// Check is CheckReport's error.
-func (d *Destination) Check(ctx context.Context) error { return d.checkReport(ctx).Err() }
+// Check is CheckReport's error, or its report's.
+func (d *Destination) Check(ctx context.Context) error { return reportErr(d.checkReport(ctx)) }
 
 // CheckReport runs the destination's check of its connection: what it
 // looked at, item by item, or its error alone from a connector that gives no
-// items.
-func (d *Destination) CheckReport(ctx context.Context) check.Report { return d.checkReport(ctx) }
+// items. The error is a connector that didn't start or didn't answer.
+func (d *Destination) CheckReport(ctx context.Context) (check.Report, error) {
+	return d.checkReport(ctx)
+}
 
 // PreflightReport runs the destination's preflight for what a pipeline
 // would write, as CheckReport runs its check.
-func (d *Destination) PreflightReport(ctx context.Context, req destination.PreflightRequest) check.Report {
+func (d *Destination) PreflightReport(ctx context.Context, req destination.PreflightRequest) (check.Report, error) {
 	p, err := d.proc(ctx)
 	if err != nil {
-		return check.FromError(err)
+		return check.Report{}, err
 	}
 	pr := &protocolv1.PreflightDestinationRequest{Config: p.config, Pipeline: req.Pipeline, Namespace: req.Namespace, Streams: writeStreams(req.Streams)}
 	for _, s := range req.Streams {
@@ -65,7 +67,7 @@ func (d *Destination) PreflightReport(ctx context.Context, req destination.Prefl
 		}
 		b, err := arrowipc.EncodeSchema(sc)
 		if err != nil {
-			return check.FromError(err)
+			return check.Report{}, errs.Wrap(errs.Internal, err, "connector: encode the schema of "+s.Name)
 		}
 		pr.Schemas = append(pr.Schemas, &protocolv1.StreamSchema{Name: s.Name, ArrowSchema: b})
 	}

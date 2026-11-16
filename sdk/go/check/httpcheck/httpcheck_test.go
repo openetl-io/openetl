@@ -294,3 +294,30 @@ func TestAuthenticateNeedsReach(t *testing.T) {
 		t.Errorf("Authenticate alone: %v", err)
 	}
 }
+
+// A password with "#" or "?" doesn't reach the url param, the title or the
+// message, whether the URL parses or not.
+func TestPasswordWithAFragmentMark(t *testing.T) {
+	for raw, want := range map[string]string{
+		"https://user:pa#ss@api.example.com/v1/me": "https://api.example.com/v1/me",
+		"https://user:123#x@api.example.com/v1/me": "https://api.example.com/v1/me",
+	} {
+		d := doer(func(*host.Request) (*host.Response, error) { return nil, &host.StatusError{Status: 404} })
+		it := rendered(t, run(t, Reach(d, host.Request{URL: raw}), Access("me", "Read {url}", d, host.Request{URL: raw})))[1]
+		if it.Params["url"] != want || it.Title != "Read "+want || it.Message != want+" doesn't exist." {
+			t.Errorf("%s: url %q, title %q, message %q", raw, it.Params["url"], it.Title, it.Message)
+		}
+	}
+}
+
+// The start of a body that isn't JSON has its URLs redacted.
+func TestUndecodedBodyRedacted(t *testing.T) {
+	d := doer(func(*host.Request) (*host.Response, error) {
+		body := `<html><a href="https://u:hunter2@sso.example.com/login?token=s3cret">Sign in</a></html>`
+		return &host.Response{Status: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	f := run(t, JSON("me", "Me", d, host.Request{URL: "https://api.example.com/v1/me"}, func(context.Context, *check.Probe, *map[string]any) error { return nil })).Items[0].Failure
+	if strings.Contains(f.Detail, "hunter2") || strings.Contains(f.Detail, "s3cret") || !strings.Contains(f.Detail, "https://sso.example.com/login") {
+		t.Errorf("the detail %q", f.Detail)
+	}
+}

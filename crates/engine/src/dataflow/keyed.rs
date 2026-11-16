@@ -15,13 +15,16 @@
 //! passes them, in the epoch it does, and the keyed lane passes it on to
 //! its writer lane as the output's.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray;
 use arrow_array::{RecordBatch, UInt32Array, new_null_array};
 use arrow_schema::{Field, Schema};
-use openetl_normalize::{Cause, NotHeld, Rejected, Typed, key_groups, render_row};
+use openetl_normalize::{Cause, Code, NotHeld, Rejected, Typed, key_groups, render_row};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
+use openetl_proto::engine::v1::{OperatorEpoch, StateRequests};
+use openetl_state::runs::RunName;
 use openetl_state::{KeyGroupRange, Layer};
 use tokio::sync::mpsc;
 
@@ -202,6 +205,18 @@ struct Keyed {
     waiting: Vec<VecDeque<In>>,
     watermarks: Senders,
     ended: bool,
+    /// What it did since its last barrier.
+    counts: Counts,
+}
+
+/// What a window's statement did on a keyed lane in an epoch.
+#[derive(Default)]
+struct Counts {
+    rows_in: u64,
+    inserts: u64,
+    updates: u64,
+    deletes: u64,
+    late: u64,
 }
 
 /// Runs keyed lane `lane.lane` until every window's stream has ended on
@@ -302,6 +317,7 @@ pub(super) async fn run(
             waiting: (0..senders).map(|_| VecDeque::new()).collect(),
             watermarks: Senders::new(senders, floor),
             ended: false,
+            counts: Counts::default(),
         };
         // Windows the record's watermark passed closed before it.
         if floor != watermark::NONE {
@@ -337,6 +353,7 @@ impl Keyed {
     async fn take(&mut self, lane: &Lane, sender: usize, item: In) -> Result<(), JobError> {
         match item {
             In::Rows(_, batch, why) => {
+                self.counts.rows_in += batch.num_rows() as u64;
                 let mut rejected = Vec::new();
                 let keep: Vec<usize> = (0..batch.num_rows())
                     .filter(|&r| match &why[r] {
@@ -361,6 +378,11 @@ impl Keyed {
                     .map_err(|e| JobError::internal(e.to_string()))?,
                 };
                 let out = self.op.rows(&mut self.layer, &input).await?;
+                self.counts.late += out
+                    .rejected
+                    .iter()
+                    .filter(|(_, _, cause)| cause.code == Code::Late)
+                    .count() as u64;
                 let rejected = out
                     .rejected
                     .iter()
@@ -467,6 +489,7 @@ impl Keyed {
             )
             .await?;
         let rejected = std::mem::take(&mut n.rejected);
+        self.count_written(&typed, &rejected);
         hold(
             plan,
             name,
@@ -476,6 +499,69 @@ impl Keyed {
             c,
         )?;
         shaped(lane, &mut self.ls, n, c).await
+    }
+
+    /// Counts the rows of `typed` that the output didn't reject, by op.
+    fn count_written(&mut self, typed: &Typed, rejected: &[Rejected]) {
+        let gone: HashSet<usize> = rejected.iter().map(|r| r.row).collect();
+        let ops: Vec<Option<&str>> = match &typed.control.op {
+            Some(a) => a.as_string::<i32>().iter().collect(),
+            None => Vec::new(),
+        };
+        for r in (0..typed.batch.num_rows()).filter(|r| !gone.contains(r)) {
+            match ops.get(r).copied().flatten() {
+                Some("update") => self.counts.updates += 1,
+                Some("delete") => self.counts.deletes += 1,
+                _ => self.counts.inserts += 1,
+            }
+        }
+    }
+
+    /// What the operator did since its last barrier, and holds at this one,
+    /// `e` of generation `generation`, whose snapshots are `snapshots`;
+    /// `memory` is what its state held before the barrier wrote the epoch's
+    /// changes. The barrier's request is the run of `e` the lane wrote, if
+    /// any, which its snapshots name.
+    fn epoch(
+        &mut self,
+        id: &str,
+        (generation, e): (u64, u64),
+        snapshots: &[openetl_state::Snapshot],
+        memory: usize,
+    ) -> Result<OperatorEpoch, JobError> {
+        let c = std::mem::take(&mut self.counts);
+        let dir = crate::state::dir(id);
+        let mut runs = HashMap::new();
+        let mut barrier = StateRequests::default();
+        for sn in snapshots {
+            let named = openetl_state::runs::runs(sn)
+                .map_err(|e| crate::state::state_error(&format!("operator {id}'s state"), &e))?;
+            for r in named {
+                let name = format!("{dir}/{}", r.name);
+                let written = RunName::parse(&r.name)
+                    .is_some_and(|n| n.generation == generation && n.epoch == e);
+                if written && !runs.contains_key(&name) {
+                    barrier.count += 1;
+                    barrier.bytes += r.size;
+                }
+                runs.insert(name, r.size);
+            }
+        }
+        Ok(OperatorEpoch {
+            operator: id.to_owned(),
+            rows_in: c.rows_in,
+            inserts: c.inserts,
+            updates: c.updates,
+            deletes: c.deletes,
+            late: c.late,
+            windows_opened: std::mem::take(&mut self.op.opened),
+            windows_dropped: std::mem::take(&mut self.op.dropped),
+            watermark: self.op.watermark_micros(),
+            memory_bytes: memory as u64,
+            runs,
+            barrier: Some(barrier),
+            ..Default::default()
+        })
     }
 
     /// Passes the statement's barrier, or its end, once every sender is
@@ -543,8 +629,11 @@ impl Keyed {
             .and_then(|t| t.sql.statements[self.statement].window.as_ref())
             .map(|(_, id)| id.clone())
             .unwrap_or_default();
+        let memory = self.layer.memory().total();
         if plan.state.job.as_ref().is_some_and(|j| j.read_only()) {
             self.layer.discard();
+            let op = self.epoch(&id, (plan.generation, e.n), &[], memory)?;
+            flow.align.lock().await.pieces(e.n).operator(op);
         } else {
             let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
                 crate::state::state_error(
@@ -556,7 +645,11 @@ impl Keyed {
                 .iter()
                 .map(|sn| crate::state::named(&id, sn))
                 .collect::<Result<Vec<_>, _>>()?;
-            flow.align.lock().await.pieces(e.n).snapshots.extend(named);
+            let op = self.epoch(&id, (plan.generation, e.n), &snapshots, memory)?;
+            let mut align = flow.align.lock().await;
+            let pieces = align.pieces(e.n);
+            pieces.snapshots.extend(named);
+            pieces.operator(op);
         }
         let outputs_q = plan
             .transform

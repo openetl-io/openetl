@@ -299,3 +299,24 @@ func TestKitSharedByRuns(t *testing.T) {
 		t.Errorf("a later run: %v", r.Err())
 	}
 }
+
+// An opener that panics fails its check and leaves the kit usable: a later
+// run opens the handle again.
+func TestOpenerPanics(t *testing.T) {
+	var opened, closed atomic.Int32
+	k := New(func(context.Context) (*sql.DB, error) {
+		if opened.Add(1) == 1 {
+			panic("the driver panicked")
+		}
+		return sql.OpenDB(connector{answers: map[string]any{"ok": true}, closed: &closed}), nil
+	})
+	r := check.Run(t.Context(), []check.Check{k.Connect()})
+	if statuses(r) != "db.connect=failed" || !strings.Contains(r.Items[0].Failure.Detail, "the driver panicked") {
+		t.Fatalf("%s %+v", statuses(r), r.Items[0].Failure)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if r := check.Run(ctx, []check.Check{k.Connect(), k.Query("a", "Q", "ok")}); !r.OK() {
+		t.Errorf("a later run: %s %v", statuses(r), r.Err())
+	}
+}

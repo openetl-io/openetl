@@ -117,6 +117,9 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 		}
 	}
 	slices.Sort(req.Operators)
+	for _, o := range rec.Operators {
+		req.OperatorStats = append(req.OperatorStats, operatorStats(o))
+	}
 	if p := rec.Previous; p != nil {
 		req.Previous = &dataplanev1.CheckpointRef{Generation: p.Generation, Epoch: p.Epoch}
 	}
@@ -178,6 +181,31 @@ func quarantineFile(q checkpoint.QuarantineFile) *dataplanev1.CheckpointQuaranti
 		f.Causes = append(f.Causes, &apiv1.QuarantineCause{Code: c.Code, Column: c.Column, NotHeld: c.NotHeld, Rows: c.Rows})
 	}
 	return f
+}
+
+// operatorStats is what o did in its record's epoch, as the control plane
+// keeps it.
+func operatorStats(o checkpoint.Operator) *apiv1.OperatorStats {
+	req := func(r checkpoint.Requests) *apiv1.StateRequests {
+		return &apiv1.StateRequests{Count: r.Count, Bytes: r.Bytes}
+	}
+	s := &apiv1.OperatorStats{
+		Operator: o.Operator, RowsIn: o.RowsIn, Inserts: o.Inserts, Updates: o.Updates, Deletes: o.Deletes, LateRows: o.Late,
+		Windows: o.Windows, MemoryBytes: o.MemoryBytes, StoredBytes: o.StoredBytes,
+		BarrierRequests: req(o.Barrier), ReadRequests: req(o.Lookup), RestoreRequests: req(o.Restore),
+	}
+	switch {
+	case o.Watermark == nil:
+	case *o.Watermark == runner.EndOfInput:
+		s.EndOfInput = true
+	default:
+		// A time outside years 1 to 9999 has no Timestamp, and would fail
+		// the whole report: it's left out.
+		if ts := timestamppb.New(time.UnixMicro(*o.Watermark)); ts.CheckValid() == nil {
+			s.Watermark = ts
+		}
+	}
+	return s
 }
 
 func progressProto(p source.Progress) *protocolv1.Progress {

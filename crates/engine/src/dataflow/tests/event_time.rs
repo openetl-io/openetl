@@ -15,8 +15,16 @@
 //! after every lane's watermarks before theirs, and before any lane's past
 //! k + 1. A row whose fate differs within those bounds is left out of the
 //! input; a row that moves its split's watermark never is.
+//!
+//! A killed case runs as jobs one after another, each restored from the
+//! record of the last barrier the one before committed, on another number
+//! of lanes. The model takes what each job commits, from where the record
+//! has the window, each job's lanes bounded as above.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicUsize;
+
+use openetl_proto::engine::v1::StateSnapshot;
 
 use super::*;
 use crate::watermark::tests::Rng;
@@ -114,6 +122,10 @@ impl Row {
 /// What a lane reads, in order.
 #[derive(Clone, Debug)]
 enum Ev {
+    /// A split a restored job reads on from where the record has it: it
+    /// joins at the record's watermark, NONE if it has none. Before
+    /// anything else of the lane.
+    Resume(usize, i64),
     /// A batch of a split's rows.
     Rows(usize, Vec<Row>),
     /// A Split frame that raises a split's watermark, as the runner sends
@@ -295,24 +307,48 @@ struct LaneModel {
 }
 
 fn lane_model(case: &Case, l: usize) -> LaneModel {
+    lane_model_to(case, l, case.lanes[l].len())
+}
+
+/// Lane l as the model has it after its first `read` events. Every split of
+/// the lane joins it before anything else, as the job reads them.
+fn lane_model_to(case: &Case, l: usize, read: usize) -> LaneModel {
     let mut m = LaneModel {
         at_barrier: vec![NONE],
         ..Default::default()
     };
+    let evs = &case.lanes[l];
     let mut wm: BTreeMap<usize, i64> = BTreeMap::new();
-    let mut read: BTreeSet<usize> = BTreeSet::new();
-    for e in &case.lanes[l] {
-        if let Ev::Rows(s, _) | Ev::Raise(s, _) | Ev::End(s) = e {
-            wm.insert(*s, NONE);
+    for e in evs {
+        match e {
+            Ev::Resume(s, w) => {
+                wm.insert(*s, *w);
+            }
+            Ev::Rows(s, _) | Ev::Raise(s, _) | Ev::End(s) => {
+                wm.entry(*s).or_insert(NONE);
+            }
+            Ev::Barrier => {}
         }
     }
+    let least = |wm: &BTreeMap<usize, i64>| match wm.values().any(|w| *w == NONE) {
+        true => NONE,
+        false => wm.values().copied().min().unwrap_or(END),
+    };
     let mut sent = NONE;
+    // Splits that resume at a record's watermarks give the lane its own
+    // before anything else of it.
+    if evs.iter().any(|e| matches!(e, Ev::Resume(..))) && least(&wm) != NONE {
+        sent = least(&wm);
+        m.sent.push(Sent::Mark(sent));
+    }
+    let mut read_rows: BTreeSet<usize> = BTreeSet::new();
     let mut k = 0;
-    for e in &case.lanes[l] {
+    for e in &evs[..read] {
         let mut raised = None;
         match e {
+            Ev::Resume(..) => continue,
             Ev::Rows(s, rows) => {
-                read.insert(*s);
+                read_rows.insert(*s);
                 m.sent.push(Sent::Batch {
                     rows: rows.clone(),
                     k,
@@ -334,6 +370,12 @@ fn lane_model(case: &Case, l: usize) -> LaneModel {
                 wm.insert(*s, END);
             }
             Ev::Barrier => {
+                // A lane without splits holds none back from its first
+                // barrier.
+                if wm.is_empty() && sent != END {
+                    sent = END;
+                    m.sent.push(Sent::Mark(END));
+                }
                 k += 1;
                 m.at_barrier.push(sent);
                 m.marks.push(
@@ -345,14 +387,11 @@ fn lane_model(case: &Case, l: usize) -> LaneModel {
                 continue;
             }
         }
-        let now = match wm.values().any(|w| *w == NONE) {
-            true => NONE,
-            false => wm.values().copied().min().unwrap_or(END),
-        };
+        let now = least(&wm);
         if now != NONE && now > sent {
             sent = now;
             m.sent.push(Sent::Mark(now));
-            if raised.is_some_and(|s| !read.contains(&s)) {
+            if raised.is_some_and(|s| !read_rows.contains(&s)) {
                 m.idle_moves += 1;
             }
         }
@@ -584,16 +623,38 @@ struct Expected {
 fn expect(case: &Case) -> Expected {
     let lanes: Vec<LaneModel> = (0..case.lanes.len()).map(|l| lane_model(case, l)).collect();
     let mut model = Model::new(case);
-    let mut keep: BTreeSet<i64> = BTreeSet::new();
+    let mut unsure = BTreeSet::new();
+    let dropped = take(&mut model, case, &lanes, NONE, true, &mut unsure);
+    Expected {
+        case: without(case, &unsure),
+        table: model.table(),
+        late: model.late.clone(),
+        marks: epoch_marks(&lanes),
+        dropped,
+        idle_moves: lanes.iter().map(|l| l.idle_moves).sum(),
+        open: model.open(),
+    }
+}
+
+/// The window takes what a job's lanes send, `lanes` as the model has
+/// them, from its `floor`, then moves to where the job's last barrier has
+/// it. A row whose fate depends on the lanes' order goes in `unsure`, to
+/// be left out of the input; how many did. `last`: the input ends in the
+/// job.
+fn take(
+    model: &mut Model,
+    case: &Case,
+    lanes: &[LaneModel],
+    floor: i64,
+    last: bool,
+    unsure: &mut BTreeSet<i64>,
+) -> usize {
     let mut dropped = 0;
     if lanes.len() == 1 {
         for s in &lanes[0].sent {
             match s {
-                Sent::Batch { rows, w, .. } => {
-                    keep.extend(rows.iter().map(|r| r.id));
-                    model.rows(rows, *w);
-                }
-                Sent::Mark(w) => model.advance(*w),
+                Sent::Batch { rows, w, .. } => model.rows(rows, (*w).max(floor)),
+                Sent::Mark(w) => model.advance((*w).max(floor)),
             }
         }
     } else {
@@ -606,8 +667,12 @@ fn expect(case: &Case) -> Expected {
                 let lo = others
                     .clone()
                     .map(|(_, b)| b.at_barrier[*k])
-                    .fold(*w, i64::min);
-                let hi = others.map(|(_, b)| b.at_barrier[*k + 1]).fold(*w, i64::min);
+                    .fold(*w, i64::min)
+                    .max(floor);
+                let hi = others
+                    .map(|(_, b)| b.at_barrier[*k + 1])
+                    .fold(*w, i64::min)
+                    .max(floor);
                 let mut kept = Vec::new();
                 for r in rows {
                     let sure = match (r.at, case.window) {
@@ -616,7 +681,6 @@ fn expect(case: &Case) -> Expected {
                         (Some(t), _) => model.placed(t, lo) == model.placed(t, hi),
                     };
                     if sure {
-                        keep.insert(r.id);
                         kept.push(r.clone());
                         continue;
                     }
@@ -627,48 +691,52 @@ fn expect(case: &Case) -> Expected {
                         t - case.delay <= *w,
                         "a row at {t} that moves its split past {w} is unsure"
                     );
+                    unsure.insert(r.id);
                     dropped += 1;
                 }
                 model.rows(&kept, lo);
             }
         }
-        let last = lanes.iter().map(|l| *l.at_barrier.last().unwrap()).min();
-        // A session that closed and then grew past the watermark keeps the
-        // row it gave until it closes again: which sessions did depends on
-        // the lanes' order, so only an input that closes every session can
-        // be sure of the table.
-        assert!(
-            case.window != Window::Session || last == Some(END),
-            "sessions on several lanes that the input leaves open"
-        );
-        model.advance(last.unwrap());
     }
-    let mut kept = case.clone();
-    for evs in &mut kept.lanes {
-        for e in evs.iter_mut() {
-            if let Ev::Rows(_, rows) = e {
-                rows.retain(|r| keep.contains(&r.id));
-            }
+    let end = lanes
+        .iter()
+        .map(|l| *l.at_barrier.last().unwrap())
+        .min()
+        .unwrap()
+        .max(floor);
+    // A session that closed and then grew past the watermark keeps the row
+    // it gave until it closes again: which sessions did depends on the
+    // lanes' order, so only an input that closes every session can be sure
+    // of the table.
+    assert!(
+        !last || lanes.len() == 1 || case.window != Window::Session || end == END,
+        "sessions on several lanes that the input leaves open"
+    );
+    model.advance(end);
+    dropped
+}
+
+/// `case` without the rows in `unsure`.
+fn without(case: &Case, unsure: &BTreeSet<i64>) -> Case {
+    let mut out = case.clone();
+    for e in out.lanes.iter_mut().flatten() {
+        if let Ev::Rows(_, rows) = e {
+            rows.retain(|r| !unsure.contains(&r.id));
         }
     }
-    let epochs = lanes[0].marks.len();
-    let marks = (0..epochs)
+    out
+}
+
+/// Each epoch's splits' watermarks, of every lane.
+fn epoch_marks(lanes: &[LaneModel]) -> Vec<BTreeMap<String, i64>> {
+    (0..lanes[0].marks.len())
         .map(|n| {
             lanes
                 .iter()
                 .flat_map(|l| l.marks[n].clone())
                 .collect::<BTreeMap<_, _>>()
         })
-        .collect();
-    Expected {
-        case: kept,
-        table: model.table(),
-        late: model.late.clone(),
-        marks,
-        dropped,
-        idle_moves: lanes.iter().map(|l| l.idle_moves).sum(),
-        open: model.open(),
-    }
+        .collect()
 }
 
 /// What the engine gave for a case.
@@ -685,43 +753,199 @@ struct Got {
 /// an order from `seed`, every output read as it comes.
 async fn run_case(name: &str, case: &Case, seed: u64) -> Got {
     let dir = tempfile::tempdir().unwrap();
+    let ran = run_job(name, dir.path(), case, &Job::first(), seed).await;
+    got(name, &[ran])
+}
+
+/// A job of a case: its generation, the epoch it starts at and the record
+/// it restores, which names the window's state and has its watermark at
+/// `floor`: NONE without one. Unless it's killed, it reads its input to
+/// the end.
+struct Job {
+    generation: u64,
+    first_epoch: u64,
+    restored: Vec<StateSnapshot>,
+    floor: i64,
+    workers: usize,
+    kill: Option<Kill>,
+}
+
+impl Job {
+    fn first() -> Job {
+        Job {
+            generation: 1,
+            first_epoch: 1,
+            restored: Vec::new(),
+            floor: NONE,
+            workers: 1,
+            kill: None,
+        }
+    }
+}
+
+/// What a job committed: each writer lane's frames up to the barrier of its
+/// last committed epoch, and those epochs' EpochReadys, in order.
+struct Ran {
+    outs: Vec<Vec<frame::Frame>>,
+    ready: Vec<EpochReady>,
+    /// It was killed after its engine had read frames past the last
+    /// barrier it committed.
+    read_past: bool,
+}
+
+/// An edge's reader, counting the bytes the engine has taken from it.
+struct Counted {
+    inner: BufReader<DuplexStream>,
+    taken: Arc<AtomicUsize>,
+}
+
+impl tokio::io::AsyncRead for Counted {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        self.taken
+            .fetch_add(buf.filled().len() - before, Ordering::Relaxed);
+        polled
+    }
+}
+
+impl AsyncBufRead for Counted {
+    fn poll_fill_buf(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<&[u8]>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_fill_buf(cx)
+    }
+
+    fn consume(mut self: std::pin::Pin<&mut Self>, amt: usize) {
+        std::pin::Pin::new(&mut self.inner).consume(amt);
+        self.taken.fetch_add(amt, Ordering::Relaxed);
+    }
+}
+
+/// As start_lanes, with each lane's count of the bytes the engine has
+/// taken from its edge.
+fn start_counted(
+    req: openetl_proto::engine::v1::StartJobRequest,
+) -> (LaneHarness, Vec<Arc<AtomicUsize>>) {
+    let plan = Arc::new(Plan::from_request(req).unwrap());
+    let (mut ins, mut readers, mut taken, mut outs, mut writers) =
+        (vec![], vec![], vec![], vec![], vec![]);
+    for _ in 0..plan.inbound.len() {
+        let (w, r) = duplex(1 << 16);
+        let n = Arc::new(AtomicUsize::new(0));
+        ins.push(w);
+        readers.push(Counted {
+            inner: BufReader::new(r),
+            taken: n.clone(),
+        });
+        taken.push(n);
+    }
+    for _ in 0..plan.writer_lanes {
+        let (w, r) = duplex(1 << 16);
+        writers.push(w);
+        outs.push(BufReader::new(r));
+    }
+    let (tx, events) = mpsc::channel(64);
+    let job = tokio::spawn(run(plan, readers, writers, tx));
+    let h = LaneHarness {
+        ins,
+        outs,
+        events,
+        job,
+    };
+    (h, taken)
+}
+
+/// Runs a job of a case through the engine's dataflow, with its state and
+/// quarantine below `dir`, its lanes' frames written in an order from
+/// `seed`, every output read as it comes. A killed job reads its lanes up
+/// to its kill, and is aborted once its engine has taken every frame
+/// written, made the EpochReady of each barrier it commits, and given that
+/// barrier on each writer lane.
+async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed: u64) -> Ran {
+    // A window runs in one engine: see WORKERS.
+    assert_eq!(
+        job.workers, 1,
+        "{name}: a window on {} engines",
+        job.workers
+    );
     let lanes = case.lanes.len();
     let mut req = window_request(
-        &dir.path().join("state"),
+        &dir.join("state"),
         &case.window.sql(case.having),
         lanes as u32,
-        1,
-        1,
+        job.generation,
+        job.first_epoch,
     );
     req.pipeline = name.into();
-    req.quarantine_url = format!("file://{}", dir.path().display());
+    req.quarantine_url = format!("file://{}", dir.display());
+    req.restored_snapshots = job.restored.clone();
     let et = event_time(&mut req);
     et.delay_micros = case.delay;
     et.lateness_micros = case.lateness;
     et.held = case.held;
-    let mut h = start_lanes(req);
+    et.floor = (job.floor != NONE).then_some(job.floor);
+    let (mut h, taken) = start_counted(req);
+    let strict = job.kill.is_none();
     let mut drains = JoinSet::new();
+    let mut given = Vec::new();
     for (i, mut r) in std::mem::take(&mut h.outs).into_iter().enumerate() {
-        drains.spawn(async move { (i, drain(&mut r).await) });
+        let (tx, rx) = tokio::sync::watch::channel(0);
+        given.push(rx);
+        drains.spawn(async move { (i, drain_counting(&mut r, tx, strict).await) });
     }
     let mut events = std::mem::replace(&mut h.events, mpsc::channel(1).1);
-    let collected = tokio::spawn(async move { ready(&mut events).await });
+    let (tx, mut readies) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(ev) = events.recv().await {
+            let r = match ev {
+                Ok(EventsResponse {
+                    event: Some(events_response::Event::EpochReady(r)),
+                }) => Ok(r),
+                Ok(_) => continue,
+                Err(e) => Err(e.message().to_owned()),
+            };
+            if tx.send(r).is_err() {
+                return;
+            }
+        }
+    });
 
-    // Each lane's frames: its splits join first.
+    // Each lane's frames: its splits join first, a resumed one at the
+    // record's watermark.
     let mut frames: Vec<Vec<(FrameKind, u32, Vec<u8>)>> = Vec::new();
-    for evs in &case.lanes {
+    // Frames past the last barrier the job commits.
+    let mut past_cut = 0;
+    for (l, evs) in case.lanes.iter().enumerate() {
         let mut fs = Vec::new();
         let mut joined = BTreeSet::new();
         for e in evs {
-            if let Ev::Rows(s, _) | Ev::Raise(s, _) | Ev::End(s) = e
-                && joined.insert(*s)
-            {
-                fs.push((FrameKind::Split, 0, split(&s.to_string(), None)));
+            match e {
+                Ev::Resume(s, w) if joined.insert(*s) => fs.push((
+                    FrameKind::Split,
+                    0,
+                    split(&s.to_string(), (*w != NONE).then_some(*w)),
+                )),
+                Ev::Rows(s, _) | Ev::Raise(s, _) | Ev::End(s) if joined.insert(*s) => {
+                    fs.push((FrameKind::Split, 0, split(&s.to_string(), None)));
+                }
+                _ => {}
             }
         }
-        let mut n = 0;
-        for e in evs {
+        let (cut, read) = match &job.kill {
+            Some(k) => (past(evs, k.cut), past(evs, k.cut) + k.tails[l]),
+            None => (evs.len(), evs.len()),
+        };
+        let mut n = job.first_epoch - 1;
+        for (i, e) in evs[..read].iter().enumerate() {
+            let before = fs.len();
             match e {
+                Ev::Resume(..) => {}
                 Ev::Rows(_, rs) if rs.is_empty() => {}
                 Ev::Rows(s, rs) => {
                     fs.push((FrameKind::Split, 0, split(&s.to_string(), None)));
@@ -733,13 +957,20 @@ async fn run_case(name: &str, case: &Case, seed: u64) -> Got {
                 Ev::End(s) => fs.push((FrameKind::Split, 0, split(&s.to_string(), Some(END)))),
                 Ev::Barrier => {
                     n += 1;
-                    fs.push((FrameKind::Barrier, 0, barrier_of(1, n)));
-                    fs.push((FrameKind::Barrier, 1, barrier_of(1, n)));
+                    fs.push((FrameKind::Barrier, 0, barrier_of(job.generation, n)));
+                    fs.push((FrameKind::Barrier, 1, barrier_of(job.generation, n)));
                 }
+            }
+            if i >= cut {
+                past_cut += fs.len() - before;
             }
         }
         frames.push(fs);
     }
+    let written: Vec<usize> = frames
+        .iter()
+        .map(|fs| fs.iter().map(|(_, _, p)| frame::HEADER_LEN + p.len()).sum())
+        .collect();
     let mut rng = Rng(seed);
     let mut at = vec![0; lanes];
     while (0..lanes).any(|l| at[l] < frames[l].len()) {
@@ -752,15 +983,114 @@ async fn run_case(name: &str, case: &Case, seed: u64) -> Got {
             at[l] += 1;
         }
     }
-    h.end_all(2).await;
+
+    let wait = std::time::Duration::from_secs(60);
+    let mut ready = Vec::new();
+    let committed = match &job.kill {
+        Some(k) => {
+            // The engine has taken every frame written, those past the
+            // barriers it commits too.
+            tokio::time::timeout(wait, async {
+                while (0..lanes).any(|l| taken[l].load(Ordering::Relaxed) < written[l]) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{name}: the engine took its frames for a minute"));
+            while ready.len() < k.cut {
+                let r = tokio::time::timeout(wait, readies.recv())
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("{name}: no EpochReady {} in a minute", ready.len() + 1)
+                    })
+                    .unwrap_or_else(|| panic!("{name}: the job ended before its kill"));
+                ready.push(r.unwrap_or_else(|e| panic!("{name}: {e}")));
+            }
+            for g in &mut given {
+                tokio::time::timeout(wait, g.wait_for(|n| *n >= k.cut))
+                    .await
+                    .unwrap_or_else(|_| panic!("{name}: a writer lane short of barrier {}", k.cut))
+                    .unwrap();
+            }
+            h.job.abort();
+            assert!(
+                h.job.await.is_err_and(|e| e.is_cancelled()),
+                "{name}: the job ended"
+            );
+            std::mem::drop(h.ins);
+            k.cut
+        }
+        None => {
+            h.end_all(2).await;
+            h.job.await.unwrap().unwrap();
+            while let Some(r) = readies.recv().await {
+                ready.push(r.unwrap_or_else(|e| panic!("{name}: {e}")));
+            }
+            usize::MAX
+        }
+    };
+    for (n, r) in ready.iter().enumerate() {
+        assert_eq!(
+            r.epoch,
+            Some(Epoch {
+                generation: job.generation,
+                n: job.first_epoch + n as u64,
+            }),
+            "{name}"
+        );
+    }
     let mut outs: Vec<Vec<frame::Frame>> = (0..lanes).map(|_| Vec::new()).collect();
     while let Some(d) = drains.join_next().await {
-        let (i, fs) = d.unwrap();
+        let (i, mut fs) = d.unwrap();
+        let mut barriers = 0;
+        let keep = match committed {
+            0 => 0,
+            c => fs
+                .iter()
+                .position(|f| {
+                    barriers += usize::from(f.kind == FrameKind::Barrier && f.stream == 0);
+                    barriers == c
+                })
+                .map_or(fs.len(), |end| end + 1),
+        };
+        fs.truncate(keep);
         outs[i] = fs;
     }
-    h.job.await.unwrap().unwrap();
-    let ready = collected.await.unwrap();
+    Ran {
+        outs,
+        ready,
+        read_past: job.kill.is_some() && past_cut > 0,
+    }
+}
 
+/// A writer lane's frames, until it closes, or for a job that's killed, at
+/// whatever it closes on. `barriers` counts its first stream's barriers.
+async fn drain_counting(
+    r: &mut BufReader<DuplexStream>,
+    barriers: tokio::sync::watch::Sender<usize>,
+    strict: bool,
+) -> Vec<frame::Frame> {
+    let mut out = Vec::new();
+    loop {
+        let f = match frame::read(r).await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(_) if !strict => break,
+            Err(e) => panic!("{e}"),
+        };
+        if f.kind == FrameKind::Barrier && f.stream == 0 {
+            barriers.send_modify(|n| *n += 1);
+        }
+        out.push(f);
+    }
+    out
+}
+
+/// What the jobs of a case committed, one after another: the table a merge
+/// of their outputs leaves, the rows they quarantined, and each epoch's
+/// splits' watermarks.
+fn got(name: &str, runs: &[Ran]) -> Got {
+    let ready: Vec<&EpochReady> = runs.iter().flat_map(|r| &r.ready).collect();
     let mut got = Got {
         table: BTreeMap::new(),
         late: BTreeSet::new(),
@@ -776,8 +1106,10 @@ async fn run_case(name: &str, case: &Case, seed: u64) -> Got {
         updates: 0,
         deletes: 0,
     };
-    for frames in &outs {
-        let mut seqs: BTreeMap<(i64, String), i64> = BTreeMap::new();
+    // A key is on one writer lane of a job, and the jobs come one after
+    // another.
+    let mut seqs: BTreeMap<(i64, String), i64> = BTreeMap::new();
+    for frames in runs.iter().flat_map(|r| &r.outs) {
         for b in batches(frames, 0) {
             let starts: Vec<i64> = b
                 .column_by_name("window_start")
@@ -871,16 +1203,27 @@ impl Tally {
 }
 
 fn check(name: &str, e: &Expected, g: &Got) {
-    assert_eq!(g.table, e.table, "{name}: the table");
-    assert_eq!(g.late, e.late, "{name}: the late rows");
-    assert_eq!(g.marks, e.marks, "{name}: the splits' watermarks");
-    // A split's watermark never goes back.
-    for pair in g.marks.windows(2) {
-        for (s, w) in &pair[0] {
-            assert!(
-                pair[1].get(s).is_some_and(|n| n >= w),
-                "{name}: split {s} went back"
-            );
+    check_against(name, &e.table, &e.late, &e.marks, g);
+}
+
+fn check_against(
+    name: &str,
+    table: &BTreeMap<(i64, String), Agg>,
+    late: &BTreeSet<i64>,
+    marks: &[BTreeMap<String, i64>],
+    g: &Got,
+) {
+    assert_eq!(&g.table, table, "{name}: the table");
+    assert_eq!(&g.late, late, "{name}: the late rows");
+    assert_eq!(g.marks, marks, "{name}: the splits' watermarks");
+    // A split's watermark never goes back. A split that completed isn't
+    // read after a restore, so the epochs after it may not have it.
+    let mut last: BTreeMap<&String, i64> = BTreeMap::new();
+    for epoch in &g.marks {
+        for (s, w) in epoch {
+            if let Some(p) = last.insert(s, *w) {
+                assert!(*w >= p, "{name}: split {s} went back from {p} to {w}");
+            }
         }
     }
 }
@@ -909,6 +1252,398 @@ async fn windows_and_watermarks_are_the_models() {
     assert!(tally.updates >= 150, "{tally:?}");
     assert!(tally.deletes >= 8, "{tally:?}");
     assert!(tally.idle_moves >= 150, "{tally:?}");
+}
+
+/// The numbers of engines a killed case's jobs draw from. A window runs in
+/// one engine for now.
+const WORKERS: &[usize] = &[1];
+
+/// A job is killed once it has committed `cut` barriers and read
+/// `tails[l]` more of lane l's events.
+#[derive(Clone, Debug)]
+struct Kill {
+    cut: usize,
+    tails: Vec<usize>,
+}
+
+/// A job of a case that's killed and restored. Each job after the first
+/// restores from the record of the last barrier the one before committed,
+/// or from the record that one restored if it committed none.
+#[derive(Clone, Debug)]
+struct Phase {
+    case: Case,
+    workers: usize,
+    /// None for the job the input ends in.
+    kill: Option<Kill>,
+    /// Before the job starts, the runs that the record it restores doesn't
+    /// name are deleted.
+    prune: bool,
+}
+
+/// Where lane `evs` is just past its barrier `cut`, or past the splits it
+/// resumes for 0.
+fn past(evs: &[Ev], cut: usize) -> usize {
+    if cut == 0 {
+        return evs
+            .iter()
+            .take_while(|e| matches!(e, Ev::Resume(..)))
+            .count();
+    }
+    let mut barriers = 0;
+    1 + evs
+        .iter()
+        .position(|e| {
+            barriers += usize::from(matches!(e, Ev::Barrier));
+            barriers == cut
+        })
+        .unwrap()
+}
+
+/// A case of `window` from `seed`, killed once or twice.
+fn killed(seed: u64, window: Window) -> Vec<Phase> {
+    let mut rng = Rng(seed ^ 0x6b1d_5eed);
+    let mut case = Case::generate(seed, window, Some(2 + rng.below(4)));
+    let kills = 1 + rng.below(2);
+    let mut phases = Vec::new();
+    for p in 0..=kills {
+        let workers = WORKERS[rng.below(WORKERS.len())];
+        let prune = p > 0 && rng.below(2) == 0;
+        if p == kills {
+            phases.push(Phase {
+                case,
+                workers,
+                kill: None,
+                prune,
+            });
+            break;
+        }
+        let barriers = case.lanes[0]
+            .iter()
+            .filter(|e| matches!(e, Ev::Barrier))
+            .count();
+        // Mostly after a barrier but the last.
+        let cut = match rng.below(6) {
+            0 => 0,
+            _ => 1 + rng.below(barriers - 1),
+        };
+        let tails = case
+            .lanes
+            .iter()
+            .map(|evs| rng.below(evs.len() - past(evs, cut) + 1))
+            .collect();
+        // Another number of lanes.
+        let mut lanes = 1 + rng.below(3);
+        if lanes >= case.lanes.len() {
+            lanes += 1;
+        }
+        let barriers = match p + 1 == kills {
+            true => 1 + rng.below(4),
+            false => 2 + rng.below(3),
+        };
+        let next = restored(&case, cut, lanes, barriers, &mut rng);
+        phases.push(Phase {
+            case,
+            workers,
+            kill: Some(Kill { cut, tails }),
+            prune,
+        });
+        case = next;
+    }
+    phases
+}
+
+/// What a job restored from `case`'s record of barrier `cut` reads, on
+/// `lanes` lanes with `barriers` barriers, the last after every split's
+/// end: each split that hasn't completed, from where the record has it, at
+/// the split's watermark there. For `cut` 0, the record `case` restored.
+fn restored(case: &Case, cut: usize, lanes: usize, barriers: usize, rng: &mut Rng) -> Case {
+    let mut rest: BTreeMap<usize, Vec<Ev>> = BTreeMap::new();
+    for evs in &case.lanes {
+        for e in &evs[past(evs, cut)..] {
+            if let Ev::Rows(s, _) | Ev::Raise(s, _) | Ev::End(s) = e {
+                rest.entry(*s).or_default().push(e.clone());
+            }
+        }
+    }
+    let mut marks: BTreeMap<usize, i64> = BTreeMap::new();
+    if cut == 0 {
+        for e in case.lanes.iter().flatten() {
+            if let Ev::Resume(s, w) = e {
+                marks.insert(*s, *w);
+            }
+        }
+    } else {
+        for l in 0..case.lanes.len() {
+            for (s, w) in &lane_model(case, l).marks[cut - 1] {
+                marks.insert(s.parse().unwrap(), *w);
+            }
+        }
+    }
+    let lane_of: BTreeMap<usize, usize> = rest.keys().map(|s| (*s, rng.below(lanes))).collect();
+    let mut out = case.clone();
+    out.lanes = (0..lanes)
+        .map(|l| {
+            let mine: Vec<usize> = rest.keys().copied().filter(|s| lane_of[s] == l).collect();
+            let mut evs: Vec<Ev> = mine
+                .iter()
+                .map(|s| Ev::Resume(*s, marks.get(s).copied().unwrap_or(NONE)))
+                .collect();
+            let resumed = evs.len();
+            let mut at: BTreeMap<usize, usize> = mine.iter().map(|s| (*s, 0)).collect();
+            loop {
+                let open: Vec<usize> = mine
+                    .iter()
+                    .copied()
+                    .filter(|s| at[s] < rest[s].len())
+                    .collect();
+                if open.is_empty() {
+                    break;
+                }
+                let s = open[rng.below(open.len())];
+                evs.push(rest[&s][at[&s]].clone());
+                *at.get_mut(&s).unwrap() += 1;
+            }
+            for _ in 1..barriers {
+                let p = resumed + rng.below(evs.len() - resumed + 1);
+                evs.insert(p, Ev::Barrier);
+            }
+            evs.push(Ev::Barrier);
+            evs
+        })
+        .collect();
+    out
+}
+
+/// Where a job's window starts: the least watermark its splits resume at,
+/// NONE if one of them has none or none resumes.
+fn floor(case: &Case) -> i64 {
+    let marks: Vec<i64> = case
+        .lanes
+        .iter()
+        .flatten()
+        .filter_map(|e| match e {
+            Ev::Resume(_, w) => Some(*w),
+            _ => None,
+        })
+        .collect();
+    match marks.contains(&NONE) {
+        true => NONE,
+        false => marks.into_iter().min().unwrap_or(NONE),
+    }
+}
+
+/// What the model expects of a killed case: its jobs with the rows it
+/// leaves out taken out, the table, the late rows, and the watermarks of
+/// each epoch the jobs commit.
+struct KilledExpected {
+    phases: Vec<Phase>,
+    table: BTreeMap<(i64, String), Agg>,
+    late: BTreeSet<i64>,
+    marks: Vec<BTreeMap<String, i64>>,
+    dropped: usize,
+}
+
+/// The window takes what each job commits, from where the record it
+/// restores has the window: a killed job's epochs up to its kill's
+/// barrier.
+fn expect_killed(phases: &[Phase]) -> KilledExpected {
+    let mut model = Model::new(&phases[0].case);
+    let mut unsure = BTreeSet::new();
+    let (mut marks, mut dropped) = (Vec::new(), 0);
+    for ph in phases {
+        let case = &ph.case;
+        let lanes: Vec<LaneModel> = (0..case.lanes.len())
+            .map(|l| {
+                let evs = &case.lanes[l];
+                let read = ph.kill.as_ref().map_or(evs.len(), |k| past(evs, k.cut));
+                lane_model_to(case, l, read)
+            })
+            .collect();
+        dropped += take(
+            &mut model,
+            case,
+            &lanes,
+            floor(case),
+            ph.kill.is_none(),
+            &mut unsure,
+        );
+        marks.extend(epoch_marks(&lanes));
+    }
+    KilledExpected {
+        phases: phases
+            .iter()
+            .map(|ph| Phase {
+                case: without(&ph.case, &unsure),
+                ..ph.clone()
+            })
+            .collect(),
+        table: model.table(),
+        late: model.late.clone(),
+        marks,
+        dropped,
+    }
+}
+
+/// Runs a killed case's jobs one after another, each restored from the
+/// record the one before left, below one directory. What they committed,
+/// and what they ran.
+async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let mut runs = Vec::new();
+    let (mut restored, mut epoch, mut r) = (Vec::new(), 0, Restores::default());
+    for (p, ph) in phases.iter().enumerate() {
+        if ph.prune {
+            r.pruned += prune(&state, &restored);
+        }
+        r.from_runs += usize::from(restored.iter().any(|s: &StateSnapshot| !s.runs.is_empty()));
+        let job = Job {
+            generation: p as u64 + 1,
+            first_epoch: epoch + 1,
+            restored: restored.clone(),
+            floor: floor(&ph.case),
+            workers: ph.workers,
+            kill: ph.kill.clone(),
+        };
+        let ran = run_job(name, dir.path(), &ph.case, &job, seed + p as u64).await;
+        // The windows kept, as the records count them across kills and
+        // restores: never below 0, and none once the input ends.
+        for op in ran.ready.iter().flat_map(|e| &e.operators) {
+            r.windows += op.windows_opened as i64 - op.windows_dropped as i64;
+            r.opened += op.windows_opened as usize;
+            assert!(r.windows >= 0, "{name}: {} windows kept", r.windows);
+        }
+        if let Some(last) = ran.ready.last() {
+            restored = last.snapshots.clone();
+            epoch += ran.ready.len() as u64;
+        }
+        r.read_past += usize::from(ran.read_past);
+        runs.push(ran);
+    }
+    assert_eq!(r.windows, 0, "{name}: windows kept at the end of input");
+    (got(name, &runs), r)
+}
+
+/// What a killed case's jobs ran.
+#[derive(Debug, Default)]
+struct Restores {
+    /// Jobs killed after their engine had read frames past the last
+    /// barrier they committed.
+    read_past: usize,
+    /// Jobs restored from a record that names runs.
+    from_runs: usize,
+    /// Runs that pruning deleted.
+    pruned: usize,
+    /// The windows the committed epochs kept, opened less dropped, and
+    /// those they opened.
+    windows: i64,
+    opened: usize,
+}
+
+/// Deletes each file below `state` that `kept` doesn't name, as retention
+/// may once no record it keeps names it. How many it deleted.
+fn prune(state: &std::path::Path, kept: &[StateSnapshot]) -> usize {
+    let named: BTreeSet<std::path::PathBuf> = kept
+        .iter()
+        .flat_map(|s| &s.runs)
+        .map(|r| state.join(r))
+        .collect();
+    let mut deleted = 0;
+    let mut dirs = vec![state.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if !named.contains(&path) && std::fs::remove_file(&path).is_ok() {
+                deleted += 1;
+            }
+        }
+    }
+    deleted
+}
+
+/// What the killed cases ran.
+#[derive(Debug, Default)]
+struct KillTally {
+    cases: usize,
+    kills: usize,
+    restores: usize,
+    /// Kills of a job that had committed nothing.
+    uncommitted: usize,
+    /// Kills of a job whose engine had read frames past the last barrier
+    /// it committed.
+    read_past: usize,
+    /// Jobs on several lanes.
+    several_lanes: usize,
+    /// Jobs restored from a record that names runs.
+    from_runs: usize,
+    pruned: usize,
+    opened: usize,
+    windows: usize,
+    late: usize,
+    dropped: usize,
+    updates: usize,
+}
+
+/// Generated cases of each window, killed once or twice: at a random
+/// barrier, or before any, after reading on past it, so the epoch the job
+/// is in is lost and the runs it wrote are orphans. The next job restores
+/// the record of the last barrier committed onto another number of lanes,
+/// some after the runs that record doesn't name are deleted, and reads on
+/// from where the record has each split. What the jobs committed, merged,
+/// is the model's table, and they quarantine the model's late rows and
+/// report its watermarks.
+#[tokio::test]
+async fn killed_and_restored_windows_are_the_models() {
+    let mut tally = KillTally::default();
+    for window in [Window::Tumble, Window::Hop, Window::Session] {
+        for seed in 0..50 {
+            let name = format!("killed-{window:?}-{seed}");
+            let e = expect_killed(&killed(seed * 104_723 + 5, window));
+            let (g, r) = run_killed(&name, &e.phases, seed).await;
+            check_against(&name, &e.table, &e.late, &e.marks, &g);
+            tally.cases += 1;
+            tally.restores += e.phases.len() - 1;
+            for ph in &e.phases {
+                tally.several_lanes += usize::from(ph.case.lanes.len() > 1);
+                let Some(k) = &ph.kill else {
+                    continue;
+                };
+                tally.kills += 1;
+                tally.uncommitted += usize::from(k.cut == 0);
+            }
+            tally.read_past += r.read_past;
+            tally.from_runs += r.from_runs;
+            tally.pruned += r.pruned;
+            tally.opened += r.opened;
+            tally.windows += e.table.len();
+            tally.late += e.late.len();
+            tally.dropped += e.dropped;
+            tally.updates += g.updates;
+        }
+    }
+    assert_eq!(tally.cases, 150);
+    assert!(
+        tally.kills >= 200 && tally.restores == tally.kills,
+        "{tally:?}"
+    );
+    assert!(tally.uncommitted >= 15, "{tally:?}");
+    assert!(tally.read_past >= 150, "{tally:?}");
+    assert!(tally.several_lanes >= 180, "{tally:?}");
+    assert!(tally.from_runs >= 150, "{tally:?}");
+    // Runs of epochs that a kill lost, which the engine may or may not have
+    // written by then.
+    assert!(tally.pruned >= 10, "{tally:?}");
+    assert!(tally.windows >= 2_000, "{tally:?}");
+    // Every window of the table was opened at least once by a committed
+    // epoch, so the count above checked something.
+    assert!(tally.opened >= tally.windows, "{tally:?}");
+    assert!(tally.late >= 150, "{tally:?}");
+    assert!(tally.updates >= 50, "{tally:?}");
 }
 
 /// `case` with only the rows `of` has.

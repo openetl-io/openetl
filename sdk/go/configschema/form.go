@@ -98,7 +98,8 @@ var Formats = []string{
 	"multiline",
 }
 
-// ReadForm reads a config schema's form.
+// ReadForm reads a config schema's form. A property whose schema is false,
+// which no value matches, isn't a field.
 func ReadForm(schema []byte) (Form, error) {
 	if len(bytes.TrimSpace(schema)) == 0 {
 		return Form{}, nil
@@ -138,6 +139,24 @@ type node struct {
 	XFormat  string                     `json:"x-format"`
 	When     map[string]json.RawMessage `json:"x-when"`
 	Groups   []Group                    `json:"x-groups"`
+
+	// The schema is false: no value matches it.
+	never bool
+}
+
+// UnmarshalJSON reads a schema, or the booleans true and false, which
+// draft 2020-12 allows in a schema's place.
+func (n *node) UnmarshalJSON(b []byte) error {
+	switch string(bytes.TrimSpace(b)) {
+	case "true":
+		*n = node{}
+		return nil
+	case "false":
+		*n = node{never: true}
+		return nil
+	}
+	type plain node
+	return json.Unmarshal(b, (*plain)(n))
 }
 
 // properties keeps an object's properties in the order the schema has them.
@@ -194,10 +213,12 @@ func (n *node) options() []Option {
 		out = append(out, Option{Value: v})
 	}
 	for _, branches := range [][]node{n.OneOf, n.AnyOf} {
+		// A branch without a const takes values that no option names.
+		if slices.ContainsFunc(branches, func(b node) bool { return b.Const == nil }) {
+			continue
+		}
 		for _, b := range branches {
-			if b.Const != nil {
-				out = append(out, Option{Value: b.Const, Title: b.Title, Description: b.Description})
-			}
+			out = append(out, Option{Value: b.Const, Title: b.Title, Description: b.Description})
 		}
 	}
 	return out
@@ -207,6 +228,9 @@ func (n *node) fields(prefix, group string) []Field {
 	var out []Field
 	for _, name := range n.Properties.names {
 		p := n.Properties.nodes[name]
+		if p.never {
+			continue
+		}
 		f := Field{
 			Name: name, Path: prefix + name, Type: p.typ(), Title: p.Title, Description: p.Description,
 			Required: slices.Contains(n.Required, name), Secret: p.Secret, Advanced: p.Advanced, Deprecated: p.Deprecated,
@@ -215,12 +239,10 @@ func (n *node) fields(prefix, group string) []Field {
 			xFormat: p.XFormat != "",
 		}
 		for _, k := range slices.Sorted(maps.Keys(p.When)) {
-			c := Condition{Field: k}
+			c := Condition{Field: k, Values: []json.RawMessage{p.When[k]}}
 			var many []json.RawMessage
-			if json.Unmarshal(p.When[k], &many) == nil {
+			if bytes.HasPrefix(bytes.TrimSpace(p.When[k]), []byte("[")) && json.Unmarshal(p.When[k], &many) == nil {
 				c.Values = many
-			} else {
-				c.Values = []json.RawMessage{p.When[k]}
 			}
 			f.When = append(f.When, c)
 		}

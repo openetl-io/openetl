@@ -114,7 +114,7 @@ The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the d
 
 ## Group windows
 
-A group window aggregates a stream's rows by windows of their event time, and by the columns its `GROUP BY` names. It writes one row for each window and key:
+A group window aggregates a stream's rows by windows of their event time, and by the columns its `GROUP BY` names. [Aggregate by windows of time](../pipelines/windows.md) is the guide to them. It writes one row for each window and key:
 
 ```sql
 INSERT INTO revenue_by_minute
@@ -189,7 +189,7 @@ How the stream is read decides when windows close:
 | Read | Pipeline | When windows close |
 |---|---|---|
 | `full_refresh` | Scheduled | The watermark holds until the sync's read ends. Every window closes at the end of the read. The next sync starts its windows again, from the whole stream. |
-| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. A window that is still open goes on in the next sync, which restores its state. |
+| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. It does not move to the end of input. A window that is still open goes on in the next sync, which restores its state. Without a later sync, it stays open. |
 | `stream` | Continuous | The watermark follows the rows as they come. Each window closes while the pipeline runs. |
 
 A group window over a stream read another way is a problem in the plan:
@@ -211,7 +211,8 @@ A group window keeps each window's aggregates as state, by key group, until its 
 - A checkpoint names only the parts of files that the state still uses. When every window that a part holds has closed and its lateness has passed, or newer files hold all of it, the next checkpoints stop naming that part. When every window has closed, a checkpoint names no file of the statement's state.
 - The next attempt restores the state that its checkpoint names, on any number of lanes. A continuous pipeline's attempt that restarts, or a sync's attempt that fails, goes on with its open windows. Each window's row has every row of the window, each one time.
 - The engine reads a file of state when a lane first needs it, not at the start of the attempt. At its first checkpoint that writes state, a lane reads whole the windows' values in the files it restored, to find which parts the state still uses.
-- A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names. So the number of files of state follows how long windows stay open, and does not grow with the number of checkpoints.
+- A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names. It does so when it starts, and after every 10 checkpoints. So the number of files of state follows how long windows stay open, and does not grow with the number of checkpoints.
+- Each checkpoint records what the operator did in its epoch, on every worker: its rows, its late rows, its watermark, the windows it keeps, its state's size and its requests to object storage. The console's **SQL** tab shows the last checkpoint's, and the `openetl.operator.*` metrics give them ([Monitoring](../self-host/monitoring.md#stateful-operators)).
 - To build a window's state again from the stream, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)). A run deletes the files of the dropped state once none of the records it keeps names them.
 - After a reset, each window's row comes only from the rows that the new read returns. If the read starts partway through a window, `merge` replaces that window's row with a row of part of its rows. A window that the new read does not reach keeps its row in the destination. Start the read where it includes every row of the windows it changes, or correct those rows in the destination.
 - A pipeline with a group window runs on one pod, whatever its `resources.workers`.
@@ -237,7 +238,7 @@ These edits give the operator a new ID:
 - A filter or an `UNNEST` before the window.
 - A change of type of the event-time column, a key or an aggregate's argument, also when the source changes the column's type.
 
-`watermark.lateness` is not part of the ID. A changed lateness keeps the state. A window that is open at the change keeps the time its state expires at, which it got when it opened: a higher lateness does not keep its state longer. A row for that window that comes after its state expired, and within the new lateness, starts a new aggregate without the window's earlier rows.
+`watermark.lateness` is not part of the ID. A changed lateness keeps the state. A window that is open at the change keeps the time its state expires at, which it got when it opened: a higher lateness does not keep its state longer. A row for that window that comes after its state expired, and within the new lateness, starts a new aggregate without the window's earlier rows. Its row is an insert under the window's key, so `merge` replaces the window's row with it.
 
 `openetl plan` and `openetl apply` show each operator in a `state` section of `transform.sql`. Each line has the statement's place, the output, the ID, what the operator is against the pipeline's current version, and what it keeps. Where the pipeline's last checkpoint says which operators' state it names, the line ends with whether it holds the operator's state. In this example, the current version has the statement of [Group windows](#group-windows) and a second statement, `orders_by_hour`, with `tumble(created_at, INTERVAL '1 hour')`. The new version gives the first statement a `FROM` alias and other column names, and changes the second one's window to 30 minutes. The stream has `watermark.lateness: 1m`:
 

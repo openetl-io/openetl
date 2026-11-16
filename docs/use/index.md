@@ -82,13 +82,25 @@ Below that, a strip shows its latest syncs, oldest on the left. Each one's color
 
 ### Preflight
 
-**Preflight** tests whether the pipeline can run, without reading or writing records. It is a [preflight](../get-started/concepts.md#checks-and-preflights). A panel opens and shows each part when it finishes:
+**Preflight** tests whether the pipeline can run, without reading or writing records. It is a [preflight](../get-started/concepts.md#checks-and-preflights). Select **Preflight** to open a panel and run it on a runner. The panel says what a preflight does: **Checks the source's and the destination's connections, plans the sync, then asks each connector whether the streams this pipeline reads and writes would work. Nothing is read or written.**
 
-1. The source's and the destination's connections.
-2. The source connector's checks of the streams the pipeline reads, and the destination connector's checks of the streams it writes.
-3. The sync's plan, with its problems and warnings.
+When it finishes, the panel says **The pipeline would run.** or **The pipeline wouldn't run as it is.** Then it shows each part, in the order it ran:
 
-Each part lists its items, with the config field and a **Fix** for each item that failed or gave a warning. A part is skipped if a part it needs failed. For example, the source's checks of its streams do not run if its connection fails. Select **Run again** after you correct something.
+1. **Source NAME: connection** and **Destination NAME: connection**: the checks of the two connections.
+2. **Sync plan**: the plan of the sync. Each problem of the plan is a failed item, and each warning is a warning item.
+3. **Source NAME: pipeline's streams** and **Destination NAME: pipeline's streams**: each connector's checks of the streams the pipeline reads or writes. **Passed. The connector has no checks of its own for a pipeline.** means that the connector has no such checks.
+
+Under each part's heading, a line counts its items, such as **1 passed, 1 failed, 1 skipped.** Its items follow, as [Read a check's items](#read-a-checks-items) explains. A part that failed without a failed item shows a red **Failed:** box with the error code and the message. For example, a part fails this way when its connector does not start or answer, or when the part runs out of time. The box also shows above failed items if the part's code or message says more than its first failed item.
+
+A part that did not run shows **Skipped:** and the reason. A part is skipped when a part before it failed:
+
+- **Skipped: the source didn't start.** or **Skipped: the destination didn't start.**
+- **Skipped: the source's check failed.** or **Skipped: the destination's check failed.**
+- **Skipped: a sync can't be planned.** The **Sync plan** failed, so the connectors cannot check the pipeline's streams.
+
+A skipped part means that the pipeline would not run. Correct the part that failed first.
+
+Select **Run again** after you correct something. If the preflight cannot run, for example because no runner takes it, the panel shows **Couldn't run the preflight** and the reason. That says nothing about the pipeline itself.
 
 ### Sync now, Pause and Resume
 
@@ -168,7 +180,7 @@ Each statement's card shows:
 |---|---|
 | **INSERT INTO** | The output it writes, and the destination table it goes to if the pipeline names one |
 | Its place | The line and column where the statement starts |
-| **Row-wise** | The kind of statement. Only row-wise statements run. |
+| **Row-wise** or **Group window** | The kind of statement. A row-wise statement changes one row at a time. A group window adds up rows by windows of time. |
 | **Replaces stream** | The output takes the place of the source's stream of the same name. |
 | **Primary key** | The output's key. **None, so append only** means rows are only added, never merged. |
 | **Reads** | The source's streams it reads, and the views it reads them through |
@@ -187,6 +199,19 @@ Below the cards, **State** lists each statement that keeps state between rows, s
 **Passed through** lists the source's streams that no statement writes, and **Not delivered** the ones left out.
 
 If the statements have errors, the **Plan** side says so, and the errors are at the top, each with its place. If the statements could not be planned, for example because no runner answered, a note at the top says why.
+
+If a statement keeps state, **At the last checkpoint** shows what it did in the pipeline's newest epoch. An epoch is the rows between two checkpoints. The numbers add up every worker of the pipeline. Each row shows:
+
+- **Operator**: the statement's operator, and its output.
+- **Watermark**: the time in the rows before which the statement expects no more rows, and how far it was behind the commit. A window of time closes when the watermark reaches its end. **None** means that a part of the stream has had no rows, or that the watermark is outside the years 1 to 9999. **End of input** means that the read ended and every window closed.
+- **Windows**: the windows the statement keeps: open ones, and closed ones that can still take late rows.
+- **Rows in**: the rows of the stream that reached the statement in the epoch.
+- **Written**: the rows it wrote to its output in the epoch, as new rows, updates and deletes.
+- **Late**: the late rows that came after their window had closed and its allowed lateness had passed, which OpenETL quarantined with the code `late`. Late rows that still went into their window are not in this count. [Quarantined rows](#quarantined-rows) shows them under the output.
+- **State**: how much state the statement held in memory, and how much the checkpoint keeps in the data plane's storage: the files that hold state still in use, which is none once every window has closed.
+- **Requests**: its requests to the data plane's storage in the epoch, with their bytes: **Writes** of its state at the checkpoint, **Reads** of state it needed, and **Restores**, which open the state that a checkpoint names after a restart, and read it once whole to find what is still in use. A read or restore made near the checkpoint can count in the next epoch instead.
+
+[Aggregate by windows of time](../pipelines/windows.md) explains watermarks, windows and late rows.
 
 ### Syncs
 
@@ -259,12 +284,57 @@ For a pipeline that waits, fails repeatedly or stops delivering fresh data, foll
 
 ## Sources, destinations and connectors
 
-- **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values. **Check** asks a runner to connect with the config: a [check](../get-started/concepts.md#checks-and-preflights) of the connection alone. Connectors that say what they looked at list each item: what **Passed**, what needs attention as a **Warning**, what **Failed** with the config field it concerns and a **Fix**, and what was **Skipped**.
+- **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values. **Check** tests the connection, as [Check a source or destination](#check-a-source-or-destination) explains.
 - **dbt projects** lists the dbt projects that run after pipelines' syncs, and under **Run after**, the pipelines each one runs after.
 - **Clusters** has **Spark** and **Flink** tabs. Each entry shows what the cluster **Runs on**, such as **spark-submit**, **EMR on EC2** or **Kubernetes**. **Used by** lists its pipelines. Open a cluster to inspect **Settings**, defaults, job configuration and **Pipelines**. **Runs** identifies use as a transform or after a sync. Secret settings show references without their values.
-- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, its config's fields under their sections with their values, defaults and when each applies, and the command that applies it, which makes it available to sources and destinations. A catalog source is a package registry or repository, separate from a pipeline's data source.
+- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, its config's fields under their sections with their values, defaults and when each applies, and the command that applies it, which makes it available to sources and destinations. A field inside another field shows under it, unless the connector puts it in another section. There it shows by its full path, such as `consumer.interval`. A catalog source is a package registry or repository, separate from a pipeline's data source.
 
 Connectors can be official, community maintained or private to your organization. Each has its own versions and releases, separate from OpenETL. Use a package's **Docs** link for its setup, supported modes and limits. An administrator manages installation and upgrades; [Choose and manage connectors](../pipelines/connectors.md) gives the CLI steps.
+
+### Check a source or destination
+
+A [check](../get-started/concepts.md#checks-and-preflights) tests one connection: a runner connects with the config, and the connector examines what it can without a pipeline. To run it, open the source's or destination's page and select **Check**. The button shows **Checking…** while the check runs.
+
+The result is in the **Check** section. Its first line gives the verdict and counts the items, such as **The check passed: 4 passed, 1 warning.** or **The check failed: 1 passed, 1 failed, 1 skipped.** A warning does not fail the check. The items follow, as [Read a check's items](#read-a-checks-items) explains.
+
+The **Check** section can also show:
+
+- **The check passed** with **The connector reached it with this config. It doesn't say what it looked at.** The connector does not report items.
+- A red **The check failed** box with an error code and a message. The check failed for a reason that no item explains. For example, some connectors report one error and no items. The box also shows above failed items if the check's code or message says more than its first failed item, such as when the checks ran out of time.
+- **Couldn't run the check**, with the reason. The check did not run. For example, no runner took it, or the connector did not start or did not answer within 1 minute. That says nothing about the connection.
+
+### Read a check's items
+
+Each item of a check or a preflight is one row:
+
+- An icon gives its status: a check mark for passed, a triangle for a warning, a cross for failed, and a minus for skipped.
+- Its title says what the connector checked. Values from your config, such as a host or a table, are in a monospace font.
+- A badge gives its kind, as the table below shows.
+- Its message says what the connector found for a passed item, what is wrong for a failed or warning item, and why it was not checked for a skipped item.
+- If the connector describes the item, the **What it checks** button, an information icon, shows what the item verifies and why the connector needs it.
+
+A failed or warning item can also show:
+
+| Label | What it shows |
+|---|---|
+| **Detail** | The cause, in the words of the system the connector connects to, such as a database's error message |
+| **Fix:** | What to do to correct it |
+| **Field** | The config field it concerns, such as `consumer.name` |
+| **Code** | The error code, such as `PERMISSION_DENIED` |
+| **Reason** | The kind of failure, such as `credentials_rejected` |
+
+| Kind | What the item verifies |
+|---|---|
+| **Configuration** | The config's values work together. |
+| **Connection** | The network path: the name resolves, the port answers, and TLS works. |
+| **Authentication** | The system accepts the credentials. |
+| **Permission** | The account can do what the connector needs, such as read a table. |
+| **Resource** | Something that the config names exists, such as a database, a bucket or a topic. |
+| **Compatibility** | The system's version or settings work with the connector. |
+| **Quota** | Limits, such as rate limits, leave room for the connector. |
+| **Custom** | Something else that the connector checks. |
+
+To correct a failed item, follow its **Fix:**. If you cannot change the config or the system yourself, give the item's **Field**, **Code** and **Detail** to the person who can.
 
 ## Settings
 
@@ -319,6 +389,11 @@ openetl holds release PIPELINE STREAM COLUMN
 openetl holds discard PIPELINE STREAM COLUMN
 openetl quarantine PIPELINE              # the files of rows it quarantined, and why
 openetl quarantine show PIPELINE PATH    # Show records
+openetl preflight PIPELINE               # Preflight
+openetl check source NAME                # Check, on a source's page
+openetl check destination NAME           # Check, on a destination's page
 ```
+
+`openetl check` and `openetl preflight` print the same items as the console. [Pipeline CLI commands](../reference/pipeline-cli.md#text-output) explains their output.
 
 `openetl principal password-link NAME` makes the link a person sets their password with, and `openetl principal sign-out NAME` signs them out everywhere. `openetl COMMAND -h` lists a command's flags.
