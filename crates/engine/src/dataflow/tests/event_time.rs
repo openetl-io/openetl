@@ -22,6 +22,7 @@
 //! has the window, each job's lanes bounded as above.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicUsize;
 
 use openetl_proto::engine::v1::StateSnapshot;
 
@@ -787,13 +788,85 @@ impl Job {
 struct Ran {
     outs: Vec<Vec<frame::Frame>>,
     ready: Vec<EpochReady>,
+    /// It was killed after its engine had read frames past the last
+    /// barrier it committed.
+    read_past: bool,
+}
+
+/// An edge's reader, counting the bytes the engine has taken from it.
+struct Counted {
+    inner: BufReader<DuplexStream>,
+    taken: Arc<AtomicUsize>,
+}
+
+impl tokio::io::AsyncRead for Counted {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        self.taken
+            .fetch_add(buf.filled().len() - before, Ordering::Relaxed);
+        polled
+    }
+}
+
+impl AsyncBufRead for Counted {
+    fn poll_fill_buf(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<&[u8]>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_fill_buf(cx)
+    }
+
+    fn consume(mut self: std::pin::Pin<&mut Self>, amt: usize) {
+        std::pin::Pin::new(&mut self.inner).consume(amt);
+        self.taken.fetch_add(amt, Ordering::Relaxed);
+    }
+}
+
+/// As start_lanes, with each lane's count of the bytes the engine has
+/// taken from its edge.
+fn start_counted(
+    req: openetl_proto::engine::v1::StartJobRequest,
+) -> (LaneHarness, Vec<Arc<AtomicUsize>>) {
+    let plan = Arc::new(Plan::from_request(req).unwrap());
+    let (mut ins, mut readers, mut taken, mut outs, mut writers) =
+        (vec![], vec![], vec![], vec![], vec![]);
+    for _ in 0..plan.inbound.len() {
+        let (w, r) = duplex(1 << 16);
+        let n = Arc::new(AtomicUsize::new(0));
+        ins.push(w);
+        readers.push(Counted {
+            inner: BufReader::new(r),
+            taken: n.clone(),
+        });
+        taken.push(n);
+    }
+    for _ in 0..plan.writer_lanes {
+        let (w, r) = duplex(1 << 16);
+        writers.push(w);
+        outs.push(BufReader::new(r));
+    }
+    let (tx, events) = mpsc::channel(64);
+    let job = tokio::spawn(run(plan, readers, writers, tx));
+    let h = LaneHarness {
+        ins,
+        outs,
+        events,
+        job,
+    };
+    (h, taken)
 }
 
 /// Runs a job of a case through the engine's dataflow, with its state and
 /// quarantine below `dir`, its lanes' frames written in an order from
 /// `seed`, every output read as it comes. A killed job reads its lanes up
-/// to its kill, and is aborted once it has made the EpochReady of each
-/// barrier it commits, and each writer lane has given that barrier.
+/// to its kill, and is aborted once its engine has taken every frame
+/// written, made the EpochReady of each barrier it commits, and given that
+/// barrier on each writer lane.
 async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed: u64) -> Ran {
     // A window runs in one engine: see WORKERS.
     assert_eq!(
@@ -817,7 +890,7 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
     et.lateness_micros = case.lateness;
     et.held = case.held;
     et.floor = (job.floor != NONE).then_some(job.floor);
-    let mut h = start_lanes(req);
+    let (mut h, taken) = start_counted(req);
     let strict = job.kill.is_none();
     let mut drains = JoinSet::new();
     let mut given = Vec::new();
@@ -846,6 +919,8 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
     // Each lane's frames: its splits join first, a resumed one at the
     // record's watermark.
     let mut frames: Vec<Vec<(FrameKind, u32, Vec<u8>)>> = Vec::new();
+    // Frames past the last barrier the job commits.
+    let mut past_cut = 0;
     for (l, evs) in case.lanes.iter().enumerate() {
         let mut fs = Vec::new();
         let mut joined = BTreeSet::new();
@@ -862,12 +937,13 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
                 _ => {}
             }
         }
-        let read = match &job.kill {
-            Some(k) => past(evs, k.cut) + k.tails[l],
-            None => evs.len(),
+        let (cut, read) = match &job.kill {
+            Some(k) => (past(evs, k.cut), past(evs, k.cut) + k.tails[l]),
+            None => (evs.len(), evs.len()),
         };
         let mut n = job.first_epoch - 1;
-        for e in &evs[..read] {
+        for (i, e) in evs[..read].iter().enumerate() {
+            let before = fs.len();
             match e {
                 Ev::Resume(..) => {}
                 Ev::Rows(_, rs) if rs.is_empty() => {}
@@ -885,9 +961,16 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
                     fs.push((FrameKind::Barrier, 1, barrier_of(job.generation, n)));
                 }
             }
+            if i >= cut {
+                past_cut += fs.len() - before;
+            }
         }
         frames.push(fs);
     }
+    let written: Vec<usize> = frames
+        .iter()
+        .map(|fs| fs.iter().map(|(_, _, p)| frame::HEADER_LEN + p.len()).sum())
+        .collect();
     let mut rng = Rng(seed);
     let mut at = vec![0; lanes];
     while (0..lanes).any(|l| at[l] < frames[l].len()) {
@@ -905,6 +988,15 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
     let mut ready = Vec::new();
     let committed = match &job.kill {
         Some(k) => {
+            // The engine has taken every frame written, those past the
+            // barriers it commits too.
+            tokio::time::timeout(wait, async {
+                while (0..lanes).any(|l| taken[l].load(Ordering::Relaxed) < written[l]) {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{name}: the engine took its frames for a minute"));
             while ready.len() < k.cut {
                 let r = tokio::time::timeout(wait, readies.recv())
                     .await
@@ -964,7 +1056,11 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
         fs.truncate(keep);
         outs[i] = fs;
     }
-    Ran { outs, ready }
+    Ran {
+        outs,
+        ready,
+        read_past: job.kill.is_some() && past_cut > 0,
+    }
 }
 
 /// A writer lane's frames, until it closes, or for a job that's killed, at
@@ -1390,18 +1486,17 @@ fn expect_killed(phases: &[Phase]) -> KilledExpected {
 
 /// Runs a killed case's jobs one after another, each restored from the
 /// record the one before left, below one directory. What they committed,
-/// how many jobs restored a record that names runs, and how many runs
-/// pruning deleted.
-async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, usize, usize) {
+/// and what they ran.
+async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let mut runs = Vec::new();
-    let (mut restored, mut epoch, mut from_runs, mut pruned) = (Vec::new(), 0, 0, 0);
+    let (mut restored, mut epoch, mut r) = (Vec::new(), 0, Restores::default());
     for (p, ph) in phases.iter().enumerate() {
         if ph.prune {
-            pruned += prune(&state, &restored);
+            r.pruned += prune(&state, &restored);
         }
-        from_runs += usize::from(restored.iter().any(|s: &StateSnapshot| !s.runs.is_empty()));
+        r.from_runs += usize::from(restored.iter().any(|s: &StateSnapshot| !s.runs.is_empty()));
         let job = Job {
             generation: p as u64 + 1,
             first_epoch: epoch + 1,
@@ -1411,13 +1506,26 @@ async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, usize, usi
             kill: ph.kill.clone(),
         };
         let ran = run_job(name, dir.path(), &ph.case, &job, seed + p as u64).await;
-        if let Some(r) = ran.ready.last() {
-            restored = r.snapshots.clone();
+        if let Some(last) = ran.ready.last() {
+            restored = last.snapshots.clone();
             epoch += ran.ready.len() as u64;
         }
+        r.read_past += usize::from(ran.read_past);
         runs.push(ran);
     }
-    (got(name, &runs), from_runs, pruned)
+    (got(name, &runs), r)
+}
+
+/// What a killed case's jobs ran.
+#[derive(Debug, Default)]
+struct Restores {
+    /// Jobs killed after their engine had read frames past the last
+    /// barrier they committed.
+    read_past: usize,
+    /// Jobs restored from a record that names runs.
+    from_runs: usize,
+    /// Runs that pruning deleted.
+    pruned: usize,
 }
 
 /// Deletes each file below `state` that `kept` doesn't name, as retention
@@ -1454,7 +1562,8 @@ struct KillTally {
     restores: usize,
     /// Kills of a job that had committed nothing.
     uncommitted: usize,
-    /// Kills of a job that had read on past the last barrier it committed.
+    /// Kills of a job whose engine had read frames past the last barrier
+    /// it committed.
     read_past: usize,
     /// Jobs on several lanes.
     several_lanes: usize,
@@ -1482,7 +1591,7 @@ async fn killed_and_restored_windows_are_the_models() {
         for seed in 0..50 {
             let name = format!("killed-{window:?}-{seed}");
             let e = expect_killed(&killed(seed * 104_723 + 5, window));
-            let (g, from_runs, pruned) = run_killed(&name, &e.phases, seed).await;
+            let (g, r) = run_killed(&name, &e.phases, seed).await;
             check_against(&name, &e.table, &e.late, &e.marks, &g);
             tally.cases += 1;
             tally.restores += e.phases.len() - 1;
@@ -1493,10 +1602,10 @@ async fn killed_and_restored_windows_are_the_models() {
                 };
                 tally.kills += 1;
                 tally.uncommitted += usize::from(k.cut == 0);
-                tally.read_past += usize::from(k.tails.iter().any(|n| *n > 0));
             }
-            tally.from_runs += from_runs;
-            tally.pruned += pruned;
+            tally.read_past += r.read_past;
+            tally.from_runs += r.from_runs;
+            tally.pruned += r.pruned;
             tally.windows += e.table.len();
             tally.late += e.late.len();
             tally.dropped += e.dropped;

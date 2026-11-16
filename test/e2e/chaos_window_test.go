@@ -37,6 +37,8 @@ const (
 	// The key of the records that close the windows. Its own windows
 	// never close.
 	windowEnd = "~end"
+	// How long a write of records may take.
+	windowProduce = 30 * time.Second
 )
 
 // A topic's window: tumble, hop or session, by its size, a hop's slide
@@ -136,7 +138,10 @@ func newWindowWork(t *testing.T, c chaosConfig, name string) *windowWork {
 		w.kinds = append(w.kinds, drawWindow(rng))
 		w.recs = append(w.recs, nil)
 	}
-	cl, err := kgo.NewClient(kgo.SeedBrokers(kafkaBrokers()), kgo.RecordPartitioner(kgo.ManualPartitioner()))
+	// A record that isn't delivered in time fails the run, rather than
+	// holding it past its writes.
+	cl, err := kgo.NewClient(kgo.SeedBrokers(kafkaBrokers()), kgo.RecordPartitioner(kgo.ManualPartitioner()),
+		kgo.RecordDeliveryTimeout(windowProduce))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +188,8 @@ func (w *windowWork) produce(ctx context.Context, rng *rand.Rand, n int) error {
 		recs = append(recs, &kgo.Record{Topic: w.topics[topic], Partition: r.partition, Key: []byte(r.key),
 			Value: []byte(`{"x": 1}`), Timestamp: at})
 	}
+	ctx, cancel := context.WithTimeout(ctx, windowProduce)
+	defer cancel()
 	if err := w.cl.ProduceSync(ctx, recs...).FirstErr(); err != nil {
 		return fmt.Errorf("produce: %w", err)
 	}
@@ -230,7 +237,10 @@ func (w *windowWork) write(ctx context.Context, rng *rand.Rand) error {
 			ends = append(ends, &kgo.Record{Topic: topic, Partition: p, Key: []byte(windowEnd), Value: []byte(`{"x": 1}`), Timestamp: w.at.Add(time.Hour)})
 		}
 	}
-	if err := w.cl.ProduceSync(context.Background(), ends...).FirstErr(); err != nil {
+	// ctx has ended: the closing records have a time of their own.
+	end, cancel := context.WithTimeout(context.Background(), windowProduce)
+	defer cancel()
+	if err := w.cl.ProduceSync(end, ends...).FirstErr(); err != nil {
 		return fmt.Errorf("produce the windows' ends: %w", err)
 	}
 	return nil
