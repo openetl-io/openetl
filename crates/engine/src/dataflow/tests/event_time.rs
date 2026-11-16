@@ -1506,6 +1506,13 @@ async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) 
             kill: ph.kill.clone(),
         };
         let ran = run_job(name, dir.path(), &ph.case, &job, seed + p as u64).await;
+        // The windows kept, as the records count them across kills and
+        // restores: never below 0, and none once the input ends.
+        for op in ran.ready.iter().flat_map(|e| &e.operators) {
+            r.windows += op.windows_opened as i64 - op.windows_dropped as i64;
+            r.opened += op.windows_opened as usize;
+            assert!(r.windows >= 0, "{name}: {} windows kept", r.windows);
+        }
         if let Some(last) = ran.ready.last() {
             restored = last.snapshots.clone();
             epoch += ran.ready.len() as u64;
@@ -1513,6 +1520,7 @@ async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) 
         r.read_past += usize::from(ran.read_past);
         runs.push(ran);
     }
+    assert_eq!(r.windows, 0, "{name}: windows kept at the end of input");
     (got(name, &runs), r)
 }
 
@@ -1526,6 +1534,10 @@ struct Restores {
     from_runs: usize,
     /// Runs that pruning deleted.
     pruned: usize,
+    /// The windows the committed epochs kept, opened less dropped, and
+    /// those they opened.
+    windows: i64,
+    opened: usize,
 }
 
 /// Deletes each file below `state` that `kept` doesn't name, as retention
@@ -1570,6 +1582,7 @@ struct KillTally {
     /// Jobs restored from a record that names runs.
     from_runs: usize,
     pruned: usize,
+    opened: usize,
     windows: usize,
     late: usize,
     dropped: usize,
@@ -1606,6 +1619,7 @@ async fn killed_and_restored_windows_are_the_models() {
             tally.read_past += r.read_past;
             tally.from_runs += r.from_runs;
             tally.pruned += r.pruned;
+            tally.opened += r.opened;
             tally.windows += e.table.len();
             tally.late += e.late.len();
             tally.dropped += e.dropped;
@@ -1625,6 +1639,9 @@ async fn killed_and_restored_windows_are_the_models() {
     // written by then.
     assert!(tally.pruned >= 10, "{tally:?}");
     assert!(tally.windows >= 2_000, "{tally:?}");
+    // Every window of the table was opened at least once by a committed
+    // epoch, so the count above checked something.
+    assert!(tally.opened >= tally.windows, "{tally:?}");
     assert!(tally.late >= 150, "{tally:?}");
     assert!(tally.updates >= 50, "{tally:?}");
 }

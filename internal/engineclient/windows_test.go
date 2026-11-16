@@ -191,7 +191,7 @@ func TestAGroupWindowClosesAsItsReadGoesOn(t *testing.T) {
 	drain := make(chan struct{})
 	var once, moved sync.Once
 	var mu sync.Mutex
-	var quarantined uint64
+	var quarantined, late, updates, rowsIn uint64
 	dir := t.TempDir()
 	j := runner.Job{
 		Pipeline: "windows", Owner: "a1", Sync: "s1", Continuous: true,
@@ -209,6 +209,12 @@ func TestAGroupWindowClosesAsItsReadGoesOn(t *testing.T) {
 			for _, q := range rec.Quarantine {
 				if q.Stream == "minutes" {
 					quarantined += q.Rows
+				}
+			}
+			for _, o := range rec.Operators {
+				late, updates, rowsIn = late+o.Late, updates+o.Updates, rowsIn+o.RowsIn
+				if o.Windows < 0 {
+					t.Errorf("epoch %d keeps %d windows", rec.Epoch, o.Windows)
 				}
 			}
 			mu.Unlock()
@@ -239,5 +245,9 @@ func TestAGroupWindowClosesAsItsReadGoesOn(t *testing.T) {
 	defer mu.Unlock()
 	if quarantined != 1 {
 		t.Errorf("%d rows quarantined, want the one at 5 seconds", quarantined)
+	}
+	// The records' operator numbers say the same.
+	if late != 1 || updates != 1 || rowsIn < 20 {
+		t.Errorf("the records' operator: %d late, %d updates, %d rows in; want 1, 1 and at least 20", late, updates, rowsIn)
 	}
 }

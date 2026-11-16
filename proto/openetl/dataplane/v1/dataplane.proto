@@ -226,6 +226,8 @@ message ReportCheckpointRequest {
   repeated CheckpointOutput outputs = 11;
   // The stateful operators whose state the checkpoint names, sorted.
   repeated string operators = 12;
+  // What each stateful operator did in the epoch, sorted by operator.
+  repeated openetl.api.v1.OperatorStats operator_stats = 13;
 }
 
 // One of a transform's outputs at a checkpoint.

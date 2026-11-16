@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
@@ -108,5 +109,38 @@ func TestCheckpointKeepsItsOperators(t *testing.T) {
 		if got == nil || !slices.Equal(got, ops) {
 			t.Errorf("epoch %d keeps %#v, want %v", i+1, got, ops)
 		}
+	}
+}
+
+// What each operator did in an epoch reads back with its checkpoint, and a
+// checkpoint without any has none.
+func TestCheckpointKeepsItsOperatorStats(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	at := timestamppb.Now()
+	stats := []*apiv1.OperatorStats{
+		{Operator: "window-a", RowsIn: 12, Inserts: 3, Updates: 1, LateRows: 2, Windows: 7, Watermark: at, MemoryBytes: 64, StoredBytes: 1 << 40,
+			BarrierRequests: &apiv1.StateRequests{Count: 2, Bytes: 900}, ReadRequests: &apiv1.StateRequests{Count: 5, Bytes: 4096}},
+		{Operator: "window-b", EndOfInput: true},
+	}
+	for i, s := range [][]*apiv1.OperatorStats{stats, nil} {
+		if _, err := e.runner.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
+			PipelineId: e.pipeline.String(), RunId: "run1", Generation: 1, Epoch: uint64(i + 1), CreateTime: timestamppb.Now(),
+			Streams: []*dataplanev1.CheckpointStream{{Name: "orders", Rows: 1}}, OperatorStats: s,
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cps, err := e.viewer.ListCheckpoints(ctx, connect.NewRequest(&apiv1.ListCheckpointsRequest{Parent: e.parent}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cps.Msg.GetCheckpoints()
+	if len(got) != 2 || got[0].GetEpoch() != 2 || len(got[0].GetOperators()) != 0 {
+		t.Fatalf("checkpoints %v", got)
+	}
+	ops := got[1].GetOperators()
+	if len(ops) != 2 || !proto.Equal(ops[0], stats[0]) || !proto.Equal(ops[1], stats[1]) {
+		t.Errorf("operators %v, want %v", ops, stats)
 	}
 }

@@ -13,8 +13,8 @@ import (
 )
 
 const insertMirroredCheckpoint = `-- name: InsertMirroredCheckpoint :execrows
-INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage, operators)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+INSERT INTO checkpoint_mirror (org_id, pipeline_id, epoch, generation, previous_epoch, previous_generation, run_id, commit_time, streams, progress, usage, operators, operator_stats)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT DO NOTHING
 `
 
@@ -31,6 +31,7 @@ type InsertMirroredCheckpointParams struct {
 	Progress           []byte
 	Usage              []byte
 	Operators          []string
+	OperatorStats      []byte
 }
 
 func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirroredCheckpointParams) (int64, error) {
@@ -47,6 +48,7 @@ func (q *Queries) InsertMirroredCheckpoint(ctx context.Context, arg InsertMirror
 		arg.Progress,
 		arg.Usage,
 		arg.Operators,
+		arg.OperatorStats,
 	)
 	if err != nil {
 		return 0, err
@@ -144,7 +146,7 @@ func (q *Queries) LatestMirroredStreams(ctx context.Context, arg LatestMirroredS
 
 const listCheckpoints = `-- name: ListCheckpoints :many
 SELECT c.epoch, c.generation, c.previous_epoch, c.previous_generation, c.commit_time, c.streams, c.usage,
-    s.id AS sync_id
+    c.operator_stats, s.id AS sync_id
 FROM checkpoint_mirror c
 LEFT JOIN syncs s ON s.org_id = c.org_id AND s.run_id = c.run_id AND s.pipeline_id = c.pipeline_id
 WHERE c.org_id = $1 AND c.pipeline_id = $2
@@ -169,6 +171,7 @@ type ListCheckpointsRow struct {
 	CommitTime         time.Time
 	Streams            []byte
 	Usage              []byte
+	OperatorStats      []byte
 	SyncID             *uuid.UUID
 }
 
@@ -197,6 +200,7 @@ func (q *Queries) ListCheckpoints(ctx context.Context, arg ListCheckpointsParams
 			&i.CommitTime,
 			&i.Streams,
 			&i.Usage,
+			&i.OperatorStats,
 			&i.SyncID,
 		); err != nil {
 			return nil, err

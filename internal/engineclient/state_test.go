@@ -166,19 +166,43 @@ func TestAGroupWindowSpansScheduledSyncs(t *testing.T) {
 	minute := time.Now().Truncate(time.Minute).Add(2 * time.Minute).UnixMicro()
 	job := spanJob(ctx, t, source.Incremental, time.Hour)
 	state, dest := "file://"+t.TempDir(), newKeyDest(2)
-	if _, err := runner.RunAttempt(ctx, job("a1", "s1", &spanSource{minute: minute, pause: 12, bounded: true}, state, dest)); err != nil {
+	// The operator's windows as each sync's last record counts them, and
+	// the rows each sync's records say it took in.
+	var mu sync.Mutex
+	var windows, rowsIn []int64
+	counted := func(j runner.Job) runner.Job {
+		windows, rowsIn = append(windows, -1), append(rowsIn, 0)
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
+			mu.Lock()
+			defer mu.Unlock()
+			for _, o := range rec.Operators {
+				windows[len(windows)-1] = o.Windows
+				rowsIn[len(rowsIn)-1] += int64(o.RowsIn)
+			}
+		}
+		return j
+	}
+	if _, err := runner.RunAttempt(ctx, counted(job("a1", "s1", &spanSource{minute: minute, pause: 12, bounded: true}, state, dest))); err != nil {
 		t.Fatal(err)
 	}
 	if got := minuteRows(dest); len(got) != 0 {
 		t.Fatalf("the minute closed in the first sync: %v", got)
 	}
 	// Two hours on, less the hour's delay, closes the minute.
-	if _, err := runner.RunAttempt(ctx, job("a2", "s2", &spanSource{minute: minute, pause: spanRows, closer: 2 * 3600, bounded: true}, state, dest)); err != nil {
+	if _, err := runner.RunAttempt(ctx, counted(job("a2", "s2", &spanSource{minute: minute, pause: spanRows, closer: 2 * 3600, bounded: true}, state, dest))); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{windowStart((minute-minutes)/1_000_000) + "/eu/" + strconv.Itoa(spanRows)}
 	if got := minuteRows(dest); !slices.Equal(got, want) {
 		t.Errorf("applied %v, want %v", got, want)
+	}
+	// The first sync keeps the eu minute open; the second closes it, and
+	// keeps the zz minute its closing row opened, counting on from the
+	// first's.
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(windows, []int64{1, 1}) || !slices.Equal(rowsIn, []int64{12, spanRows - 12 + 1}) {
+		t.Errorf("windows %v and rows in %v by sync, want [1 1] and [12 %d]", windows, rowsIn, spanRows-12+1)
 	}
 }
 

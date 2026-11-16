@@ -3364,6 +3364,13 @@ components:
                     allOf:
                         - $ref: '#/components/schemas/Usage'
                     description: What the attempt that committed it had used by then.
+                operators:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/OperatorStats'
+                    description: |-
+                        What each of a SQL transform's stateful operators did in the epoch,
+                         and held at its barrier, on every worker.
             description: |-
                 Checkpoint is a record of the pipeline's checkpoint log: an epoch a sync
                  committed.
@@ -4973,6 +4980,62 @@ components:
                  keeps, so an edit that changes neither, such as a rename, a new column
                  passed through or a filter after its aggregates, leaves it and its state
                  as they were.
+        OperatorStats:
+            type: object
+            properties:
+                operator:
+                    type: string
+                    description: Its ID, as TransformPlan.operators has it.
+                rowsIn:
+                    type: string
+                    description: Rows of its stream that reached it.
+                inserts:
+                    type: string
+                    description: |-
+                        Its output's rows it wrote, by op; rows the output quarantined aren't
+                         counted.
+                updates:
+                    type: string
+                deletes:
+                    type: string
+                lateRows:
+                    type: string
+                    description: 'Rows it quarantined as late: past their windows'' allowed lateness.'
+                windows:
+                    type: string
+                    description: |-
+                        The windows, or sessions, whose state it keeps: open, or closed and
+                         kept for their lateness.
+                watermark:
+                    type: string
+                    description: |-
+                        Its watermark: the least of its lanes'. Unset while a lane has none, at
+                         the end of input, and outside the years 1 to 9999, which a Timestamp
+                         holds.
+                    format: date-time
+                endOfInput:
+                    type: boolean
+                    description: Its input has ended, and every window closed.
+                memoryBytes:
+                    type: string
+                    description: What its state held in memory, its block caches included.
+                storedBytes:
+                    type: string
+                    description: The bytes on object storage of the state that the checkpoint names.
+                barrierRequests:
+                    allOf:
+                        - $ref: '#/components/schemas/StateRequests'
+                    description: |-
+                        Its requests to object storage in the epoch: writing its state at the
+                         barrier, reading it, and opening what a checkpoint names. A read made
+                         near a barrier can count in the epoch next to it; each counts once.
+                readRequests:
+                    $ref: '#/components/schemas/StateRequests'
+                restoreRequests:
+                    $ref: '#/components/schemas/StateRequests'
+            description: |-
+                OperatorStats is what a stateful operator of a SQL transform did in an
+                 epoch, on every lane of every worker, and held at the epoch's barrier.
         Partitioning:
             type: object
             properties:
@@ -6244,6 +6307,16 @@ components:
                  the source's streams and write outputs, which are the destination's
                  streams. A stream no statement writes passes through, unless passthrough
                  is none.
+        StateRequests:
+            type: object
+            properties:
+                count:
+                    type: string
+                bytes:
+                    type: string
+            description: |-
+                StateRequests are requests of one kind to object storage, and their
+                 bytes.
         StatementPlan:
             type: object
             properties:
