@@ -233,17 +233,23 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			// hold, released or not, which the replay clears once every cell
 			// fits. A discarded cell hold is gone by now, and isn't read.
 			var from checkpoint.RecordRef
-			starts := make(map[string]checkpoint.RecordRef, len(released))
+			// Where each column's hold held whole starts, and its cell hold;
+			// absent for one the replay doesn't end.
+			whole, cellHolds := map[string]checkpoint.RecordRef{}, map[string]checkpoint.RecordRef{}
 			for i, col := range released {
-				at := h.Cells[col].Since
+				var starts []checkpoint.RecordRef
 				if k := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == col }); k >= 0 {
-					if _, ok := h.Cells[col]; !ok || before(taken[k].Since, at) {
-						at = taken[k].Since
-					}
+					whole[col] = taken[k].Since
+					starts = append(starts, taken[k].Since)
 				}
-				starts[col] = at
-				if i == 0 || before(at, from) {
-					from = at
+				if c, ok := h.Cells[col]; ok {
+					cellHolds[col] = c.Since
+					starts = append(starts, c.Since)
+				}
+				for k, at := range starts {
+					if i == 0 && k == 0 || before(at, from) {
+						from = at
+					}
 				}
 			}
 			files, err := j.Log.HeldFiles(ctx, s.Name, heldFrom(h.Epochs, from))
@@ -251,24 +257,33 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				return nil, nil, err
 			}
 			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
-			// A column whose holds started after from isn't read from the
-			// files before them, which may hold values of an earlier hold of
-			// it: patched in since, or discarded.
-			for col, at := range starts {
-				first := slices.IndexFunc(files, func(rel string) bool {
-					ref, ok := checkpoint.HeldFileRef(rel)
-					return !ok || !before(ref, at)
-				})
-				if first < 0 {
-					first = len(files)
-				}
-				if first > 0 {
-					if h.Replay.First == nil {
-						h.Replay.First = map[string]int{}
+			// A column isn't read from the files before its hold of a kind
+			// started, or from any for a kind it holds nothing of: those
+			// may hold values of an earlier hold of it, patched in since, or
+			// discarded.
+			first := func(starts map[string]checkpoint.RecordRef) map[string]int {
+				var out map[string]int
+				for _, col := range released {
+					n := len(files)
+					if at, ok := starts[col]; ok {
+						n = slices.IndexFunc(files, func(rel string) bool {
+							ref, ok := checkpoint.HeldFileRef(rel)
+							return !ok || !before(ref, at)
+						})
+						if n < 0 {
+							n = len(files)
+						}
 					}
-					h.Replay.First[col] = first
+					if n > 0 {
+						if out == nil {
+							out = map[string]int{}
+						}
+						out[col] = n
+					}
 				}
+				return out
 			}
+			h.Replay.First, h.Replay.FirstCells = first(whole), first(cellHolds)
 			if len(cells) > 0 {
 				h.Replay.CellReleases = cells
 			}
@@ -411,7 +426,8 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 	if h.Replay != nil {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
-		r.Versioned, r.CellReleases, r.First = slices.Clone(r.Versioned), maps.Clone(r.CellReleases), maps.Clone(r.First)
+		r.Versioned, r.CellReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases)
+		r.First, r.FirstCells = maps.Clone(r.First), maps.Clone(r.FirstCells)
 		out.Replay = &r
 	}
 	return out

@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use arrow_array::RecordBatch;
 use object_store::ObjectStoreExt;
 use object_store::path::Path;
+use openetl_normalize::hold::{CELL, HOLD_KIND_KEY};
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_proto::engine::v1::ReplayProgress;
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
@@ -31,9 +32,19 @@ impl Replayer {
         })
     }
 
-    /// The released columns that are read from held file `file`.
-    pub fn columns(&self, file: usize) -> HashSet<String> {
-        let read = |c: &&String| self.plan.first.get(*c).is_none_or(|first| *first <= file);
+    /// The released columns that `held`, a batch of held file `file`, is
+    /// read for: a batch holds cells, or columns whole.
+    pub fn columns(&self, file: usize, held: &RecordBatch) -> HashSet<String> {
+        let cells = held.schema().fields().iter().any(|f| {
+            f.metadata()
+                .get(HOLD_KIND_KEY)
+                .is_some_and(|k| k.as_str() == CELL)
+        });
+        let first = match cells {
+            true => &self.plan.first_cells,
+            false => &self.plan.first,
+        };
+        let read = |c: &&String| first.get(*c).is_none_or(|first| *first <= file);
         self.plan.columns.iter().filter(read).cloned().collect()
     }
 
@@ -135,6 +146,12 @@ async fn fetch(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use arrow_schema::{DataType, Field, Schema};
+    use openetl_normalize::hold::COLUMN;
+
     use super::*;
 
     fn replayer(dir: &std::path::Path) -> Replayer {
@@ -151,13 +168,26 @@ mod tests {
         let plan = ReplayPlan {
             files: vec!["1/1/s/part-00000.parquet".into(); 3],
             columns: HashSet::from(["a".to_owned(), "b".to_owned()]),
-            first: std::collections::HashMap::from([("a".to_owned(), 2)]),
+            first: HashMap::from([("a".to_owned(), 2)]),
+            first_cells: HashMap::from([("b".to_owned(), 3)]),
             ..ReplayPlan::default()
+        };
+        let held = |kind: &str| {
+            let f = Field::new("a", DataType::Utf8, true)
+                .with_metadata(HashMap::from([(HOLD_KIND_KEY.to_owned(), kind.to_owned())]));
+            RecordBatch::new_empty(Arc::new(Schema::new(vec![f])))
+        };
+        let names = |c: HashSet<String>| {
+            let mut c: Vec<String> = c.into_iter().collect();
+            c.sort();
+            c
         };
         let dir = tempfile::tempdir().unwrap();
         let r = Replayer::open(&format!("file://{}", dir.path().display()), plan).unwrap();
-        assert_eq!(r.columns(1), HashSet::from(["b".to_owned()]));
-        assert_eq!(r.columns(2).len(), 2);
+        assert_eq!(names(r.columns(1, &held(COLUMN))), ["b"]);
+        assert_eq!(names(r.columns(2, &held(COLUMN))), ["a", "b"]);
+        assert_eq!(names(r.columns(2, &held(CELL))), ["a"]);
+        assert_eq!(names(r.columns(3, &held(CELL))), ["a", "b"]);
     }
 
     #[tokio::test]

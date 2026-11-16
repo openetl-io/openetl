@@ -2021,7 +2021,7 @@ async fn replay(lane: &Lane, ls: &mut LaneStream) -> Result<(), JobError> {
     for (file, b) in r.chunk().await? {
         let (patch, still) = ls
             .shaper
-            .patch(&b, &r.columns(file))
+            .patch(&b, &r.columns(file, &b))
             .map_err(|e| JobError::internal(format!("patches: {e}")))?;
         r.still_held(still);
         if let Some(p) = patch {

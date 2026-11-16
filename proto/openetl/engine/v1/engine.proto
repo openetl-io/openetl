@@ -400,10 +400,12 @@ message Replay {
   // start, and from now on. The column keeps the type the destination has.
   // Once the stream's schema has that version, it is the one.
   repeated ColumnHold versioned = 5;
-  // By column, the index in files of the first file its values are read
-  // from. A column's values in the files before belong to a hold of it that
-  // has ended, and are skipped. A column without one is read from the first.
+  // By column, the index in files of the first file its values held whole
+  // are read from, and the first its held cells are. What the files before
+  // hold of it belongs to a hold of that kind that has ended, and is
+  // skipped. A column without one is read from the first file.
   map<string, uint32> first = 6;
+  map<string, uint32> first_cells = 7;
 }
 
 message ReplayProgress {

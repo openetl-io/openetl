@@ -215,13 +215,14 @@ type HeldEpochs struct {
 type Replay struct {
 	Columns []string `json:"columns"`
 	Files   []string `json:"files"`
-	// By column, the index in Files of the first file its values are read
-	// from: the files before are of holds that started earlier, and what
-	// they hold of the column is of a hold of it that has ended. A column
-	// without one is read from the first.
-	First map[string]int `json:"first,omitempty"`
-	File  int            `json:"file,omitempty"`
-	Row   uint64         `json:"row,omitempty"`
+	// By column, the index in Files of the first file its values held
+	// whole are read from, and the first its held cells are: what the files
+	// before hold of it is of a hold of that kind that has ended. A column
+	// without one is read from the first file.
+	First      map[string]int `json:"first,omitempty"`
+	FirstCells map[string]int `json:"first_cells,omitempty"`
+	File       int            `json:"file,omitempty"`
+	Row        uint64         `json:"row,omitempty"`
 	// Cells read that still don't fit, which stay held.
 	StillHeld uint64 `json:"still_held,omitempty"`
 	// The released columns' cells held since the replay began, which aren't
