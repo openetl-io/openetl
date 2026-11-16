@@ -730,6 +730,20 @@ func drains(j *runner.Job) {
 	j.Drain, j.OnCommit = ch, func(uint64) { once.Do(func() { close(ch) }) }
 }
 
+// drainsHolding drains j once a commit leaves s holding n rows.
+func drainsHolding(j *runner.Job, s *laneStore, n int) {
+	ch := make(chan struct{})
+	var once sync.Once
+	j.Drain, j.OnCommit = ch, func(uint64) {
+		s.mu.Lock()
+		held := len(s.rows)
+		s.mu.Unlock()
+		if held >= n {
+			once.Do(func() { close(ch) })
+		}
+	}
+}
+
 // Attempts on one runner, three workers and one restore from each other's
 // records, whatever the layout that wrote them. Each but the last keeps its
 // read open, so it ends only by draining.
@@ -1061,7 +1075,7 @@ func TestStreamsReadWithCDCShareOneWorker(t *testing.T) {
 		}
 	}
 	j := p.workers("a1", 2)
-	drains(&j)
+	drainsHolding(&j, p.store, 40)
 	if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
 		t.Fatalf("the attempt: %v", err)
 	}
