@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/platform/errs"
@@ -163,6 +164,48 @@ func printableLines(s string) string {
 		lines[i] = strings.TrimRight(printable(l), " ")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// printableCopy is a copy of m whose strings, at any depth, are printable.
+// A map's keys are left as they are.
+func printableCopy[M proto.Message](m M) M {
+	c := proto.CloneOf(m)
+	makePrintable(c.ProtoReflect())
+	return c
+}
+
+func makePrintable(m protoreflect.Message) {
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		switch {
+		case fd.IsList():
+			l := v.List()
+			for i := range l.Len() {
+				l.Set(i, printableValue(fd, l.Get(i)))
+			}
+		case fd.IsMap():
+			v.Map().Range(func(k protoreflect.MapKey, e protoreflect.Value) bool {
+				v.Map().Set(k, printableValue(fd.MapValue(), e))
+				return true
+			})
+		case fd.Kind() == protoreflect.StringKind:
+			m.Set(fd, printableValue(fd, v))
+		default:
+			printableValue(fd, v)
+		}
+		return true
+	})
+}
+
+// printableValue is v made printable if it's a string. A message is made
+// printable in place.
+func printableValue(fd protoreflect.FieldDescriptor, v protoreflect.Value) protoreflect.Value {
+	switch fd.Kind() {
+	case protoreflect.StringKind:
+		return protoreflect.ValueOfString(printable(v.String()))
+	case protoreflect.MessageKind, protoreflect.GroupKind:
+		makePrintable(v.Message())
+	}
+	return v
 }
 
 // bidi reports whether r is a bidirectional control: the Arabic letter

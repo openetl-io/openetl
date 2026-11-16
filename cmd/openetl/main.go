@@ -329,9 +329,9 @@ func printWarnings(out io.Writer, res *apiv1.ApplyResponse) {
 	changed := changedPipelines(res)
 	for _, p := range res.GetPlans() {
 		if changed[p.GetPipeline()] && len(p.GetWarnings()) > 0 {
-			fmt.Fprintf(out, "\nwarnings for %s:\n", p.GetPipeline())
+			fmt.Fprintf(out, "\nwarnings for %s:\n", printable(p.GetPipeline()))
 			for _, w := range p.GetWarnings() {
-				fmt.Fprintf(out, "  %s\n", warningText(w))
+				fmt.Fprintf(out, "  %s\n", printable(warningText(w)))
 			}
 		}
 	}
@@ -399,7 +399,10 @@ func printPlans(out io.Writer, res *apiv1.ApplyResponse) error {
 	return nil
 }
 
+// printPlan prints a pipeline's plan, its text made printable: a
+// connector's discover names the streams and columns in it.
 func printPlan(out io.Writer, p *apiv1.PipelinePlan) {
+	p = printableCopy(p)
 	fmt.Fprintf(out, "\n%s (%s)\n", p.GetPipeline(), versionText(p.GetVersion()))
 	if len(p.GetChanges()) > 0 {
 		fmt.Fprintln(out, "  changes:")

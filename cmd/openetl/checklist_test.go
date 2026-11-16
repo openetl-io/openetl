@@ -315,6 +315,18 @@ func TestNothingDrivesTheTerminal(t *testing.T) {
 	f := &fakeChecks{destination: &apiv1.CheckResult{Code: evil, Message: evil, Version: evil, Items: []*apiv1.CheckItem{item("failed"), item("warning"), item("passed"), item("skipped")}}}
 	f.preflight = preflight(evil, evil, item("failed"))
 	f.preflight.Parts[partDestinationPreflight].Skipped = evil
+	// The plan after the preflight's parts, with what a connector's discover
+	// names.
+	f.plan = &apiv1.PipelinePlan{
+		Pipeline: "workspaces/default/pipelines/shop-to-lake", Version: f.preflight.GetVersion(),
+		Changes: []*apiv1.PlanChange{{Field: evil, Before: evil, After: evil}},
+		Streams: []*apiv1.StreamPlan{{Name: evil, Table: evil, Reason: evil,
+			Partitioning: &apiv1.Partitioning{Kind: apiv1.PartitioningKind_PARTITIONING_KIND_SPLITS, Columns: []string{evil}},
+			Operators:    []*apiv1.PlanOperator{{Needs: []string{evil}}}}},
+		Transform: &apiv1.TransformPlan{PassedThrough: []string{evil}, Statements: []*apiv1.StatementPlan{{
+			Output: evil, Inputs: []string{evil}, Columns: []*apiv1.SchemaColumn{{Name: evil, Type: evil}}}}},
+		Problems: []string{evil}, Notes: []string{evil}, Warnings: []*apiv1.PlanWarning{{Stream: evil, Message: evil}},
+	}
 	url := checksServer(t, f)
 	for _, args := range [][]string{
 		{"check", "--api-url", url, "destination", "lake"},
@@ -333,9 +345,24 @@ func TestNothingDrivesTheTerminal(t *testing.T) {
 		}
 	}
 
+	// The plan's text: none of it drives the terminal, and none of it starts
+	// a line.
+	for _, args := range [][]string{
+		{"preflight", "--api-url", url, "shop-to-lake"},
+		{"plan", "--api-url", url, "-f", documentFile(t)},
+	} {
+		f.applied = createdPipeline()
+		f.applied.Plans = []*apiv1.PipelinePlan{f.plan}
+		out, _, _ := runCLI(t, args...)
+		if bad := unprintable(out); len(bad) > 0 || !strings.Contains(out, "\n  problems:\n    pub]0;pwned[2K PASS  schema.usage  Use schema ok lic ") || strings.Contains(out, "\nlic") {
+			t.Errorf("%s's plan printed %q in\n%q", args[0], bad, out)
+		}
+	}
+
 	f.applied = createdPipeline()
+	f.applied.Plans = []*apiv1.PipelinePlan{f.plan}
 	out, _, err := runCLI(t, "apply", "--api-url", url, "-f", documentFile(t))
-	if bad := unprintable(out); err != nil || len(bad) > 0 {
+	if bad := unprintable(out); err != nil || len(bad) > 0 || !strings.Contains(out, "\nwarnings for workspaces/default/pipelines/shop-to-lake:\n") {
 		t.Errorf("apply printed %q: %v\n%q", bad, err, out)
 	}
 
