@@ -898,6 +898,10 @@ func TestOverlappingReportsKeepAPlacementBeingMade(t *testing.T) {
 	case err := <-older:
 		t.Fatalf("the older report ended before its list: %v", err)
 	}
+	// Cleanups run last first, so this runs before the worker's stop, which
+	// the paused list would hold up if a wait below fails.
+	releaseOlder := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseOlder)
 	open.Do(func() { close(gate) })
 	eventually(t, "the pods made", func() bool { _, done := makingNow(); return done })
 
@@ -916,7 +920,7 @@ func TestOverlappingReportsKeepAPlacementBeingMade(t *testing.T) {
 	if sent {
 		newerErr = <-newer
 	}
-	close(release)
+	releaseOlder()
 	if err := <-older; err != nil {
 		t.Fatal(err)
 	}
