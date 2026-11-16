@@ -3,7 +3,9 @@
 package pkgcatalog_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,9 +21,9 @@ import (
 	"github.com/openetl-io/openetl/internal/store/storetest"
 )
 
-// A listing that runs out of time replaces the source's last error, though
-// the time that ended it has ended Refresh's context too; one its caller gave
-// up on leaves it alone.
+// A listing that runs out of time replaces the source's last error and logs
+// it, though the time that ended it has ended Refresh's context too; one its
+// caller gave up on leaves it alone, and logs nothing.
 func TestRefreshSavesAFailureAfterItsDeadline(t *testing.T) {
 	ctx := t.Context()
 	hung := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
@@ -41,7 +43,9 @@ func TestRefreshSavesAFailureAfterItsDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &pkgcatalog.Catalog{Queries: st.Queries, Org: tenant.Org, HTTP: hung.Client(), PlainHTTP: []string{strings.TrimPrefix(hung.URL, "http://")}}
+	var logged bytes.Buffer
+	c := &pkgcatalog.Catalog{Queries: st.Queries, Org: tenant.Org, HTTP: hung.Client(), PlainHTTP: []string{strings.TrimPrefix(hung.URL, "http://")},
+		Logger: slog.New(slog.NewTextHandler(&logged, nil))}
 	lastError := func() string {
 		sources, err := st.ListConnectorSources(ctx, tenant.Org)
 		if err != nil || len(sources) != 1 {
@@ -59,6 +63,9 @@ func TestRefreshSavesAFailureAfterItsDeadline(t *testing.T) {
 	if e := lastError(); e != "" {
 		t.Errorf("a listing its caller gave up on saved %q", e)
 	}
+	if logged.Len() > 0 {
+		t.Errorf("a listing its caller gave up on logged %q", logged.String())
+	}
 
 	limited, stop := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer stop()
@@ -67,5 +74,8 @@ func TestRefreshSavesAFailureAfterItsDeadline(t *testing.T) {
 	}
 	if e := lastError(); !strings.Contains(e, context.DeadlineExceeded.Error()) {
 		t.Errorf("after the deadline the error is %q", e)
+	}
+	if !strings.Contains(logged.String(), "connector source failed to list") {
+		t.Errorf("after the deadline the log is %q", logged.String())
 	}
 }

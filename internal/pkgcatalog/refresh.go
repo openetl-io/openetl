@@ -45,7 +45,6 @@ func (c *Catalog) Refresh(ctx context.Context) ([]Listed, error) {
 		l := Listed{Source: s.Name, Packages: n}
 		if err != nil {
 			l.Error = err.Error()
-			c.log().Warn("connector source failed to list", "source", s.Name, "url", s.Url, "err", err)
 			if ferr := c.recordFailure(ctx, s.Name, s.Url, l.Error); ferr != nil {
 				return out, ferr
 			}
@@ -57,13 +56,15 @@ func (c *Catalog) Refresh(ctx context.Context) ([]Listed, error) {
 	return out, nil
 }
 
-// recordFailure saves why a source failed to list. A listing that ran out of
-// time ended ctx too, so this has a context of its own. One its caller gave
-// up on says nothing about the source, and isn't saved.
+// recordFailure logs and saves why a source failed to list. A listing that
+// ran out of time ended ctx too, so this has a context of its own. One its
+// caller gave up on says nothing about the source, and is neither logged nor
+// saved.
 func (c *Catalog) recordFailure(ctx context.Context, source, url, reason string) error {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return nil
 	}
+	c.log().Warn("connector source failed to list", "source", source, "url", url, "err", reason)
 	save, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	return c.Queries.SourceFailed(save, db.SourceFailedParams{OrgID: c.Org, Name: source, Url: url, Error: truncate(reason, 2000)})
