@@ -52,6 +52,7 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"merge-drops-tombstones", "restore", "a merge of the newest values sections drops deletions, though older sections it didn't take hold what they delete"},
 	{"drop-by-first", "restore", "a set's or timers' section is dropped once the horizon has passed its earliest entry, not its latest"},
 	{"drop-tombstones", "restore", "a values section of deletions is dropped though an older section holds what they delete"},
+	{"restore-keeps-passed", "restore", "a restore takes the set's IDs and the timers at or below the record's horizon, which the sections it names may hold though they're gone"},
 	{"pending-epoch-only", "restore", "the record carries the lane's changes of the epoch, not all of them since its last run"},
 	{"pending-to-memory-only", "restore", "a restore reads the record's pending set into memory, and not into its lane's pending set"},
 	{"lazy-stale-handles", "restore", "a lazy lane reads key groups from the sections it restored, not those it names now"},

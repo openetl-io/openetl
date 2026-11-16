@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/test/e2e/procs"
 )
 
 // chaosPool keeps a runner going in each slot. Each slot reaches the API
@@ -43,6 +44,23 @@ type chaosPool struct {
 	slots []*slot
 	book  *faultBook
 	wg    sync.WaitGroup
+	mu    sync.Mutex
+	// The one pipeline a run's own pool runs, once it's applied; empty for
+	// a pool runs share.
+	only string
+}
+
+// dedicate notes that the pool runs pipeline and no other.
+func (p *chaosPool) dedicate(pipeline string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.only = pipeline
+}
+
+func (p *chaosPool) dedicated() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.only
 }
 
 type poolConfig struct {
@@ -436,26 +454,18 @@ func (s *slot) engine(pipeline string) int {
 	return pid
 }
 
-// children are the PIDs of the child processes, whose names start with prefix,
-// of what runs the pipeline: the slot's runner, or a launcher's pod.
-func (s *slot) children(pipeline, prefix string) []int {
-	parent := 0
+// children are the PIDs of the pipeline's connectors whose names start
+// with prefix: a launcher's pod's children, or the runner's in a pool the
+// pipeline has to itself. A runner other pipelines may share has none, as
+// its connectors can't be told apart.
+func (s *slot) children(ctx context.Context, pipeline, prefix string) []int {
+	h := procs.Host{Pod: s.launcher, Only: s.pool.dedicated()}
 	if s.launcher {
-		parent = s.pod(pipeline)
+		h.PID = s.pod(pipeline)
 	} else if r := s.runner(); r != nil {
-		parent = r.cmd.Process.Pid
+		h.PID = r.cmd.Process.Pid
 	}
-	if parent == 0 {
-		return nil
-	}
-	out, _ := exec.Command("pgrep", "-P", strconv.Itoa(parent), "^"+prefix).Output()
-	var pids []int
-	for _, f := range strings.Fields(string(out)) {
-		if pid, err := strconv.Atoi(f); err == nil {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
+	return procs.Children(ctx, procs.Owner(h, pipeline), prefix)
 }
 
 // partition cuts the slot off from the API for d.

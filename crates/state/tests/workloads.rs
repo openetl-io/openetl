@@ -10,7 +10,9 @@
 //! `_EVENTS` (an epoch's), `_KEYS` (the windows' key space), `_LATENCY_MS`
 //! (added to each request), `_CACHE_MB` (the block cache, for all lanes),
 //! `_RETENTION` (the dedupe's, in epochs) and `_RESCALE` (lanes to restore
-//! onto, as `3,8`) change its size.
+//! onto, as `3,8`) change its size. `_DROP=0` names every section, and
+//! the windows don't move their horizon, as before dead sections were
+//! dropped.
 //!
 //! The columns: the epoch's time and its slowest barrier's; runs written
 //! and their KiB; reads of blocks, reads opening runs, and the KiB of both;
@@ -18,8 +20,8 @@
 //! that read one that didn't (false positives), and that the cache
 //! answered; probes the filters ruled out; the KiB of changes; write
 //! amplification, written over changed; the lanes' indexes and filters,
-//! and the cache, in MB; windows' accumulators and rows emitted; and the
-//! dedupe's repeats.
+//! and the cache, in MB; windows' accumulators and rows emitted; the
+//! dedupe's repeats; and the sections the lanes' snapshots name.
 
 #![allow(clippy::unwrap_used)]
 
@@ -55,6 +57,7 @@ struct Args {
     cache_bytes: usize,
     retention: i64,
     rescale: Vec<u32>,
+    drop: bool,
 }
 
 fn env(name: &str, default: u64) -> u64 {
@@ -74,6 +77,7 @@ fn args() -> Args {
         latency: Duration::from_millis(env("LATENCY_MS", 20)),
         cache_bytes: (env("CACHE_MB", 64) as usize) << 20,
         retention: env("RETENTION", 32) as i64,
+        drop: env("DROP", 1) != 0,
         rescale: rescale.split(',').filter_map(|s| s.parse().ok()).collect(),
     }
 }
@@ -229,9 +233,25 @@ struct LaneOut {
     barrier: Duration,
     emitted: u64,
     repeats: u64,
+    /// Sections the lane's snapshot names.
+    named: usize,
 }
 
-async fn window_epoch(l: &mut Layer, events: Vec<Event>, epoch: u64, rows: bool) -> LaneOut {
+fn named(snapshots: &[Snapshot]) -> usize {
+    snapshots
+        .iter()
+        .flat_map(|s| openetl_state::runs::runs(s).unwrap())
+        .map(|r| r.sections.len())
+        .sum()
+}
+
+async fn window_epoch(
+    l: &mut Layer,
+    events: Vec<Event>,
+    epoch: u64,
+    rows: bool,
+    drop: bool,
+) -> LaneOut {
     let mut out = LaneOut::default();
     for chunk in events.chunks(BATCH) {
         let keys: Vec<Bytes> = chunk.iter().map(window_key).collect();
@@ -274,8 +294,11 @@ async fn window_epoch(l: &mut Layer, events: Vec<Event>, epoch: u64, rows: bool)
         let taken = l.take_rows(OP, watermark, usize::MAX).await.unwrap();
         out.emitted += taken.len() as u64;
     }
+    if drop {
+        l.expire(OP, watermark);
+    }
     let t = Instant::now();
-    l.barrier(epoch).await.unwrap();
+    out.named = named(&l.barrier(epoch).await.unwrap());
     out.barrier = t.elapsed();
     out
 }
@@ -292,7 +315,7 @@ async fn dedupe_epoch(l: &mut Layer, ids: Vec<Event>, epoch: u64, retention: i64
     let watermark = (epoch as i64 + 1) * EPOCH - DELAY;
     l.expire(OP, watermark);
     let t = Instant::now();
-    l.barrier(epoch).await.unwrap();
+    out.named = named(&l.barrier(epoch).await.unwrap());
     out.barrier = t.elapsed();
     out
 }
@@ -312,6 +335,7 @@ impl Run {
         };
         let config = RunConfig {
             cache_bytes: self.args.cache_bytes,
+            drop: self.args.drop,
             ..Default::default()
         };
         RunStores::new(Arc::new(slow), config)
@@ -339,10 +363,11 @@ impl Run {
         let mut tasks = Vec::new();
         for (mut l, evs) in lanes.into_iter().zip(per) {
             let (workload, retention) = (self.workload, self.args.retention * EPOCH);
+            let drop = self.args.drop;
             tasks.push(tokio::spawn(async move {
                 let out = match workload {
                     Workload::Dedupe => dedupe_epoch(&mut l, evs, epoch, retention).await,
-                    Workload::Window { rows } => window_epoch(&mut l, evs, epoch, rows).await,
+                    Workload::Window { rows } => window_epoch(&mut l, evs, epoch, rows, drop).await,
                 };
                 (l, out)
             }));
@@ -360,8 +385,9 @@ impl Run {
         let memory: usize = lanes.iter().map(|l| l.memory().store).sum();
         let emitted: u64 = outs.iter().map(|o| o.emitted).sum();
         let repeats: u64 = outs.iter().map(|o| o.repeats).sum();
+        let named: usize = outs.iter().map(|o| o.named).sum();
         println!(
-            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>7.0} {:>6} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7}",
+            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>7.0} {:>6} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7} {:>5}",
             ms(wall),
             ms(barrier),
             c.barrier.count,
@@ -379,6 +405,7 @@ impl Run {
             mib(stores.cache_bytes() as u64),
             emitted,
             repeats,
+            named,
         );
         (lanes, c)
     }
@@ -405,7 +432,7 @@ fn amplification(c: &Counts) -> f64 {
 
 fn header() {
     println!(
-        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>7} {:>6} {:>4} {:>8} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7}",
+        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>7} {:>6} {:>4} {:>8} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5}",
         "",
         "ep",
         "wall ms",
@@ -424,7 +451,8 @@ fn header() {
         "mem MB",
         "cch MB",
         "emitted",
-        "repeats"
+        "repeats",
+        "named"
     );
 }
 

@@ -1,6 +1,7 @@
 //! The group-window operator on state's layers: what windows give and
-//! when, lateness, sessions merging, and that the final rows don't depend
-//! on how rows arrive, how barriers fall, or how many lanes restore them.
+//! when, lateness, sessions merging, that the final rows don't depend on
+//! how rows arrive, how barriers fall, or how many lanes restore them, and
+//! that what its snapshots name stays bounded as windows close.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -10,7 +11,10 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, TimestampMicro
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use openetl_normalize::key_groups;
 use openetl_sql::{Catalog, Operator as Planned, Stream};
-use openetl_state::{KeyGroupRange, Layer, MemoryBucket, Snapshot};
+use openetl_state::runs::{Counts, runs};
+use openetl_state::{
+    KeyGroupRange, Layer, MemoryBucket, ObjectStorage, RunConfig, RunStores, Snapshot, Stores,
+};
 
 use super::Operator;
 
@@ -91,8 +95,12 @@ fn ranges(lanes: u32) -> Vec<KeyGroupRange> {
 struct Table(BTreeMap<String, String>);
 
 impl Table {
-    fn apply(&mut self, out: &super::Out, key: &[&str]) {
-        let Some(t) = &out.rows else { return };
+    /// Applies what `out` gave, and gives the keys of its rows.
+    fn apply(&mut self, out: &super::Out, key: &[&str]) -> Vec<String> {
+        let mut written = Vec::new();
+        let Some(t) = &out.rows else {
+            return written;
+        };
         let b = &t.batch;
         let ops: Vec<&str> = t
             .control
@@ -123,7 +131,9 @@ impl Table {
                     self.0.insert(k.join("|"), all.join(" "));
                 }
             }
+            written.push(k.join("|"));
         }
+        written
     }
 }
 
@@ -135,13 +145,15 @@ struct Run {
     table: Table,
     rejected: usize,
     key: Vec<&'static str>,
+    /// How many rows the output was given of each key.
+    writes: BTreeMap<String, usize>,
 }
 
 impl Run {
     async fn new(
         sql: &str,
         lateness: i64,
-        bucket: &MemoryBucket,
+        bucket: &dyn Stores,
         generation: u64,
         epoch: u64,
         lanes: u32,
@@ -168,6 +180,13 @@ impl Run {
             table: Table::default(),
             rejected: 0,
             key: vec!["window_start", "region"],
+            writes: BTreeMap::new(),
+        }
+    }
+
+    fn give(&mut self, out: &super::Out) {
+        for k in self.table.apply(out, &self.key) {
+            *self.writes.entry(k).or_default() += 1;
         }
     }
 
@@ -175,11 +194,12 @@ impl Run {
         let all = batch(&self.ops[0], rows);
         let need = self.ops[0].plan.need.clone();
         let groups = key_groups(&all, &need, GROUPS).unwrap();
-        for (i, l) in self.layers.iter_mut().enumerate() {
+        for i in 0..self.layers.len() {
+            let range = self.layers[i].range();
             let mine: Vec<u32> = groups
                 .iter()
                 .enumerate()
-                .filter(|(_, g)| l.range().contains(**g))
+                .filter(|(_, g)| range.contains(**g))
                 .map(|(r, _)| r as u32)
                 .collect();
             if mine.is_empty() {
@@ -188,18 +208,22 @@ impl Run {
             let part =
                 arrow_select::take::take_record_batch(&all, &arrow_array::UInt32Array::from(mine))
                     .unwrap();
-            let out = self.ops[i].rows(l, &part).await.unwrap();
+            let out = self.ops[i].rows(&mut self.layers[i], &part).await.unwrap();
             self.rejected += out.rejected.len();
-            self.table.apply(&out, &self.key);
+            self.give(&out);
         }
     }
 
     async fn advance(&mut self, t: i64) {
-        for (op, l) in self.ops.iter_mut().zip(&mut self.layers) {
-            let out = op.advance(l, t).await.unwrap();
-            assert!(out.failed.is_empty(), "{:?}", out.failed);
-            self.table.apply(&out, &self.key);
+        for i in 0..self.ops.len() {
+            self.advance_lane(i, t).await;
         }
+    }
+
+    async fn advance_lane(&mut self, i: usize, t: i64) {
+        let out = self.ops[i].advance(&mut self.layers[i], t).await.unwrap();
+        assert!(out.failed.is_empty(), "{:?}", out.failed);
+        self.give(&out);
     }
 
     async fn barrier(&mut self, epoch: u64) -> Vec<Snapshot> {
@@ -749,11 +773,11 @@ async fn the_final_rows_dont_depend_on_order_barriers_or_lanes() {
                         // restores it on other lanes.
                         generation += 1;
                         lanes = 1 + u32::try_from(next(&mut s) % 4).unwrap();
-                        let table = run.table.clone();
+                        let (table, rejected) = (run.table.clone(), run.rejected);
                         let watermark = run.ops[0].watermark;
                         run = Run::new(sql, 0, &bucket, generation, epoch, lanes, &snaps).await;
                         run.key = key.clone();
-                        run.table = table;
+                        (run.table, run.rejected) = (table, rejected);
                         run.advance(watermark).await;
                     }
                 }
@@ -764,4 +788,267 @@ async fn the_final_rows_dont_depend_on_order_barriers_or_lanes() {
             assert_eq!(run.table, want.table, "{sql}, seed {seed}");
         }
     }
+}
+
+/// Each section the snapshots of an epoch name.
+fn named_sections(snaps: &[Snapshot]) -> usize {
+    snaps
+        .iter()
+        .map(|s| {
+            runs(s)
+                .unwrap()
+                .iter()
+                .map(|r| r.sections.len())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+/// What [`epochs`] feeds a job, and how its runs are kept.
+#[derive(Clone, Copy)]
+struct Load {
+    epochs: u64,
+    /// Rows each epoch, of this many keys.
+    rows: usize,
+    keys: u64,
+    drop: bool,
+    /// The block cache's bytes.
+    cache: usize,
+}
+
+/// What one job of [`epochs`] gave: its rows, and for each epoch, the
+/// sections its lanes named, and the requests its reads made, of lookups
+/// and of restores.
+struct Epochs {
+    table: Table,
+    named: Vec<usize>,
+    lookups: Vec<u64>,
+    restores: Vec<u64>,
+}
+
+/// Epochs of 20 seconds of rows each, the watermark 10 seconds behind, a
+/// barrier at each, and the attempt restored onto another number of lanes
+/// every 10 epochs; then the end of input.
+async fn epochs(sql: &str, lateness: i64, load: Load) -> Epochs {
+    let objects = Arc::new(ObjectStorage::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        object_store::path::Path::from("state"),
+    ));
+    let config = RunConfig {
+        drop: load.drop,
+        cache_bytes: load.cache,
+        ..RunConfig::default()
+    };
+    let keys: Vec<&'static str> = (0..load.keys)
+        .map(|k| &*Box::leak(format!("k{k:04}").into_boxed_str()))
+        .collect();
+    let mut stores = RunStores::new(objects.clone(), config.clone());
+    let mut counted = Counts::default();
+    let mut run = Run::new(sql, lateness, &stores, 1, 1, 2, &[]).await;
+    let (mut named, mut lookups, mut restores) = (Vec::new(), Vec::new(), Vec::new());
+    let mut seed = 99;
+    for epoch in 1..=load.epochs {
+        let from = i64::try_from(epoch).unwrap() * 20 * SEC;
+        let rows: Vec<Row> = (0..load.rows)
+            .map(|_| {
+                let k = keys[usize::try_from(next(&mut seed) % load.keys).unwrap()];
+                let a = i64::try_from(next(&mut seed) % 50).unwrap();
+                let t = from + i64::try_from(next(&mut seed) % 20).unwrap() * SEC;
+                (k, a, t)
+            })
+            .collect();
+        run.rows(&rows).await;
+        let watermark = from + 10 * SEC;
+        run.advance(watermark).await;
+        let before = stores.counts();
+        let snaps = run.barrier(epoch).await;
+        assert_eq!(
+            (stores.counts() - before).lookup.count,
+            0,
+            "a barrier looks nothing up"
+        );
+        named.push(named_sections(&snaps));
+        let c = stores.counts() - counted;
+        lookups.push(c.lookup.count);
+        restores.push(c.restore.count);
+        counted = stores.counts();
+        if epoch % 10 == 0 {
+            // The attempt dies after the record, and the next restores it
+            // on another number of lanes, with caches of its own.
+            stores = RunStores::new(objects.clone(), config.clone());
+            counted = Counts::default();
+            let lanes = [1, 3, 2][usize::try_from(epoch / 10 % 3).unwrap()];
+            let (table, rejected) = (run.table.clone(), run.rejected);
+            run = Run::new(sql, lateness, &stores, epoch + 1, epoch + 1, lanes, &snaps).await;
+            (run.table, run.rejected) = (table, rejected);
+            run.advance(watermark).await;
+        }
+    }
+    run.advance(i64::MAX).await;
+    let end = run.barrier(load.epochs + 1).await;
+    named.push(named_sections(&end));
+    assert_eq!(run.rejected, 0, "{sql}: rows late, across every attempt");
+    Epochs {
+        table: run.table,
+        named,
+        lookups,
+        restores,
+    }
+}
+
+const HOP: &str = "INSERT INTO o SELECT window_start, region, count(*) AS n, sum(amount) AS total \
+     FROM orders GROUP BY hop(at, INTERVAL '1 minute', INTERVAL '3 minutes'), region";
+
+/// A tumbling window without lateness, a hopping one with 30 seconds of it
+/// and sessions with a minute.
+const WINDOWS: [(&str, i64); 3] = [(TUMBLE, 0), (HOP, 30 * SEC), (SESSION, MIN)];
+
+/// As windows close, what a job's snapshots name stays bounded, where a
+/// job that drops nothing names more at each epoch; both give the same
+/// rows, through restores onto 3, 2 and 1 lanes. With every window closed
+/// at the end of input, nothing is named.
+#[tokio::test]
+async fn named_sections_stay_bounded_as_windows_close() {
+    let mut compared = 0;
+    for (sql, lateness) in WINDOWS {
+        let load = |drop| Load {
+            epochs: 40,
+            rows: 24,
+            keys: 16,
+            drop,
+            cache: 64 << 20,
+        };
+        let kept = epochs(sql, lateness, load(false)).await;
+        let dropped = epochs(sql, lateness, load(true)).await;
+        assert!(!kept.table.0.is_empty());
+        assert_eq!(dropped.table, kept.table, "{sql}");
+        compared += 1;
+        // On one lane, from epoch 31, the dropping job names no more than
+        // it did on two in its first epochs; the other names more and more.
+        let first = *dropped.named[..10].iter().max().unwrap();
+        let last = *dropped.named[30..40].iter().max().unwrap();
+        assert!(last <= first, "{sql}: {:?}", dropped.named);
+        let kept_last = kept.named[39];
+        assert!(
+            kept_last > 10 * dropped.named[39].max(1),
+            "{sql}: {:?}",
+            kept.named
+        );
+        assert_eq!(dropped.named[40], 0, "{sql}: all closed");
+    }
+    assert_eq!(compared, 3);
+}
+
+/// The sections each epoch names and the requests its reads make, with no
+/// block cache, over 20 epochs of 400 rows of 2,000 keys, by a job that
+/// drops dead sections and one that doesn't.
+#[tokio::test]
+#[ignore = "a measurement: run it with --ignored --nocapture"]
+async fn sections_and_reads_by_epoch() {
+    for (sql, lateness) in WINDOWS {
+        let load = |drop| Load {
+            epochs: 20,
+            rows: 400,
+            keys: 2000,
+            drop,
+            cache: 0,
+        };
+        let kept = epochs(sql, lateness, load(false)).await;
+        let dropped = epochs(sql, lateness, load(true)).await;
+        assert_eq!(dropped.table, kept.table, "{sql}");
+        println!("{sql}");
+        println!("epoch | sections named | lookup GETs | restore GETs (kept / dropped)");
+        for e in 0..20 {
+            println!(
+                "{:>5} | {:>6} / {:<6} | {:>6} / {:<6} | {:>4} / {:<4}",
+                e + 1,
+                kept.named[e],
+                dropped.named[e],
+                kept.lookups[e],
+                dropped.lookups[e],
+                kept.restores[e],
+                dropped.restores[e]
+            );
+        }
+    }
+}
+
+/// A restored operator goes on from its state's horizon, though the
+/// record's watermark it's restored at is lower: a row of a window the
+/// horizon passed is late, and doesn't open a window whose timer would be
+/// gone at once.
+#[tokio::test]
+async fn a_restored_window_goes_on_from_its_states_horizon() {
+    let objects = Arc::new(ObjectStorage::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        object_store::path::Path::from("state"),
+    ));
+    let stores = RunStores::new(objects.clone(), RunConfig::default());
+    let mut run = Run::new(TUMBLE, 0, &stores, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 1), ("eu", 1, 2 * MIN + 1)]).await;
+    run.advance(2 * MIN).await;
+    let snaps = run.barrier(1).await;
+    let stores = RunStores::new(objects, RunConfig::default());
+    let mut back = Run::new(TUMBLE, 0, &stores, 2, 2, 1, &snaps).await;
+    back.advance(MIN / 2).await;
+    back.rows(&[("eu", 5, MIN + 1)]).await;
+    assert_eq!(
+        back.rejected, 1,
+        "the second minute closed before the record"
+    );
+    back.advance(i64::MAX).await;
+    let rows: Vec<String> = back.table.0.values().cloned().collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        rows[0].contains("window_start=1970-01-01T00:02:00Z"),
+        "{rows:?}"
+    );
+}
+
+/// Two lanes whose state's horizons differ restore onto one lane, each key
+/// group keeping its own: a window that the lagging group's horizon hadn't
+/// passed closes once, on time, and a row of a window that the leading
+/// group's horizon passed is late.
+#[tokio::test]
+async fn groups_restored_with_different_horizons_each_keep_theirs() {
+    let objects = Arc::new(ObjectStorage::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        object_store::path::Path::from("state"),
+    ));
+    let stores = RunStores::new(objects.clone(), RunConfig::default());
+    let mut run = Run::new(TUMBLE, 0, &stores, 1, 1, 2, &[]).await;
+    let op = &run.ops[0];
+    let group = |region: &'static str| -> u32 {
+        key_groups(&batch(op, &[(region, 1, 1)]), &op.plan.need, GROUPS).unwrap()[0]
+    };
+    const NAMES: [&str; 12] = [
+        "eu", "us", "apac", "latam", "mena", "a", "b", "c", "d", "e", "f", "g",
+    ];
+    let lead = *NAMES.iter().find(|n| group(n) < GROUPS / 2).unwrap();
+    let lag = *NAMES.iter().find(|n| group(n) >= GROUPS / 2).unwrap();
+    run.rows(&[
+        (lead, 1, 10 * SEC),
+        (lead, 1, 70 * SEC),
+        (lag, 1, 10 * SEC),
+        (lag, 1, 70 * SEC),
+    ])
+    .await;
+    // The leading lane has closed both minutes, the lagging one the first.
+    run.advance_lane(0, 2 * MIN).await;
+    run.advance_lane(1, MIN + SEC).await;
+    let snaps = run.barrier(1).await;
+    let (table, writes) = (run.table.clone(), run.writes.clone());
+    let stores = RunStores::new(objects, RunConfig::default());
+    let mut back = Run::new(TUMBLE, 0, &stores, 2, 2, 1, &snaps).await;
+    (back.table, back.writes) = (table, writes);
+    // Restored at the least of the lanes' watermarks.
+    back.advance(MIN + SEC).await;
+    back.rows(&[(lag, 1, 80 * SEC), (lead, 1, 80 * SEC)]).await;
+    assert_eq!(back.rejected, 1, "the leading group's second minute closed");
+    back.advance(2 * MIN).await;
+    back.advance(i64::MAX).await;
+    assert_eq!(back.writes.len(), 4, "{:?}", back.writes);
+    assert!(back.writes.values().all(|n| *n == 1), "{:?}", back.writes);
+    let second = &back.table.0[&format!("1970-01-01T00:01:00Z|{lag}")];
+    assert!(second.ends_with("total=2 n=2 hi=1"), "{second}");
 }

@@ -538,6 +538,8 @@ func (l *wLane) restore(d decision) {
 	l.cur, l.kcur = e+1, e+1
 	l.readerPast, l.keyedPast, l.precommitted = e, e, e
 	l.sentWM, l.opWM, l.senderWM, l.senderIdle, l.aligned = wNoMark, wNoMark, map[int]int64{}, map[int]bool{}, map[int]bool{}
+	// The keyed operator goes on from the horizon its state was left at.
+	l.opWM = l.restoreH
 	l.opFloor = wNoMark
 	if rec != nil {
 		for _, o := range m.opMarks[rec.ref()] {
