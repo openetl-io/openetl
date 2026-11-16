@@ -329,12 +329,9 @@ func tableName(stream string, keep bool) string {
 	return name
 }
 
-// The firings of a cron schedule that interval looks at: at most
-// cronFirings, until one past cronHorizon from the first.
-const (
-	cronFirings = 10000
-	cronHorizon = 366 * 24 * time.Hour
-)
+// The firings of a cron schedule that interval looks at: from the first,
+// until one past cronHorizon from it.
+const cronHorizon = 366 * 24 * time.Hour
 
 // interval is the longest a schedule goes between syncs after now, jitter
 // included: its every, or the longest gap between its cron's firings over
@@ -356,17 +353,70 @@ func interval(s *apiv1.Schedule, now time.Time) time.Duration {
 	if t.IsZero() {
 		return 0
 	}
-	var longest time.Duration
-	for end, i := t.Add(cronHorizon), 0; i < cronFirings && !t.After(end); i++ {
-		next := sched.Next(t)
-		if next.IsZero() {
-			break
-		}
-		longest = max(longest, next.Sub(t))
-		t = next
-	}
+	longest := longestGap(sched, t)
 	if longest == 0 {
 		return 0
 	}
 	return longest + s.GetJitter().AsDuration()
+}
+
+// longestGap is the longest gap between sched's firings from first, one of
+// them, to the first past cronHorizon from it. A cron fires at the same clock
+// times on each day it fires, so of the days with 24 hours and one UTC
+// offset, it steps through one's firings and takes the others' from it.
+func longestGap(sched cron.Schedule, first time.Time) time.Duration {
+	if c, ok := sched.(cron.ConstantDelaySchedule); ok {
+		return c.Delay
+	}
+	loc := time.UTC
+	if s, ok := sched.(*cron.SpecSchedule); ok && s.Location != time.Local {
+		loc = s.Location
+	}
+	end := first.Add(cronHorizon)
+	var (
+		longest time.Duration
+		// The firings of a plain day, as times since its midnight, and the
+		// longest gap between them; nil until one is stepped through.
+		plain *struct{ first, last, longest time.Duration }
+	)
+	for t := first; !t.After(end); {
+		start, next, isPlain := cronDay(t, loc)
+		last := t
+		if plain != nil && isPlain && t.Equal(start.Add(plain.first)) && !start.Add(plain.last).After(end) {
+			last, longest = start.Add(plain.last), max(longest, plain.longest)
+		} else {
+			whole := plain == nil && isPlain && sched.Next(start.Add(-time.Second)).Equal(t)
+			var within time.Duration
+			for {
+				n := sched.Next(last)
+				if n.IsZero() || !n.Before(next) {
+					break
+				}
+				within = max(within, n.Sub(last))
+				if last = n; last.After(end) {
+					return max(longest, within)
+				}
+			}
+			longest = max(longest, within)
+			if whole {
+				plain = &struct{ first, last, longest time.Duration }{t.Sub(start), last.Sub(start), within}
+			}
+		}
+		n := sched.Next(last)
+		if n.IsZero() {
+			break
+		}
+		longest, t = max(longest, n.Sub(last)), n
+	}
+	return longest
+}
+
+// cronDay is the midnights in loc that start t's day and the next, and whether
+// the day is plain: 24 hours with one UTC offset.
+func cronDay(t time.Time, loc *time.Location) (start, next time.Time, plain bool) {
+	y, m, d := t.In(loc).Date()
+	start, next = time.Date(y, m, d, 0, 0, 0, 0, loc), time.Date(y, m, d+1, 0, 0, 0, 0, loc)
+	_, a := start.Zone()
+	_, b := next.Zone()
+	return start, next, a == b && start.Hour() == 0 && next.Hour() == 0 && next.Sub(start) == 24*time.Hour
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -103,6 +104,12 @@ func TestInterval(t *testing.T) {
 		{"monthly", cron("0 0 1 * *", 0), 31 * day},
 		{"on the 31st", cron("0 0 31 * *", 0), 61 * day},
 		{"quarterly", cron("0 0 1 */3 *", 0), 92 * day},
+		// More than 10,000 firings before the first long gap.
+		{"each minute of a month's first week", cron("* * 1-7 * *", 0), 24*day + time.Minute},
+		{"each minute of a month's first week, in Berlin", cron("CRON_TZ=Europe/Berlin * * 1-7 * *", 0), 24*day + time.Hour + time.Minute},
+		{"each minute of January and July", cron("* * * 1,7 *", 0), 153*day + time.Minute},
+		{"each minute", cron("* * * * *", 0), time.Minute},
+		{"every 90 minutes", cron("@every 90m", time.Minute), 91 * time.Minute},
 		{"never", cron("0 0 31 2 *", time.Minute), 0},
 		{"unparsable", cron("every day", 0), 0},
 		{"none", nil, 0},
@@ -116,6 +123,43 @@ func TestInterval(t *testing.T) {
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatalf("%s: interval didn't return", c.name)
+		}
+	}
+}
+
+// longestGap finds what stepping through each firing finds, across changes
+// of UTC offset: Berlin's at 2:00, Santiago's at midnight and Lord Howe's by
+// half an hour.
+func TestLongestGap(t *testing.T) {
+	stepped := func(s cron.Schedule, first time.Time) time.Duration {
+		var longest time.Duration
+		for f, end := first, first.Add(cronHorizon); !f.After(end); {
+			n := s.Next(f)
+			if n.IsZero() {
+				break
+			}
+			longest, f = max(longest, n.Sub(f)), n
+		}
+		return longest
+	}
+	// Few firings each: stepping through them is slow under the race
+	// detector. A year from mid-day holds each zone's changes.
+	crons := []string{"*/30 0-2 * * *", "*/20 2 * * 0", "0 0,12 * * 1", "0,59 23 * * *", "0 * 1,31 * *", "0 0 1,15 * *", "0 */6 * 2 *", "0 0 29 2 *"}
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for _, zone := range []string{"Europe/Berlin", "America/Santiago", "Australia/Lord_Howe"} {
+		if _, err := time.LoadLocation(zone); err != nil {
+			t.Skip(err)
+		}
+		for _, c := range crons {
+			c = "CRON_TZ=" + zone + " " + c
+			s, err := cron.ParseStandard(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := s.Next(now)
+			if got, want := longestGap(s, first), stepped(s, first); got != want {
+				t.Errorf("%s: %v, want %v", c, got, want)
+			}
 		}
 	}
 }
