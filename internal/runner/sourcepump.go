@@ -284,7 +284,12 @@ func newSourcePump(ctx context.Context, job *Job, restoredEpoch uint64, splits m
 		st := &streamPos{byID: map[string]*splitPos{}, canForce: canForce[s.Name], ended: done[s.Name], lanes: make([]laneHold, p.lanes), adding: map[string]int{}, inTurn: job.inTurn(s), timed: s.EventTime}
 		for _, sp := range splits[s.Name] {
 			pos := &splitPos{id: sp.ID, lane: st.firstLane(), resume: sp.State, from: sp.State, complete: sp.Complete, forced: sp.Forced, rereading: sp.Forced, home: -1, mark: sp.Watermark, lastRead: time.Now()}
-			if st.timed != nil && !sp.Complete && !st.ended {
+			// A stream read in the order of its time that completed earlier
+			// in the sync isn't read again, but its splits join at their
+			// watermarks: a lane with none holds nothing back, so its windows
+			// would close as at the end of input.
+			reading := !sp.Complete && !st.ended
+			if st.timed != nil && (reading || st.ended && !st.timed.Held) {
 				pos.home = p.homes % p.lanes
 				p.homes++
 			}

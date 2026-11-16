@@ -25,19 +25,20 @@
 //! A window is gone once the watermark has passed its end plus the
 //! lateness in force then, and stays gone when the lateness changes: the
 //! floor, in each key group, is the latest the group's watermark less the
-//! lateness has been, and a window that ends at or before it is gone. A
-//! row of it is late, and a session there is dropped when its key's
-//! sessions are next read. A row that would give a session its start is
-//! late too where its own gap ends there: the start could be a gone
-//! session's, whose row the output keeps. With a lateness that never
-//! changes, the floor is the watermark less the lateness; after a raise
-//! it holds where the old lateness had it, until the watermark less the
-//! new one passes it. A window takes the lateness in force when it
-//! closes, which its expiry timer is set by: one that fires before a
-//! raised lateness has passed is set again. State keeps the floor as the
-//! horizon of an operator of its own in the window's layer, which keeps
-//! nothing else, so it's in every snapshot, by key group, whether or not
-//! any window is left.
+//! lateness has been, and a window that ends at or before it is gone, as
+//! is a session whose end, its last row's time plus the gap, is before
+//! it. A row of either is late, and a gone session is dropped when its
+//! key's sessions are next read. A row that would give a session its
+//! start is late too where its own time plus the gap is before the floor:
+//! the start could be a gone session's, whose row the output keeps. With
+//! a lateness that never changes, the floor is the watermark less the
+//! lateness; after a raise it holds where the old lateness had it, until
+//! the watermark less the new one passes it. A window takes the lateness
+//! in force when it closes, which its expiry timer is set by: one that
+//! fires before a raised lateness has passed is set again. State keeps
+//! the floor as the horizon of an operator of its own in the window's
+//! layer, which keeps nothing else, so it's in every snapshot, by key
+//! group, whether or not any window is left.
 //!
 //! Output rows are keyed by `window_start` and the group keys: an insert
 //! the first time, then updates; each has an ID and a seq from its key and

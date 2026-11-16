@@ -242,7 +242,7 @@ These edits give the operator a new ID:
 
 - A window that is open at the change, or closed and within its lateness, takes the new lateness. Its state expires when the watermark passes its end plus the lateness in force when it closed, or later if the lateness rises before then.
 - A window whose lateness had passed before the change stays gone. A row of it is late, also within a higher lateness, and the window's row stays as it is.
-- The state keeps, in each key group, the latest point that the group's watermark less the lateness has reached. A window that ends at or before that point is gone. A session's row is late when the session that it joins or starts ends at or before that point, or when it would move a session's start and its own time plus the gap is at or before that point.
+- The state keeps, in each key group, the latest point that the group's watermark less the lateness has reached. A tumbling or hopping window that ends at or before that point is gone. A session ends at its last row's time plus the gap. A session's row is late when the session that it joins or starts ends before that point. It is also late when it would move a session's start and its own time plus the gap is before that point.
 - A lower lateness can leave the state of a window that closed before the change until the old lateness passes. Once the new lateness has passed the window, it takes no more rows.
 
 [Change the lateness](../pipelines/windows.md#change-the-lateness) has what each window does.

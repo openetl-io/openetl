@@ -165,7 +165,7 @@ When you apply a new `watermark.lateness`, the next run uses it for the windows 
 
 The engine keeps a record of how far windows are gone in the window's state, and the checkpoint holds it. So the rule holds after a failure, a restart and a change in the number of workers. After a higher lateness, the late rows of windows that were gone before the change go to quarantine. This continues until the watermark less the new lateness passes the point where those windows had gone.
 
-For a `session` window, the engine judges a row by the session that the row joins or starts. If that session ends at or before the point where windows had gone, the row is late. A row that would move a session's start is also late if its own time plus the gap is at or before that point. Other rows start or join a session, as they do with an unchanged lateness. Such a session can overlap a session that had gone, and each one has its own row.
+For a `session` window, the engine judges a row by the session that the row joins or starts. A session ends at its last row's time plus the gap. If that end is before the point where windows had gone, the row is late. A row that would move a session's start is also late if its own time plus the gap is before that point. Other rows start or join a session, as they do with an unchanged lateness. Such a session can overlap a session that had gone, and each one has its own row.
 
 With a lower lateness, the engine can keep the state of a window that had closed before the change until the old lateness passes. Once the new lateness has passed the window, the window takes no more rows.
 

@@ -429,6 +429,49 @@ async fn a_row_that_would_take_a_gone_sessions_start_is_late() {
     assert_eq!(run.writes["1970-01-01T00:00:00Z|eu"], 1);
 }
 
+/// Where the floor is, after a raise: a tumbling window that ends at it is
+/// gone, and a session is gone once its end, its last row's time plus the
+/// gap, is before it. A row whose own gap ends at the floor may still give
+/// a session its start, and one a microsecond earlier may not.
+#[tokio::test]
+async fn the_floor_is_a_windows_end_and_after_a_sessions() {
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(TUMBLE, 0, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 1, 1)]).await;
+    run.advance(MIN).await;
+    let snaps = run.barrier(1).await;
+    let mut run = run
+        .restore(TUMBLE, MIN, &bucket, (2, 1, 1), &snaps, MIN)
+        .await;
+    run.rows(&[("eu", 1, MIN - 1)]).await;
+    assert_eq!(run.rejected, 1, "the minute ends at the floor");
+    run.rows(&[("eu", 1, MIN)]).await;
+    assert_eq!(run.rejected, 1, "the next minute ends after it");
+    assert_eq!(run.writes["1970-01-01T00:00:00Z|eu"], 1);
+
+    let mut run = Run::new(SESSION, 0, &bucket, 3, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 0)]).await;
+    run.advance(40 * SEC).await;
+    let snaps = run.barrier(1).await;
+    // The floor is at 40 seconds, and the lateness no longer decides.
+    let mut run = run
+        .restore(SESSION, 2 * MIN, &bucket, (4, 1, 1), &snaps, 40 * SEC)
+        .await;
+    run.rows(&[("eu", 2, 20 * SEC)]).await;
+    run.rows(&[("eu", 1, 10 * SEC - 1)]).await;
+    assert_eq!(run.rejected, 1, "its gap ends before the floor");
+    run.rows(&[("eu", 3, 10 * SEC)]).await;
+    assert_eq!(run.rejected, 1, "its gap ends at the floor");
+    run.advance(i64::MAX).await;
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        [
+            "window_start=1970-01-01T00:00:00Z window_end=1970-01-01T00:00:30Z region=eu total=5",
+            "window_start=1970-01-01T00:00:10Z window_end=1970-01-01T00:00:50Z region=eu total=5",
+        ]
+    );
+}
+
 /// Groups restored with horizons above the lane's watermark keep a floor
 /// of their own: a window gone in one under a lowered lateness, at its
 /// group's watermark, stays gone when a later attempt raises it.

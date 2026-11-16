@@ -206,6 +206,150 @@ func TestAGroupWindowSpansScheduledSyncs(t *testing.T) {
 	}
 }
 
+// pairSource reads stream s as span does, and stream t's one row with a
+// resume point. With failAfter, t then waits for it to close and fails.
+type pairSource struct {
+	span      *spanSource
+	failAfter <-chan struct{}
+}
+
+func (p pairSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	spans, others := req, req
+	spans.Streams, others.Streams = nil, nil
+	for _, cs := range req.Streams {
+		switch cs.Name {
+		case "s":
+			spans.Streams = append(spans.Streams, cs)
+		default:
+			others.Streams = append(others.Streams, cs)
+		}
+	}
+	errs := make(chan error, 2)
+	go func() {
+		if len(spans.Streams) == 0 {
+			errs <- nil
+			return
+		}
+		errs <- p.span.Read(ctx, spans, out)
+	}()
+	go func() {
+		errs <- source.ReadSplits(ctx, others, out, func(ctx context.Context, _ source.ConfiguredStream, _ source.Split, e source.SplitEmitter) error {
+			if err := e.Rows([]json.RawMessage{json.RawMessage(`{"id": 1}`)}); err != nil {
+				return err
+			}
+			if err := e.ResumePoint([]byte("1")); err != nil {
+				return err
+			}
+			if p.failAfter == nil {
+				return e.Complete([]byte("1"))
+			}
+			select {
+			case <-p.failAfter:
+				return errors.New("t broke")
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}()
+	return errors.Join(<-errs, <-errs)
+}
+
+// A retry within a sync doesn't read again a stream read in the order of
+// its event time that completed earlier in the sync, and its splits keep
+// their watermarks: the minute the stream left open stays open, its state
+// in the retry's records, and the next sync closes it with every row of
+// both syncs.
+func TestARetryKeepsACompletedStreamsWindowsOpen(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	minute := time.Now().Truncate(time.Minute).Add(2 * time.Minute).UnixMicro()
+	opts := options(t, nil)
+	s := runner.Stream{
+		Name: "s", Replay: source.Exact, Mode: destination.Append, Read: source.Incremental, CursorField: "at",
+		Schema: arrow.NewSchema([]arrow.Field{
+			{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+			{Name: "region", Type: arrow.BinaryTypes.String, Nullable: true},
+			{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
+		}, nil),
+		EventTime: &runner.EventTime{Column: "at", Delay: time.Hour, Idle: time.Hour},
+	}
+	other := runner.Stream{
+		Name: "t", Replay: source.Exact, Mode: destination.Append, Read: source.FullRefresh,
+		Schema: arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}}, nil),
+	}
+	var declared []sqlplan.Stream
+	for _, st := range []runner.Stream{s, other} {
+		d, err := arrowipc.EncodeSchema(st.Schema)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ps := sqlplan.Stream{Name: st.Name, DeclaredSchema: d}
+		if st.EventTime != nil {
+			ps.EventTime = st.EventTime.Column
+		}
+		declared = append(declared, ps)
+	}
+	const sql = "INSERT INTO minutes SELECT window_start, region, count(*) AS n FROM s GROUP BY tumble(at, INTERVAL '1 minute'), region;\n" +
+		"INSERT INTO copied SELECT id FROM t"
+	a, err := Plan(ctx, planEngine(t), sqlplan.Request{SQL: sql, Streams: declared})
+	if err != nil || len(a.Errors) != 0 {
+		t.Fatal(a.Errors, err)
+	}
+	exp := expected(t, a)
+	exp[0].Operator = a.Statements[0].Operator
+	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "windows")
+	state, dest := "file://"+t.TempDir(), newKeyDest(2)
+	var mu sync.Mutex
+	var snapshots []int
+	completed := make(chan struct{})
+	var once sync.Once
+	job := func(owner, sync string, src source.Reader) runner.Job {
+		return runner.Job{
+			Pipeline: "windows", Owner: owner, Sync: sync, Log: log, Source: src,
+			Streams: []runner.Stream{s, other},
+			Outputs: []runner.Stream{
+				{Name: "minutes", Replay: source.Exact, Mode: destination.Merge, PrimaryKey: []string{"window_start", "region"}, Transformed: true, From: "s"},
+				{Name: "copied", Replay: source.Exact, Mode: destination.Append, Transformed: true, From: "t"},
+			},
+			SQL:         &runner.SQLTransform{SQL: sql, Expected: exp, Operators: []string{a.Statements[0].Operator}},
+			Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 2, Logger: opts.Logger,
+			StateURL: state,
+			Settings: delivery.Settings{Require: delivery.AtLeastOnce, CommitInterval: 20 * time.Millisecond, Scope: destination.ScopePipeline},
+			OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
+				mu.Lock()
+				defer mu.Unlock()
+				snapshots = append(snapshots, len(rec.Snapshots))
+				if rec.Streams["s"].Complete {
+					once.Do(func() { close(completed) })
+				}
+			},
+		}
+	}
+	// s completes with the minute open, and then t fails.
+	if _, err := runner.RunAttempt(ctx, job("a1", "s1", pairSource{span: &spanSource{minute: minute, pause: 12, bounded: true}, failAfter: completed})); err == nil {
+		t.Fatal("the first attempt succeeded")
+	}
+	if _, err := runner.RunAttempt(ctx, job("a2", "s1", pairSource{span: &spanSource{minute: minute, pause: 12, bounded: true}})); err != nil {
+		t.Fatal(err)
+	}
+	if got := minuteRows(dest); len(got) != 0 {
+		t.Fatalf("the retry closed the minute: %v", got)
+	}
+	mu.Lock()
+	kept := slices.Clone(snapshots)
+	mu.Unlock()
+	if len(kept) < 2 || kept[len(kept)-1] == 0 {
+		t.Fatalf("the records' snapshots %v: the last keeps no window state", kept)
+	}
+	if _, err := runner.RunAttempt(ctx, job("a3", "s2", pairSource{span: &spanSource{minute: minute, pause: spanRows, closer: 2 * 3600, bounded: true}})); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{windowStart((minute-minutes)/1_000_000) + "/eu/" + strconv.Itoa(spanRows)}
+	if got := minuteRows(dest); !slices.Equal(got, want) {
+		t.Errorf("applied %v, want %v", got, want)
+	}
+}
+
 // A group window's state outlives the engine that kept it. An attempt
 // whose engine ends while the minute is open leaves its state in the
 // state's storage, named by its records; the next attempt, in an engine
