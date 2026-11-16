@@ -208,12 +208,12 @@ A group window keeps each window's aggregates as state, by key group, until its 
 - The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.
 - A window over no group keys runs on one lane.
 - At each checkpoint, each lane writes what its state changed since the last checkpoint, if anything, as a file under `_state/`, next to the pipeline's checkpoints. The checkpoint record names the files that hold the state. A file that no checkpoint names, such as one from an epoch that did not commit, is never read.
-- The next attempt restores the state that its checkpoint names, on any number of lanes. A continuous pipeline's attempt that restarts, or a sync's attempt that fails, goes on with its open windows. Each window's row has every row of the window, each one time.
+- The next attempt restores the state that its checkpoint names, on any number of lanes and workers. A continuous pipeline's attempt that restarts, or a sync's attempt that fails, goes on with its open windows. Each window's row has every row of the window, each one time.
 - The engine reads a file of state when a lane first needs it, not at the start of the attempt.
 - A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names.
 - To build a window's state again from the stream, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)). A run deletes the files of the dropped state once none of the records it keeps names them.
 - After a reset, each window's row comes only from the rows that the new read returns. If the read starts partway through a window, `merge` replaces that window's row with a row of part of its rows. A window that the new read does not reach keeps its row in the destination. Start the read where it includes every row of the windows it changes, or correct those rows in the destination.
-- A pipeline with a group window runs on one pod, whatever its `resources.workers`.
+- With `resources.workers` above 1, the exchange sends each row to the worker whose lane owns the row's key group, and that worker keeps the key group's state and writes its windows' rows ([Group windows on workers](../pipelines/workers.md#group-windows-on-workers)).
 
 ### Changing a query
 

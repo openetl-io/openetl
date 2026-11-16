@@ -41,6 +41,10 @@ type laneLossProxy struct {
 	srv      *httptest.Server
 	launcher atomic.Pointer[runner]
 
+	// Says a record is one to stop at, beside every writer lane's holding
+	// rows; nil: any.
+	when func(checkpoint.Record) bool
+
 	mu sync.Mutex
 	// The last record written, until HEAD's write after it.
 	pending string
@@ -126,6 +130,9 @@ func (p *laneLossProxy) beforeHead(ctx context.Context) {
 		if len(c.Splits) == 0 {
 			return
 		}
+	}
+	if p.when != nil && !p.when(rec) {
+		return
 	}
 	launcher := p.launcher.Load()
 	if launcher == nil {
@@ -261,6 +268,16 @@ func (l *laneLoss) lose(t *testing.T, name, topic string) (checkpoint.Record, in
 	t.Helper()
 	producer := kafkaClient(t, kgo.RecordPartitioner(kgo.ManualPartitioner()))
 	const round = 10 * laneLossPartitions
+	return l.loseFeeding(t, name, func(from int) int {
+		produceRound(t, producer, topic, from, round, laneLossPartitions)
+		return round
+	})
+}
+
+// loseFeeding is lose, writing a round of records with feed, from the id
+// it's given, which says how many it wrote.
+func (l *laneLoss) loseFeeding(t *testing.T, name string, feed func(from int) int) (checkpoint.Record, int) {
+	t.Helper()
 	produced := 0
 	for deadline := time.Now().Add(3 * time.Minute); ; {
 		select {
@@ -269,8 +286,7 @@ func (l *laneLoss) lose(t *testing.T, name, topic string) (checkpoint.Record, in
 			if time.Now().After(deadline) {
 				t.Fatalf("no epoch on workers had rows in every writer lane in 3 minutes; attempts on 2 workers: %d", attemptsOnTwoWorkers(t, name))
 			}
-			produceRound(t, producer, topic, produced, round, laneLossPartitions)
-			produced += round
+			produced += feed(produced)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
