@@ -3,6 +3,7 @@ package check
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -248,6 +249,31 @@ func TestRedact(t *testing.T) {
 	}
 }
 
+// Redact finds a secret in an item's name and reason, and quoted as Go and
+// JSON quote it and with lowercase percent escapes, in one pass, so a short
+// secret isn't found in what replaced a longer one.
+func TestRedactMoreForms(t *testing.T) {
+	const secret = `p"s<s\1/`
+	// Go's quoting, JSON's with < escaped, and percent escapes in lower and
+	// upper case.
+	forms := []string{`p\"s<s\\1/`, `p\"s` + `\` + `u003cs\\1/`, "p%22s%3cs%5c1%2f", "p%22s%3Cs%5C1%2F"}
+	text := strings.Join(forms, " | ")
+	want := "[redacted] | [redacted] | [redacted] | [redacted]"
+	items := []*protocolv1.CheckItem{{Name: "auth." + secret, Reason: "rejected_" + secret, Title: text, Detail: secret, Error: &protocolv1.Error{Message: "red"}}}
+	e := &protocolv1.Error{Message: fmt.Sprintf("Sign in: %q", secret)}
+	Redact([]string{secret, "red"}, items, e)
+	it := items[0]
+	if it.GetName() != "auth.[redacted]" || it.GetReason() != "rejected_[redacted]" || it.GetError().GetMessage() != "[redacted]" || it.GetDetail() != "[redacted]" {
+		t.Errorf("the item: %v", it)
+	}
+	if it.GetTitle() != want {
+		t.Errorf("the title %q", it.GetTitle())
+	}
+	if e.GetMessage() != `Sign in: "[redacted]"` {
+		t.Errorf("the answer's error %q", e.GetMessage())
+	}
+}
+
 // A report's method is a host's, which Of doesn't call.
 type reporting struct{ listed }
 
@@ -323,5 +349,10 @@ func TestRendered(t *testing.T) {
 	}
 	if it.Failure.Fix != "GRANT USAGE ON SCHEMA {schema}" || it.Title != "Use {schema}" {
 		t.Error("Rendered changed the item")
+	}
+	// A value with braces is shown as it is, not filled in again.
+	it = Item{Title: "Find {resource}", Status: Failed, Params: Params{"resource": "{host}", "host": "db"}, Failure: NotFound.Fail()}
+	if got := it.Rendered(); got.Title != "Find {host}" || got.Message != "" || got.Failure.Message != "{host} doesn't exist." || got.Failure.Error() != "{host} doesn't exist." {
+		t.Errorf("%q, %q, %q", got.Title, got.Failure.Message, got.Failure.Error())
 	}
 }

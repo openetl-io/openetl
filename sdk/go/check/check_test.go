@@ -255,6 +255,20 @@ func TestContextDeadline(t *testing.T) {
 	}
 }
 
+// A run whose deadline passes isn't OK, though its last check skips itself
+// once the deadline has passed.
+func TestContextDeadlineThenSkip(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	r := Run(ctx, []Check{{Name: "a", Title: "A", Run: func(ctx context.Context, _ *Probe) error {
+		<-ctx.Done()
+		return Skip("no time left")
+	}}})
+	if statuses(r) != "a=skipped" || r.OK() || !errors.Is(r.Err(), context.DeadlineExceeded) {
+		t.Errorf("%s, OK %v, %v", statuses(r), r.OK(), r.Err())
+	}
+}
+
 func TestStatusOutsideTheFourFails(t *testing.T) {
 	for _, s := range []Status{0, 7} {
 		r := Report{Items: []Item{{Name: "a", Title: "A", Status: Passed}, {Name: "b", Title: "B", Status: s}}}

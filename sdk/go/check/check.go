@@ -432,7 +432,7 @@ func runOne(ctx context.Context, c Check, it *Item) ([]func(context.Context), bo
 		return cleanups, false
 	case o.skip != nil:
 		it.Status, it.Message = Skipped, o.skip.reason
-		return cleanups, false
+		return cleanups, o.stop != nil
 	}
 	f := o.failure
 	for k, v := range f.Params {

@@ -2,10 +2,12 @@ package check
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -192,33 +194,44 @@ func (r Report) Proto() ([]*protocolv1.CheckItem, *protocolv1.Error) {
 }
 
 // Redact puts "[redacted]" in place of each of secrets in an answer: in its
-// items' titles, descriptions, messages, fixes, details and fields, their
-// params' names and values, and its errors' messages. It finds a secret as
-// written and as a URL's query, path and userinfo escape it, the longest form
-// first, and changes the answer in place. It's for the SDK's serving code and
-// hosts, with the values of the secrets they gave the connector, not for a
-// connector's checks.
+// items' names, titles, descriptions, messages, fixes, reasons, details and
+// fields, their params' names and values, and its errors' messages. It finds
+// a secret as written; as a URL's query, path and userinfo escape it, in
+// upper- or lowercase hex; and as strconv.Quote and JSON quote it, without
+// the quotes. It replaces them all in one pass, the longest form first where
+// two start at one place, and changes the answer in place. It's for the
+// SDK's serving code and hosts, with the values of the secrets they gave the
+// connector, not for a connector's checks.
 func Redact(secrets []string, items []*protocolv1.CheckItem, e *protocolv1.Error) {
 	var forms []string
+	add := func(v string) {
+		if v != "" && !slices.Contains(forms, v) {
+			forms = append(forms, v)
+		}
+	}
 	for _, s := range secrets {
 		userinfo := strings.TrimPrefix(url.UserPassword("", s).String(), ":")
 		for _, v := range []string{s, url.QueryEscape(s), url.PathEscape(s), userinfo} {
-			if v != "" && !slices.Contains(forms, v) {
-				forms = append(forms, v)
-			}
+			add(v)
+			add(lowerHex(v))
+		}
+		if s != "" {
+			add(unquoted(strconv.Quote(s)))
+			add(jsonString(s, true))
+			add(jsonString(s, false))
 		}
 	}
 	if len(forms) == 0 {
 		return
 	}
 	slices.SortStableFunc(forms, func(a, b string) int { return len(b) - len(a) })
-	redact := func(s string) string {
-		for _, v := range forms {
-			s = strings.ReplaceAll(s, v, redacted)
-		}
-		return s
+	pairs := make([]string, 0, 2*len(forms))
+	for _, v := range forms {
+		pairs = append(pairs, v, redacted)
 	}
+	redact := strings.NewReplacer(pairs...).Replace
 	for _, it := range items {
+		it.Name, it.Reason = redact(it.Name), redact(it.Reason)
 		it.Title, it.Description, it.Message, it.Fix, it.Detail, it.Field = redact(it.Title), redact(it.Description), redact(it.Message), redact(it.Fix), redact(it.Detail), redact(it.Field)
 		if len(it.Params) > 0 {
 			p := make(map[string]string, len(it.Params))
@@ -237,6 +250,45 @@ func Redact(secrets []string, items []*protocolv1.CheckItem, e *protocolv1.Error
 }
 
 const redacted = "[redacted]"
+
+// lowerHex is s with the hex digits of its percent escapes in lowercase.
+func lowerHex(s string) string {
+	b := []byte(s)
+	for i := 0; i+2 < len(b); i++ {
+		if b[i] == '%' {
+			b[i+1], b[i+2] = toLower(b[i+1]), toLower(b[i+2])
+			i += 2
+		}
+	}
+	return string(b)
+}
+
+func toLower(c byte) byte {
+	if 'A' <= c && c <= 'F' {
+		return c + 'a' - 'A'
+	}
+	return c
+}
+
+// jsonString is s as a JSON string without its quotes, with <, > and &
+// escaped as encoding/json escapes them or not.
+func jsonString(s string, escapeHTML bool) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(escapeHTML)
+	if enc.Encode(s) != nil {
+		return ""
+	}
+	return unquoted(strings.TrimSuffix(b.String(), "\n"))
+}
+
+// unquoted is q without its first and last bytes, its quotes.
+func unquoted(q string) string {
+	if len(q) < 2 {
+		return ""
+	}
+	return q[1 : len(q)-1]
+}
 
 func errorProto(err error) *protocolv1.Error {
 	if err == nil {
