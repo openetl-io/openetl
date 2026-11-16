@@ -425,6 +425,12 @@ struct Model {
     having: bool,
     lateness: i64,
     w: i64,
+    /// The latest the watermark less the lateness has been, as jobs with
+    /// another lateness restore it: a window that ends at or before it is
+    /// gone. NONE for none.
+    gone: i64,
+    /// Rows late only because a window was gone under an earlier lateness.
+    floored: usize,
     /// Tumbling and hopping windows' rows, by key and start.
     windows: BTreeMap<(&'static str, i64), Vec<Row>>,
     sessions: BTreeMap<&'static str, Vec<Session>>,
@@ -440,6 +446,8 @@ impl Model {
             having: case.having,
             lateness: case.lateness,
             w: NONE,
+            gone: NONE,
+            floored: 0,
             windows: BTreeMap::new(),
             sessions: BTreeMap::new(),
             out: BTreeMap::new(),
@@ -456,8 +464,21 @@ impl Model {
         self.window
             .starts(t)
             .into_iter()
-            .filter(|s| (s + self.window.size()).saturating_add(self.lateness) > w)
+            .filter(|s| !self.ended(s + self.window.size(), w))
             .collect()
+    }
+
+    /// Whether a window that ends at `end` is gone at the watermark `w`.
+    fn ended(&self, end: i64, w: i64) -> bool {
+        end.saturating_add(self.lateness) <= w || end <= self.gone
+    }
+
+    /// A job starts with `lateness`, its window at `floor`.
+    fn start(&mut self, lateness: i64, floor: i64) {
+        self.lateness = lateness;
+        if floor != NONE {
+            self.gone = self.gone.max(floor.saturating_sub(lateness));
+        }
     }
 
     /// A batch the window takes while its watermark is at `w`.
@@ -473,6 +494,9 @@ impl Model {
             let placed = self.placed(t, w);
             if placed.is_empty() {
                 self.late.insert(r.id);
+                let lateness = self.lateness;
+                let ok = |s: &i64| (s + self.window.size()).saturating_add(lateness) > w;
+                self.floored += usize::from(self.window.starts(t).iter().any(ok));
             }
             for s in placed {
                 self.windows.entry((r.key, s)).or_default().push(r.clone());
@@ -491,7 +515,11 @@ impl Model {
             }
         }
         for (key, rs) in by_key {
+            // Sessions given and gone, as after a lowered lateness; those
+            // the window's own watermark hasn't closed yet no sure row
+            // meets.
             let mut list = self.sessions.remove(key).unwrap_or_default();
+            list.retain(|s| !self.ended(s.end + 1, self.w));
             let before: BTreeMap<i64, (i64, usize, bool)> = list
                 .iter()
                 .map(|s| (s.start, (s.end, s.rows.len(), s.visible)))
@@ -504,8 +532,9 @@ impl Model {
                     .iter()
                     .filter(|s| meets(s))
                     .fold((t, end), |(a, b), s| (a.min(s.start), b.max(s.end)));
-                if (last + 1).saturating_add(self.lateness) <= w {
+                if self.ended(last + 1, w) {
                     self.late.insert(r.id);
+                    self.floored += usize::from((last + 1).saturating_add(self.lateness) > w);
                     continue;
                 }
                 let mut merged = Session {
@@ -551,6 +580,7 @@ impl Model {
         if w <= self.w {
             return;
         }
+        self.gone = self.gone.max(w.saturating_sub(self.lateness));
         if self.window == Window::Session {
             for (key, list) in &mut self.sessions {
                 for s in list.iter_mut() {
@@ -558,7 +588,8 @@ impl Model {
                         emit(&mut self.out, self.having, key, s);
                     }
                 }
-                list.retain(|s| (s.end + 1).saturating_add(self.lateness) > w);
+                let (lateness, gone) = (self.lateness, self.gone);
+                list.retain(|s| (s.end + 1).saturating_add(lateness) > w && s.end + 1 > gone);
             }
         }
         self.w = w;
@@ -677,7 +708,9 @@ fn take(
                 for r in rows {
                     let sure = match (r.at, case.window) {
                         (None, _) => true,
-                        (Some(t), Window::Session) => (t + 1).saturating_add(case.lateness) > hi,
+                        (Some(t), Window::Session) => {
+                            (t + 1).saturating_add(case.lateness) > hi && t + 1 > model.gone
+                        }
                         (Some(t), _) => model.placed(t, lo) == model.placed(t, hi),
                     };
                     if sure {
@@ -1299,9 +1332,11 @@ fn past(evs: &[Ev], cut: usize) -> usize {
         .unwrap()
 }
 
-/// A case of `window` from `seed`, killed once or twice.
+/// A case of `window` from `seed`, killed once or twice. A job after a kill
+/// may run with another lateness, as when a version changes it.
 fn killed(seed: u64, window: Window) -> Vec<Phase> {
     let mut rng = Rng(seed ^ 0x6b1d_5eed);
+    let mut lateness = Rng(seed ^ 0x1a7e_9e55);
     let mut case = Case::generate(seed, window, Some(2 + rng.below(4)));
     let kills = 1 + rng.below(2);
     let mut phases = Vec::new();
@@ -1340,7 +1375,13 @@ fn killed(seed: u64, window: Window) -> Vec<Phase> {
             true => 1 + rng.below(4),
             false => 2 + rng.below(3),
         };
-        let next = restored(&case, cut, lanes, barriers, &mut rng);
+        let mut next = restored(&case, cut, lanes, barriers, &mut rng);
+        if lateness.below(2) == 0 {
+            next.lateness = [0, 3, 6, 20, 40][lateness.below(5)] * SEC;
+        }
+        if next.lateness > case.lateness {
+            stale(&mut next, case.lateness, p, &mut lateness);
+        }
         phases.push(Phase {
             case,
             workers,
@@ -1350,6 +1391,39 @@ fn killed(seed: u64, window: Window) -> Vec<Phase> {
         case = next;
     }
     phases
+}
+
+/// Rows a job restored with a raised lateness reads first, of the first
+/// split it resumes: up to 12 seconds before where the record's watermark
+/// less the lateness `was` had windows gone, and within the new lateness.
+/// None moves its split's watermark. `phase` keeps their IDs apart.
+fn stale(case: &mut Case, was: i64, phase: usize, rng: &mut Rng) {
+    let at = floor(case);
+    let first = case
+        .lanes
+        .iter()
+        .enumerate()
+        .find_map(|(l, evs)| match evs.first() {
+            Some(Ev::Resume(s, _)) => Some((l, *s)),
+            _ => None,
+        });
+    let (Some((l, s)), false) = (first, at == NONE) else {
+        return;
+    };
+    let gone = (at - was) / SEC;
+    let rows = (0..3)
+        .map(|j| Row {
+            id: 1_000_000 + 10 * phase as i64 + j,
+            key: KEYS[rng.below(KEYS.len())],
+            v: rng.below(90) as i64 - 30,
+            at: Some((gone - 1 - rng.below(12) as i64).max(0) * SEC),
+        })
+        .collect();
+    let resumed = case.lanes[l]
+        .iter()
+        .take_while(|e| matches!(e, Ev::Resume(..)))
+        .count();
+    case.lanes[l].insert(resumed, Ev::Rows(s, rows));
 }
 
 /// What a job restored from `case`'s record of barrier `cut` reads, on
@@ -1441,6 +1515,9 @@ struct KilledExpected {
     late: BTreeSet<i64>,
     marks: Vec<BTreeMap<String, i64>>,
     dropped: usize,
+    /// Late rows of windows gone under an earlier job's lateness, which
+    /// the job's own would have taken.
+    floored: usize,
 }
 
 /// The window takes what each job commits, from where the record it
@@ -1452,6 +1529,7 @@ fn expect_killed(phases: &[Phase]) -> KilledExpected {
     let (mut marks, mut dropped) = (Vec::new(), 0);
     for ph in phases {
         let case = &ph.case;
+        model.start(case.lateness, floor(case));
         let lanes: Vec<LaneModel> = (0..case.lanes.len())
             .map(|l| {
                 let evs = &case.lanes[l];
@@ -1481,6 +1559,7 @@ fn expect_killed(phases: &[Phase]) -> KilledExpected {
         late: model.late.clone(),
         marks,
         dropped,
+        floored: model.floored,
     }
 }
 
@@ -1587,6 +1666,11 @@ struct KillTally {
     late: usize,
     dropped: usize,
     updates: usize,
+    /// Jobs restored with a higher lateness than the one before, and with
+    /// a lower one.
+    raised: usize,
+    lowered: usize,
+    floored: usize,
 }
 
 /// Generated cases of each window, killed once or twice: at a random
@@ -1596,7 +1680,8 @@ struct KillTally {
 /// some after the runs that record doesn't name are deleted, and reads on
 /// from where the record has each split. What the jobs committed, merged,
 /// is the model's table, and they quarantine the model's late rows and
-/// report its watermarks.
+/// report its watermarks. Some jobs run with a raised or lowered lateness:
+/// a window gone under an earlier one stays gone.
 #[tokio::test]
 async fn killed_and_restored_windows_are_the_models() {
     let mut tally = KillTally::default();
@@ -1608,6 +1693,12 @@ async fn killed_and_restored_windows_are_the_models() {
             check_against(&name, &e.table, &e.late, &e.marks, &g);
             tally.cases += 1;
             tally.restores += e.phases.len() - 1;
+            for pair in e.phases.windows(2) {
+                let (was, now) = (pair[0].case.lateness, pair[1].case.lateness);
+                tally.raised += usize::from(now > was);
+                tally.lowered += usize::from(now < was);
+            }
+            tally.floored += e.floored;
             for ph in &e.phases {
                 tally.several_lanes += usize::from(ph.case.lanes.len() > 1);
                 let Some(k) = &ph.kill else {
@@ -1644,6 +1735,8 @@ async fn killed_and_restored_windows_are_the_models() {
     assert!(tally.opened >= tally.windows, "{tally:?}");
     assert!(tally.late >= 150, "{tally:?}");
     assert!(tally.updates >= 50, "{tally:?}");
+    assert!(tally.raised >= 40 && tally.lowered >= 20, "{tally:?}");
+    assert!(tally.floored >= 20, "{tally:?}");
 }
 
 /// `case` with only the rows `of` has.

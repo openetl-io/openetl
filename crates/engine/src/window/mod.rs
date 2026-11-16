@@ -22,6 +22,20 @@
 //! late and quarantined. `i64::MAX` is the end of input: every window
 //! closes.
 //!
+//! A window is gone once the watermark has passed its end plus the
+//! lateness in force then, and stays gone when the lateness changes: the
+//! floor, in each key group, is the latest the watermark less the lateness
+//! has been, and a window that ends at or before it is gone. A row of it
+//! is late, and a session there is dropped when its key's sessions are
+//! next read. With a lateness that never changes, the floor is the
+//! watermark less the lateness; after a raise it holds where the old
+//! lateness had it, until the watermark less the new one passes it. A
+//! window takes the lateness in force when it closes, which its expiry
+//! timer is set by: one that fires before a raised lateness has passed is
+//! set again. State keeps the floor as the horizon of an operator of its
+//! own in the window's layer, which keeps nothing else, so it's in every
+//! snapshot, by key group, whether or not any window is left.
+//!
 //! Output rows are keyed by `window_start` and the group keys: an insert
 //! the first time, then updates; each has an ID and a seq from its key and
 //! how many times it has been given, so a replay gives the same rows.
@@ -186,6 +200,8 @@ impl Out {
 /// A group window of a statement, on one lane's key groups.
 pub struct Operator {
     pub id: OperatorId,
+    /// Whose horizon in the window's layer is the floor, in microseconds.
+    floor: OperatorId,
     plan: Arc<GroupWindow>,
     /// The statement's place and output, for messages.
     at: String,
@@ -199,6 +215,7 @@ pub struct Operator {
     per_micro: i64,
     /// In the event time's unit.
     lateness: i64,
+    lateness_micros: i64,
     key_groups: u32,
     /// In microseconds; `i64::MIN` until it advances.
     watermark: i64,
@@ -235,8 +252,10 @@ impl Operator {
                 out: a.data_type.clone(),
             })
             .collect();
+        let op = operator(id);
         Ok(Self {
-            id: operator(id),
+            id: op,
+            floor: OperatorId(op.0 ^ 1),
             at: at.to_string(),
             output: output.to_owned(),
             schema,
@@ -254,6 +273,7 @@ impl Operator {
             time_type,
             per_micro,
             lateness: lateness.max(0).saturating_mul(per_micro),
+            lateness_micros: lateness.max(0),
             key_groups,
             watermark: i64::MIN,
             opened: 0,
@@ -292,6 +312,19 @@ impl Operator {
     fn watermark_in<S: StateBackend>(&self, state: &S, g: u32) -> i64 {
         let horizon = state.horizon(self.id, g).saturating_mul(self.per_micro);
         self.watermark().max(horizon)
+    }
+
+    /// Where windows in key group `g` stand: its watermark, and its floor,
+    /// both in the event time's unit; `i64::MIN` for no floor.
+    fn standing<S: StateBackend>(&self, state: &S, g: u32) -> (i64, i64) {
+        let floor = state.horizon(self.floor, g).saturating_mul(self.per_micro);
+        (self.watermark_in(state, g), floor)
+    }
+
+    /// Whether a window that ends at `end`, a time of the event time's
+    /// unit, is gone where windows stand as `standing` gave.
+    fn gone(&self, end: i64, (watermark, floor): (i64, i64)) -> bool {
+        end.saturating_add(self.lateness) <= watermark || (floor > i64::MIN && end <= floor)
     }
 
     /// Takes a batch of the statement's input: the columns it reads.
@@ -549,10 +582,10 @@ impl Operator {
         let mut slots: BTreeMap<(u32, Vec<u8>, i64), Vec<usize>> = BTreeMap::new();
         for &(r, t) in take {
             let mut placed = false;
-            let w = self.watermark_in(state, groups[r]);
+            let at = self.standing(state, groups[r]);
             for s in self.starts(t) {
                 let end = s.saturating_add(size);
-                if end.saturating_add(self.lateness) <= w {
+                if self.gone(end, at) {
                     continue;
                 }
                 placed = true;
@@ -599,6 +632,8 @@ impl Operator {
             }
             let name = slot_key(&k, s);
             let closed = end <= self.watermark_in(state, g);
+            // An open window's expiry is set when it closes, by the
+            // lateness then.
             if fresh {
                 self.opened += 1;
                 let timer = match closed {
@@ -613,13 +648,6 @@ impl Operator {
                         _ => end.saturating_add(self.lateness),
                     }),
                 );
-                if !closed && self.lateness > 0 {
-                    state.set_timer(
-                        self.id,
-                        KeyRef::new(g, &timer_key(EXPIRE, &k, s)),
-                        self.timer_at(end.saturating_add(self.lateness)),
-                    );
-                }
             }
             match closed {
                 true => again.push(Emit {
@@ -671,11 +699,17 @@ impl Operator {
         let mut emits = Vec::new();
         let mut lists = Vec::new();
         for (((g, k), rs), value) in by_key.into_iter().zip(got) {
-            let w = self.watermark_in(state, g);
+            let at = self.standing(state, g);
+            let w = at.0;
             let mut list = match &value {
                 Some(v) => self.decode_sessions(v)?,
                 None => Vec::new(),
             };
+            // Sessions gone but not yet expired, as after a lowered
+            // lateness: no row meets them, and they go without a row.
+            let kept = list.len();
+            list.retain(|s| !self.gone(s.end.saturating_add(1), at));
+            self.dropped += (kept - list.len()) as u64;
             let before: BTreeMap<i64, Session> =
                 list.iter().map(|s| (s.start, s.clone())).collect();
             for (r, t) in rs {
@@ -685,7 +719,7 @@ impl Operator {
                     .iter()
                     .filter(|s| meets(s))
                     .fold((t, end), |(a, b), s| (a.min(s.start), b.max(s.end)));
-                if last.saturating_add(1).saturating_add(self.lateness) <= w {
+                if self.gone(last.saturating_add(1), at) {
                     out.rejected.push((
                         rows_of(r),
                         self.reason("late: its session closed past its allowed lateness"),
@@ -770,20 +804,15 @@ impl Operator {
                 }
                 let close = s.end.saturating_add(1);
                 let closed = close <= w;
-                if !closed {
-                    state.set_timer(
-                        self.id,
-                        KeyRef::new(g, &timer_key(CLOSE, &k, s.start)),
-                        self.timer_at(close),
-                    );
-                }
-                if closed || self.lateness > 0 {
-                    state.set_timer(
-                        self.id,
-                        KeyRef::new(g, &timer_key(EXPIRE, &k, s.start)),
-                        self.timer_at(close.saturating_add(self.lateness)),
-                    );
-                }
+                let (kind, at) = match closed {
+                    true => (EXPIRE, close.saturating_add(self.lateness)),
+                    false => (CLOSE, close),
+                };
+                state.set_timer(
+                    self.id,
+                    KeyRef::new(g, &timer_key(kind, &k, s.start)),
+                    self.timer_at(at),
+                );
                 if closed {
                     emits.push(Emit {
                         group: g,
@@ -803,7 +832,8 @@ impl Operator {
     /// Moves the watermark to `t`, in microseconds, if it's later: closes
     /// every window it reaches the end of, giving its row, and forgets
     /// those past their allowed lateness. A group whose state's horizon is
-    /// past `t` has fired its timers to there already. Its timers fired, it
+    /// past `t` has fired its timers to there already. It moves the floor
+    /// to `t` less the lateness where that's later. Its timers fired, it
     /// moves state's horizon to `t`: state drops what's at or before it.
     pub async fn advance<S: StateBackend>(
         &mut self,
@@ -815,6 +845,7 @@ impl Operator {
             return Ok(out);
         }
         self.watermark = t;
+        state.expire(self.floor, t.saturating_sub(self.lateness_micros));
         loop {
             let timers = state
                 .fire(self.id, t, TIMERS)
@@ -866,13 +897,18 @@ impl Operator {
             }
             let st = self.decode_state(&value)?;
             let end = s.saturating_add(self.size());
-            if *kind == EXPIRE
-                || self.lateness == 0
-                || end.saturating_add(self.lateness) <= self.watermark()
-            {
-                state.delete(self.id, KeyRef::new(*g, name));
-                gone.insert(name.clone());
-                self.dropped += 1;
+            match self.gone(end, self.standing(state, *g)) {
+                true => {
+                    state.delete(self.id, KeyRef::new(*g, name));
+                    gone.insert(name.clone());
+                    self.dropped += 1;
+                }
+                // It closes, or its expiry came by a lateness since raised.
+                false => state.set_timer(
+                    self.id,
+                    KeyRef::new(*g, &timer_key(EXPIRE, k, *s)),
+                    self.timer_at(end.saturating_add(self.lateness)),
+                ),
             }
             if *kind == CLOSE {
                 closing.push(Emit {
@@ -913,11 +949,11 @@ impl Operator {
             .get(self.id, &refs)
             .await
             .map_err(|e| state_error(&e))?;
-        let w = self.watermark();
         let mut closing = Vec::new();
         let mut lists = Vec::new();
         for (((g, k), fired), value) in by_key.into_iter().zip(got) {
             let Some(value) = value else { continue };
+            let at = self.standing(state, g);
             let mut list = self.decode_sessions(&value)?;
             for (kind, start) in fired {
                 let Some(i) = list.iter().position(|s| s.start == start) else {
@@ -927,9 +963,18 @@ impl Operator {
                     closing.push((g, k.clone(), list[i].clone()));
                 }
                 let end = list[i].end.saturating_add(1);
-                if kind == EXPIRE || self.lateness == 0 || end.saturating_add(self.lateness) <= w {
-                    list.remove(i);
-                    self.dropped += 1;
+                match self.gone(end, at) {
+                    true => {
+                        list.remove(i);
+                        self.dropped += 1;
+                    }
+                    // It closes, or its expiry came by a lateness since
+                    // raised, or by an end it has grown past.
+                    false => state.set_timer(
+                        self.id,
+                        KeyRef::new(g, &timer_key(EXPIRE, &k, start)),
+                        self.timer_at(end.saturating_add(self.lateness)),
+                    ),
                 }
             }
             lists.push((g, k, list));

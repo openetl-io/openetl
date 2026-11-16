@@ -315,28 +315,268 @@ async fn lateness_gives_a_window_again_until_it_passes() {
     assert!(run.table.0.values().next().unwrap().contains("total=7 n=2"));
 }
 
-/// A higher lateness doesn't bring back a window whose state went under
-/// the lower one: a row for it within the new lateness starts the window
-/// again from that row alone, whose row then takes the window's place.
+impl Run {
+    /// The attempt dies after the barrier of `epoch`, and another, of
+    /// `generation`, restores its record on `lanes` lanes with `lateness`,
+    /// at the watermark `at`: it goes on with the output as this one left
+    /// it.
+    async fn restore(
+        &self,
+        sql: &str,
+        lateness: i64,
+        stores: &dyn Stores,
+        (generation, epoch, lanes): (u64, u64, u32),
+        snaps: &[Snapshot],
+        at: i64,
+    ) -> Run {
+        let mut back = Run::new(sql, lateness, stores, generation, epoch + 1, lanes, snaps).await;
+        (back.table, back.writes, back.rejected) =
+            (self.table.clone(), self.writes.clone(), self.rejected);
+        back.key = self.key.clone();
+        back.advance(at).await;
+        back
+    }
+
+    /// The windows its lanes stopped keeping since their callers last
+    /// took them.
+    fn dropped(&self) -> u64 {
+        self.ops.iter().map(|o| o.dropped).sum()
+    }
+}
+
+/// A window gone under the lateness it had stays gone when the lateness is
+/// raised: a row of it within the new lateness is late, and the window's
+/// row stays as it was. A window open at the change takes the new lateness,
+/// and a row of it within that updates its row.
 #[tokio::test]
-async fn a_raised_lateness_starts_a_gone_window_again() {
+async fn a_window_gone_before_a_raised_lateness_stays_gone() {
     let bucket = MemoryBucket::new();
     let mut run = Run::new(TUMBLE, 0, &bucket, 1, 1, 1, &[]).await;
-    run.rows(&[("eu", 5, 1), ("eu", 2, 10)]).await;
+    run.rows(&[("eu", 5, 1), ("eu", 2, 10), ("eu", 3, MIN + 10 * SEC)])
+        .await;
     run.advance(MIN + 5).await;
-    assert!(run.table.0.values().next().unwrap().contains("total=7 n=2"));
-    let snaps = run.barrier(1).await;
-    let table = run.table.clone();
-    let mut run = Run::new(TUMBLE, MIN, &bucket, 2, 2, 1, &snaps).await;
-    run.table = table;
-    run.advance(MIN + 5).await;
-    run.rows(&[("eu", 4, 20)]).await;
-    assert_eq!(run.rejected, 0);
+    let first = "1970-01-01T00:00:00Z|eu";
+    let second = "1970-01-01T00:01:00Z|eu";
     assert!(
-        run.table.0.values().next().unwrap().contains("total=4 n=1"),
+        run.table.0[first].contains("total=7 n=2"),
         "{:?}",
         run.table
     );
+    let snaps = run.barrier(1).await;
+    let mut run = run
+        .restore(TUMBLE, 2 * MIN, &bucket, (2, 1, 2), &snaps, MIN + 5)
+        .await;
+    // Within the new lateness of the first minute, which had gone.
+    run.rows(&[("eu", 4, 20)]).await;
+    assert_eq!(run.rejected, 1);
+    assert!(
+        run.table.0[first].contains("total=7 n=2"),
+        "{:?}",
+        run.table
+    );
+    // The second minute was open at the change: it keeps its state for
+    // the new lateness once it closes.
+    run.advance(2 * MIN + 5).await;
+    assert!(
+        run.table.0[second].contains("total=3 n=1"),
+        "{:?}",
+        run.table
+    );
+    run.rows(&[("eu", 6, MIN + 20 * SEC)]).await;
+    run.advance(4 * MIN - 1).await;
+    run.rows(&[("eu", 1, MIN + 30 * SEC)]).await;
+    assert_eq!(run.rejected, 1);
+    assert!(
+        run.table.0[second].contains("total=10 n=3"),
+        "{:?}",
+        run.table
+    );
+    run.advance(4 * MIN).await;
+    run.rows(&[("eu", 1, MIN + 40 * SEC)]).await;
+    assert_eq!(run.rejected, 2);
+    run.advance(i64::MAX).await;
+    assert_eq!(run.writes[first], 1, "{:?}", run.writes);
+    assert_eq!(run.writes[second], 3, "{:?}", run.writes);
+    assert_eq!(run.table.0.len(), 2);
+}
+
+/// A window closed and kept at a raise takes the new lateness: its expiry
+/// by the old one passes, and a row of it still updates its row.
+#[tokio::test]
+async fn a_window_kept_at_a_raised_lateness_takes_it() {
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(TUMBLE, MIN, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 1)]).await;
+    run.advance(MIN + 5).await;
+    let snaps = run.barrier(1).await;
+    let mut run = run
+        .restore(TUMBLE, 3 * MIN, &bucket, (2, 1, 2), &snaps, MIN + 5)
+        .await;
+    run.advance(2 * MIN + 5).await;
+    run.rows(&[("eu", 2, 10)]).await;
+    let first = "1970-01-01T00:00:00Z|eu";
+    assert!(
+        run.table.0[first].contains("total=7 n=2"),
+        "{:?}",
+        run.table
+    );
+    run.advance(4 * MIN).await;
+    run.rows(&[("eu", 2, 20)]).await;
+    assert_eq!(run.rejected, 1);
+    assert_eq!(run.writes[first], 2);
+    assert_eq!(run.dropped(), 1);
+}
+
+/// The floor that keeps windows gone is in the window's snapshots by key
+/// group, even when no window is left and they name no run. Kills between
+/// the change and the late rows, with restores onto other numbers of
+/// lanes, keep it; a window that ends after it takes rows by the new
+/// lateness, and once the watermark less the new lateness passes it, the
+/// floor no longer matters.
+#[tokio::test]
+async fn the_floor_survives_kills_onto_other_lanes() {
+    let objects = Arc::new(ObjectStorage::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        object_store::path::Path::from("state"),
+    ));
+    let stores = || RunStores::new(objects.clone(), RunConfig::default());
+    let s = stores();
+    let mut run = Run::new(TUMBLE, 0, &s, 1, 1, 2, &[]).await;
+    let firsts: Vec<Row> = REGIONS.iter().map(|r| (*r, 1, 10 * SEC)).collect();
+    run.rows(&firsts).await;
+    run.advance(MIN + 5).await;
+    assert_eq!(run.table.0.len(), REGIONS.len());
+    let snaps = run.barrier(1).await;
+    assert_eq!(snaps.len(), 2);
+    assert!(
+        snaps.iter().all(|sn| runs(sn).unwrap().is_empty()),
+        "every window has gone"
+    );
+    // Raised, and killed before a row comes; then again on 1 lane.
+    let s = stores();
+    let mut run = run
+        .restore(TUMBLE, 3 * MIN, &s, (2, 1, 3), &snaps, MIN + 5)
+        .await;
+    let snaps = run.barrier(2).await;
+    assert_eq!(snaps.len(), 3);
+    let s = stores();
+    let mut run = run
+        .restore(TUMBLE, 3 * MIN, &s, (3, 2, 1), &snaps, MIN + 5)
+        .await;
+    let lates: Vec<Row> = REGIONS.iter().map(|r| (*r, 7, 50 * SEC)).collect();
+    run.rows(&lates).await;
+    assert_eq!(run.rejected, REGIONS.len());
+    // A window that ends after the floor, and none of whose rows came
+    // before, takes one within the new lateness.
+    run.advance(3 * MIN).await;
+    run.rows(&[("eu", 2, MIN + SEC)]).await;
+    assert_eq!(run.rejected, REGIONS.len());
+    let snaps = run.barrier(3).await;
+    let s = stores();
+    let mut run = run
+        .restore(TUMBLE, 3 * MIN, &s, (4, 3, 2), &snaps, 3 * MIN)
+        .await;
+    // The watermark less the new lateness has passed the floor: a row is
+    // late by the lateness alone.
+    run.advance(5 * MIN).await;
+    run.rows(&[("eu", 1, 2 * MIN + SEC), ("eu", 1, 2 * MIN - 1)])
+        .await;
+    assert_eq!(run.rejected, REGIONS.len() + 1);
+    run.advance(i64::MAX).await;
+    assert_eq!(run.table.0.len(), REGIONS.len() + 2, "{:?}", run.table);
+    for r in REGIONS {
+        let k = format!("1970-01-01T00:00:00Z|{r}");
+        assert_eq!(run.writes[&k], 1, "{k}");
+        assert!(run.table.0[&k].contains("total=1 n=1"), "{:?}", run.table);
+    }
+    assert!(run.table.0["1970-01-01T00:02:00Z|eu"].contains("total=1 n=1"));
+}
+
+/// A lowered lateness takes rows only within itself, at once, and touches
+/// no row the output has: a window past it keeps its row, and a row of it
+/// is late. A session past it is dropped without a delete, and a row that
+/// would have joined it makes a session of its own.
+#[tokio::test]
+async fn a_lowered_lateness_takes_rows_only_within_it() {
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(TUMBLE, 2 * MIN, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 1), ("eu", 1, MIN + 1)]).await;
+    run.advance(MIN + 5).await;
+    run.rows(&[("eu", 2, 10)]).await;
+    let first = "1970-01-01T00:00:00Z|eu";
+    assert!(
+        run.table.0[first].contains("total=7 n=2"),
+        "{:?}",
+        run.table
+    );
+    let snaps = run.barrier(1).await;
+    let mut run = run
+        .restore(TUMBLE, 30 * SEC, &bucket, (2, 1, 3), &snaps, MIN + 5)
+        .await;
+    run.rows(&[("eu", 1, 20)]).await;
+    assert_eq!(run.rejected, 0, "within the new lateness");
+    run.advance(MIN + 30 * SEC).await;
+    run.rows(&[("eu", 100, 30)]).await;
+    assert_eq!(run.rejected, 1);
+    assert!(
+        run.table.0[first].contains("total=8 n=3"),
+        "{:?}",
+        run.table
+    );
+    run.advance(i64::MAX).await;
+    assert_eq!(run.writes[first], 3, "{:?}", run.writes);
+    assert_eq!(run.dropped(), 2, "both minutes' state went");
+
+    let mut run = Run::new(SESSION, 2 * MIN, &bucket, 3, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 0)]).await;
+    run.advance(40 * SEC).await;
+    let snaps = run.barrier(1).await;
+    let mut run = run
+        .restore(SESSION, 0, &bucket, (4, 1, 2), &snaps, 40 * SEC)
+        .await;
+    run.rows(&[("eu", 2, 25 * SEC)]).await;
+    assert_eq!(run.rejected, 0);
+    assert_eq!(run.dropped(), 1, "the gone session went");
+    run.advance(i64::MAX).await;
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        [
+            "window_start=1970-01-01T00:00:00Z window_end=1970-01-01T00:00:30Z region=eu total=5",
+            "window_start=1970-01-01T00:00:25Z window_end=1970-01-01T00:00:55Z region=eu total=2",
+        ]
+    );
+    assert_eq!(run.writes["1970-01-01T00:00:00Z|eu"], 1);
+}
+
+/// A raised lateness keeps a session gone too: a row whose session, with
+/// the key's sessions kept, ends at or before the floor is late, so none
+/// starts again under the gone one's start. A row whose own session
+/// reaches past the floor makes a session, as it would without the change.
+#[tokio::test]
+async fn a_session_gone_before_a_raised_lateness_stays_gone() {
+    let bucket = MemoryBucket::new();
+    let sql = "INSERT INTO o SELECT window_start, window_end, region, sum(amount) AS total \
+               FROM orders GROUP BY session(at, INTERVAL '30 seconds'), region";
+    let mut run = Run::new(sql, 0, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 0)]).await;
+    run.advance(40 * SEC).await;
+    let snaps = run.barrier(1).await;
+    let mut run = run
+        .restore(sql, 2 * MIN, &bucket, (2, 1, 3), &snaps, 40 * SEC)
+        .await;
+    run.rows(&[("eu", 4, 0), ("eu", 1, 9 * SEC)]).await;
+    assert_eq!(run.rejected, 2);
+    run.rows(&[("eu", 2, 20 * SEC)]).await;
+    assert_eq!(run.rejected, 2);
+    run.advance(i64::MAX).await;
+    assert_eq!(
+        run.table.0.values().cloned().collect::<Vec<_>>(),
+        [
+            "window_start=1970-01-01T00:00:00Z window_end=1970-01-01T00:00:30Z region=eu total=5",
+            "window_start=1970-01-01T00:00:20Z window_end=1970-01-01T00:00:50Z region=eu total=2",
+        ]
+    );
+    assert_eq!(run.writes["1970-01-01T00:00:00Z|eu"], 1);
 }
 
 /// A window that no longer passes HAVING leaves the output.

@@ -1942,7 +1942,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		KeyGroups:    c.job.keyGroups(),
 		Committables: make([][]byte, len(st.descs)),
 		Files:        recordFiles(st.flow.Files()),
-		Snapshots:    checkpoint.KeptSnapshots(st.flow.Snapshots),
+		Snapshots:    st.flow.Snapshots,
 		Operators:    checkpoint.Operators(st.flow.Operators, c.windows),
 		Quarantine:   st.flow.Quarantine,
 		Sync:         c.job.Sync,

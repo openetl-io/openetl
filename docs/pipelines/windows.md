@@ -94,7 +94,7 @@ Take the statement above with `delay: 30s`, over a stream with one split that re
 A row is late when the watermark has passed its event time. A late row of a window that is still open goes into the window as usual. A late row of a window that has closed goes into the window only within `watermark.lateness`:
 
 - **Within the lateness**, the window's state is kept, so the late row is added to it. The engine writes the window's row again, as an update of the row with the same key. If the window no longer passes `HAVING`, the engine writes a delete of its row. If a late row moves a session's start, the engine deletes the session's old row and writes the row under its new start.
-- **After the lateness**, the window's state is gone. The engine quarantines the late row with the code `late`. A row whose event time is null is in no window, and is quarantined with the code `event_time`.
+- **After the lateness**, the window's state is gone. The engine quarantines the late row with the code `late`. A row whose event time is null is in no window, and is quarantined with the code `event_time`. A window that is gone stays gone when you change the lateness later ([Change the lateness](#change-the-lateness)).
 
 Updates and deletes need a destination that merges, so a stream with `watermark.lateness` needs `destination.write: merge` for each group window's output. The plan refuses lateness otherwise.
 
@@ -153,9 +153,23 @@ A group window keeps its state under an ID that the plan shows. Some edits keep 
 
 Without step 4, a changed or new window starts from now: its windows hold only the rows that the pipeline reads after the change. A window that is open at the change loses the rows read before. A stream read with `full_refresh` is read whole at each sync, so a changed or new window over it holds every row from the next sync on.
 
-A changed `watermark.delay` or `watermark.lateness` keeps the state. Each window keeps the time that its state expires at, which it got when it opened. So a higher lateness does not extend the state of a window that opened before the change, and does not bring back a window whose state is gone.
+A changed `watermark.delay` or `watermark.lateness` keeps the state.
 
-After such a window's state is gone, a row that comes within the new lateness starts the window again, with that row alone. Under `merge`, the window's new row then replaces the row that had every earlier row of the window. This can occur for each window that opened before the change, until the watermark passes the window's end plus the new lateness. To prevent it, read the stream again as [Build the state again](#build-the-state-again) describes.
+### Change the lateness
+
+When you apply a new `watermark.lateness`, the next run uses it for the windows that are still kept, and for new windows. It does not bring back a window that is gone:
+
+- **A window whose lateness had passed before the change** stays gone. A row for it is late, also when the row comes within a higher new lateness. The engine quarantines the row with the code `late`, and the window's row in the destination stays as it is.
+- **A window that is open at the change, or closed and within its lateness,** takes the new lateness. With a higher lateness, the engine keeps the window's state longer, and a late row within the new lateness updates the window's row. With a lower lateness, a row that comes after the new lateness is late, and the window's row stays as it is.
+- **A window that opens after the change** uses the new lateness.
+
+The engine keeps a record of how far windows are gone in the window's state, and the checkpoint holds it. So the rule holds after a failure, a restart and a change in the number of workers. After a higher lateness, the late rows of windows that were gone before the change go to quarantine. This continues until the watermark less the new lateness passes the point where those windows had gone.
+
+For a `session` window, the engine judges a row by the session that the row joins or starts. If that session ends at or before the point where windows had gone, the row is late. A row whose gap reaches past that point starts or joins a session, as it does with an unchanged lateness. That session can overlap a session that had gone, and each one has its own row.
+
+With a lower lateness, the engine can keep the state of a window that had closed before the change until the old lateness passes. It takes no more rows for that window.
+
+A change of the lateness never deletes or rewrites a row that a window wrote. To build windows that are gone again, with the rows that came late, read the stream again as [Build the state again](#build-the-state-again) describes. The reset drops the state, and the new read builds each window again from the rows that it returns.
 
 ## Watch a window
 
@@ -164,5 +178,5 @@ The console's **SQL** tab shows, under **At the last checkpoint**, what each win
 The same numbers are metrics, with the operator's ID as `openetl.operator` ([Monitoring](../self-host/monitoring.md#stateful-operators)). Watch these:
 
 - `openetl.operator.watermark.lag` grows when a split is behind the others. A window's row waits until the watermark reaches the window's end, so a growing lag delays the rows.
-- `openetl.operator.rows.late` counts late rows that came after their window's lateness, which OpenETL quarantined. If it grows, raise `watermark.delay` or `watermark.lateness`. A raised lateness applies to windows that open after the change. A late row of an older window can replace that window's row with a row of itself alone, as [Change a window's statement](#change-a-windows-statement) describes.
+- `openetl.operator.rows.late` counts late rows that came after their window's lateness, which OpenETL quarantined. If it grows, raise `watermark.delay` or `watermark.lateness`. A raised lateness applies to the windows that are still kept and to new windows. The late rows of windows that were gone before the change still go to quarantine, as [Change the lateness](#change-the-lateness) describes.
 - `openetl.operator.windows` and `openetl.operator.state.memory` grow with the keys and the lateness.
