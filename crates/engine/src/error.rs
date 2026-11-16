@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn a_lost_peer_is_in_the_details_too() {
-        let st = JobError::peer_lost(2, "engine 2 was lost").to_status();
+        let st = JobError::peer_lost(2, "engine 3 was lost").to_status();
         let rpc = RpcStatus::decode(st.details()).unwrap();
         let types: Vec<&str> = rpc.details.iter().map(|d| d.type_url.as_str()).collect();
         assert_eq!(

@@ -475,7 +475,7 @@ async fn an_engine_lost_mid_epoch_fails_the_job_as_transient() {
     let err = failure(e1).await;
     assert_eq!(err.code, ErrorCode::Transient);
     assert!(
-        err.message.contains("engine 0") && err.message.contains("lost"),
+        err.message.contains("engine 1 at") && err.message.contains("lost"),
         "{err}"
     );
     assert!(!reader.await.unwrap().contains(&FrameKind::Barrier));
