@@ -6411,7 +6411,7 @@ pub(crate) mod tests {
             panic!("planned");
         };
         assert!(
-            e.message.contains("no statement of transform.sql keeps")
+            e.message.contains("no statement of transform.sql computes, and which the pipeline's version didn't drop")
                 && e.message.contains("openetl reset --stream STREAM NAME"),
             "{}",
             e.message

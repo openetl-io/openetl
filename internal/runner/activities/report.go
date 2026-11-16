@@ -111,6 +111,12 @@ func (r *reporter) mirrored(rec *checkpoint.Record, collapsed, held map[string]u
 	for _, p := range progress {
 		req.Progress = append(req.Progress, progressProto(p))
 	}
+	for _, s := range rec.Snapshots {
+		if !slices.Contains(req.Operators, s.Operator) {
+			req.Operators = append(req.Operators, s.Operator)
+		}
+	}
+	slices.Sort(req.Operators)
 	if p := rec.Previous; p != nil {
 		req.Previous = &dataplanev1.CheckpointRef{Generation: p.Generation, Epoch: p.Epoch}
 	}

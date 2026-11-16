@@ -798,10 +798,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 		}
 		restored = at.prev
 	}
-	restored, reset, resetStreams := j.reset(restored)
-	if len(resetStreams) > 0 {
-		log.Info("reading streams again from the start", "streams", resetStreams, "reset", reset)
-	}
+	restored, reset, resetStreams := j.restoring(restored, log)
 	if restored != nil {
 		res.Restored = restored.Epoch
 	}

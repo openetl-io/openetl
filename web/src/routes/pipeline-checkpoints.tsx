@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { DataTable } from "@/components/data-table/data-table";
 import { useDataTable } from "@/components/data-table/use-data-table";
 import { Empty, ErrorNote } from "@/components/empty";
+import { QuarantineCount, QuarantineView } from "@/components/quarantine";
 import { RelativeTime } from "@/components/relative-time";
 import { DeliveryLevel, PipelineService, type ListCheckpointsResponse } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorMessage } from "@/lib/api";
@@ -17,12 +18,16 @@ import { lastSegment, pipelineName } from "@/lib/names";
 
 type Checkpoint = ListCheckpointsResponse["checkpoints"][number];
 
-function StreamChip({ s }: { s: Checkpoint["streams"][number] }) {
+function StreamChip({ s, checkpoint }: { s: Checkpoint["streams"][number]; checkpoint: Checkpoint }) {
   return (
     <Badge variant="outline" className="gap-1.5 font-normal">
       <span>{s.name}</span>
       <span className="text-muted-foreground tabular-nums">{compact(s.rows)}</span>
-      {s.quarantinedRows > 0n && <span className="text-degraded tabular-nums">{compact(s.quarantinedRows)} quarantined</span>}
+      {s.quarantinedRows > 0n && (
+        <QuarantineCount stream={s.name} focus={{ generation: checkpoint.generation, epoch: checkpoint.epoch }}>
+          {compact(s.quarantinedRows)} quarantined
+        </QuarantineCount>
+      )}
       {s.heldCells > 0n && <span className="text-degraded tabular-nums">{compact(s.heldCells)} cells held</span>}
       {s.heldColumns.length > 0 && <span className="text-degraded">{s.heldColumns.join(", ")} held</span>}
       {s.collapsedRows > 0n && <span className="text-muted-foreground tabular-nums">{compact(s.collapsedRows)} collapsed</span>}
@@ -96,7 +101,7 @@ export function CheckpointsTab({ workspace, pipeline, running }: { workspace: st
         cell: ({ row }) => (
           <span className="flex flex-wrap gap-1.5 py-1">
             {row.original.streams.map((s) => (
-              <StreamChip key={s.name} s={s} />
+              <StreamChip key={s.name} s={s} checkpoint={row.original} />
             ))}
           </span>
         ),
@@ -132,18 +137,20 @@ export function CheckpointsTab({ workspace, pipeline, running }: { workspace: st
     );
   }
   return (
-    <div className="grid gap-3">
-      <p className="text-muted-foreground">
-        Each epoch a sync committed, newest first. A forced barrier was placed without a resume point. A stream read again after a
-        restore from one shows the delivery level it got in that epoch, below the planned one, since its rows may repeat rows an
-        earlier epoch committed. A complete stream finished its read in that epoch.
-      </p>
-      <DataTable table={table} loading={cps.isPending} />
-      {cps.hasNextPage && (
-        <Button variant="outline" size="sm" className="w-fit" disabled={cps.isFetchingNextPage} onClick={() => cps.fetchNextPage()}>
-          {cps.isFetchingNextPage ? "Loading…" : "Load older checkpoints"}
-        </Button>
-      )}
-    </div>
+    <QuarantineView workspace={workspace} pipeline={pipeline}>
+      <div className="grid gap-3">
+        <p className="text-muted-foreground">
+          Each epoch a sync committed, newest first. A forced barrier was placed without a resume point. A stream read again after a
+          restore from one shows the delivery level it got in that epoch, below the planned one, since its rows may repeat rows an
+          earlier epoch committed. A complete stream finished its read in that epoch.
+        </p>
+        <DataTable table={table} loading={cps.isPending} />
+        {cps.hasNextPage && (
+          <Button variant="outline" size="sm" className="w-fit" disabled={cps.isFetchingNextPage} onClick={() => cps.fetchNextPage()}>
+            {cps.isFetchingNextPage ? "Loading…" : "Load older checkpoints"}
+          </Button>
+        )}
+      </div>
+    </QuarantineView>
   );
 }

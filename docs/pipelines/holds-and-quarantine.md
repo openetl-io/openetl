@@ -164,8 +164,9 @@ Held values:
 
 Quarantined rows:
 
-- The **Quarantined** counts on a pipeline's **Overview**, its **Syncs** and **Checkpoints** tabs, and a sync's page count the rows that OpenETL did not write.
+- The **Quarantined** counts on a pipeline's **Overview**, its **Syncs** and **Checkpoints** tabs, and a sync's page count the rows that OpenETL did not write. Select a count to see the stream's files, with their rows by cause. If you are an editor or above, **Show records** shows a file's first records ([Use the console](../use/index.md#quarantined-rows)).
 - `openetl quarantine PIPELINE` lists the files of quarantined rows, newest first. It also adds up their rows by stream and cause, such as `312  type on amount`. Add `--stream STREAM` or `--since 7d` to list fewer files. The API method is `ListQuarantine`.
+- `openetl quarantine show PIPELINE PATH` prints a file's first lines, so that you can pipe them to `jq`. It needs the editor role.
 - The rows are in the data plane's object storage, under `_quarantine/` next to the pipeline's checkpoints, in files of JSON lines. A job reads in parallel parts, called lanes. For each stream, a commit has one file from each lane that quarantined rows: `STREAM.jsonl` from the first lane, and `STREAM.N.jsonl` from lane `N`. Read all of a commit's files for the stream.
 - Each line has the stream, a code, the column, the reason and the record. On a stream with `unfitValues: hold`, it also has `notHeld`. [Quarantine files](../reference/quarantine-files.md) describes the format, which you can use to load the rows again yourself.
 - OpenETL keeps the files of every commit, and deletes the files of commits that failed. To delete old files, set the pipeline's `quarantine.retention`, such as `720h`. Without it, OpenETL keeps the files.

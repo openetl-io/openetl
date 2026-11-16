@@ -12,6 +12,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DescriptionItem, DetailHeader } from "@/components/detail-header";
 import { ErrorNote } from "@/components/empty";
+import { QuarantineCount, QuarantineView } from "@/components/quarantine";
 import { RelativeTime } from "@/components/relative-time";
 import { StatusBadge } from "@/components/status";
 import { SyncService, SyncState, type LogEntry } from "@/gen/openetl/api/v1/sync_pb";
@@ -19,7 +20,7 @@ import { errorMessage } from "@/lib/api";
 import { clock, compact, dateOf, duration, full } from "@/lib/format";
 import { shortDigest, syncName } from "@/lib/names";
 import { bytes, cpuTime, sizeAmounts, sizeLabel, sizeReasonLabel, syncUse } from "@/lib/sizes";
-import { heldLabel, rows, syncStatus } from "@/lib/status";
+import { heldLabel, quarantinedStream, rows, syncStatus } from "@/lib/status";
 
 const route = getRouteApi("/_app/workspaces/$workspace/pipelines/$pipeline/syncs/$sync");
 
@@ -192,85 +193,99 @@ export function SyncPage() {
   const use = syncUse(it?.attempts ?? []);
 
   return (
-    <div className="grid gap-6">
-      {s.error ? (
-        <ErrorNote title="Couldn't load the sync" message={errorMessage(s.error)} />
-      ) : (
-        <div className="grid gap-4">
-          <DetailHeader title={`Sync ${sync.slice(-8)}`} status={it && <StatusBadge status={syncStatus(it)} />}>
-            {it && (
-              <>
-                <DescriptionItem label="Started">{start && <RelativeTime date={start} />}</DescriptionItem>
-                <DescriptionItem label={end ? "Took" : "Running for"}>
-                  <span className="tabular-nums">{start && duration((end?.getTime() ?? Date.now()) - start.getTime())}</span>
-                </DescriptionItem>
-                <DescriptionItem label="Rows">
-                  <span className="tabular-nums">
-                    {r && full(r.all)}
-                    {r && r.quarantined > 0n && <span className="text-degraded">, {full(r.quarantined)} quarantined</span>}
-                    {r && r.held > 0 && <span className="text-degraded">, {heldLabel(r.held)}</span>}
-                  </span>
-                </DescriptionItem>
-                <DescriptionItem label="Version">
-                  <Link
-                    to="/workspaces/$workspace/pipelines/$pipeline"
-                    params={{ workspace, pipeline }}
-                    search={{ tab: "versions", version: it.version }}
-                    className="font-mono text-[0.8125rem] hover:underline"
-                  >
-                    {shortDigest(it.version)}
-                  </Link>
-                </DescriptionItem>
-                <DescriptionItem label="Data plane">{it.dataPlane}</DescriptionItem>
-                {lastAttempt && (
-                  <DescriptionItem label="Size">
-                    <span title={sizeAmounts(lastAttempt.size)}>
-                      {sizeLabel(lastAttempt.size)}, {sizeReasonLabel[lastAttempt.sizeReason]}
-                    </span>
-                  </DescriptionItem>
-                )}
-                {lastAttempt?.usage && (
-                  <DescriptionItem label="Used">
-                    <span className="tabular-nums">
-                      {cpuTime(use.cpu)} of CPU, peak {bytes(use.memory)}
-                    </span>
-                  </DescriptionItem>
-                )}
-              </>
-            )}
-          </DetailHeader>
-          {it && it.streams.length > 0 && (
-            <ul aria-label="Rows by stream" className="flex flex-wrap gap-1.5">
-              {it.streams.map((st) => (
-                <li key={st.name}>
-                  <Badge variant="outline" className="gap-1.5 font-normal">
-                    {st.name}
-                    <span className="text-muted-foreground tabular-nums">{compact(st.rows)}</span>
-                    {st.heldColumns.length > 0 && <span className="text-degraded">{st.heldColumns.join(", ")} held</span>}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-          )}
-          {it?.error && <ErrorNote title="Why it failed" message={it.error} />}
-        </div>
-      )}
-      {it && it.attempts.length > 1 && <Attempts attempts={it.attempts} />}
-      <section className="grid gap-2" aria-labelledby="log-h">
-        <h2 id="log-h" className="text-base font-semibold">
-          Log
-        </h2>
-        {log.error ? (
-          <div className="grid gap-2">
-            <ErrorNote title="Couldn't read the log" message={log.error} />
-            <Button variant="outline" size="sm" className="w-fit" onClick={log.retry}>
-              Try again
-            </Button>
-          </div>
+    <QuarantineView workspace={workspace} pipeline={pipeline}>
+      <div className="grid gap-6">
+        {s.error ? (
+          <ErrorNote title="Couldn't load the sync" message={errorMessage(s.error)} />
         ) : (
-          <LogView entries={log.entries} live={live || !log.done} />
+          <div className="grid gap-4">
+            <DetailHeader title={`Sync ${sync.slice(-8)}`} status={it && <StatusBadge status={syncStatus(it)} />}>
+              {it && (
+                <>
+                  <DescriptionItem label="Started">{start && <RelativeTime date={start} />}</DescriptionItem>
+                  <DescriptionItem label={end ? "Took" : "Running for"}>
+                    <span className="tabular-nums">{start && duration((end?.getTime() ?? Date.now()) - start.getTime())}</span>
+                  </DescriptionItem>
+                  <DescriptionItem label="Rows">
+                    <span className="tabular-nums">
+                      {r && full(r.all)}
+                      {r && r.quarantined > 0n && (
+                        <span className="text-degraded">
+                          ,{" "}
+                          <QuarantineCount stream={quarantinedStream(it)} focus={{ sync: name }}>
+                            {full(r.quarantined)} quarantined
+                          </QuarantineCount>
+                        </span>
+                      )}
+                      {r && r.held > 0 && <span className="text-degraded">, {heldLabel(r.held)}</span>}
+                    </span>
+                  </DescriptionItem>
+                  <DescriptionItem label="Version">
+                    <Link
+                      to="/workspaces/$workspace/pipelines/$pipeline"
+                      params={{ workspace, pipeline }}
+                      search={{ tab: "versions", version: it.version }}
+                      className="font-mono text-[0.8125rem] hover:underline"
+                    >
+                      {shortDigest(it.version)}
+                    </Link>
+                  </DescriptionItem>
+                  <DescriptionItem label="Data plane">{it.dataPlane}</DescriptionItem>
+                  {lastAttempt && (
+                    <DescriptionItem label="Size">
+                      <span title={sizeAmounts(lastAttempt.size)}>
+                        {sizeLabel(lastAttempt.size)}, {sizeReasonLabel[lastAttempt.sizeReason]}
+                      </span>
+                    </DescriptionItem>
+                  )}
+                  {lastAttempt?.usage && (
+                    <DescriptionItem label="Used">
+                      <span className="tabular-nums">
+                        {cpuTime(use.cpu)} of CPU, peak {bytes(use.memory)}
+                      </span>
+                    </DescriptionItem>
+                  )}
+                </>
+              )}
+            </DetailHeader>
+            {it && it.streams.length > 0 && (
+              <ul aria-label="Rows by stream" className="flex flex-wrap gap-1.5">
+                {it.streams.map((st) => (
+                  <li key={st.name}>
+                    <Badge variant="outline" className="gap-1.5 font-normal">
+                      {st.name}
+                      <span className="text-muted-foreground tabular-nums">{compact(st.rows)}</span>
+                      {st.quarantinedRows > 0n && (
+                        <QuarantineCount stream={st.name} focus={{ sync: name }}>
+                          {compact(st.quarantinedRows)} quarantined
+                        </QuarantineCount>
+                      )}
+                      {st.heldColumns.length > 0 && <span className="text-degraded">{st.heldColumns.join(", ")} held</span>}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {it?.error && <ErrorNote title="Why it failed" message={it.error} />}
+          </div>
         )}
-      </section>
-    </div>
+        {it && it.attempts.length > 1 && <Attempts attempts={it.attempts} />}
+        <section className="grid gap-2" aria-labelledby="log-h">
+          <h2 id="log-h" className="text-base font-semibold">
+            Log
+          </h2>
+          {log.error ? (
+            <div className="grid gap-2">
+              <ErrorNote title="Couldn't read the log" message={log.error} />
+              <Button variant="outline" size="sm" className="w-fit" onClick={log.retry}>
+                Try again
+              </Button>
+            </div>
+          ) : (
+            <LogView entries={log.entries} live={live || !log.done} />
+          )}
+        </section>
+      </div>
+    </QuarantineView>
   );
 }

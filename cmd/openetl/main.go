@@ -90,6 +90,8 @@ Commands:
                   --new-version patches them into COLUMN__v2
   quarantine NAME list the files of rows a pipeline quarantined, newest
                   first, and their rows by cause
+  quarantine show NAME PATH
+                  print a quarantine file's first lines, which a runner reads
   version         print the CLI's version
 
 Commands send the API key in OPENETL_API_KEY, or in --api-key-file
@@ -559,6 +561,75 @@ func printTransform(out io.Writer, t *apiv1.TransformPlan) {
 	if len(dropped) > 0 {
 		fmt.Fprintf(out, "    not delivered, as passthrough is none: %s\n", strings.Join(dropped, ", "))
 	}
+	printOperators(out, t.GetOperators())
+}
+
+// printOperators prints a SQL transform's stateful operators: what each
+// keeps, and what it is against the pipeline's current version.
+func printOperators(out io.Writer, ops []*apiv1.OperatorPlan) {
+	if len(ops) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "  state:")
+	tw := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	for _, op := range ops {
+		at := "-"
+		if op.GetLine() > 0 {
+			at = fmt.Sprintf("%d:%d", op.GetLine(), op.GetColumn())
+		}
+		change := strings.ToLower(strings.TrimPrefix(op.GetChange().String(), "OPERATOR_CHANGE_"))
+		if op.GetChange() == apiv1.OperatorChange_OPERATOR_CHANGE_UNSPECIFIED {
+			change = "unknown"
+		}
+		fmt.Fprintf(tw, "    %s\t%s\t%s\t%s\t%s\n", at, cmp.Or(op.GetOutput(), "-"), op.GetId(), change, operatorText(op))
+	}
+	_ = tw.Flush()
+}
+
+func operatorText(op *apiv1.OperatorPlan) string {
+	var what string
+	if op.GetWindow() != "" {
+		what = op.GetWindow() + " " + op.GetSize().AsDuration().String()
+		if s := op.GetSlide(); s != nil {
+			what += " every " + s.AsDuration().String()
+		}
+		what += " by " + op.GetEventTime()
+		if len(op.GetKeys()) > 0 {
+			what += " on " + strings.Join(op.GetKeys(), ", ")
+		}
+		what += ": " + strings.Join(op.GetAggregates(), ", ")
+		what += fmt.Sprintf("; keeps a window's state %s of event time (lateness %s)", op.GetRetention().AsDuration(), op.GetLateness().AsDuration())
+	}
+	start := "starts empty"
+	if op.GetEarlier() {
+		start = "an earlier version's, so it restores that state if the checkpoint still holds it, or starts empty"
+	}
+	var then string
+	switch op.GetChange() {
+	case apiv1.OperatorChange_OPERATOR_CHANGE_NEW:
+		then = start
+	case apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED:
+		then = start + ", in place of " + op.GetReplaces()
+	case apiv1.OperatorChange_OPERATOR_CHANGE_DROPPED:
+		then = "its state is dropped"
+	}
+	if len(op.GetBackfill()) > 0 {
+		then += "; a backfill reads again " + strings.Join(op.GetBackfill(), ", ")
+	}
+	if op.Held != nil {
+		held := "the last checkpoint holds its state"
+		if !op.GetHeld() {
+			held = "the last checkpoint holds none of its state"
+		}
+		then = strings.TrimPrefix(then+"; "+held, "; ")
+	}
+	switch {
+	case what == "":
+		return then
+	case then == "":
+		return what
+	}
+	return what + "; " + then
 }
 
 func runPipeline(ctx context.Context, cmd string, args []string, out io.Writer) error {

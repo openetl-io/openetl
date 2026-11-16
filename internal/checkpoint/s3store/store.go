@@ -45,6 +45,22 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, checkpoint.Version
 	return data, checkpoint.Version(aws.ToString(out.ETag)), nil
 }
 
+func (s *Store) GetPrefix(ctx context.Context, key string, n int) ([]byte, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
+	if status(err) == http.StatusNotFound {
+		return nil, checkpoint.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: s3 get %s: %w", key, err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	data, err := io.ReadAll(io.LimitReader(out.Body, int64(n)))
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint: s3 get %s: %w", key, err)
+	}
+	return data, nil
+}
+
 func (s *Store) Create(ctx context.Context, key string, data []byte) (checkpoint.Version, error) {
 	return s.put(ctx, key, data, &s3.PutObjectInput{IfNoneMatch: aws.String("*")})
 }

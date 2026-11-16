@@ -100,6 +100,11 @@ INSERT INTO public.customers
 SELECT id, lower(email) AS email, country, updated_at
 FROM public.customers
 WHERE country IS NOT NULL;
+
+INSERT INTO revenue_by_minute
+SELECT window_start, customer_id, sum(amount) AS revenue, count(*) AS orders
+FROM paid_orders
+GROUP BY tumble(created_at, INTERVAL '1 minute'), customer_id;
 `,
   revenue: `INSERT INTO invoices_clean
 SELECT id, customer_id, upper(currency) AS currency, total
@@ -216,6 +221,8 @@ function history(d: Def): Sync[] {
     else if (i < (d.failing ?? 0)) state = SyncState.FAILED;
     else if (i === 0 && d.outcome === "quarantined") quarantined = 61;
     else if (rnd() < 0.04) state = SyncState.FAILED;
+    // An earlier sync of a pipeline that quarantines quarantined a few rows too.
+    if (i === 2 && state === SyncState.SUCCEEDED && d.outcome === "quarantined") quarantined = 9;
     const rows = state === SyncState.FAILED ? 0 : Math.round(d.rows * (0.7 + rnd() * 0.6));
     return create(SyncSchema, {
       name: syncName(i),

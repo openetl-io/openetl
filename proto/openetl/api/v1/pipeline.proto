@@ -141,6 +141,15 @@ service PipelineService {
   rpc ListQuarantine(ListQuarantineRequest) returns (ListQuarantineResponse) {
     option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/quarantine"};
   }
+  // The first lines of one of the files ListQuarantine lists, which a
+  // runner of the pipeline's data plane reads from its object storage. The
+  // records are the pipeline's data: the control plane hands them to the
+  // caller, and doesn't keep them. Each read is in the audit log. Fails
+  // with NOT_FOUND for a path ListQuarantine doesn't list, and UNAVAILABLE
+  // when no runner of the data plane takes the read within a minute.
+  rpc ReadQuarantineFile(ReadQuarantineFileRequest) returns (ReadQuarantineFileResponse) {
+    option (google.api.http) = {get: "/v1/{parent=workspaces/*/pipelines/*}/quarantine:read"};
+  }
 }
 
 // PipelineVersion is a pipeline's spec with what it pins. Syncs run exactly
@@ -178,6 +187,10 @@ message SqlPlan {
   repeated SqlOutput outputs = 1;
   // The stateful operators' IDs, in the order of their statements.
   repeated string operators = 2;
+  // The stateful operators of earlier versions that this one doesn't keep,
+  // changed or dropped by the version that applied it. A sync drops their
+  // state from the checkpoint it starts from.
+  repeated string dropped = 3;
 }
 
 message SqlOutput {
@@ -188,6 +201,8 @@ message SqlOutput {
   // An Arrow IPC stream holding only the schema: the statement's columns,
   // with logical types.
   bytes arrow_schema = 4;
+  // Its statement's stateful operator's ID; empty for none.
+  string operator = 5;
 }
 
 // PinnedConfig is a version of a source's or destination's config.
@@ -946,6 +961,88 @@ message TransformPlan {
   // one a statement replaces, and with passthrough none, each one no
   // statement writes.
   repeated string withheld = 4;
+  // The stateful operators: each one a statement keeps, in the order of the
+  // statements, then each one the pipeline's current version keeps that no
+  // statement does now.
+  repeated OperatorPlan operators = 5;
+}
+
+// OperatorPlan is a stateful operator of a SQL transform, and what it does
+// to state the pipeline keeps. Its ID is a hash of what it computes and
+// keeps, so an edit that changes neither, such as a rename, a new column
+// passed through or a filter after its aggregates, leaves it and its state
+// as they were.
+message OperatorPlan {
+  string id = 1;
+  // The output its statement writes.
+  string output = 2;
+  // Where its statement's INSERT is in transform.sql, counting from 1; 0
+  // for a dropped one.
+  uint32 line = 3;
+  uint32 column = 4;
+  // group_window. It and the fields up to retention, what the operator
+  // keeps, are unset for a dropped one.
+  string class = 5;
+  // The stream it reads, and the stream's eventTime.
+  string input = 6;
+  string event_time = 7;
+  // tumble, hop or session.
+  string window = 8;
+  // A tumble's or hop's size, or a session's gap.
+  google.protobuf.Duration size = 9;
+  // How often a hop's windows start; unset for the others.
+  google.protobuf.Duration slide = 10;
+  // The stream's columns it groups by, in the order its key groups take
+  // them.
+  repeated string keys = 11;
+  // Its aggregates, over the stream's columns, such as sum(amount).
+  repeated string aggregates = 12;
+  // The input's watermark.lateness.
+  google.protobuf.Duration lateness = 13;
+  // How long, in event time, it keeps a window's state: from the window's
+  // start until lateness after its end, or for a session, until gap and
+  // lateness after its last row.
+  google.protobuf.Duration retention = 14;
+  OperatorChange change = 15;
+  // With OPERATOR_CHANGE_CHANGED, the operator of the current version it
+  // takes the place of.
+  string replaces = 16;
+  // With OPERATOR_CHANGE_NEW or OPERATOR_CHANGE_CHANGED, the streams the
+  // pipeline has read that a backfill reads again, to build its state from
+  // their start: openetl reset --stream. Empty: its state builds from what
+  // the next sync reads, as each sync reads the stream whole, or the
+  // pipeline hasn't read it.
+  repeated string backfill = 17;
+  // With OPERATOR_CHANGE_NEW or OPERATOR_CHANGE_CHANGED: an earlier version
+  // had it, the current version dropped it, and the pipeline's last
+  // checkpoint may still hold its state, as when no sync has run since. The
+  // next sync then restores that state, where it can be restored, rather
+  // than starting empty. Where held is set, it is set only if the last
+  // checkpoint holds the state.
+  bool earlier = 18;
+  // Whether the pipeline's last checkpoint names its state; unset where
+  // that isn't known.
+  optional bool held = 19;
+}
+
+// OperatorChange is what a stateful operator is against the pipeline's
+// current version.
+enum OperatorChange {
+  // Unknown: the current version's statements weren't planned when it was
+  // applied.
+  OPERATOR_CHANGE_UNSPECIFIED = 0;
+  // The current version has it, so it keeps its state.
+  OPERATOR_CHANGE_KEPT = 1;
+  // The current version has no stateful operator writing its output. Its
+  // state starts empty.
+  OPERATOR_CHANGE_NEW = 2;
+  // It takes the place of the current version's operator writing the same
+  // output, which computes or keeps something else. Its state starts empty,
+  // and the other's is dropped.
+  OPERATOR_CHANGE_CHANGED = 3;
+  // The current version has it, and no statement keeps it now. Its state is
+  // dropped.
+  OPERATOR_CHANGE_DROPPED = 4;
 }
 
 // StatementPlan is one INSERT INTO … SELECT of a SQL transform.
@@ -1379,4 +1476,22 @@ message ListQuarantineRequest {
 message ListQuarantineResponse {
   repeated QuarantineFile files = 1;
   string next_page_token = 2;
+}
+
+message ReadQuarantineFileRequest {
+  // workspaces/{workspace}/pipelines/{pipeline}
+  string parent = 1;
+  // The file's path, as ListQuarantine gives it.
+  string path = 2;
+  // At most this many lines, from the first. 0: 20; at most 100.
+  int32 limit = 3;
+}
+
+message ReadQuarantineFileResponse {
+  // The file's first lines, each a JSON object with the quarantined
+  // record and why, without their newlines. They stop before the limit
+  // where the next would take them past 256 KiB.
+  repeated string lines = 1;
+  // The file has lines after these.
+  bool more = 2;
 }

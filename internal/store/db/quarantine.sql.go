@@ -63,6 +63,29 @@ func (q *Queries) DropExpiredQuarantineFiles(ctx context.Context, arg DropExpire
 	return result.RowsAffected(), nil
 }
 
+const getQuarantineFile = `-- name: GetQuarantineFile :one
+SELECT stream, output FROM quarantine_files
+WHERE org_id = $1 AND pipeline_id = $2 AND path = $3
+`
+
+type GetQuarantineFileParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Path       string
+}
+
+type GetQuarantineFileRow struct {
+	Stream string
+	Output bool
+}
+
+func (q *Queries) GetQuarantineFile(ctx context.Context, arg GetQuarantineFileParams) (GetQuarantineFileRow, error) {
+	row := q.db.QueryRow(ctx, getQuarantineFile, arg.OrgID, arg.PipelineID, arg.Path)
+	var i GetQuarantineFileRow
+	err := row.Scan(&i.Stream, &i.Output)
+	return i, err
+}
+
 const insertQuarantineFile = `-- name: InsertQuarantineFile :execrows
 INSERT INTO quarantine_files (org_id, pipeline_id, path, url, stream, output, generation, epoch, run_id, commit_time, rows, causes)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)

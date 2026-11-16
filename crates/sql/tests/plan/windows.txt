@@ -20,13 +20,13 @@ statement 1:1 revenue_by_minute group_window
   schema window_start Timestamp(µs, "UTC"), region Utf8, revenue Decimal128(22, 2), orders Int64 not null
   reads orders: region, amount, created_at
   window Tumble { size: 60000000 } by created_at on region
-  aggregate Sum(orders.amount): Decimal128(22, 2)
   aggregate Count(*): Int64
-  grouped __openetl_window_start, __openetl_window_end, region, sum(orders.amount), count(*)
+  aggregate Sum(orders.amount): Decimal128(22, 2)
+  grouped __openetl_window_start, __openetl_window_end, region, count(*), sum(orders.amount)
   project window_start := __openetl_window_start, region, revenue := sum(orders.amount), orders := count(*)
   need region
   passes region -> region
-  operator window-1566d23a39b0adbe
+  operator window-29faae33810aefa5
 
 plan
 INSERT INTO x SELECT window_start, window_end, avg(qty) AS a, min(amount) AS lo, max(region) AS hi, approx_distinct(id) AS n, median(qty) AS m, percentile_cont(0.9) WITHIN GROUP (ORDER BY qty) AS p90
@@ -42,19 +42,19 @@ statement 1:1 x group_window
   reads orders: id, region, amount, qty, created_at
   filter orders.amount > Decimal128(0.00,12,2)
   window Hop { slide: 60000000, size: 300000000 } by created_at on 
-  aggregate Avg(CAST(orders.qty AS Float64)): Float64
-  aggregate Min(orders.amount): Decimal128(12, 2)
-  aggregate Max(orders.region): Utf8
   aggregate ApproxDistinct(orders.id): UInt64
+  aggregate Avg(CAST(orders.qty AS Float64)): Float64
+  aggregate Count(*): Int64
+  aggregate Max(orders.region): Utf8
+  aggregate Min(orders.amount): Decimal128(12, 2)
   aggregate Percentile(0.5)(CAST(orders.qty AS Float64)): Float64
   aggregate Percentile(0.9)(CAST(orders.qty AS Float64)): Float64
-  aggregate Count(*): Int64
-  grouped __openetl_window_start, __openetl_window_end, avg(orders.qty), min(orders.amount), max(orders.region), approx_distinct(orders.id), median(orders.qty), percentile_cont(Float64(0.9)) WITHIN GROUP [orders.qty ASC NULLS LAST], count(*)
+  grouped __openetl_window_start, __openetl_window_end, approx_distinct(orders.id), avg(orders.qty), count(*), max(orders.region), min(orders.amount), median(orders.qty), percentile_cont(Float64(0.9)) WITHIN GROUP [orders.qty ASC NULLS LAST]
   filter count(*) > Int64(2)
   project window_start := __openetl_window_start, window_end := __openetl_window_end, a := avg(orders.qty), lo := min(orders.amount), hi := max(orders.region), n := CAST(approx_distinct(orders.id) AS Int64), m := median(orders.qty), p90 := percentile_cont(Float64(0.9)) WITHIN GROUP [orders.qty ASC NULLS LAST]
   need 
   passes 
-  operator window-8502403263decec7
+  operator window-384bdb7b5a0d1a24
 
 plan
 INSERT INTO s SELECT window_start, window_end, region AS r, count(qty) FILTER (WHERE qty > 1) AS n
@@ -72,7 +72,7 @@ statement 1:1 s group_window
   project window_start := __openetl_window_start, window_end := __openetl_window_end, r := orders.region, n := count(orders.qty) FILTER (WHERE orders.qty > Int64(1))
   need region
   passes region -> r
-  operator window-78fd17611c2e5856
+  operator window-0c9a6f78a725f012
 
 # A view's rows, renamed, are grouped: the key follows the renames, and the
 # need is the stream's column.
@@ -101,7 +101,7 @@ statement 2:1 hourly group_window
   project hour := __openetl_window_start, area, revenue := sum(paid.amount)
   need region
   passes region -> area
-  operator window-adea73d001d22442
+  operator window-c90ffd150aa62683
 
 stream ticks time(at)
   sym utf8
@@ -119,14 +119,14 @@ statement 1:1 bars group_window
   schema window_start Timestamp(ns, "UTC"), sym Utf8, lo Float64, hi Float64, total Float64
   reads ticks: sym, price, at
   window Tumble { size: 1000000000 } by at on sym
-  aggregate Min(ticks.price): Float64
   aggregate Max(ticks.price): Float64
+  aggregate Min(ticks.price): Float64
   aggregate Sum(ticks.price): Float64
-  grouped __openetl_window_start, __openetl_window_end, sym, min(ticks.price), max(ticks.price), sum(ticks.price)
+  grouped __openetl_window_start, __openetl_window_end, sym, max(ticks.price), min(ticks.price), sum(ticks.price)
   project window_start := __openetl_window_start, sym, lo := min(ticks.price), hi := max(ticks.price), total := sum(ticks.price)
   need sym
   passes sym -> sym
-  operator window-c8eb2cff204b6e88
+  operator window-720b35a345a6a333
 
 plan
 INSERT INTO x SELECT tumble(created_at, INTERVAL '1 minute') AS w, count(*) AS n FROM orders

@@ -26,6 +26,12 @@ export function rows(s: Sync) {
   return { all, quarantined, held };
 }
 
+/** The one stream of a sync that quarantined rows; undefined for none, or several. */
+export function quarantinedStream(s: Sync) {
+  const q = s.streams.filter((st) => st.quarantinedRows > 0n);
+  return q.length === 1 ? q[0]!.name : undefined;
+}
+
 export function heldLabel(columns: number) {
   return columns === 1 ? "1 column held" : `${columns} columns held`;
 }

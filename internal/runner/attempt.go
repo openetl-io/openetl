@@ -160,6 +160,10 @@ type Job struct {
 	// Where the dataflow's stateful operators keep their state, as Plan
 	// says.
 	StateURL string
+	// The stateful operators of earlier versions that the pipeline's
+	// version changed or dropped, as removing transform.sql drops them all:
+	// an attempt drops their state from the record it restores.
+	DroppedOperators []string
 	// Infinite dates and timestamps are quarantined instead of clamped.
 	UnfitInfinity bool
 	Dataflow      Dataflow
@@ -573,10 +577,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 		}
 		restored = prev
 	}
-	restored, reset, resetStreams := job.reset(restored)
-	if len(resetStreams) > 0 {
-		log.Info("reading streams again from the start", "streams", resetStreams, "reset", reset)
-	}
+	restored, reset, resetStreams := job.restoring(restored, log)
 	if restored != nil {
 		res.Restored = restored.Epoch
 	}

@@ -224,6 +224,8 @@ message ReportCheckpointRequest {
   // in the epoch. With a SQL transform the destination gets the outputs, so
   // they hold, and the source's streams don't.
   repeated CheckpointOutput outputs = 11;
+  // The stateful operators whose state the checkpoint names, sorted.
+  repeated string operators = 12;
 }
 
 // One of a transform's outputs at a checkpoint.

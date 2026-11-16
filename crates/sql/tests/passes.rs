@@ -125,7 +125,7 @@ fn a_group_window_needs_its_keys_and_passes_them() {
     );
     assert_eq!(
         s.need(),
-        Some(&["user_id".to_owned(), "kind".to_owned()][..])
+        Some(&["kind".to_owned(), "user_id".to_owned()][..])
     );
     assert_eq!(s.passes(), pairs(&[("user_id", "uid"), ("kind", "kind")]));
     assert_eq!(s.key, ["window_start", "uid", "kind"]);

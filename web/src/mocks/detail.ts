@@ -1,13 +1,15 @@
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
-import { timestampFromMs } from "@bufbuild/protobuf/wkt";
+import { durationFromMs, timestampFromMs } from "@bufbuild/protobuf/wkt";
 import {
   CheckpointSchema,
   DeliveryLevel,
   HoldCause_Kind,
   HoldSchema,
   HoldWayOut_Action,
+  OperatorChange,
   PipelinePlanSchema,
   PipelineVersionSchema,
+  QuarantineFileSchema,
   StreamSchemaSchema,
   TransformPlanSchema,
   WriteMode,
@@ -16,6 +18,7 @@ import {
   type Pipeline,
   type PipelinePlan,
   type PipelineVersion,
+  type QuarantineFile,
   type StreamSchema,
 } from "@/gen/openetl/api/v1/pipeline_pb";
 import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
@@ -54,6 +57,15 @@ function sqlPlan(p: Pipeline): MessageInitShape<typeof PipelinePlanSchema> {
         { line: 11, column: 1, output: "order_tags", class: "row_wise", inputs: ["public.orders"], views: ["paid_orders"], columns: cols("order_id int64; tag utf8") },
         { line: 15, column: 1, output: "public.customers", replaces: true, class: "row_wise", inputs: ["public.customers"], primaryKey: ["id"],
           columns: cols(`id int64; email utf8; country utf8; updated_at ${ts}`) },
+        { line: 20, column: 1, output: "revenue_by_minute", class: "group_window", inputs: ["public.orders"], views: ["paid_orders"],
+          primaryKey: ["window_start", "customer_id"], exchange: ["customer_id"], operator: "window-29faae33810aefa5",
+          columns: cols(`window_start ${ts}; customer_id int64; revenue decimal(22, 2); orders int64`) },
+      ],
+      operators: [
+        { id: "window-29faae33810aefa5", output: "revenue_by_minute", line: 20, column: 1, class: "group_window", input: "public.orders", eventTime: "created_at",
+          window: "tumble", size: durationFromMs(60_000), keys: ["customer_id"], aggregates: ["count(*)", "sum(amount)"],
+          lateness: durationFromMs(30_000), retention: durationFromMs(90_000), change: OperatorChange.KEPT },
+        { id: "window-b20660707787f280", output: "revenue_by_hour", change: OperatorChange.DROPPED },
       ],
       passedThrough: ["public.orders"],
       withheld: ["public.customers"],
@@ -249,4 +261,68 @@ export function log(s: Sync): LogEntry[] {
   return lines.map(([level, message, attrs], i) =>
     create(LogEntrySchema, { time: ts(start + ((end - start) * i) / lines.length), level, message, attempt: 1, attrs }),
   );
+}
+
+// Where the data plane keeps a pipeline's quarantine files: its store, then
+// the org's and the pipeline's IDs.
+const quarantineDir = (p: string) => `s3://acme-openetl/checkpoints/0192f3a4-0000-7000-8000-000000000001/${p.split("/").pop()}/_quarantine`;
+
+/** The quarantine files of a pipeline's committed epochs, newest first, made up from its checkpoints' quarantined rows. */
+export function quarantineFiles(parent: string, stream?: string): QuarantineFile[] {
+  return checkpoints(parent).flatMap((c) =>
+    c.streams
+      .filter((st) => st.quarantinedRows > 0n && (!stream || st.name === stream))
+      .flatMap((st) => {
+        const n = st.quarantinedRows;
+        const file = (path: string, rows: bigint, causes: { code: string; column?: string; notHeld?: string; rows: bigint }[]) =>
+          create(QuarantineFileSchema, {
+            stream: st.name,
+            path,
+            url: `${quarantineDir(parent)}/${path}`,
+            rows,
+            causes,
+            generation: c.generation,
+            epoch: c.epoch,
+            sync: c.sync,
+            commitTime: c.commitTime,
+          });
+        const at = `${c.generation}/${c.epoch}/${st.name}`;
+        if (n < 20n) return [file(`${at}.jsonl`, n, [{ code: "type", column: "amount", rows: n }])];
+        // Two lanes' files: values that don't fit, and records that aren't objects. The stream holds cells, so each line says
+        // why its row wasn't held.
+        return [
+          file(`${at}.jsonl`, n - 3n, [
+            { code: "type", column: "amount", rows: n - 9n },
+            { code: "precision", column: "amount", rows: 4n },
+            { code: "type", column: "id", notHeld: "key", rows: 2n },
+          ]),
+          file(`${at}.1.jsonl`, 3n, [{ code: "object", notHeld: "record", rows: 3n }]),
+        ];
+      }),
+  );
+}
+
+/** A file's first lines, as a runner reads them; undefined for a file the pipeline doesn't have. */
+export function quarantineLines(parent: string, path: string, limit: number) {
+  const f = quarantineFiles(parent).find((x) => x.path === path);
+  if (!f) return undefined;
+  const line = (code: string, column: string, notHeld: string, reason: string, record: string) =>
+    JSON.stringify({ stream: f.stream, code, ...(column && { column }), ...(notHeld && { notHeld }), reason, record });
+  const lines: string[] = [];
+  for (const c of f.causes) {
+    for (let i = 0; i < Number(c.rows) && lines.length < 100; i++) {
+      const id = 7 + lines.length;
+      const [reason, record] =
+        c.code === "object"
+          ? [`row ${i} is not a JSON object`, `[${id}]`]
+          : c.code === "precision"
+            ? [`precision: column "${c.column}" doesn't fit decimal(18, 2)`, `{"id": ${id}, "amount": "1204.12345"}`]
+            : c.column === "id"
+              ? [`type: column "id" isn't a number`, `{"id": "${id}a", "amount": "3.25"}`]
+              : [`type: column "${c.column}" isn't a number`, `{"id": ${id}, "amount": "12.5O", "currency": "EUR"}`];
+      lines.push(line(c.code, c.column, c.notHeld, reason, record));
+    }
+  }
+  const n = Math.min(limit || 20, 100);
+  return { lines: lines.slice(0, n), more: Number(f.rows) > n };
 }

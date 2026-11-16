@@ -33,3 +33,7 @@ WHERE f.org_id = @org_id AND f.pipeline_id = @pipeline_id
   AND p.org_id = f.org_id AND p.id = f.pipeline_id
   AND v.spec -> 'quarantine' ->> 'retention' IS NOT NULL
   AND f.commit_time < now() - rtrim(v.spec -> 'quarantine' ->> 'retention', 's')::numeric * interval '1 second';
+
+-- name: GetQuarantineFile :one
+SELECT stream, output FROM quarantine_files
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND path = @path;
