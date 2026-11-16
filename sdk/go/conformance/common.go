@@ -202,20 +202,20 @@ func (c *common) checkCheck(t T) {
 func (c *common) passed(t T, what string, resp answer) {
 	t.Helper()
 	const with = "with the good config"
-	c.checkAnswer(t, with, c.config, resp)
+	secrets := c.checkAnswer(t, with, c.config, resp)
 	items := resp.GetItems()
 	// With a failed item, the loop says so; without one, the checks didn't
 	// finish.
 	_, first := firstFailed(items)
 	if e := resp.GetError(); e != nil && first == nil {
-		t.Errorf("%s failed %s: %s: %s", what, with, e.GetCode(), e.GetMessage())
+		t.Errorf("%s failed %s: %s: %s", what, with, e.GetCode(), shown(e.GetMessage(), secrets))
 	}
 	for i, it := range items {
 		switch it.GetStatus() {
 		case protocolv1.CheckStatus_CHECK_STATUS_FAILED:
-			t.Errorf("%s, %s's %s failed with %s: %s", with, what, label(i, it), it.GetError().GetCode(), itemText(it))
+			t.Errorf("%s, %s's %s failed with %s: %s", with, what, label(i, it, secrets), it.GetError().GetCode(), shown(itemText(it), secrets))
 		case protocolv1.CheckStatus_CHECK_STATUS_WARNING:
-			t.Logf("%s, %s's %s warned: %s", with, what, label(i, it), itemText(it))
+			t.Logf("%s, %s's %s warned: %s", with, what, label(i, it, secrets), shown(itemText(it), secrets))
 		}
 	}
 }
@@ -240,6 +240,10 @@ const (
 	answerTime  = 5 * time.Second
 	answerSlack = time.Second
 )
+
+// How long errors gives the Check whose codes it reads, so that a connector
+// that never answers fails the check rather than hangs it.
+const checkTime = 2 * time.Minute
 
 // Errors: bad credentials are AUTH_INVALID and an upstream that doesn't
 // answer is retryable, both from Check and from the connector's work. With
@@ -267,12 +271,14 @@ func (c *common) checkErrors(t T) {
 		}
 		p := c.another(t, tc.config)
 		with := "with " + tc.name
-		resp, err := protocolv1.NewConnectorServiceClient(p.Conn()).Check(t.Context(), &protocolv1.CheckRequest{Config: p.Config()})
+		ctx, cancel := context.WithTimeout(t.Context(), checkTime)
+		resp, err := protocolv1.NewConnectorServiceClient(p.Conn()).Check(ctx, &protocolv1.CheckRequest{Config: p.Config()})
+		cancel()
 		if err != nil {
 			t.Errorf("%s, Check failed as an RPC, not in its response: %v", with, rpcerr.FromStatus(err))
 		} else {
-			c.checkAnswer(t, with, tc.config, resp)
-			c.failedWith(t, with, resp, tc.codes)
+			secrets := c.checkAnswer(t, with, tc.config, resp)
+			c.failedWith(t, with, resp, tc.codes, secrets)
 		}
 		if tc.timed {
 			c.answersInTime(t, with, p, tc.config)
@@ -287,8 +293,9 @@ func (c *common) checkErrors(t T) {
 
 // failedWith reports a Check answer that passed, or failed with a code
 // other than codes: the response's error's, or without one, which
-// checkAnswer reports, the first failed item's.
-func (c *common) failedWith(t T, with string, resp answer, codes []protocolv1.ErrorCode) {
+// checkAnswer reports, the first failed item's. It shows no text that holds
+// one of secrets.
+func (c *common) failedWith(t T, with string, resp answer, codes []protocolv1.ErrorCode, secrets []string) {
 	t.Helper()
 	i, first := firstFailed(resp.GetItems())
 	switch e := resp.GetError(); {
@@ -296,12 +303,12 @@ func (c *common) failedWith(t T, with string, resp answer, codes []protocolv1.Er
 		t.Errorf("%s, Check passed", with)
 	case e == nil:
 		if code := first.GetError().GetCode(); !slices.Contains(codes, code) {
-			t.Errorf("%s, %s failed with %s, not %v: %s", with, label(i, first), code, codes, itemText(first))
+			t.Errorf("%s, %s failed with %s, not %v: %s", with, label(i, first, secrets), code, codes, shown(itemText(first), secrets))
 		}
 	case !slices.Contains(codes, e.GetCode()) && first != nil:
-		t.Errorf("%s, %s failed with %s, not %v: %s", with, label(i, first), e.GetCode(), codes, e.GetMessage())
+		t.Errorf("%s, %s failed with %s, not %v: %s", with, label(i, first, secrets), e.GetCode(), codes, shown(e.GetMessage(), secrets))
 	case !slices.Contains(codes, e.GetCode()):
-		t.Errorf("%s, Check failed with %s, not %v: %s", with, e.GetCode(), codes, e.GetMessage())
+		t.Errorf("%s, Check failed with %s, not %v: %s", with, e.GetCode(), codes, shown(e.GetMessage(), secrets))
 	}
 }
 

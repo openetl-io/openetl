@@ -565,7 +565,10 @@ func (d *memDestination) Capabilities() destination.Capabilities {
 func (d *memDestination) Checks() []check.Check {
 	params := check.Params{"store": "the memory store"}
 	return []check.Check{
-		{Name: "connect", Kind: check.Connection, Title: "Reach {store}", Params: params, Run: func(context.Context, *check.Probe) error {
+		{Name: "connect", Kind: check.Connection, Title: "Reach {store}", Params: params, Run: func(ctx context.Context, _ *check.Probe) error {
+			if _, ok := ctx.Deadline(); d.c.Down && !ok && d.bug == "check-unbounded" {
+				return errors.New("waited for an upstream that never answers")
+			}
 			if d.c.Down {
 				return check.ConnectionRefused.Fail("address", "memory:1")
 			}
@@ -1214,9 +1217,9 @@ var rewrites = map[string]func(ctx context.Context, method string, reply any, ca
 		}
 		return err
 	},
-	// Check given a deadline runs out of it.
+	// Check given a deadline under a minute runs out of it.
 	"check-hangs": func(ctx context.Context, method string, _ any, call func() error) error {
-		if _, ok := ctx.Deadline(); ok && strings.HasSuffix(method, "/Check") {
+		if d, ok := ctx.Deadline(); ok && time.Until(d) < time.Minute && strings.HasSuffix(method, "/Check") {
 			<-ctx.Done()
 			return status.FromContextError(ctx.Err()).Err()
 		}
@@ -1290,6 +1293,17 @@ func TestAnswerBugsFail(t *testing.T) {
 				t.Errorf("failed checks %v, want %v; said %q: %v", failed, tc.failed, tc.says, said)
 			}
 		})
+	}
+}
+
+// The errors check gives each Check a deadline, which a connector whose
+// upstream never answers waits for.
+func TestErrorsGivesCheckADeadline(t *testing.T) {
+	failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) {
+		destinationSuite("check-unbounded").Run(ctx, report)
+	})
+	if len(failed) > 0 {
+		t.Errorf("failed checks %v, want none", failed)
 	}
 }
 
