@@ -7,8 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -268,43 +271,85 @@ func (b *base) Spec(_ context.Context, req *protocolv1.SpecRequest) (*protocolv1
 	return resp, nil
 }
 
+// Check runs the connection's checks, or Check, as check.Of does.
 func (b *base) Check(ctx context.Context, req *protocolv1.CheckRequest) (*protocolv1.CheckResponse, error) {
-	var c any
-	var err error
-	if b.c.Source != nil {
-		c, err = b.source(ctx, req.GetConfig())
-	} else {
-		c, err = b.destination(ctx, req.GetConfig())
-	}
+	c, secrets, err := b.bound(ctx, req.GetConfig())
 	if err != nil {
-		return &protocolv1.CheckResponse{Error: protoError(err)}, nil
+		return &protocolv1.CheckResponse{Error: secrets.error(protoError(err))}, nil
 	}
-	switch c := c.(type) {
-	case interface {
-		CheckReport(context.Context, *check.Report)
-	}:
-		var r check.Report
-		c.CheckReport(ctx, &r)
-		return &protocolv1.CheckResponse{Error: protoError(r.Err()), Items: checkItems(&r)}, nil
-	case interface{ Check(context.Context) error }:
-		err = c.Check(ctx)
-	}
-	return &protocolv1.CheckResponse{Error: protoError(err)}, nil
+	items, rerr := answer(ctx, secrets, func(ctx context.Context) check.Report { return check.Of(ctx, c) })
+	return &protocolv1.CheckResponse{Items: items, Error: rerr}, nil
 }
 
-func checkItems(r *check.Report) []*protocolv1.CheckItem {
-	var out []*protocolv1.CheckItem
-	for _, it := range r.Items() {
-		out = append(out, &protocolv1.CheckItem{
-			Name: it.Name, Title: it.Title, Status: ints.Enum[protocolv1.CheckStatus](it.Status), Message: it.Message,
-			Error: protoError(it.Err), Fix: it.Fix, Field: it.Field,
-		})
+// answer runs a check or a preflight under a deadline a little before ctx's,
+// so that when time runs out it still answers in time, with the items that
+// finished and the rest as check.Run leaves them; and gives the answer
+// without secrets' values.
+func answer(ctx context.Context, secrets revealed, run func(context.Context) check.Report) ([]*protocolv1.CheckItem, *protocolv1.Error) {
+	if d, ok := ctx.Deadline(); ok {
+		// A quarter of the time left, at most answerMargin.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, d.Add(-min(time.Until(d)/4, answerMargin)))
+		defer cancel()
 	}
-	return out
+	items, rerr := run(ctx).Proto()
+	return secrets.items(items), secrets.error(rerr)
+}
+
+// answerMargin is the most time answer leaves to answer in.
+const answerMargin = time.Second
+
+// revealed are the values of the secrets the SDK put in a bound config in
+// their names' place, with the forms a URL gives them, longest first; none on
+// the host tier, where the connector gets names only. No check's answer
+// shows them.
+type revealed []string
+
+func (r *revealed) add(value string) {
+	userinfo := strings.TrimPrefix(url.UserPassword("", value).String(), ":")
+	for _, v := range []string{value, url.QueryEscape(value), url.PathEscape(value), userinfo} {
+		if v != "" && !slices.Contains(*r, v) {
+			*r = append(*r, v)
+		}
+	}
+	slices.SortStableFunc(*r, func(a, b string) int { return len(b) - len(a) })
+}
+
+// scrub is s with each value replaced by "[redacted]".
+func (r revealed) scrub(s string) string {
+	for _, v := range r {
+		s = strings.ReplaceAll(s, v, redacted)
+	}
+	return s
+}
+
+// items scrubs every string of items that people see: the templates, the
+// params' values, the detail and the error's message.
+func (r revealed) items(items []*protocolv1.CheckItem) []*protocolv1.CheckItem {
+	if len(r) == 0 {
+		return items
+	}
+	for _, it := range items {
+		it.Title, it.Description, it.Message, it.Fix, it.Detail = r.scrub(it.Title), r.scrub(it.Description), r.scrub(it.Message), r.scrub(it.Fix), r.scrub(it.Detail)
+		for k, v := range it.Params {
+			it.Params[k] = r.scrub(v)
+		}
+		if e := it.GetError(); e != nil {
+			e.Message = r.scrub(e.Message)
+		}
+	}
+	return items
+}
+
+func (r revealed) error(e *protocolv1.Error) *protocolv1.Error {
+	if e != nil {
+		e.Message = r.scrub(e.Message)
+	}
+	return e
 }
 
 func (b *base) Setup(ctx context.Context, req *protocolv1.SetupRequest) (*protocolv1.SetupResponse, error) {
-	c, err := b.bound(ctx, req.GetConfig())
+	c, _, err := b.bound(ctx, req.GetConfig())
 	if err != nil {
 		return nil, status(err)
 	}
@@ -319,7 +364,7 @@ func (b *base) Setup(ctx context.Context, req *protocolv1.SetupRequest) (*protoc
 }
 
 func (b *base) Teardown(ctx context.Context, req *protocolv1.TeardownRequest) (*protocolv1.TeardownResponse, error) {
-	c, err := b.bound(ctx, req.GetConfig())
+	c, _, err := b.bound(ctx, req.GetConfig())
 	if err != nil {
 		return nil, status(err)
 	}
@@ -333,44 +378,46 @@ func (b *base) Teardown(ctx context.Context, req *protocolv1.TeardownRequest) (*
 	return &protocolv1.TeardownResponse{}, nil
 }
 
-// bound is the source or the destination, bound to config.
-func (b *base) bound(ctx context.Context, config []byte) (any, error) {
-	if b.c.Source != nil {
-		return b.source(ctx, config)
+// bound is the source or the destination, bound to config, and the values
+// of the secrets put in config.
+func (b *base) bound(ctx context.Context, config []byte) (any, revealed, error) {
+	config, secrets, err := b.config(ctx, config)
+	if err != nil {
+		return nil, secrets, err
 	}
-	return b.destination(ctx, config)
+	if b.c.Source != nil {
+		s, err := b.c.Source(config, b.host)
+		return s, secrets, configError(err)
+	}
+	d, err := b.c.Destination(config, b.host)
+	return d, secrets, configError(err)
 }
 
 func (b *base) source(ctx context.Context, config []byte) (source.Source, error) {
-	config, err := b.config(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	s, err := b.c.Source(config, b.host)
-	return s, configError(err)
+	c, _, err := b.bound(ctx, config)
+	s, _ := c.(source.Source)
+	return s, err
 }
 
 func (b *base) destination(ctx context.Context, config []byte) (destination.Destination, error) {
-	config, err := b.config(ctx, config)
-	if err != nil {
-		return nil, err
-	}
-	d, err := b.c.Destination(config, b.host)
-	return d, configError(err)
+	c, _, err := b.bound(ctx, config)
+	d, _ := c.(destination.Destination)
+	return d, err
 }
 
 // config puts the secrets' values in place of their names, for the tiers
-// that build their own auth.
-func (b *base) config(ctx context.Context, config []byte) ([]byte, error) {
+// that build their own auth, and gives the values it put there.
+func (b *base) config(ctx context.Context, config []byte) ([]byte, revealed, error) {
 	if len(b.secrets) == 0 || b.c.Egress.Tier < EgressProxy || len(bytes.TrimSpace(config)) == 0 {
-		return config, nil
+		return config, nil, nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(config))
 	dec.UseNumber()
 	var m map[string]any
 	if err := dec.Decode(&m); err != nil {
-		return nil, configError(fmt.Errorf("config: %w", err))
+		return nil, nil, configError(fmt.Errorf("config: %w", err))
 	}
+	var secrets revealed
 	for _, k := range b.secrets {
 		v, ok := configschema.Lookup(m, k)
 		if !ok {
@@ -378,15 +425,17 @@ func (b *base) config(ctx context.Context, config []byte) ([]byte, error) {
 		}
 		name, ok := v.(string)
 		if !ok {
-			return nil, configError(fmt.Errorf("config.%s must name a secret", k))
+			return nil, secrets, configError(fmt.Errorf("config.%s must name a secret", k))
 		}
 		val, err := b.host.GetSecret(ctx, name)
 		if err != nil {
-			return nil, fmt.Errorf("config.%s: %w", k, err)
+			return nil, secrets, fmt.Errorf("config.%s: %w", k, err)
 		}
+		secrets.add(val)
 		configschema.Replace(m, k, val)
 	}
-	return json.Marshal(m)
+	config, err := json.Marshal(m)
+	return config, secrets, err
 }
 
 func configError(err error) error {

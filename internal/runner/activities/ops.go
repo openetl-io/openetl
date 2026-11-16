@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"strings"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -62,27 +63,33 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 	if err == nil {
 		err = readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets())
 	}
-	var items []check.Item
+	r := check.FromError(err)
 	if err == nil {
-		items, err = checkConnection(ctx, in, cfg.GetConfig(), env)
+		r = checkConnection(ctx, in, cfg.GetConfig(), env)
 	}
-	if err != nil {
-		res.Code, res.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
-	}
-	res.Checks = checkItems(items)
+	res.Checks, res.Code, res.Message = checkResult(r)
 	return res, nil
 }
 
-func checkItems(items []check.Item) []contract.CheckItem {
-	var out []contract.CheckItem
-	for _, it := range items {
-		c := contract.CheckItem{Name: it.Name, Title: it.Title, Status: it.Status.String(), Message: it.Message, Fix: it.Fix, Field: it.Field}
-		if it.Err != nil {
-			c.Code, c.Message = errs.CodeOf(it.Err).String(), errs.ToProto(it.Err).GetMessage()
+// checkResult is r as a result: its items, filled in, and the code and
+// message of its error, which a failed item gives even when the connector's
+// answer had no error; empty when r is OK.
+func checkResult(r check.Report) (items []contract.CheckItem, code, message string) {
+	for _, it := range r.Items {
+		it = it.Rendered()
+		c := contract.CheckItem{Name: it.Name, Title: it.Title, Status: it.Status.String(), Message: it.Message, Field: it.Field}
+		if f := it.Failure; f != nil {
+			c.Code, c.Fix = errs.Code(f.ErrorCode()).String(), f.Fix
+			if f.Detail != "" {
+				c.Message = strings.TrimSuffix(c.Message, ".") + ": " + f.Detail
+			}
 		}
-		out = append(out, c)
+		items = append(items, c)
 	}
-	return out
+	if err := r.Err(); err != nil {
+		code, message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
+	}
+	return items, code, message
 }
 
 // opEnv is what an op's connector gets: its version's env, and the aws role
@@ -110,48 +117,38 @@ func opDigests(in contract.ConnectorOpInput, digest string) (source, destination
 	return "", digest
 }
 
-// checkConnection runs a source's or destination's check: its items, if it
-// says what it looked at, and its error.
-func checkConnection(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) ([]check.Item, error) {
+// checkConnection runs a source's or destination's check.
+func checkConnection(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) check.Report {
 	raw, err := protojson.Marshal(cfg.GetConfig())
 	if err != nil {
-		return nil, err
+		return check.FromError(err)
 	}
 	name, _ := connectorhost.SplitRef(cfg.GetConnector())
 	if in.SourceID != "" {
 		src, err := connectorhost.NewSource(name, raw, env)
 		if err != nil {
-			return nil, err
+			return check.FromError(err)
 		}
 		defer connectorhost.Close(src)
 		return runCheck(ctx, src)
 	}
 	dst, err := connectorhost.NewDestination(name, raw, env)
 	if err != nil {
-		return nil, err
+		return check.FromError(err)
 	}
 	defer connectorhost.Close(dst)
 	return runCheck(ctx, dst)
 }
 
-// runCheck runs c's check, a source or a destination's: an external one's
-// items, or a built-in one's report, or its error alone.
-func runCheck(ctx context.Context, c any) ([]check.Item, error) {
-	switch c := c.(type) {
-	case interface {
-		CheckItems(context.Context) ([]check.Item, error)
-	}:
-		return c.CheckItems(ctx)
-	case interface {
-		CheckReport(context.Context, *check.Report)
-	}:
-		var r check.Report
-		c.CheckReport(ctx, &r)
-		return r.Items(), r.Err()
-	case interface{ Check(context.Context) error }:
-		return nil, c.Check(ctx)
+// runCheck runs c's check, a source's or a destination's: an external
+// connector's report of its answer, or a built-in one's run here.
+func runCheck(ctx context.Context, c any) check.Report {
+	if e, ok := c.(interface {
+		CheckReport(context.Context) check.Report
+	}); ok {
+		return e.CheckReport(ctx)
 	}
-	return nil, nil
+	return check.Of(ctx, c)
 }
 
 // DiscoverSource discovers a source's catalog and reports it to the API,

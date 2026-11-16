@@ -64,53 +64,35 @@ func (c *instance) Close() error {
 	return nil
 }
 
-func (c *instance) check(ctx context.Context) error {
-	_, err := c.checkItems(ctx)
-	return err
-}
-
-// checkItems runs the connector's check: what it looked at, item by item,
-// none if it reports only a result, and the check's error.
-func (c *instance) checkItems(ctx context.Context) ([]check.Item, error) {
+// checkReport runs the connector's check of its connection. The answer is
+// read as check.FromProto reads it, failing closed; a failure to start or to
+// call the connector is the report's error.
+func (c *instance) checkReport(ctx context.Context) check.Report {
 	p, err := c.proc(ctx)
 	if err != nil {
-		return nil, err
+		return check.FromError(err)
 	}
 	resp, err := protocolv1.NewConnectorServiceClient(p.conn).Check(ctx, &protocolv1.CheckRequest{Config: p.config})
 	if err != nil {
-		return nil, p.failure(errs.FromStatus(err))
+		return check.FromError(p.failure(errs.FromStatus(err)))
 	}
-	return checkItems(resp.GetItems()), errs.FromProto(resp.GetError())
+	return check.FromProto(resp)
 }
 
-func checkItems(items []*protocolv1.CheckItem) []check.Item {
-	var out []check.Item
-	for _, it := range items {
-		st := check.Status(it.GetStatus())
-		if st < check.Passed || st > check.Skipped {
-			st = check.Skipped
-		}
-		out = append(out, check.Item{
-			Name: it.GetName(), Title: it.GetTitle(), Status: st, Message: it.GetMessage(),
-			Err: errs.FromProto(it.GetError()), Fix: it.GetFix(), Field: it.GetField(),
-		})
-	}
-	return out
-}
-
-// preflightResult is a preflight's items and error. A connector from before
-// preflights has none.
-func preflightResult(p *process, resp interface {
+// preflightReport is a preflight's answer as checkReport reads a check's. A
+// connector that answers Unimplemented has no preflight: its report is
+// empty, and passes.
+func preflightReport(p *process, resp interface {
 	GetError() *protocolv1.Error
 	GetItems() []*protocolv1.CheckItem
-}, err error) ([]check.Item, error) {
+}, err error) check.Report {
 	if status.Code(err) == codes.Unimplemented {
-		return nil, nil
+		return check.Report{}
 	}
 	if err != nil {
-		return nil, p.failure(errs.FromStatus(err))
+		return check.FromError(p.failure(errs.FromStatus(err)))
 	}
-	return checkItems(resp.GetItems()), errs.FromProto(resp.GetError())
+	return check.FromProto(resp)
 }
 
 // Source is an external source. It acknowledges upstream only if its spec
@@ -131,17 +113,19 @@ func NewSource(exe string, config []byte, opts Options) *Source {
 	return &Source{instance{exe: exe, kind: protocolv1.ConnectorKind_CONNECTOR_KIND_SOURCE, config: config, opts: opts}}
 }
 
-func (s *Source) Check(ctx context.Context) error { return s.check(ctx) }
+// Check is CheckReport's error.
+func (s *Source) Check(ctx context.Context) error { return s.checkReport(ctx).Err() }
 
-// CheckItems is Check, with what the check looked at, item by item.
-func (s *Source) CheckItems(ctx context.Context) ([]check.Item, error) { return s.checkItems(ctx) }
+// CheckReport runs the source's check of its connection: what it looked at,
+// item by item, or its error alone from a connector that gives no items.
+func (s *Source) CheckReport(ctx context.Context) check.Report { return s.checkReport(ctx) }
 
-// PreflightItems runs the source's preflight for what a pipeline would
-// read: what it looked at, item by item, and its error.
-func (s *Source) PreflightItems(ctx context.Context, req source.PreflightRequest) ([]check.Item, error) {
+// PreflightReport runs the source's preflight for what a pipeline would
+// read, as CheckReport runs its check.
+func (s *Source) PreflightReport(ctx context.Context, req source.PreflightRequest) check.Report {
 	p, err := s.proc(ctx)
 	if err != nil {
-		return nil, err
+		return check.FromError(err)
 	}
 	pr := &protocolv1.PreflightSourceRequest{Config: p.config, Pipeline: req.Pipeline, Continuous: req.Continuous}
 	if req.Interval > 0 {
@@ -151,7 +135,7 @@ func (s *Source) PreflightItems(ctx context.Context, req source.PreflightRequest
 		pr.Streams = append(pr.Streams, configuredStream(cs))
 	}
 	resp, err := protocolv1.NewSourceServiceClient(p.conn).PreflightSource(ctx, pr)
-	return preflightResult(p, resp, err)
+	return preflightReport(p, resp, err)
 }
 
 // Setup and Teardown call the connector only when its spec sets setup, as

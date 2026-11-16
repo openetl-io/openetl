@@ -85,7 +85,16 @@ message CheckRequest {
 }
 
 message CheckResponse {
-  // Unset when the check passed. With items, the first failed item's error.
+  // Set when the check failed, and unset when it passed. When an item is
+  // FAILED, it's the first such item's error, with as message its title and
+  // its error's message joined as "title: message", placeholders filled in,
+  // then ": " and its detail when it has one: a host from before items reads
+  // only this. It's also set with no item FAILED when the check couldn't
+  // finish because it ran out of time or was cancelled (the items it didn't
+  // reach or finish are SKIPPED), or when the connector couldn't run its
+  // checks at all (no items). A response with this set has failed either
+  // way. A host also fails the check when an item is FAILED and this is
+  // unset.
   Error error = 1;
   // What the check looked at, one item each, in the order it ran, such as
   // reaching the service and signing in. Empty from a connector that

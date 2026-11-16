@@ -276,9 +276,9 @@ func writeStreams(ws []*protocolv1.WriteStream) []destination.Stream {
 // PreflightDestination runs the destination's preflight, if it has one; without one,
 // it answers with no items.
 func (d *destinationServer) PreflightDestination(ctx context.Context, req *protocolv1.PreflightDestinationRequest) (*protocolv1.PreflightDestinationResponse, error) {
-	dst, err := d.destination(ctx, req.GetConfig())
+	dst, secrets, err := d.bound(ctx, req.GetConfig())
 	if err != nil {
-		return &protocolv1.PreflightDestinationResponse{Error: protoError(err)}, nil
+		return &protocolv1.PreflightDestinationResponse{Error: secrets.error(protoError(err))}, nil
 	}
 	p, ok := dst.(destination.Preflighter)
 	if !ok {
@@ -295,7 +295,8 @@ func (d *destinationServer) PreflightDestination(ctx context.Context, req *proto
 		}
 		pr.Schemas[sc.GetName()] = schema
 	}
-	var r check.Report
-	p.Preflight(ctx, pr, &r)
-	return &protocolv1.PreflightDestinationResponse{Error: protoError(r.Err()), Items: checkItems(&r)}, nil
+	items, rerr := answer(ctx, secrets, func(ctx context.Context) check.Report {
+		return check.RunList(ctx, func() []check.Check { return p.Preflight(pr) })
+	})
+	return &protocolv1.PreflightDestinationResponse{Items: items, Error: rerr}, nil
 }

@@ -96,22 +96,16 @@ func (a *Ops) PreflightPipeline(ctx context.Context, in contract.ConnectorOpInpu
 			side.g.Skipped = "the connector didn't start"
 			continue
 		}
-		items, err := runCheck(ctx, side.c)
-		side.g.Items = checkItems(items)
-		if err != nil {
-			failed(side.g, err)
-			continue
-		}
-		*side.ok = true
+		r := runCheck(ctx, side.c)
+		side.g.Items, side.g.Code, side.g.Message = checkResult(r)
+		*side.ok = r.OK()
 	}
 	res.Preflight = append(res.Preflight, src, dst)
 
 	plan := contract.CheckGroup{Role: roleSync, Stage: stagePlan}
 	if jobErr != nil {
 		failed(&plan, jobErr)
-		var r check.Report
-		r.Fail("sync.plan", "Settle what a sync reads and writes", jobErr)
-		plan.Items = checkItems(r.Items())
+		plan.Items = []contract.CheckItem{{Name: "sync.plan", Title: "Settle what a sync reads and writes", Status: check.Failed.String(), Code: plan.Code, Message: plan.Message}}
 		res.Preflight = append(res.Preflight, plan)
 		why := "a sync can't be planned"
 		res.Preflight = append(res.Preflight,
@@ -124,54 +118,46 @@ func (a *Ops) PreflightPipeline(ctx context.Context, in contract.ConnectorOpInpu
 	if !srcOK {
 		srcPre.Skipped = "the source's check failed"
 	} else {
-		items, err := runPreflight(ctx, job.Source, sourcePreflight(spec.GetPipelineId(), spec.GetPipeline(), job))
-		srcPre.Items = checkItems(items)
-		if err != nil {
-			failed(&srcPre, err)
-		}
+		r := runPreflight(ctx, job.Source, sourcePreflight(spec.GetPipelineId(), spec.GetPipeline(), job))
+		srcPre.Items, srcPre.Code, srcPre.Message = checkResult(r)
 	}
 	dstPre := contract.CheckGroup{Role: roleDestination, Stage: stagePreflight, Version: dst.Version}
 	if !dstOK {
 		dstPre.Skipped = "the destination's check failed"
 	} else {
-		items, err := runPreflight(ctx, job.Destination, destinationPreflight(spec.GetPipelineId(), job))
-		dstPre.Items = checkItems(items)
-		if err != nil {
-			failed(&dstPre, err)
-		}
+		r := runPreflight(ctx, job.Destination, destinationPreflight(spec.GetPipelineId(), job))
+		dstPre.Items, dstPre.Code, dstPre.Message = checkResult(r)
 	}
 	res.Preflight = append(res.Preflight, srcPre, dstPre)
 	return res, nil
 }
 
-// runPreflight runs c's preflight for req: an external connector's items, or
-// a built-in one's report; none without one.
-func runPreflight(ctx context.Context, c any, req any) ([]check.Item, error) {
+// runPreflight runs c's preflight for req, a source.PreflightRequest or a
+// destination.PreflightRequest: an external connector's report of its
+// answer, or a built-in one's checks run here; an empty report without a
+// preflight.
+func runPreflight(ctx context.Context, c any, req any) check.Report {
 	switch req := req.(type) {
 	case source.PreflightRequest:
 		switch c := c.(type) {
 		case interface {
-			PreflightItems(context.Context, source.PreflightRequest) ([]check.Item, error)
+			PreflightReport(context.Context, source.PreflightRequest) check.Report
 		}:
-			return c.PreflightItems(ctx, req)
+			return c.PreflightReport(ctx, req)
 		case source.Preflighter:
-			var r check.Report
-			c.Preflight(ctx, req, &r)
-			return r.Items(), r.Err()
+			return check.RunList(ctx, func() []check.Check { return c.Preflight(req) })
 		}
 	case destination.PreflightRequest:
 		switch c := c.(type) {
 		case interface {
-			PreflightItems(context.Context, destination.PreflightRequest) ([]check.Item, error)
+			PreflightReport(context.Context, destination.PreflightRequest) check.Report
 		}:
-			return c.PreflightItems(ctx, req)
+			return c.PreflightReport(ctx, req)
 		case destination.Preflighter:
-			var r check.Report
-			c.Preflight(ctx, req, &r)
-			return r.Items(), r.Err()
+			return check.RunList(ctx, func() []check.Check { return c.Preflight(req) })
 		}
 	}
-	return nil, nil
+	return check.Report{}
 }
 
 // sourcePreflight is what a sync of the job would read.

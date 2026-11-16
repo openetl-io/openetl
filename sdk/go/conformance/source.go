@@ -137,20 +137,13 @@ func (r *sourceRun) discover(t T) map[string]*protocolv1.CatalogStream {
 	return r.catalog
 }
 
-// Preflight: with the good config, a preflight of every discovered stream,
-// in its first sync mode, passes.
+// Preflight: with the good config, a preflight of the streams the suite
+// reads, as it reads them, passes, and its answer holds to the protocol.
 func (r *sourceRun) checkPreflight(t T) {
-	cat := r.discover(t)
-	req := &protocolv1.PreflightSourceRequest{Config: r.process(t).Config(), Pipeline: "conformance", Interval: durationpb.New(time.Hour)}
-	for _, name := range r.order {
-		cs := &protocolv1.ConfiguredStream{Name: name, Cursor: cat[name].GetDefaultCursor()}
-		if modes := cat[name].GetSyncModes(); len(modes) > 0 {
-			cs.SyncMode = modes[0]
-		}
-		req.Streams = append(req.Streams, cs)
-	}
-	resp, err := protocolv1.NewSourceServiceClient(r.process(t).Conn()).PreflightSource(t.Context(), req)
-	preflightResult(t, resp, err)
+	p := r.process(t)
+	req := &protocolv1.PreflightSourceRequest{Config: p.Config(), Pipeline: "conformance", Interval: durationpb.New(time.Hour), Streams: r.streams(t)}
+	resp, err := protocolv1.NewSourceServiceClient(p.Conn()).PreflightSource(t.Context(), req)
+	r.preflighted(t, resp, err)
 }
 
 // Discover: schemas are valid, and keys and cursors name their fields.

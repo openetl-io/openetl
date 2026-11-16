@@ -9,6 +9,7 @@ package protocolv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	durationpb "google.golang.org/protobuf/types/known/durationpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -80,26 +81,146 @@ func (CheckStatus) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_connector_v1_check_proto_rawDescGZIP(), []int{0}
 }
 
+// CheckKind is what an item verifies.
+type CheckKind int32
+
+const (
+	CheckKind_CHECK_KIND_UNSPECIFIED CheckKind = 0
+	// The config's values make sense together, beyond what its schema says.
+	CheckKind_CHECK_KIND_CONFIGURATION CheckKind = 1
+	// The network path: the name resolves, the port answers, TLS agrees.
+	CheckKind_CHECK_KIND_CONNECTION CheckKind = 2
+	// The upstream accepts the credentials.
+	CheckKind_CHECK_KIND_AUTHENTICATION CheckKind = 3
+	// The identity may do what the connector needs: read a table, write to a
+	// bucket, create a replication slot.
+	CheckKind_CHECK_KIND_PERMISSION CheckKind = 4
+	// Something the config names exists: a database, a schema, a bucket, a
+	// topic.
+	CheckKind_CHECK_KIND_RESOURCE CheckKind = 5
+	// The upstream's version or settings are ones the connector works with.
+	CheckKind_CHECK_KIND_COMPATIBILITY CheckKind = 6
+	// Limits leave room for the connector: rate limits, quotas, free slots.
+	CheckKind_CHECK_KIND_QUOTA CheckKind = 7
+	// The connector's own kind of check.
+	CheckKind_CHECK_KIND_CUSTOM CheckKind = 8
+)
+
+// Enum value maps for CheckKind.
+var (
+	CheckKind_name = map[int32]string{
+		0: "CHECK_KIND_UNSPECIFIED",
+		1: "CHECK_KIND_CONFIGURATION",
+		2: "CHECK_KIND_CONNECTION",
+		3: "CHECK_KIND_AUTHENTICATION",
+		4: "CHECK_KIND_PERMISSION",
+		5: "CHECK_KIND_RESOURCE",
+		6: "CHECK_KIND_COMPATIBILITY",
+		7: "CHECK_KIND_QUOTA",
+		8: "CHECK_KIND_CUSTOM",
+	}
+	CheckKind_value = map[string]int32{
+		"CHECK_KIND_UNSPECIFIED":    0,
+		"CHECK_KIND_CONFIGURATION":  1,
+		"CHECK_KIND_CONNECTION":     2,
+		"CHECK_KIND_AUTHENTICATION": 3,
+		"CHECK_KIND_PERMISSION":     4,
+		"CHECK_KIND_RESOURCE":       5,
+		"CHECK_KIND_COMPATIBILITY":  6,
+		"CHECK_KIND_QUOTA":          7,
+		"CHECK_KIND_CUSTOM":         8,
+	}
+)
+
+func (x CheckKind) Enum() *CheckKind {
+	p := new(CheckKind)
+	*p = x
+	return p
+}
+
+func (x CheckKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CheckKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_openetl_connector_v1_check_proto_enumTypes[1].Descriptor()
+}
+
+func (CheckKind) Type() protoreflect.EnumType {
+	return &file_openetl_connector_v1_check_proto_enumTypes[1]
+}
+
+func (x CheckKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CheckKind.Descriptor instead.
+func (CheckKind) EnumDescriptor() ([]byte, []int) {
+	return file_openetl_connector_v1_check_proto_rawDescGZIP(), []int{1}
+}
+
 // CheckItem is one thing a check or a preflight looked at, such as
-// reaching the service, a permission, or one stream. Its text never holds secrets or records.
+// reaching the service, a permission, or one stream.
+//
+// title, description, message and fix are templates: {name}, with name
+// matching [a-z][a-z0-9_]*, stands for params[name], and a placeholder
+// without a param stays as written. Text without placeholders is plain
+// text. The host fills them in, so a connector sends the template and the
+// values apart.
+//
+// No text, param or detail holds a secret or record contents.
 type CheckItem struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Unique within the response and the same from one check to the next,
-	// such as stream.clicks.read, so a client can follow an item.
+	// Names the item, unique within the response and the same from one
+	// release to the next, so a client can follow it: lowercase letters and
+	// digits in words joined by ".", "_" or "-"
+	// (^[a-z0-9]+([._-][a-z0-9]+)*$), such as stream.clicks.read.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// What was checked, for people: "Read stream clicks".
-	Title  string      `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	// What was checked, for people: "Read stream {stream}".
+	Title string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	// A host counts any status other than PASSED, WARNING and SKIPPED as
+	// FAILED.
 	Status CheckStatus `protobuf:"varint,3,opt,name=status,proto3,enum=openetl.connector.v1.CheckStatus" json:"status,omitempty"`
-	// What it found. For a failure, what failed.
+	// What it found when PASSED, what failed when FAILED or WARNING, and why
+	// it wasn't checked when SKIPPED.
 	Message string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
-	// When failed: the classified error.
+	// Required when FAILED, optional when WARNING, and unset otherwise: the
+	// code, retry_after, and as message the item's message with its
+	// placeholders filled in, without the detail, which has its own field.
 	Error *Error `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
 	// For a failure or a warning: what to do about it, such as the IAM
 	// action to allow.
 	Fix string `protobuf:"bytes,6,opt,name=fix,proto3" json:"fix,omitempty"`
 	// The config field it concerns, as a dotted path such as
 	// consumer.name; empty if none.
-	Field         string `protobuf:"bytes,7,opt,name=field,proto3" json:"field,omitempty"`
+	Field string `protobuf:"bytes,7,opt,name=field,proto3" json:"field,omitempty"`
+	// UNSPECIFIED counts as CUSTOM.
+	Kind CheckKind `protobuf:"varint,8,opt,name=kind,proto3,enum=openetl.connector.v1.CheckKind" json:"kind,omitempty"`
+	// What the item verifies, and why the connector needs it. Optional.
+	Description string `protobuf:"bytes,9,opt,name=description,proto3" json:"description,omitempty"`
+	// For a failure or a warning, the kind of failure: lowercase words joined
+	// by "_". It's one of the standard reasons or the connector's own, such
+	// as "replication_slot_missing"; empty counts as unknown. The standard
+	// reasons:
+	//
+	//	dns_failed, connection_refused, timed_out, tls_failed, unreachable:
+	//	  the network path.
+	//	credentials_rejected, credentials_expired
+	//	permission_denied, privilege_missing
+	//	not_found: something the config names doesn't exist.
+	//	config_invalid
+	//	unsupported_version, setting_mismatch
+	//	rate_limited, quota_exceeded
+	//	unavailable: the upstream answered that it can't serve now.
+	//	unknown: the connector didn't classify the failure.
+	Reason string `protobuf:"bytes,10,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Values for the placeholders.
+	Params map[string]string `protobuf:"bytes,11,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// For a failure or a warning: the underlying error's text, such as a
+	// driver's. Not a template.
+	Detail string `protobuf:"bytes,12,opt,name=detail,proto3" json:"detail,omitempty"`
+	// How long the check of the item ran; unset if it didn't run.
+	Duration      *durationpb.Duration `protobuf:"bytes,13,opt,name=duration,proto3" json:"duration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -183,11 +304,53 @@ func (x *CheckItem) GetField() string {
 	return ""
 }
 
+func (x *CheckItem) GetKind() CheckKind {
+	if x != nil {
+		return x.Kind
+	}
+	return CheckKind_CHECK_KIND_UNSPECIFIED
+}
+
+func (x *CheckItem) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *CheckItem) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *CheckItem) GetParams() map[string]string {
+	if x != nil {
+		return x.Params
+	}
+	return nil
+}
+
+func (x *CheckItem) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
+func (x *CheckItem) GetDuration() *durationpb.Duration {
+	if x != nil {
+		return x.Duration
+	}
+	return nil
+}
+
 var File_openetl_connector_v1_check_proto protoreflect.FileDescriptor
 
 const file_openetl_connector_v1_check_proto_rawDesc = "" +
 	"\n" +
-	" openetl/connector/v1/check.proto\x12\x14openetl.connector.v1\x1a!openetl/connector/v1/errors.proto\"\xe5\x01\n" +
+	" openetl/connector/v1/check.proto\x12\x14openetl.connector.v1\x1a\x1egoogle/protobuf/duration.proto\x1a!openetl/connector/v1/errors.proto\"\xa3\x04\n" +
 	"\tCheckItem\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x129\n" +
@@ -195,13 +358,33 @@ const file_openetl_connector_v1_check_proto_rawDesc = "" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x121\n" +
 	"\x05error\x18\x05 \x01(\v2\x1b.openetl.connector.v1.ErrorR\x05error\x12\x10\n" +
 	"\x03fix\x18\x06 \x01(\tR\x03fix\x12\x14\n" +
-	"\x05field\x18\a \x01(\tR\x05field*\x91\x01\n" +
+	"\x05field\x18\a \x01(\tR\x05field\x123\n" +
+	"\x04kind\x18\b \x01(\x0e2\x1f.openetl.connector.v1.CheckKindR\x04kind\x12 \n" +
+	"\vdescription\x18\t \x01(\tR\vdescription\x12\x16\n" +
+	"\x06reason\x18\n" +
+	" \x01(\tR\x06reason\x12C\n" +
+	"\x06params\x18\v \x03(\v2+.openetl.connector.v1.CheckItem.ParamsEntryR\x06params\x12\x16\n" +
+	"\x06detail\x18\f \x01(\tR\x06detail\x125\n" +
+	"\bduration\x18\r \x01(\v2\x19.google.protobuf.DurationR\bduration\x1a9\n" +
+	"\vParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x91\x01\n" +
 	"\vCheckStatus\x12\x1c\n" +
 	"\x18CHECK_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13CHECK_STATUS_PASSED\x10\x01\x12\x18\n" +
 	"\x14CHECK_STATUS_WARNING\x10\x02\x12\x17\n" +
 	"\x13CHECK_STATUS_FAILED\x10\x03\x12\x18\n" +
-	"\x14CHECK_STATUS_SKIPPED\x10\x04B=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
+	"\x14CHECK_STATUS_SKIPPED\x10\x04*\xfe\x01\n" +
+	"\tCheckKind\x12\x1a\n" +
+	"\x16CHECK_KIND_UNSPECIFIED\x10\x00\x12\x1c\n" +
+	"\x18CHECK_KIND_CONFIGURATION\x10\x01\x12\x19\n" +
+	"\x15CHECK_KIND_CONNECTION\x10\x02\x12\x1d\n" +
+	"\x19CHECK_KIND_AUTHENTICATION\x10\x03\x12\x19\n" +
+	"\x15CHECK_KIND_PERMISSION\x10\x04\x12\x17\n" +
+	"\x13CHECK_KIND_RESOURCE\x10\x05\x12\x1c\n" +
+	"\x18CHECK_KIND_COMPATIBILITY\x10\x06\x12\x14\n" +
+	"\x10CHECK_KIND_QUOTA\x10\a\x12\x15\n" +
+	"\x11CHECK_KIND_CUSTOM\x10\bB=Z;github.com/openetl-io/openetl/sdk/go/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_openetl_connector_v1_check_proto_rawDescOnce sync.Once
@@ -215,21 +398,27 @@ func file_openetl_connector_v1_check_proto_rawDescGZIP() []byte {
 	return file_openetl_connector_v1_check_proto_rawDescData
 }
 
-var file_openetl_connector_v1_check_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_openetl_connector_v1_check_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_openetl_connector_v1_check_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_openetl_connector_v1_check_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_openetl_connector_v1_check_proto_goTypes = []any{
-	(CheckStatus)(0),  // 0: openetl.connector.v1.CheckStatus
-	(*CheckItem)(nil), // 1: openetl.connector.v1.CheckItem
-	(*Error)(nil),     // 2: openetl.connector.v1.Error
+	(CheckStatus)(0),            // 0: openetl.connector.v1.CheckStatus
+	(CheckKind)(0),              // 1: openetl.connector.v1.CheckKind
+	(*CheckItem)(nil),           // 2: openetl.connector.v1.CheckItem
+	nil,                         // 3: openetl.connector.v1.CheckItem.ParamsEntry
+	(*Error)(nil),               // 4: openetl.connector.v1.Error
+	(*durationpb.Duration)(nil), // 5: google.protobuf.Duration
 }
 var file_openetl_connector_v1_check_proto_depIdxs = []int32{
 	0, // 0: openetl.connector.v1.CheckItem.status:type_name -> openetl.connector.v1.CheckStatus
-	2, // 1: openetl.connector.v1.CheckItem.error:type_name -> openetl.connector.v1.Error
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	4, // 1: openetl.connector.v1.CheckItem.error:type_name -> openetl.connector.v1.Error
+	1, // 2: openetl.connector.v1.CheckItem.kind:type_name -> openetl.connector.v1.CheckKind
+	3, // 3: openetl.connector.v1.CheckItem.params:type_name -> openetl.connector.v1.CheckItem.ParamsEntry
+	5, // 4: openetl.connector.v1.CheckItem.duration:type_name -> google.protobuf.Duration
+	5, // [5:5] is the sub-list for method output_type
+	5, // [5:5] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_openetl_connector_v1_check_proto_init() }
@@ -243,8 +432,8 @@ func file_openetl_connector_v1_check_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_openetl_connector_v1_check_proto_rawDesc), len(file_openetl_connector_v1_check_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   1,
+			NumEnums:      2,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

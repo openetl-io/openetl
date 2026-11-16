@@ -31,9 +31,11 @@ import (
 	"github.com/openetl-io/openetl/internal/netguard"
 	"github.com/openetl-io/openetl/internal/oci"
 	"github.com/openetl-io/openetl/internal/pkgref"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/spec"
 	sdk "github.com/openetl-io/openetl/sdk/go"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
+	"github.com/openetl-io/openetl/sdk/go/check"
 	"github.com/openetl-io/openetl/sdk/go/conformance"
 	"github.com/openetl-io/openetl/sdk/go/host"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
@@ -475,12 +477,20 @@ func runConnectorCheck(ctx context.Context, args []string, out io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("%s's check: %w", t.name, err)
 	}
-	if e := res.GetError(); e != nil {
-		printCheckItems(out, "", protoCheckItems(res.GetItems()))
-		return fmt.Errorf("%s failed its check: %s: %s", t.name, strings.TrimPrefix(e.GetCode().String(), "ERROR_CODE_"), e.GetMessage())
+	return printConnectorCheck(out, t.name, res)
+}
+
+// printConnectorCheck prints a connector's answer to Check, read failing
+// closed, and fails when it didn't pass: a failed item fails it even when
+// the answer has no error.
+func printConnectorCheck(out io.Writer, name string, res *protocolv1.CheckResponse) error {
+	r := check.FromProto(res)
+	if err := r.Err(); err != nil {
+		printCheckItems(out, "", reportItems(r.Items))
+		return fmt.Errorf("%s failed its check: %s: %s", name, errs.CodeOf(err), err.Error())
 	}
-	fmt.Fprintf(out, "%s passed its check\n", t.name)
-	printCheckItems(out, "  ", protoCheckItems(res.GetItems()))
+	fmt.Fprintf(out, "%s passed its check\n", name)
+	printCheckItems(out, "  ", reportItems(r.Items))
 	return nil
 }
 
