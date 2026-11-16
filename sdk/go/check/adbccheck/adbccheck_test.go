@@ -32,11 +32,32 @@ type fakeDB struct {
 	infoErr   error
 	noSchemas bool
 	delay     time.Duration
+	// The query "hold" blocks until gate closes, whatever its context, as a
+	// driver that doesn't stop on a cancelled context does; entered gets a
+	// value when it starts.
+	gate, entered chan struct{}
 	// Of the connection and the database.
 	closed atomic.Int32
+	// Gets a value when the database closes, which the kit does after the
+	// connection.
+	dbClosed chan struct{}
 	// GetInfo's readers released.
 	released atomic.Int32
+	// The connection's calls, statements and readers open now; a call that
+	// starts while another is open overlaps.
+	busy     atomic.Int32
+	overlaps atomic.Int32
+	// The connection closed while something on it was open.
+	closedUnderCall atomic.Int32
 }
+
+func (d *fakeDB) enter() {
+	if d.busy.Add(1) > 1 {
+		d.overlaps.Add(1)
+	}
+}
+
+func (d *fakeDB) leave() { d.busy.Add(-1) }
 
 func (d *fakeDB) Open(context.Context) (adbc.Connection, error) {
 	if d.openErr != nil {
@@ -44,27 +65,45 @@ func (d *fakeDB) Open(context.Context) (adbc.Connection, error) {
 	}
 	return &fakeConn{db: d}, nil
 }
-func (d *fakeDB) Close() error { d.closed.Add(1); return nil }
+func (d *fakeDB) Close() error {
+	d.closed.Add(1)
+	if d.dbClosed != nil {
+		d.dbClosed <- struct{}{}
+	}
+	return nil
+}
 
 type fakeConn struct {
 	adbc.Connection
 	db *fakeDB
 }
 
-func (c *fakeConn) Close() error { c.db.closed.Add(1); return nil }
+func (c *fakeConn) Close() error {
+	if c.db.busy.Load() > 0 {
+		c.db.closedUnderCall.Add(1)
+	}
+	c.db.closed.Add(1)
+	return nil
+}
+
 func (c *fakeConn) NewStatement() (adbc.Statement, error) {
+	c.db.enter()
 	return &fakeStmt{db: c.db}, nil
 }
 
 func (c *fakeConn) GetInfo(context.Context, []adbc.InfoCode) (array.RecordReader, error) {
+	c.db.enter()
 	if c.db.infoErr != nil {
+		c.db.leave()
 		return nil, c.db.infoErr
 	}
 	rr, err := reader("PostgreSQL")
-	return &released{RecordReader: rr, n: &c.db.released}, err
+	return &released{RecordReader: rr, db: c.db}, err
 }
 
 func (c *fakeConn) GetTableSchema(_ context.Context, _, schema *string, table string) (*arrow.Schema, error) {
+	c.db.enter()
+	defer c.db.leave()
 	if c.db.noSchemas {
 		return nil, &adbc.Error{Code: adbc.StatusNotImplemented, Msg: "GetTableSchema not implemented"}
 	}
@@ -76,10 +115,10 @@ func (c *fakeConn) GetTableSchema(_ context.Context, _, schema *string, table st
 
 type released struct {
 	array.RecordReader
-	n *atomic.Int32
+	db *fakeDB
 }
 
-func (r *released) Release() { r.n.Add(1); r.RecordReader.Release() }
+func (r *released) Release() { r.db.released.Add(1); r.db.leave(); r.RecordReader.Release() }
 
 type fakeStmt struct {
 	adbc.Statement
@@ -87,9 +126,13 @@ type fakeStmt struct {
 	query string
 }
 
-func (s *fakeStmt) Close() error               { return nil }
+func (s *fakeStmt) Close() error               { s.db.leave(); return nil }
 func (s *fakeStmt) SetSqlQuery(q string) error { s.query = q; return nil }
 func (s *fakeStmt) ExecuteQuery(context.Context) (array.RecordReader, int64, error) {
+	if s.query == "hold" {
+		s.db.entered <- struct{}{}
+		<-s.db.gate
+	}
 	time.Sleep(s.db.delay)
 	a := s.db.answers[s.query]
 	if err, ok := a.(error); ok {
@@ -136,6 +179,14 @@ func reader(v any) (array.RecordReader, error) {
 }
 
 func kit(t *testing.T, db *fakeDB) *Kit {
+	t.Cleanup(func() {
+		if n := db.overlaps.Load(); n > 0 {
+			t.Errorf("%d calls overlapped on the connection", n)
+		}
+		if n := db.closedUnderCall.Load(); n > 0 {
+			t.Errorf("the connection closed %d times under a call", n)
+		}
+	})
 	var opened atomic.Int32
 	return New(func(context.Context) (adbc.Database, error) {
 		if opened.Add(1) > 1 {
@@ -357,4 +408,100 @@ func TestKitSharedByRuns(t *testing.T) {
 	if db.closed.Load() != 2*opened.Load() || k.conn != nil || k.users != 0 {
 		t.Errorf("opened %d, closed %d, users %d", opened.Load(), db.closed.Load(), k.users)
 	}
+	if db.overlaps.Load() > 0 || db.closedUnderCall.Load() > 0 {
+		t.Errorf("%d calls overlapped, and the connection closed %d times under a call", db.overlaps.Load(), db.closedUnderCall.Load())
+	}
+}
+
+func holding() *fakeDB {
+	return &fakeDB{
+		answers:  map[string]any{"ok": true},
+		gate:     make(chan struct{}),
+		entered:  make(chan struct{}, 1),
+		dbClosed: make(chan struct{}, 1),
+	}
+}
+
+// gaveUp checks that it is the failure of a check that gave up waiting for
+// the connection.
+func gaveUp(t *testing.T, it check.Item) {
+	t.Helper()
+	if it.Status != check.Failed || it.Failure.Reason != "timed_out" || it.Message != "The connection to the database was still in use by a check that didn't finish." || it.Failure.Fix != "" {
+		t.Errorf("%s: %s %+v", it.Name, it.Status, it.Failure)
+	}
+}
+
+// awaitClose waits for the connection and the database to close.
+func awaitClose(t *testing.T, db *fakeDB) {
+	t.Helper()
+	select {
+	case <-db.dbClosed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the database didn't close")
+	}
+	if n := db.closed.Load(); n != 2 {
+		t.Errorf("closed %d of the connection and the database", n)
+	}
+}
+
+// A run whose check waits for the connection while another run's check has
+// it gives up when its own deadline passes, without touching the
+// connection.
+func TestKitRunsAtOnce(t *testing.T) {
+	db := holding()
+	k := kit(t, db)
+	held := make(chan check.Report)
+	go func() {
+		held <- check.Run(context.Background(), []check.Check{k.Connect(), k.Query("hold", "Hold", "hold")})
+	}()
+	<-db.entered
+	waiter := k.Connect()
+	waiter.Timeout = 50 * time.Millisecond
+	r := check.Run(context.Background(), []check.Check{waiter, k.Query("q", "Q", "ok")})
+	if statuses(r) != "db.connect=failed q=skipped" {
+		t.Error(statuses(r))
+	}
+	gaveUp(t, rendered(t, r)["db.connect"])
+	close(db.gate)
+	if r := <-held; r.Err() != nil {
+		t.Errorf("the run that had the connection: %v", r.Err())
+	}
+	awaitClose(t, db)
+}
+
+// A check left running in the driver keeps the connection: the next check
+// of the same run waits for it, and fails once its own deadline passes.
+func TestKitCheckLeftRunning(t *testing.T) {
+	db := holding()
+	k := kit(t, db)
+	hold := k.Query("hold", "Hold", "hold")
+	hold.Timeout = 50 * time.Millisecond
+	next := k.Query("next", "Next", "ok")
+	next.Timeout = 50 * time.Millisecond
+	r := check.Run(context.Background(), []check.Check{k.Connect(), hold, next})
+	if statuses(r) != "db.connect=passed hold=failed next=failed" {
+		t.Error(statuses(r))
+	}
+	items := rendered(t, r)
+	if f := items["hold"].Failure; f.Reason != "timed_out" || f.Message != "The check didn't finish in time." {
+		t.Errorf("hold: %+v", f)
+	}
+	gaveUp(t, items["next"])
+	close(db.gate)
+	awaitClose(t, db)
+}
+
+// The run's cleanups don't close the connection under a check still in the
+// driver: it closes when that check returns.
+func TestKitClosesAfterCallReturns(t *testing.T) {
+	db := holding()
+	k := kit(t, db)
+	hold := k.Query("hold", "Hold", "hold")
+	hold.Timeout = 50 * time.Millisecond
+	check.Run(context.Background(), []check.Check{k.Connect(), hold})
+	if n := db.closed.Load(); n != 0 {
+		t.Errorf("closed %d of the connection and the database while a call ran", n)
+	}
+	close(db.gate)
+	awaitClose(t, db)
 }

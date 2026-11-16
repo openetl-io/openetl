@@ -241,6 +241,8 @@ for _, t := range tables {
 - `Query`, `True` and `Value` take a query without arguments.
 - `Table(name, catalog, schema, table)` is a Resource check that the table exists and its schema reads. A nil catalog or schema is the connection's default. It sets `table` and `resource`. A driver that cannot read a table's schema skips it.
 
+ADBC does not make a connection safe for concurrent use, so the kit's checks use the connection one at a time, also when runs overlap. A check that needs the connection while another check uses it waits. If its deadline passes first, it fails as `timed_out` with the message "The connection to the database was still in use by a check that didn't finish." and no fix. A check left running in the driver keeps the connection until its call returns. In a check of your own, close the statements and readers you open before `run` returns, not in a cleanup.
+
 `Kit.Failure` classifies an `adbc.Error` by its status. If the status is `Unknown` or `Internal`, it classifies by the SQLSTATE, as `sqlcheck` does. It sets the params `sqlstate` and `vendor_code` where the error has them.
 
 ### Combine toolkits
@@ -504,7 +506,7 @@ func (d *Destination) sessionCheck() check.Check {
 }
 ```
 
-A cleanup's context is not cancelled with the run, and ends 10 seconds after the cleanups start. `check.Run` waits for the cleanups only until shortly after its own context is done. Cleanups still running then finish in the background, so a slow cleanup does not delay the answer past its deadline. The SDK recovers a panic in each cleanup, and the others still run. A check left running that registers a cleanup after its item is done runs it at once. The toolkits' kits use cleanups to close their shared handle.
+A cleanup's context is not cancelled with the run, and ends 10 seconds after the cleanups start. `check.Run` waits for the cleanups only until shortly after its own context is done. Cleanups still running then finish in the background, so a slow cleanup does not delay the answer past its deadline. The SDK recovers a panic in each cleanup, and the others still run. A check left running that registers a cleanup after its item is done runs it at once. The toolkits' kits use cleanups to close their shared handle. `adbccheck`'s kit does not close its connection while a check left running still uses it.
 
 ### Cancellation and panics
 

@@ -1,6 +1,6 @@
 // Package adbccheck checks a database through ADBC. A Kit's checks share
-// one database and connection, opened by the first check that runs and
-// closed once the runs that used them have ended.
+// one database and connection, which they take turns with, opened by the
+// first check that runs and closed once the runs that used them have ended.
 //
 //	k := adbccheck.New(func(ctx context.Context) (adbc.Database, error) { return drv.NewDatabase(opts) })
 //	checks := []check.Check{
@@ -112,18 +112,28 @@ func bySQLState(err error, state string) *check.Failure {
 }
 
 // Kit makes checks that share one ADBC connection. Its checks may run in
-// any number of runs, one after another or at once: the connection opens
-// when the first check needs it, and closes, with its database, once every
-// run that used it has ended. Set Classify before any check runs.
+// any number of runs, one after another or at once, but they use the
+// connection one at a time, opening it included: a check that needs it
+// while another check has it waits until its own context ends, and then
+// fails as timed_out without using it. The connection opens when the first
+// check needs it, and closes, with its database, once every run that used it
+// has ended and no check is using it. A check left running inside the driver
+// keeps it: if that call never returns, the connection is never closed, and
+// the kit's later checks fail waiting for it. Set Classify before any check
+// runs.
 type Kit struct {
 	open func(ctx context.Context) (adbc.Database, error)
 	// Classifies the driver's errors before the kit does. Nil, or nil for an
 	// error: the kit's own classification.
 	Classify func(error) *check.Failure
 
-	mu   sync.Mutex
+	// Holds a value while a check opens, uses or closes the connection. Only
+	// its holder reads or changes db and conn.
+	turn chan struct{}
 	db   adbc.Database
 	conn adbc.Connection
+
+	mu sync.Mutex
 	// The checks that have the connection and whose runs haven't ended.
 	users int
 }
@@ -131,7 +141,7 @@ type Kit struct {
 // New makes a Kit whose checks open their database with open, which should
 // stop when ctx ends.
 func New(open func(ctx context.Context) (adbc.Database, error)) *Kit {
-	return &Kit{open: open}
+	return &Kit{open: open, turn: make(chan struct{}, 1)}
 }
 
 // Failure is err classified: by Classify, then, for an adbc.Error, by its
@@ -164,50 +174,96 @@ func (k *Kit) fail(err error) error {
 	return nil
 }
 
-// acquire gives the shared connection, opening it if no check has it, and
-// holds it until p's run ends.
+// inUse is the failure of a check whose context ended while it waited for
+// the connection.
+func inUse(err error) *check.Failure {
+	f := check.TimedOut.Wrap(err)
+	f.Message, f.Fix = "The connection to the database was still in use by a check that didn't finish.", ""
+	return f
+}
+
+// acquire takes the kit's turn with the connection, opening the connection
+// if no check has it, and holds the connection until p's run ends. The
+// caller gives the turn back with put once it's done with the connection.
 func (k *Kit) acquire(ctx context.Context, p *check.Probe) (adbc.Connection, error) {
-	k.mu.Lock()
+	select {
+	case k.turn <- struct{}{}:
+	default:
+		select {
+		case k.turn <- struct{}{}:
+		case <-ctx.Done():
+			return nil, inUse(ctx.Err())
+		}
+	}
 	if k.conn == nil {
 		db, err := k.open(ctx)
 		if err != nil {
-			k.mu.Unlock()
-			return nil, err
+			k.put()
+			return nil, k.fail(err)
 		}
 		conn, err := db.Open(ctx)
 		if err != nil {
 			_ = db.Close()
-			k.mu.Unlock()
-			return nil, err
+			k.put()
+			return nil, k.fail(err)
 		}
 		k.db, k.conn = db, conn
 	}
 	conn := k.conn
+	k.mu.Lock()
 	k.users++
 	k.mu.Unlock()
 	p.Cleanup(func(context.Context) { k.release() })
 	return conn, nil
 }
 
-func (k *Kit) release() {
+// put gives back the turn, first closing the connection if the runs that
+// used it have all ended, as they may have while a check was left running
+// with it.
+func (k *Kit) put() {
 	k.mu.Lock()
-	defer k.mu.Unlock()
-	if k.users--; k.users == 0 && k.conn != nil {
+	unused := k.users == 0 && k.conn != nil
+	if !unused {
+		<-k.turn
+	}
+	k.mu.Unlock()
+	if unused {
 		_ = k.conn.Close()
 		_ = k.db.Close()
 		k.db, k.conn = nil, nil
+		<-k.turn
+	}
+}
+
+// release ends a check's hold on the connection, and after the last one
+// closes it, unless a check is using it: that check's put closes it.
+func (k *Kit) release() {
+	k.mu.Lock()
+	if k.users--; k.users > 0 {
+		k.mu.Unlock()
+		return
+	}
+	select {
+	case k.turn <- struct{}{}:
+		k.mu.Unlock()
+		k.put()
+	default:
+		k.mu.Unlock()
 	}
 }
 
 // Check is a check of kind that runs run with the kit's connection, for
 // what the kit's other checks don't cover. It needs "db.connect". Return
-// k.Failure(err) for a driver's error, so the kit classifies it.
+// k.Failure(err) for a driver's error, so the kit classifies it. No other
+// check uses the connection until run returns, so close what run opens on
+// it before returning, not in a cleanup.
 func (k *Kit) Check(name string, kind check.Kind, title string, run func(ctx context.Context, p *check.Probe, conn adbc.Connection) error) check.Check {
 	return check.Check{Name: name, Kind: kind, Title: title, Needs: []string{"db.connect"}, Run: func(ctx context.Context, p *check.Probe) error {
 		conn, err := k.acquire(ctx, p)
 		if err != nil {
-			return k.fail(err)
+			return err
 		}
+		defer k.put()
 		return run(ctx, p, conn)
 	}}
 }
