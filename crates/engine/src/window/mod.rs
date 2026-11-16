@@ -202,6 +202,8 @@ pub struct Operator {
     key_groups: u32,
     /// In microseconds; `i64::MIN` until it advances.
     watermark: i64,
+    /// It has taken its state's horizon as its watermark's least.
+    resumed: bool,
 }
 
 impl Operator {
@@ -252,6 +254,7 @@ impl Operator {
             lateness: lateness.max(0).saturating_mul(per_micro),
             key_groups,
             watermark: i64::MIN,
+            resumed: false,
             plan,
         })
     }
@@ -274,12 +277,22 @@ impl Operator {
         format!("transform.sql {}, writing {}: {why}", self.at, self.output)
     }
 
+    /// A restored operator goes on from at least the watermark its state's
+    /// horizon was moved to, so it sets no timer the horizon has passed.
+    fn resume<S: StateBackend>(&mut self, state: &S) {
+        if !self.resumed {
+            self.resumed = true;
+            self.watermark = self.watermark.max(state.horizon(self.id));
+        }
+    }
+
     /// Takes a batch of the statement's input: the columns it reads.
     pub async fn rows<S: StateBackend>(
         &mut self,
         state: &mut S,
         input: &RecordBatch,
     ) -> Result<Out, JobError> {
+        self.resume(state);
         let mut out = Out::default();
         let plan = self.plan.clone();
         let (ran, failed) = steps::run_rows(&plan.input.steps, input.clone(), true)
@@ -779,13 +792,15 @@ impl Operator {
 
     /// Moves the watermark to `t`, in microseconds, if it's later: closes
     /// every window it reaches the end of, giving its row, and forgets
-    /// those past their allowed lateness.
+    /// those past their allowed lateness. Its timers fired, it moves
+    /// state's horizon to `t`: state drops what's at or before it.
     pub async fn advance<S: StateBackend>(
         &mut self,
         state: &mut S,
         t: i64,
     ) -> Result<Out, JobError> {
         let mut out = Out::default();
+        self.resume(state);
         if t <= self.watermark {
             return Ok(out);
         }
@@ -809,6 +824,7 @@ impl Operator {
                 break;
             }
         }
+        state.expire(self.id, t);
         Ok(out)
     }
 
