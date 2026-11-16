@@ -136,6 +136,27 @@ func windowLanesJob() *Job {
 	return j
 }
 
+// A group window's output is never exchanged again before its writer,
+// whatever partitioning it's given: its keyed lanes give its rows to their
+// own writer lanes by the window's keys, which its primary key holds, so a
+// lane's part is of those keys' groups, and a redo reads it again by them.
+// A row-wise output keyed otherwise than it's partitioned still is.
+func TestAWindowsOutputIsNeverExchangedAgain(t *testing.T) {
+	j := windowLanesJob()
+	if len(j.Outputs[0].Partitioning.Columns) != 0 {
+		t.Fatalf("the output is partitioned by %v", j.Outputs[0].Partitioning)
+	}
+	if got := j.exchanges(4); got != nil {
+		t.Errorf("exchanges %v; want none for a window's output", got)
+	}
+	if j.keyGrouped(j.Outputs[0]) {
+		t.Error("a window's output meets its writer through an exchange")
+	}
+	if got := sqlLanesJob().exchanges(4); !reflect.DeepEqual(got, map[string][]string{"by_id": {"id"}}) {
+		t.Errorf("a row-wise output's exchanges %v", got)
+	}
+}
+
 // A worker's committable names every split it read for a group window's
 // output, as the exchange before the window sends any lane's rows to any
 // keyed lane, by the window's keys.

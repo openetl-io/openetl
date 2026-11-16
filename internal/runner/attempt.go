@@ -1515,10 +1515,17 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 }
 
 // exchanges are the columns each of the destination's streams is exchanged
-// by before the writer, on writers writer lanes; nil for none.
+// by before the writer, on writers writer lanes; nil for none. A stateful
+// statement's output never is: its keyed lanes, which own their key groups
+// by the statement's keys, give its rows to their own writer lanes, and its
+// primary key holds those keys. So a writer lane's part of an epoch is of
+// the key groups of the statement's keys, which a redo reads it again by.
 func (j *Job) exchanges(writers int) map[string][]string {
 	var out map[string][]string
 	for _, s := range j.sinkStreams() {
+		if _, keyed := j.keyedBy(s.Name); keyed {
+			continue
+		}
 		if cols := exchange(s, writers); cols != nil {
 			if out == nil {
 				out = map[string][]string{}
@@ -1571,8 +1578,12 @@ func (j *Job) exchangeKey(d Stream) []string {
 }
 
 // keyGrouped says a stream's rows meet the writer through an exchange by key
-// group when there is more than one writer lane.
-func (j *Job) keyGrouped(s Stream) bool { return exchange(s, 2) != nil }
+// group when there is more than one writer lane; a stateful statement's
+// output's never do (exchanges).
+func (j *Job) keyGrouped(s Stream) bool {
+	_, keyed := j.keyedBy(s.Name)
+	return !keyed && exchange(s, 2) != nil
+}
 
 // sinkStarts are the starts of the reads of the destination's streams that
 // the attempt reads, and where their reads end.

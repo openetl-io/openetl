@@ -902,9 +902,9 @@ where
             return Err(e);
         }
     };
-    // A keyed lane sends its output on to the writer lane its lane feeds,
-    // or where an exchange follows, to the one owning each row's key group,
-    // in whichever engine.
+    // A keyed lane sends its output on to the writer lane its lane feeds, in
+    // its own engine (the plan has no exchange after a window), so it never
+    // waits on a link while a connection's reader waits on it.
     for (lane, rx) in keyed_rx.into_iter().enumerate() {
         let k = Lane {
             flow: flow.clone(),
@@ -912,7 +912,7 @@ where
             clock: inbound.len() + lane,
             tx: senders.clone(),
             keyed: Vec::new(),
-            mesh: mesh.clone(),
+            mesh: None,
         };
         readers.spawn(keyed::run(flow.clone(), k, rx).in_current_span());
     }
@@ -1130,13 +1130,18 @@ impl Lane {
     async fn send_to(&self, w: usize, out: Out) -> Result<(), JobError> {
         let stopped = |_| JobError::stopped("the outbound edge stopped");
         let from = self.flow.plan.first_lane + self.lane;
-        let out = match self.tx[w].try_send((from, out)) {
+        let Some(tx) = self.tx.get(w) else {
+            return Err(JobError::internal(format!(
+                "lane {from} sent to writer lane {w}, which this engine doesn't have"
+            )));
+        };
+        let out = match tx.try_send((from, out)) {
             Ok(()) => return Ok(()),
             Err(mpsc::error::TrySendError::Full(out)) => out,
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(stopped(())),
         };
         self.enter(Doing::Backpressured);
-        let sent = self.tx[w].send(out).await.map_err(|_| stopped(()));
+        let sent = tx.send(out).await.map_err(|_| stopped(()));
         self.enter(Doing::Busy);
         sent
     }

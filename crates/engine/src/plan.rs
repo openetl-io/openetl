@@ -691,7 +691,7 @@ impl Plan {
             )));
         }
         let inputs = transform.as_ref().map_or(0, |_| req.streams.len());
-        let windowed = (0..names.len())
+        let windowed: Vec<bool> = (0..names.len())
             .map(|o| {
                 routes
                     .iter()
@@ -700,6 +700,15 @@ impl Plan {
                     .any(|&(to, r)| to == o && matches!(r, Route::Window(_)))
             })
             .collect();
+        // A window's keyed lanes give its output to their own writer lanes,
+        // whose part of an epoch, which a redo reads again, is of the key
+        // groups of the window's keys; the output's key holds those keys.
+        if let Some(o) = (0..names.len()).find(|&o| windowed[o] && exchanges[o].is_some()) {
+            return Err(JobError::internal(format!(
+                "output {} is written by a group window, whose keyed lanes give its rows to their own writer lanes, and the job exchanges it again before its writer",
+                names[o]
+            )));
+        }
 
         let plan = Plan {
             state: StatePlan {

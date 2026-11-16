@@ -901,8 +901,21 @@ mod windows {
         generation: u64,
         first_epoch: u64,
     ) -> StartJobRequest {
+        window_mesh_of(state, MINUTES, parts, me, addrs, generation, first_epoch)
+    }
+
+    /// As window_mesh, of the statement `sql`, which writes minutes.
+    fn window_mesh_of(
+        state: &Path,
+        sql: &str,
+        parts: &[(u32, u32)],
+        me: usize,
+        addrs: &[String],
+        generation: u64,
+        first_epoch: u64,
+    ) -> StartJobRequest {
         let (lanes, writers) = parts[me];
-        let mut req = window_request(state, MINUTES, lanes, generation, first_epoch);
+        let mut req = window_request(state, sql, lanes, generation, first_epoch);
         req.writer_lanes = writers;
         req.edges
             .retain(|e| e.direction() == EdgeDirection::ToEngine || e.lane < writers);
@@ -1066,7 +1079,7 @@ mod windows {
     /// all report the same watermark at each barrier.
     #[tokio::test]
     async fn a_window_takes_its_keys_rows_from_every_engine() {
-        let per_lane = window_across_engines(false).await;
+        let per_lane = window_across_engines().await;
         for key in ["x", "y", "z", "w"] {
             let lanes = per_lane
                 .iter()
@@ -1076,35 +1089,40 @@ mod windows {
         }
     }
 
-    /// Where the writer needs another key than the window's, its output is
-    /// exchanged again, from the keyed lanes to the writer lanes of the
-    /// output's key groups, in whichever engine.
-    #[tokio::test]
-    async fn a_windows_output_can_be_exchanged_again_across_engines() {
-        let per_lane = window_across_engines(true).await;
-        let mut at: BTreeMap<(i64, String), usize> = BTreeMap::new();
-        for rows in &per_lane {
-            for r in rows {
-                *at.entry((r.start, r.email.clone())).or_default() += 1;
-            }
+    /// A window's keyed lanes give its output to their own writer lanes, so
+    /// a writer lane's part of an epoch is of the key groups of the window's
+    /// keys, which a redo reads it again by: a job that exchanges the
+    /// output again before its writer, by its own key, is refused, on one
+    /// engine or several.
+    #[test]
+    fn a_windows_output_is_never_exchanged_again() {
+        let state = tempfile::tempdir().unwrap();
+        let addrs = ["127.0.0.1:7000".to_string(), "127.0.0.1:7001".to_string()];
+        let mut alone = window_request(state.path(), MINUTES, 2, 1, 1);
+        alone.outputs[0].exchange = exchange_by(&["window_start", "email"]);
+        let mut meshed = window_mesh(state.path(), &[(1, 1), (1, 1)], 0, &addrs, 1, 1);
+        meshed.outputs[0].exchange = exchange_by(&["window_start", "email"]);
+        for req in [alone, meshed] {
+            let Err(e) = Plan::from_request(req) else {
+                panic!("planned");
+            };
+            assert_eq!(e.code, ErrorCode::Internal, "{e}");
+            assert!(
+                e.message.contains("exchanges it again before its writer"),
+                "{e}"
+            );
         }
-        assert!(at.values().all(|n| *n == 1), "{at:?}");
+        // Its own key's groups are a lane's part, unexchanged.
+        assert!(Plan::from_request(window_request(state.path(), MINUTES, 2, 1, 1)).is_ok());
     }
 
-    /// Runs `a_window_takes_its_keys_rows_from_every_engine`'s job, with an
-    /// exchange of the output by its key before the writer where `again`,
-    /// and returns each writer lane's rows.
-    async fn window_across_engines(again: bool) -> Vec<Vec<WindowRow>> {
+    /// Runs `a_window_takes_its_keys_rows_from_every_engine`'s job, and
+    /// returns each writer lane's rows.
+    async fn window_across_engines() -> Vec<Vec<WindowRow>> {
         let state = tempfile::tempdir().unwrap();
         let parts = [(2, 1), (1, 1)];
         let mut es = start_mesh(
-            |me, addrs| {
-                let mut req = window_mesh(state.path(), &parts, me, addrs, 1, 1);
-                if again {
-                    req.outputs[0].exchange = exchange_by(&["window_start", "email"]);
-                }
-                req
-            },
+            |me, addrs| window_mesh(state.path(), &parts, me, addrs, 1, 1),
             2,
         )
         .await;
@@ -1150,6 +1168,229 @@ mod windows {
         assert_eq!(snapshots.len(), 3, "a snapshot a keyed lane");
         assert_every_key_group_once(&snapshots);
         per_lane
+    }
+
+    /// One epoch of `sql` over stream a on one lane: the rows of key x at
+    /// `seconds`, in that order, then the barrier. Live where `closes_at` is
+    /// None; else a redo that closes the windows there. Returns the window
+    /// rows it gave, the rows it quarantined, and its window watermark at
+    /// the barrier.
+    async fn one_epoch(
+        sql: &str,
+        seconds: &[i64],
+        closes_at: Option<i64>,
+    ) -> (Vec<WindowRow>, u64, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = window_request(&dir.path().join("state"), sql, 1, 1, 1);
+        req.quarantine_url = format!("file://{}", dir.path().display());
+        if let Some(c) = closes_at {
+            req.state_read_only = true;
+            req.streams[0].event_time.as_mut().unwrap().closes_at = Some(c);
+        }
+        let mut h = crate::dataflow::tests::start_lanes(req);
+        put_on(&mut h.ins[0], FrameKind::Split, 0, split("s", None)).await;
+        for (i, s) in seconds.iter().enumerate() {
+            let row = minute_row(i as i64, "x", *s);
+            put_on(&mut h.ins[0], FrameKind::Rows, 0, json_rows(&[&row])).await;
+        }
+        barriers(&mut h.ins[0], 1, 1).await;
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        let late = ready
+            .iter()
+            .flat_map(|r| &r.quarantine)
+            .filter(|q| q.stream == "minutes")
+            .map(|q| q.rows)
+            .sum();
+        let rows = window_rows(&outs, 1).into_iter().flatten().collect();
+        (rows, late, ready[0].window_watermarks["a"])
+    }
+
+    /// What a redo can't give back: a row that came behind its window's
+    /// close inside the epoch, which the live epoch quarantined as late.
+    /// The redo holds its windows at the floor while it reads, so the row
+    /// is on time there, and the window's row counts it; the redo
+    /// quarantines nothing. The live epoch's quarantine keeps the row.
+    #[tokio::test]
+    async fn a_redo_counts_a_row_late_inside_its_epoch() {
+        // 10 s, then 70 s, which closes the first minute, then 20 s.
+        let (live, late, closed) = one_epoch(MINUTES, &[10, 70, 20], None).await;
+        assert_eq!((live, late, closed), (vec![row(0, "x", 1, 1)], 1, 70 * SEC));
+        let (redo, late, _) = one_epoch(MINUTES, &[10, 70, 20], Some(closed)).await;
+        assert_eq!((redo, late), (vec![row(0, "x", 2, 1)], 0));
+        // Without the late row, the redo gives what the epoch gave.
+        let (live, _, closed) = one_epoch(MINUTES, &[10, 20, 70], None).await;
+        let (redo, _, _) = one_epoch(MINUTES, &[10, 20, 70], Some(closed)).await;
+        assert_eq!((live.clone(), redo), (vec![row(0, "x", 2, 1)], live));
+    }
+
+    /// Sessions, and rows behind the watermark inside the epoch. A row
+    /// late there that meets two closed sessions: the live epoch gives both
+    /// sessions' rows and quarantines it; the redo takes it on time and
+    /// gives one session of the three rows. A row behind the watermark that
+    /// isn't late, as it meets an open session: the live epoch gave the
+    /// closed session's row before the row merged it away; the redo merges
+    /// them before either closes, and gives no row.
+    #[tokio::test]
+    async fn a_redo_merges_the_sessions_a_row_behind_the_watermark_meets() {
+        const SESSIONS: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
+                                FROM a GROUP BY session(at, INTERVAL '10 seconds'), email";
+        // 0 s and 20 s, closed by 45 s, then 10 s, which meets both.
+        let (live, late, closed) = one_epoch(SESSIONS, &[0, 20, 45, 10], None).await;
+        assert_eq!(
+            (live, late),
+            (vec![row(0, "x", 1, 1), row(20, "x", 1, 1)], 1)
+        );
+        let (redo, late, _) = one_epoch(SESSIONS, &[0, 20, 45, 10], Some(closed)).await;
+        assert_eq!((redo, late), (vec![row(0, "x", 3, 1)], 0));
+        // 0 s, closed by 19 s, then 9 s, which meets it and the open one.
+        let (live, late, closed) = one_epoch(SESSIONS, &[0, 19, 9], None).await;
+        assert_eq!((live, late), (vec![row(0, "x", 1, 1)], 0));
+        let (redo, late, _) = one_epoch(SESSIONS, &[0, 19, 9], Some(closed)).await;
+        assert_eq!((redo, late), (vec![], 0));
+    }
+
+    /// Two engines of three lanes each send a window's rows to each other's
+    /// keyed lanes at once, over links of the least room, while nothing
+    /// reads their writer lanes for a while. The windows are a second long,
+    /// so the keyed lanes write a row for each key every second, and every
+    /// channel, link and socket between the engines fills: the lanes stop
+    /// reading their edges. Each lane passes its barriers at another point of
+    /// its rows, so keyed lanes wait at barriers with rows of senders past
+    /// them, and of others not there yet, behind each other on one
+    /// connection. A keyed lane keeps reading while it aligns, and sends only
+    /// to its own engine's writer lane, so once the writer lanes are read
+    /// every window comes out once, with every row: no wait goes in a circle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn windows_flow_both_ways_under_backpressure_with_barriers_in_flight() {
+        const BATCHES: i64 = 120;
+        const ROWS: i64 = 100;
+        const KEYS: i64 = 64;
+        const SECONDS: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
+                               FROM a GROUP BY tumble(at, INTERVAL '1 second'), email";
+        let state = tempfile::tempdir().unwrap();
+        let parts = [(3, 1), (3, 1)];
+        let mut es = start_mesh(
+            |me, addrs| {
+                let mut req = window_mesh_of(state.path(), SECONDS, &parts, me, addrs, 1, 1);
+                // An eighth of it for the one link: its least, MIN_BUFFER.
+                req.limits = Some(openetl_proto::engine::v1::Limits {
+                    memory_bytes: 2 << 20,
+                });
+                req
+            },
+            2,
+        )
+        .await;
+        // Nothing reads the writer lanes until the lanes have stalled.
+        let (go, read) = tokio::sync::watch::channel(false);
+        let drains: Vec<JoinHandle<Vec<Frame>>> = es
+            .iter_mut()
+            .flat_map(|e| std::mem::take(&mut e.outs))
+            .map(|mut r| {
+                let mut read = read.clone();
+                tokio::spawn(async move {
+                    read.wait_for(|go| *go).await.unwrap();
+                    let mut out = Vec::new();
+                    while let Some(f) = frame::read(&mut r).await.unwrap() {
+                        out.push(f);
+                    }
+                    out
+                })
+            })
+            .collect();
+        let mut feeders = Vec::new();
+        let mut lane = 0i64;
+        let mut want: BTreeMap<(i64, String), i64> = BTreeMap::new();
+        let sent = Arc::new(std::sync::atomic::AtomicI64::new(0));
+        for e in &mut es {
+            for mut w in std::mem::take(&mut e.ins) {
+                let l = lane;
+                lane += 1;
+                let sent = sent.clone();
+                // Lane l passes barrier 1 after batch l * 17, and barrier 2
+                // after batch 60 + l * 9.
+                let (b1, b2) = (l * 17, 60 + l * 9);
+                for b in 0..BATCHES {
+                    for r in 0..ROWS {
+                        *want
+                            .entry((b, format!("k{}", (b * ROWS + r) % KEYS)))
+                            .or_default() += 1;
+                    }
+                }
+                feeders.push(tokio::spawn(async move {
+                    let id = format!("s{l}");
+                    put_on(&mut w, FrameKind::Split, 0, split(&id, None)).await;
+                    for b in 0..BATCHES {
+                        let rs: Vec<String> = (0..ROWS)
+                            .map(|r| {
+                                minute_row(
+                                    l * 1_000_000 + b * ROWS + r,
+                                    &format!("k{}", (b * ROWS + r) % KEYS),
+                                    b,
+                                )
+                            })
+                            .collect();
+                        let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                        put_on(&mut w, FrameKind::Rows, 0, json_rows(&refs)).await;
+                        sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if b == b1 {
+                            barriers(&mut w, 1, 1).await;
+                        }
+                        if b == b2 {
+                            barriers(&mut w, 1, 2).await;
+                        }
+                    }
+                    put_on(&mut w, FrameKind::Split, 0, split(&id, Some(END))).await;
+                    barriers(&mut w, 1, 3).await;
+                    end_both(&mut w).await;
+                }));
+            }
+        }
+        // The engines hold their lanes back while the writer lanes aren't
+        // read: no batch goes in for half a second, short of the last.
+        let mut last = -1;
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let now = sent.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                now < 6 * BATCHES,
+                "every lane's rows went in with nothing reading the writer lanes"
+            );
+            if now == last {
+                break;
+            }
+            last = now;
+        }
+        assert!(last > 0, "no batch went in");
+        go.send(true).unwrap();
+        let run = async {
+            for f in feeders {
+                f.await.unwrap();
+            }
+            let mut outs = Vec::new();
+            for d in drains {
+                outs.push(d.await.unwrap());
+            }
+            for e in es {
+                e.job.await.unwrap().unwrap();
+            }
+            outs
+        };
+        let outs = tokio::time::timeout(Duration::from_secs(120), run)
+            .await
+            .expect("the engines stopped moving");
+        let mut got: BTreeMap<(i64, String), i64> = BTreeMap::new();
+        for r in window_rows(&outs, 1).into_iter().flatten() {
+            assert!(
+                got.insert((r.start, r.email.clone()), r.n).is_none(),
+                "window {} of {} came twice",
+                r.start,
+                r.email
+            );
+        }
+        assert_eq!(got.len(), want.len());
+        assert_eq!(got, want);
     }
 
     /// The first part of the job of `a_window_restores_onto_another_mesh`
