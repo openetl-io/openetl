@@ -177,12 +177,12 @@ A cause is a code, the column if one column caused it, and why OpenETL did not h
 
 | Flag | Commands | Type | Required | Default | Meaning |
 |---|---|---|---|---|---|
-| `--data-plane` | `check`, `discover` | string | No | The server's default data plane | The data plane whose runner performs the operation. |
+| `--data-plane` | `check`, `discover` | string | No | The server's default data plane | The data plane whose runner performs the operation. `check pipeline` accepts it and ignores it. |
 | `--format` | `check`, `preflight` | `text` or `json` | No | `text` | `text` prints a checklist. `json` prints the API's result as one JSON document. See [JSON output](#json-output). |
 
 Put flags before `source` or `destination` for `check`, and before the pipeline for `preflight`. These commands use connections and pipelines already applied to the API. To test a connector locally with a config file, use `openetl connector check`, in the [connector CLI](./index.md#the-openetl-cli).
 
-`openetl check pipeline PIPELINE` takes the flags of `preflight`. It prints `openetl: check pipeline is deprecated; use openetl preflight NAME` on standard error, then runs the preflight.
+`openetl check pipeline PIPELINE` takes the flags of `preflight`. It also accepts `--data-plane` before `pipeline`, and ignores it, because a preflight runs on the pipeline's own data plane. It prints `openetl: check pipeline is deprecated; use openetl preflight NAME` on standard error, then runs the preflight.
 
 A [check](../get-started/concepts.md#checks-and-preflights) tests one connection. A runner starts the connector and runs its check, which has 1 minute. If the connector does not start, or does not answer within 1 minute, the check could not run, and the command exits with `2`.
 
@@ -301,6 +301,14 @@ workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
 openetl: workspaces/default/pipelines/app-db-to-warehouse failed its preflight: destination warehouse's check failed: PERMISSION_DENIED: Create tables in public: openetl_writer has no CREATE on schema public: ERROR: permission denied for schema public (SQLSTATE 42501)
 ```
 
+After the preflight, the command gets the plan of the pipeline's current version. If an apply changed the pipeline in between, the command does not print that plan. It prints one line with the version that the preflight checked and the current version:
+
+```text
+workspaces/default/pipelines/app-db-to-warehouse changed after its preflight: version 1e56f1b4d3be was checked, and version 7a0c3f92d8e1 is current
+```
+
+Run the preflight again to check the current version. If the command cannot get the plan, its error says whether the preflight passed or failed, then that the plan could not be fetched, and why.
+
 The last line, which starts with `openetl:`, is on standard error. For a failed preflight, it names the first failed part. If no part failed, it names the first skipped part, such as `source shop's preflight was skipped: the source's check failed`. If no part failed or was skipped, it says `it failed, though none of its parts did; run it again`.
 
 The CLI fills each title, message and fix from the item's params. It removes control characters and bidirectional formatting characters from all text that a connector sent, so that the text cannot change the terminal. A detail keeps its line breaks. OpenETL cuts a connector's long texts, and ends each cut text with `…`. An answer with too many items fails with `INTERNAL`. [What OpenETL does with the answer](../build-connectors/checks.md#what-the-platform-does-with-the-answer) gives the limits.
@@ -331,10 +339,18 @@ statement_timeout is 30s, and the connector needs 0, or at least 10min.
 | Status | Meaning |
 |---|---|
 | `0` | It passed. Warnings do not change the status. |
-| `1` | It ran and failed: an item failed, a part failed or was skipped, or the check or preflight failed with no failed item. In a preflight, a connector that does not start or answer fails its part, so the status is `1`. |
-| `2` | It could not run: a usage error, an unknown `--format`, the API or a runner that cannot be reached, or an operation that ran out of time. For `check` and `openetl connector check`, also a connector that did not start, or did not answer within 1 minute. For `preflight`, also a source catalog that could not be refreshed after the plan part passed. |
+| `1` | It ran and failed: an item failed, a part failed or was skipped, or the check or preflight failed with no failed item. In a preflight, a connector that does not start or answer fails its part, so the status is `1`. A failed preflight whose plan cannot be fetched also exits with `1`. |
+| `2` | It could not run: a usage error, an unknown `--format`, the API or a runner that cannot be reached, or an operation that ran out of time. For `check` and `openetl connector check`, also a connector that did not start, or did not answer within 1 minute. For `preflight`, also a source catalog that could not be refreshed after the plan part passed, and a plan that cannot be fetched after the preflight passed. |
 
-A status of `2` says nothing about the connection or the pipeline. The error starts with `the check couldn't run:`, or `the preflight couldn't run:` for a preflight. For example, if no runner of the data plane takes the check within 1 minute, `check` prints this and exits with `2`:
+A status of `2` says nothing about the connection or the pipeline. The error, after `openetl:`, says why the command could not run:
+
+- A usage error gives the flag or the argument that is wrong, such as `--format yaml: want text or json`.
+- An API call that fails starts with the API's error code, such as `not_found` for a pipeline that does not exist, or `unavailable` for an API that cannot be reached.
+- If the API could not run or finish the check or the preflight on a runner, `the check couldn't run:` or `the preflight couldn't run:` follows the error code. [Check and preflight results](../integrate/index.md#check-and-preflight-results) lists these errors.
+- If the preflight passed but the plan could not be fetched, the error starts with the pipeline's name and `passed its preflight, but its plan couldn't be fetched:`.
+- For `openetl connector check`, a connector that did not start or answer gives an error that names the connector.
+
+For example, if no runner of the data plane takes the check within 1 minute, `check` prints this and exits with `2`:
 
 ```text
 openetl: unavailable: the check couldn't run: no runner of data plane "default" took it within 1m0s

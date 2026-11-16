@@ -90,7 +90,7 @@ When it finishes, the panel says **The pipeline would run.** or **The pipeline w
 2. **Sync plan**: the plan of the sync. Each problem of the plan is a failed item, and each warning is a warning item.
 3. **Source NAME: pipeline's streams** and **Destination NAME: pipeline's streams**: each connector's checks of the streams the pipeline reads or writes. **Passed. The connector has no checks of its own for a pipeline.** means that the connector has no such checks.
 
-Under each part's heading, a line counts its items, such as **1 passed, 1 failed, 1 skipped.** Its items follow, as [Read a check's items](#read-a-checks-items) explains. A part that failed without a failed item shows a red **Failed:** box with the error code and the message. For example, a part fails this way when its connector does not start or answer, or when the part runs out of time.
+Under each part's heading, a line counts its items, such as **1 passed, 1 failed, 1 skipped.** Its items follow, as [Read a check's items](#read-a-checks-items) explains. A part that failed without a failed item shows a red **Failed:** box with the error code and the message. For example, a part fails this way when its connector does not start or answer, or when the part runs out of time. The box also shows above failed items if the part's code or message says more than its first failed item.
 
 A part that did not run shows **Skipped:** and the reason. A part is skipped when a part before it failed:
 
@@ -274,7 +274,7 @@ For a pipeline that waits, fails repeatedly or stops delivering fresh data, foll
 - **Sources** and **Destinations** list each one with its **Connector**, the connector's **Version**, the **Pipelines** that use it, and when it was **Updated**. A source's or destination's page shows its pipelines and its **Config**. Configs name secrets, and never show their values. **Check** tests the connection, as [Check a source or destination](#check-a-source-or-destination) explains.
 - **dbt projects** lists the dbt projects that run after pipelines' syncs, and under **Run after**, the pipelines each one runs after.
 - **Clusters** has **Spark** and **Flink** tabs. Each entry shows what the cluster **Runs on**, such as **spark-submit**, **EMR on EC2** or **Kubernetes**. **Used by** lists its pipelines. Open a cluster to inspect **Settings**, defaults, job configuration and **Pipelines**. **Runs** identifies use as a transform or after a sync. Secret settings show references without their values.
-- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, its config's fields under their sections with their values, defaults and when each applies, and the command that applies it, which makes it available to sources and destinations. A catalog source is a package registry or repository, separate from a pipeline's data source.
+- **Connectors** has a **Catalog** of the connector packages available to install, and the **Sources** they're listed from. Open a package for its details, its config's fields under their sections with their values, defaults and when each applies, and the command that applies it, which makes it available to sources and destinations. A field inside another field shows under it, unless the connector puts it in another section. There it shows by its full path, such as `consumer.interval`. A catalog source is a package registry or repository, separate from a pipeline's data source.
 
 Connectors can be official, community maintained or private to your organization. Each has its own versions and releases, separate from OpenETL. Use a package's **Docs** link for its setup, supported modes and limits. An administrator manages installation and upgrades; [Choose and manage connectors](../pipelines/connectors.md) gives the CLI steps.
 
@@ -287,7 +287,7 @@ The result is in the **Check** section. Its first line gives the verdict and cou
 The **Check** section can also show:
 
 - **The check passed** with **The connector reached it with this config. It doesn't say what it looked at.** The connector does not report items.
-- A red **The check failed** box with an error code and a message. The check failed for a reason that no item explains. For example, some connectors report one error and no items.
+- A red **The check failed** box with an error code and a message. The check failed for a reason that no item explains. For example, some connectors report one error and no items. The box also shows above failed items if the check's code or message says more than its first failed item, such as when the checks ran out of time.
 - **Couldn't run the check**, with the reason. The check did not run. For example, no runner took it, or the connector did not start or did not answer within 1 minute. That says nothing about the connection.
 
 ### Read a check's items
