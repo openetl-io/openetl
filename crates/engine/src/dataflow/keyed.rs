@@ -1,42 +1,62 @@
 //! Keyed lanes: where a group window's statement runs. A lane that reads a
 //! window's stream sends each typed row to the keyed lane owning the key
-//! group of the window's keys, by the layout's lane ranges, and its
-//! barriers, watermarks and end to every keyed lane, which is the exchange
-//! before the statement inside one engine. Each keyed lane aligns its
-//! senders on each barrier, as a writer lane does, runs the window on its
-//! key groups' state, then names and holds the output as a lane does and
-//! sends it to its own writer lane: its range is inside that writer lane's,
-//! so an output keyed by the window's keys needs no second exchange.
+//! group of the window's keys, and its barriers, watermarks and end to every
+//! keyed lane: the exchange before the statement. Keyed lanes are the
+//! attempt's lanes' twins, each owning its lane's key groups: inside one
+//! engine they're its channels, and with a mesh, other engines' are reached
+//! over their links (see [`crate::mesh`]). Each keyed lane aligns every
+//! sender of the attempt on each barrier, as a writer lane does, runs the
+//! window on its key groups' state, then names and holds the output as a
+//! lane does and sends it to its own writer lane, in its own engine: its
+//! range is inside that writer lane's, so an output keyed by the window's
+//! keys needs no second exchange.
 //!
 //! The watermark of a window is the least of its senders', each the
 //! stream's on that lane, which comes after the rows that moved it, from
 //! the stream's floor: where the record's splits were, so a window that
 //! closed before a restore or a new read stays closed. Windows close as it
 //! passes them, in the epoch it does, and the keyed lane passes it on to
-//! its writer lane as the output's.
+//! its writer lane as the output's, and reports it at each barrier.
+//!
+//! A redo of one writer lane's part of an epoch keeps the output's key
+//! groups alone (Plan::keep): only rows of the window's keys in them reach a
+//! keyed lane, whose state is of those, and its windows stay at the floor
+//! while the epoch is read again, to close at the barrier by the watermark
+//! the epoch had there (EventTime::closes_at).
 
 use std::collections::VecDeque;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use arrow_array::{RecordBatch, UInt32Array, new_null_array};
-use arrow_schema::{Field, Schema};
+use arrow_array::cast::AsArray;
+use arrow_array::{
+    Array, RecordBatch, RecordBatchOptions, StringArray, UInt32Array, new_null_array,
+};
+use arrow_schema::{DataType, Field, Schema};
 use openetl_normalize::{Cause, NotHeld, Rejected, Typed, key_groups, render_row};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
+use openetl_proto::engine::v1::{Barrier, FrameKind, Watermark};
 use openetl_state::{KeyGroupRange, Layer};
+use prost::Message;
 use tokio::sync::mpsc;
 
 use super::{
     Flow, Lane, LaneStream, Quarantined, copy, hold, quarantine_file, shape_error, shaped,
 };
 use crate::error::JobError;
+use crate::frame;
+use crate::ipc;
+use crate::mesh::Target;
+use crate::plan::Plan;
 use crate::watermark::{self, Senders};
 use crate::window::{Operator, Out};
 
 /// What a lane sends a keyed lane, for a window's statement by its index.
-pub(super) enum In {
+pub(crate) enum In {
     /// Rows of the statement's stream: the columns it reads. Each row the
-    /// statement can't read, as a cell the stream holds, has why.
-    Rows(usize, RecordBatch, Vec<Option<(String, Cause)>>),
+    /// statement can't read, as a cell the stream holds, has the cell's
+    /// column and why it's held.
+    Rows(usize, RecordBatch, Vec<Option<(String, String)>>),
     /// The sender's watermark of the statement's stream, in microseconds:
     /// every row before it has come, but late ones. It never goes back.
     Watermark(usize, i64),
@@ -52,8 +72,135 @@ impl In {
     }
 }
 
+/// The columns a BATCH to another engine's keyed lane carries after the
+/// statement's: each row's held cell, its column and why.
+const HELD_COLUMN: &str = "\0held_column";
+const HELD_REASON: &str = "\0held_reason";
+
+/// A frame to another engine's keyed lane: its kind, statement and
+/// payload.
+pub(crate) fn wire(item: In) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
+    let index = |s: usize| u32::try_from(s).map_err(|_| JobError::internal("a statement past u32"));
+    Ok(match item {
+        In::Rows(s, batch, held) => {
+            let schema = batch.schema();
+            let mut fields: Vec<Field> =
+                schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+            fields.push(Field::new(HELD_COLUMN, DataType::Utf8, true));
+            fields.push(Field::new(HELD_REASON, DataType::Utf8, true));
+            let mut columns = batch.columns().to_vec();
+            let of = |f: fn(&(String, String)) -> &str| -> Arc<dyn Array> {
+                Arc::new(
+                    held.iter()
+                        .map(|h| h.as_ref().map(f))
+                        .collect::<StringArray>(),
+                )
+            };
+            columns.push(of(|h| &h.0));
+            columns.push(of(|h| &h.1));
+            let b = RecordBatch::try_new_with_options(
+                Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+                columns,
+                &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+            )
+            .map_err(|e| JobError::internal(e.to_string()))?;
+            (
+                FrameKind::Batch,
+                index(s)?,
+                ipc::encode_batch(&b).map_err(|e| JobError::internal(e.to_string()))?,
+            )
+        }
+        In::Watermark(s, micros) => (
+            FrameKind::Watermark,
+            index(s)?,
+            Watermark { micros }.encode_to_vec(),
+        ),
+        In::Barrier(s, e) => (
+            FrameKind::Barrier,
+            index(s)?,
+            Barrier { epoch: Some(e) }.encode_to_vec(),
+        ),
+        In::End(s) => (FrameKind::EndOfStream, index(s)?, Vec::new()),
+    })
+}
+
+/// What `wire` made of a frame, from an engine of generation `generation`.
+pub(crate) fn unwire(f: frame::Frame, generation: u64) -> Result<In, String> {
+    let s = f.stream as usize;
+    match f.kind {
+        FrameKind::Batch => {
+            let b = ipc::decode_batch(f.payload).map_err(|e| e.to_string())?;
+            let n = b.num_columns();
+            let schema = b.schema();
+            if n < 2
+                || schema.field(n - 2).name() != HELD_COLUMN
+                || schema.field(n - 1).name() != HELD_REASON
+            {
+                return Err("a batch for a keyed lane without its held cells".into());
+            }
+            let (Some(column), Some(reason)) = (
+                b.column(n - 2).as_string_opt::<i32>(),
+                b.column(n - 1).as_string_opt::<i32>(),
+            ) else {
+                return Err("a batch for a keyed lane whose held cells aren't strings".into());
+            };
+            let held = column
+                .iter()
+                .zip(reason.iter())
+                .map(|(c, r)| Some((c?.to_owned(), r?.to_owned())))
+                .collect();
+            let rows = b
+                .project(&(0..n - 2).collect::<Vec<_>>())
+                .map_err(|e| e.to_string())?;
+            Ok(In::Rows(s, rows, held))
+        }
+        FrameKind::Watermark => Ok(In::Watermark(
+            s,
+            Watermark::decode(f.payload.as_slice())
+                .map_err(|e| e.to_string())?
+                .micros,
+        )),
+        FrameKind::Barrier => {
+            let e = Barrier::decode(f.payload.as_slice())
+                .map_err(|e| e.to_string())?
+                .epoch
+                .unwrap_or_default();
+            if e.generation != generation {
+                return Err(format!(
+                    "a barrier of generation {}, not {generation}",
+                    e.generation
+                ));
+            }
+            Ok(In::Barrier(s, e))
+        }
+        FrameKind::EndOfStream => Ok(In::End(s)),
+        k => Err(format!("a {} frame for a keyed lane", k.as_str_name())),
+    }
+}
+
+/// The group windows' statements, by their index in the transform.
+pub(crate) fn statements(plan: &Plan) -> Vec<usize> {
+    plan.transform.as_ref().map_or_else(Vec::new, |t| {
+        (0..t.sql.statements.len())
+            .filter(|&i| t.sql.statements[i].window.is_some())
+            .collect()
+    })
+}
+
+/// The output a statement writes, by its index in the plan's streams.
+fn output_of(plan: &Plan, st: &crate::transform::Statement) -> Option<usize> {
+    plan.streams.iter().position(|s| *s == st.output)
+}
+
+/// The lane of `lanes`, contiguous ranges in order, that owns key group g.
+fn lane_of(lanes: &[RangeInclusive<u32>], g: u32) -> usize {
+    lanes
+        .partition_point(|r| *r.end() < g)
+        .min(lanes.len().saturating_sub(1))
+}
+
 /// Sends the window statements' rows of a typed batch of their stream to
-/// the keyed lanes owning their keys' groups.
+/// the keyed lanes owning their keys' groups: those the output keeps.
 pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Result<(), JobError> {
     let plan = &lane.flow.plan;
     let Some(t) = &plan.transform else {
@@ -65,7 +212,7 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
             continue;
         };
         let batch = reads(st, &typed.batch, &t.sql.inputs[st.input].name)?;
-        let mut why: Vec<Option<(String, Cause)>> = vec![None; batch.num_rows()];
+        let mut held: Vec<Option<(String, String)>> = vec![None; batch.num_rows()];
         // A cell the stream holds is no value only for a column the
         // statement reads.
         for c in typed
@@ -73,22 +220,19 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
             .iter()
             .filter(|c| st.op.reads.column_with_name(&c.column).is_some())
         {
-            if let Some(w) = why.get_mut(c.row) {
-                w.get_or_insert_with(|| {
-                    let reason = format!(
-                        "transform.sql {}, writing {}: column {} has a value that doesn't fit its type, which the stream holds: {}",
-                        st.at, st.output, c.column, c.reason
-                    );
-                    let cause = Cause::value(&c.reason, &c.column, Some(NotHeld::Transform));
-                    (reason, cause)
-                });
+            if let Some(h) = held.get_mut(c.row) {
+                h.get_or_insert_with(|| (c.column.clone(), c.reason.clone()));
             }
         }
         let groups = key_groups(&batch, &window.need, plan.key_groups)
             .map_err(|e| shape_error(&t.sql.inputs[st.input].name, e.into()))?;
-        let mut parts: Vec<Vec<u32>> = vec![Vec::new(); lane.keyed.len()];
+        let keep = output_of(plan, st).and_then(|o| plan.keep[o]);
+        let mut parts: Vec<Vec<u32>> = vec![Vec::new(); plan.attempt_lanes.len()];
         for (r, g) in groups.into_iter().enumerate() {
-            parts[plan.layout.lane_of(g)].push(r as u32);
+            if keep.is_some_and(|(first, last)| g < first || g > last) {
+                continue;
+            }
+            parts[lane_of(&plan.attempt_lanes, g)].push(r as u32);
         }
         for (k, rows) in parts.into_iter().enumerate() {
             if rows.is_empty() {
@@ -101,36 +245,48 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
                         .map_err(|e| JobError::internal(e.to_string()))?
                 }
             };
-            let w = rows.iter().map(|&r| why[r as usize].clone()).collect();
-            send(lane, k, In::Rows(i, part, w)).await?;
+            let h = rows.iter().map(|&r| held[r as usize].clone()).collect();
+            send(lane, k, In::Rows(i, part, h)).await?;
         }
     }
     Ok(())
 }
 
-/// Sends `f(statement)` to every keyed lane, for each statement.
+/// Sends `f(statement)` to every keyed lane of the attempt, for each
+/// statement.
 pub(super) async fn all(
     lane: &Lane,
     statements: &[usize],
     f: impl Fn(usize) -> In,
 ) -> Result<(), JobError> {
     for &i in statements {
-        for k in 0..lane.keyed.len() {
+        for k in 0..lane.flow.plan.attempt_lanes.len() {
             send(lane, k, f(i)).await?;
         }
     }
     Ok(())
 }
 
+/// Sends to the keyed lane of the attempt's lane `k`, from the first of the
+/// plan's senders: the engine's own, or another's over its link.
 async fn send(lane: &Lane, k: usize, item: In) -> Result<(), JobError> {
+    let plan = &lane.flow.plan;
+    let to = plan.senders().start + k;
+    let from = plan.first_lane + lane.lane;
+    let Some(local) = to
+        .checked_sub(plan.first_lane)
+        .filter(|&l| l < lane.keyed.len())
+    else {
+        return lane.remote(Target::Keyed(to), wire(item)?).await;
+    };
     let stopped = || JobError::stopped("a keyed lane stopped");
-    let item = match lane.keyed[k].try_send((lane.lane, item)) {
+    let item = match lane.keyed[local].try_send((from, item)) {
         Ok(()) => return Ok(()),
         Err(mpsc::error::TrySendError::Full(item)) => item,
         Err(mpsc::error::TrySendError::Closed(_)) => return Err(stopped()),
     };
     lane.enter(super::Doing::Backpressured);
-    let sent = lane.keyed[k].send(item).await.map_err(|_| stopped());
+    let sent = lane.keyed[local].send(item).await.map_err(|_| stopped());
     lane.enter(super::Doing::Busy);
     sent
 }
@@ -201,11 +357,16 @@ struct Keyed {
     /// What each sender sent past its barrier, until every sender is there.
     waiting: Vec<VecDeque<In>>,
     watermarks: Senders,
+    /// The window's watermark: where it has closed windows up to.
+    wm: i64,
+    /// A redo's: where it closes windows at the barrier, its senders'
+    /// watermarks moving nothing before.
+    closes_at: Option<i64>,
     ended: bool,
 }
 
 /// Runs keyed lane `lane.lane` until every window's stream has ended on
-/// every sender.
+/// every sender of the attempt.
 pub(super) async fn run(
     flow: Arc<Flow>,
     lane: Lane,
@@ -215,15 +376,14 @@ pub(super) async fn run(
     let Some(t) = &plan.transform else {
         return Ok(());
     };
-    let senders = plan.inbound.len();
-    let range = plan.layout.lane(lane.lane);
-    let range = KeyGroupRange::new(*range.start(), *range.end());
+    let senders = plan.senders();
+    let owned = plan.layout.lane(lane.lane);
     let mut windows: Vec<Keyed> = Vec::new();
     for (i, st) in t.sql.statements.iter().enumerate() {
         let Some((window, id)) = &st.window else {
             continue;
         };
-        let Some(output) = plan.streams.iter().position(|s| *s == st.output) else {
+        let Some(output) = output_of(plan, st) else {
             continue;
         };
         let op = Operator::new(
@@ -235,6 +395,12 @@ pub(super) async fn run(
             t.sql.inputs[st.input].lateness,
             plan.key_groups,
         )?;
+        // A redo keeps the rows of its key groups alone, and so the state.
+        let range = match plan.keep[output] {
+            None => Some(owned.clone()),
+            Some((first, last)) => Some(first.max(*owned.start())..=last.min(*owned.end()))
+                .filter(|r| r.start() <= r.end()),
+        };
         // A record names an operator's state on every lane, or on none
         // where none has written any: then the lane starts empty.
         let named: Vec<&openetl_state::Snapshot> = plan
@@ -251,17 +417,26 @@ pub(super) async fn run(
                 st.at, st.output
             )
         };
-        if let Some(g) = crate::state::uncovered(&named, range) {
-            return Err(JobError::new(
-                ErrorCode::CheckpointCorrupt,
-                cant_open(format!("as none of its snapshots holds key group {g}")),
-            ));
-        }
-        let restored: Vec<openetl_state::Snapshot> = named
-            .into_iter()
-            .filter(|s| s.range.overlaps(&range))
-            .cloned()
-            .collect();
+        let (range, restored) = match range {
+            Some(r) => {
+                let range = KeyGroupRange::new(*r.start(), *r.end());
+                if let Some(g) = crate::state::uncovered(&named, range) {
+                    return Err(JobError::new(
+                        ErrorCode::CheckpointCorrupt,
+                        cant_open(format!("as none of its snapshots holds key group {g}")),
+                    ));
+                }
+                let restored: Vec<openetl_state::Snapshot> = named
+                    .into_iter()
+                    .filter(|s| s.range.overlaps(&range))
+                    .cloned()
+                    .collect();
+                (range, restored)
+            }
+            // None of its key groups is kept: no row reaches it, and it
+            // keeps nothing.
+            None => (KeyGroupRange::new(*owned.start(), *owned.end()), Vec::new()),
+        };
         let Some(state) = &plan.state.job else {
             return Err(JobError::internal("a group window without the job's state"));
         };
@@ -277,10 +452,11 @@ pub(super) async fn run(
             let err = crate::state::state_error("its state", &e);
             JobError::new(err.code, cant_open(err.message))
         })?;
-        let floor = t.inputs[st.input]
-            .event_time
-            .as_ref()
-            .map_or(watermark::NONE, |e| e.floor);
+        let event_time = t.inputs[st.input].event_time.as_ref();
+        let floor = event_time.map_or(watermark::NONE, |e| e.floor);
+        let closes_at = event_time
+            .and_then(|e| e.closes_at)
+            .filter(|_| plan.state.job.as_ref().is_some_and(|j| j.read_only()));
         let ls = {
             let o = flow.owners[output].lock();
             LaneStream {
@@ -292,15 +468,18 @@ pub(super) async fn run(
                 replay: None,
             }
         };
+        let n = senders.len();
         let mut w = Keyed {
             statement: i,
             output,
             op,
             layer,
             ls,
-            standing: vec![Standing::Open; senders],
-            waiting: (0..senders).map(|_| VecDeque::new()).collect(),
-            watermarks: Senders::new(senders, floor),
+            standing: vec![Standing::Open; n],
+            waiting: (0..n).map(|_| VecDeque::new()).collect(),
+            watermarks: Senders::new(n, floor),
+            wm: watermark::NONE,
+            closes_at,
             ended: false,
         };
         // Windows the record's watermark passed closed before it.
@@ -316,8 +495,16 @@ pub(super) async fn run(
         lane.enter(super::Doing::Idle);
         let got = rx.recv().await;
         lane.enter(super::Doing::Busy);
-        let Some((sender, item)) = got else {
+        let Some((from, item)) = got else {
             return Err(JobError::stopped("the lanes feeding a keyed lane stopped"));
+        };
+        let Some(sender) = from
+            .checked_sub(senders.start)
+            .filter(|&s| s < senders.len())
+        else {
+            return Err(JobError::internal(format!(
+                "lane {from} sent to a keyed lane, whose senders are {senders:?}"
+            )));
         };
         let Some(w) = windows.iter_mut().find(|w| w.statement == item.statement()) else {
             return Err(JobError::internal(
@@ -336,15 +523,27 @@ impl Keyed {
     /// Takes what an open sender sent.
     async fn take(&mut self, lane: &Lane, sender: usize, item: In) -> Result<(), JobError> {
         match item {
-            In::Rows(_, batch, why) => {
+            In::Rows(_, batch, held) => {
+                let flow = lane.flow.clone();
+                let Some(st) = flow
+                    .plan
+                    .transform
+                    .as_ref()
+                    .map(|t| &t.sql.statements[self.statement])
+                else {
+                    return Err(JobError::internal("a keyed lane without a transform"));
+                };
                 let mut rejected = Vec::new();
                 let keep: Vec<usize> = (0..batch.num_rows())
-                    .filter(|&r| match &why[r] {
-                        Some((reason, cause)) => {
+                    .filter(|&r| match &held[r] {
+                        Some((column, why)) => {
                             rejected.push(Rejected {
                                 row: r,
-                                reason: reason.clone(),
-                                cause: cause.clone(),
+                                reason: format!(
+                                    "transform.sql {}, writing {}: column {column} has a value that doesn't fit its type, which the stream holds: {why}",
+                                    st.at, st.output
+                                ),
+                                cause: Cause::value(why, column, Some(NotHeld::Transform)),
                             });
                             false
                         }
@@ -379,8 +578,8 @@ impl Keyed {
                     .take(sender, t)
                     .map_err(|e| JobError::internal(format!("a keyed lane's group window: {e}")))?;
                 match advanced {
-                    Some(wm) => self.advance(lane, wm).await,
-                    None => Ok(()),
+                    Some(wm) if self.closes_at.is_none() => self.advance(lane, wm).await,
+                    _ => Ok(()),
                 }
             }
             In::Barrier(_, e) => {
@@ -397,6 +596,7 @@ impl Keyed {
     /// Closes the windows the watermark `wm` passes, and passes it on to the
     /// output's writer lane after their rows.
     async fn advance(&mut self, lane: &Lane, wm: i64) -> Result<(), JobError> {
+        self.wm = wm;
         let out = self.op.advance(&mut self.layer, wm).await?;
         self.give(lane, out).await?;
         let s = self.output;
@@ -516,6 +716,9 @@ impl Keyed {
                     "a keyed lane's senders passed different barriers",
                 ));
             }
+            if let Some(c) = self.closes_at.filter(|c| *c > self.wm) {
+                self.advance(lane, c).await?;
+            }
             self.barrier(lane, e).await?;
             for i in 0..self.standing.len() {
                 self.standing[i] = Standing::Open;
@@ -532,17 +735,29 @@ impl Keyed {
     /// The epoch's state is the layer's barrier: a run of what the epoch
     /// changed, which counts once the record names the lane's snapshot, and
     /// that once every writer lane has passed the epoch; then the output's
-    /// barrier goes on. A read-only job's epoch changes nothing.
+    /// barrier goes on. A read-only job's epoch changes nothing. Each keyed
+    /// lane reports the window's watermark there, the same on all of them.
     async fn barrier(&mut self, lane: &Lane, e: Epoch) -> Result<(), JobError> {
         let flow = lane.flow.clone();
         let plan = &flow.plan;
         let s = self.output;
-        let id = plan
-            .transform
+        let Some((st, input)) = plan.transform.as_ref().map(|t| {
+            let st = &t.sql.statements[self.statement];
+            (st, &t.sql.inputs[st.input].name)
+        }) else {
+            return Err(JobError::internal("a keyed lane without a transform"));
+        };
+        let id = st
+            .window
             .as_ref()
-            .and_then(|t| t.sql.statements[self.statement].window.as_ref())
             .map(|(_, id)| id.clone())
             .unwrap_or_default();
+        {
+            let mut align = flow.align.lock().await;
+            let marks = &mut align.pieces(e.n).window_marks;
+            let wm = marks.get(input).map_or(self.wm, |m| (*m).min(self.wm));
+            marks.insert(input.clone(), wm);
+        }
         if plan.state.job.as_ref().is_some_and(|j| j.read_only()) {
             self.layer.discard();
         } else {

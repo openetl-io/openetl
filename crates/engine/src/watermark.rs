@@ -36,6 +36,9 @@ pub struct EventTime {
     pub held: bool,
     /// Where a receiver of the stream's outputs starts.
     pub floor: i64,
+    /// A redo's: where the group windows over it close at the barrier of
+    /// the epoch it redoes, whatever their senders' watermarks.
+    pub closes_at: Option<i64>,
 }
 
 impl EventTime {
@@ -51,6 +54,7 @@ impl EventTime {
             delay: p.delay_micros,
             held: p.held,
             floor: p.floor.unwrap_or(NONE),
+            closes_at: p.closes_at,
         })
     }
 }

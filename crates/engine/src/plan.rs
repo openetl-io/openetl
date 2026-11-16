@@ -50,6 +50,10 @@ pub struct Plan {
     /// The key groups the lanes and writer lanes own, and so which writer
     /// lane each lane feeds.
     pub layout: Layout,
+    /// The key groups of each of the attempt's lanes that an exchange into
+    /// keyed lanes sends to, from the first of `senders()`: every engine's,
+    /// with a mesh. A keyed lane owns its lane's.
+    pub attempt_lanes: Vec<std::ops::RangeInclusive<u32>>,
     /// Each stream's exchange before the writer, if it has one: its rows go
     /// to the writer lanes owning their key groups, not from their lane to
     /// its writer lane.
@@ -57,6 +61,11 @@ pub struct Plan {
     /// Each stream's: only rows whose key's group is in this range, first to
     /// last, pass, for a redo of one writer lane's part of an epoch.
     pub keep: Vec<Option<(u32, u32)>>,
+    /// By stream: a group window's statement writes it. Its `keep` then
+    /// takes the window's input rows by the groups of the window's keys,
+    /// before the exchange into keyed lanes, which keep the state of those
+    /// key groups alone.
+    pub windowed: Vec<bool>,
     /// Each stream's holds; None where it holds nothing.
     pub holds: Vec<Option<HoldConfig>>,
     /// Each stream's replay of released holds.
@@ -336,19 +345,29 @@ impl Plan {
         }
         let transform = check_transform(&req)?;
         // A group window's keyed lanes take its stream from every lane of
-        // the attempt, inside one engine, which keeps their state.
+        // the attempt: those of this engine, or with a mesh, every engine's.
+        // A redo runs one engine, whatever its first lane.
         let windowed = transform
             .as_ref()
             .is_some_and(|t| t.statements.iter().any(|s| s.window.is_some()));
-        // A redo runs one engine of one lane, whatever its first lane.
-        let part = mesh.as_ref().is_some_and(|m| m.engines.len() > 1)
-            || (req.first_lane != 0 && !req.state_read_only)
+        let meshed = mesh.as_ref().is_some_and(|m| m.engines.len() > 1);
+        let part = (req.first_lane != 0 && !req.state_read_only)
             || (req.attempt_writer_lanes as usize) > writer_lanes;
-        if windowed && part {
+        if windowed && part && !meshed {
             return Err(JobError::config(
-                "transform.sql has a group window, which runs in one engine with every lane of the attempt: the job runs on one pod",
+                "transform.sql has a group window, whose keyed lanes take its stream from every lane of the attempt: a part of an attempt runs it only in a mesh of the attempt's engines",
             ));
         }
+        // The attempt's lanes' key groups, from its first lane: every
+        // engine's, with a mesh.
+        let attempt_lanes = match &mesh {
+            Some(m) => (0..m.engines.len())
+                .map(|e| Layout::meshed(key_groups, &m.parts(), e).map(|l| l.lanes().to_vec()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(JobError::config)?
+                .concat(),
+            None => layout.lanes().to_vec(),
+        };
         let mut restored_state = Vec::with_capacity(req.restored_snapshots.len());
         for s in &req.restored_snapshots {
             let known = transform
@@ -672,6 +691,15 @@ impl Plan {
             )));
         }
         let inputs = transform.as_ref().map_or(0, |_| req.streams.len());
+        let windowed = (0..names.len())
+            .map(|o| {
+                routes
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .any(|&(to, r)| to == o && matches!(r, Route::Window(_)))
+            })
+            .collect();
 
         let plan = Plan {
             state: StatePlan {
@@ -704,11 +732,13 @@ impl Plan {
             writer_lanes,
             key_groups,
             layout,
+            attempt_lanes,
             exchanges,
             keep: sinks
                 .iter()
                 .map(|s| s.key_groups.as_ref().map(|r| (r.first, r.last)))
                 .collect(),
+            windowed,
             holds: holds_,
             replays,
             held_url,
@@ -755,6 +785,13 @@ impl Plan {
 }
 
 impl Plan {
+    /// The key groups of stream `s` whose rows its writer lanes take; None
+    /// for all, or for a group window's output, which kept them before the
+    /// window.
+    pub fn kept(&self, s: usize) -> Option<(u32, u32)> {
+        self.keep[s].filter(|_| !self.windowed[s])
+    }
+
     /// The writer lanes an exchange sends rows to: the attempt's, with a
     /// mesh, or the engine's.
     pub fn routed_writers(&self) -> usize {
