@@ -379,6 +379,9 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 			if f, ok := plan.Floors[s.Name]; ok {
 				sp.EventTime.Floor = &f
 			}
+			if c, ok := plan.Closes[s.Name]; ok {
+				sp.EventTime.ClosesAt = &c
+			}
 		}
 		req.Streams = append(req.Streams, sp)
 	}
@@ -488,6 +491,7 @@ func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
 	ready.Delivered = r.GetDelivered()
 	ready.Holds = attempt.HoldsOf(r.GetHolds())
 	ready.Watermarks = attempt.WatermarksOf(r.GetWatermarks())
+	ready.WindowMarks = attempt.WindowMarksOf(r.GetWindowWatermarks())
 	return ready, nil
 }
 

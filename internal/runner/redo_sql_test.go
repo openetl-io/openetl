@@ -122,6 +122,84 @@ func TestARedoReadsEachOutputsPart(t *testing.T) {
 	}
 }
 
+// windowLanesJob reads items, whose group window writes minutes, keyed by
+// window_start and region and exchanged by region before the window, into
+// a destination whose writer lanes commit on their own.
+func windowLanesJob() *Job {
+	j := sqlLanesJob()
+	j.Outputs = []Stream{{Name: "minutes", Mode: destination.Append, PrimaryKey: []string{"window_start", "region"}, From: "items", Transformed: true}}
+	j.SQL = &SQLTransform{
+		SQL:       "INSERT INTO minutes SELECT window_start, region, count(*) AS n FROM items GROUP BY tumble(at, INTERVAL '1 minute'), region",
+		Operators: []string{"window-1"},
+		Expected:  []ExpectedOutput{{Name: "minutes", Input: "items", Operator: "window-1", Need: []string{"region"}}},
+	}
+	return j
+}
+
+// A worker's committable names every split it read for a group window's
+// output, as the exchange before the window sends any lane's rows to any
+// keyed lane, by the window's keys.
+func TestAWorkersShareNamesAWindowsRowsOfEverySplit(t *testing.T) {
+	j := windowLanesJob()
+	p := &workerPart{job: j, global: []int{0, 1}}
+	e := &workerEpoch{descs: make([]destination.Staged, 2), ready: &Ready{}, splitLanes: map[checkpoint.SplitRef]splitRead{
+		{Stream: "items", ID: "a"}: {lane: 0, rows: 5},
+		{Stream: "items", ID: "b"}: {lane: 1, rows: 7},
+	}}
+	s := p.share(1, 2, e, Plan{Lanes: 2, WriterLanes: 2})
+	got := map[uint32][]string{}
+	for _, c := range s.GetCommittables() {
+		got[c.GetWriterLane()] = refNames(c.GetSplits())
+		for _, r := range c.GetSplits() {
+			if !slices.Equal(r.GetKey(), []string{"region"}) {
+				t.Errorf("writer lane %d names the window's rows by %v", c.GetWriterLane(), r.GetKey())
+			}
+		}
+	}
+	want := map[uint32][]string{0: {"items/a:0:5>minutes", "items/b:0:7>minutes"}, 1: {"items/a:128:5>minutes", "items/b:128:7>minutes"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("committables %v, want %v", got, want)
+	}
+}
+
+// A redo of a writer lane's part of a group window's epoch reads every
+// split the record names for it, keeps the window's rows of the lane's key
+// groups by the window's keys, and takes them from whichever of its lanes
+// the keyed lanes give them to; with no split to read, it still closes the
+// windows of those key groups from the state before. A part split by
+// another key can't be written again.
+func TestARedoOfAWindowsPart(t *testing.T) {
+	kg := &checkpoint.KeyGroupRange{First: 128, Last: 255}
+	rec := func(splits ...checkpoint.CoveredSplit) *checkpoint.Record {
+		return &checkpoint.Record{
+			Epoch: 4, Generation: 1,
+			Streams:      map[string]checkpoint.StreamState{"items": {Splits: []checkpoint.SplitState{{ID: "a", State: []byte("9")}, {ID: "b", State: []byte("19")}}}},
+			Coverage:     []checkpoint.Coverage{{KeyGroups: kg, Splits: splits}},
+			Committables: [][]byte{nil},
+			SQLDigest:    windowLanesJob().SQL.digest(),
+		}
+	}
+	covered := func(id, from string) checkpoint.CoveredSplit {
+		return checkpoint.CoveredSplit{Stream: "items", ID: id, Output: "minutes", KeyGroups: kg, Key: []string{"region"}, From: []byte(from), Rows: 3}
+	}
+	part, err := windowLanesJob().redoReads(rec(covered("a", "4"), covered("b", "12")), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(part.reads) != 2 || !reflect.DeepEqual(part.ranges, map[string]checkpoint.KeyGroupRange{"minutes": *kg}) || !slices.Equal(part.keyed, []string{"minutes"}) {
+		t.Errorf("reads %v, ranges %v, keyed %v", part.reads, part.ranges, part.keyed)
+	}
+	part, err = windowLanesJob().redoReads(rec(), 0)
+	if err != nil || len(part.reads) != 0 || !reflect.DeepEqual(part.ranges, map[string]checkpoint.KeyGroupRange{"minutes": *kg}) || !slices.Equal(part.keyed, []string{"minutes"}) {
+		t.Errorf("with nothing read: reads %v, ranges %v, keyed %v: %v", part.reads, part.ranges, part.keyed, err)
+	}
+	byID := covered("a", "4")
+	byID.Key = []string{"id"}
+	if _, err := windowLanesJob().redoReads(rec(byID), 0); errs.CodeOf(err) != errs.ConfigInvalid {
+		t.Errorf("a part split by another key: %v", err)
+	}
+}
+
 // What the pipeline's SQL writes now must be what wrote the epoch: other
 // statements, even with the same outputs and keys, an output keyed
 // otherwise, written from another stream, gone, or a SQL transform gone

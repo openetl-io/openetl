@@ -213,9 +213,60 @@ func TestWhatCrossesIsWhatCoverageNames(t *testing.T) {
 	if err := j.OnWorkers(2); err != nil {
 		t.Errorf("a SQL transform into lane commits: %v", err)
 	}
+	// A group window's output takes its rows of every split, by the window's
+	// keys' groups, through the exchange before the window.
 	j.SQL.Operators = []string{"window-1"}
-	if err := j.OnWorkers(2); err == nil {
-		t.Error("a SQL statement with state into lane commits may run on workers")
+	j.SQL.Expected = []ExpectedOutput{{Name: "names", Input: "items", Operator: "window-1", Need: []string{"name"}}}
+	if err := j.OnWorkers(2); err != nil {
+		t.Errorf("a SQL statement with state into lane commits: %v", err)
+	}
+	if !j.meshed(2) {
+		t.Error("an attempt on 2 workers with a group window doesn't exchange between them")
+	}
+	want = map[string][]crossed{"items": {{output: "out", key: []string{"id"}}, {output: "names", key: []string{"name"}}}}
+	if got := j.crossing(); !reflect.DeepEqual(got, want) {
+		t.Errorf("a group window's crossing %v; want %v", got, want)
+	}
+	j.Dataflow = Passthrough{}
+	var onePod *OnePodError
+	if err := j.OnWorkers(2); !errors.As(err, &onePod) {
+		t.Errorf("a group window ran on workers whose engines don't exchange rows: %v", err)
+	}
+	if err := j.OnWorkers(1); err != nil {
+		t.Errorf("a group window on one worker: %v", err)
+	}
+}
+
+// A job with a group window lays every lane and writer lane out over the
+// key groups, on one worker too, where its keyed lanes keep their state;
+// and each writer lane's committable names its key groups, which the
+// window's rows of it are of whether or not a split was read.
+func TestAGroupWindowLaysOutItsKeyGroups(t *testing.T) {
+	j := meshJob(Passthrough{})
+	j.SQL = &SQLTransform{SQL: "…", Operators: []string{"window-1"}, Expected: []ExpectedOutput{{Name: "minutes", Input: "logs", Operator: "window-1", Need: []string{"region"}}}}
+	j.Outputs = []Stream{{Name: "minutes", Mode: destination.Merge, PrimaryKey: []string{"window_start", "region"}, From: "logs", Transformed: true}}
+	a, err := j.layout(1, map[string][]checkpoint.SplitState{"logs": splitsOf(3)}, map[string]bool{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := plan.NewLayout(256, len(a.GetLanes()), len(a.GetWriterLanes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for w, l := range a.GetWriterLanes() {
+		if kg := l.GetKeyGroups(); kg == nil || int(kg.GetFirst()) != want.Writers[w].First || int(kg.GetLast()) != want.Writers[w].Last {
+			t.Errorf("writer lane %d owns %v, want %v", w, kg, want.Writers[w])
+		}
+	}
+	f := &fleet{job: j, writers: 2, ranges: []plan.KeyGroupRange{{First: 0, Last: 127}, {First: 128, Last: 255}}, schemas: newSchemaOwner(nil, nil)}
+	sh, err := f.merge(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for w, c := range sh.coverage {
+		if c.KeyGroups == nil || c.KeyGroups.First != f.ranges[w].First || c.KeyGroups.Last != f.ranges[w].Last {
+			t.Errorf("writer lane %d's coverage names key groups %v", w, c.KeyGroups)
+		}
 	}
 }
 

@@ -71,12 +71,15 @@ func TestWorkers(t *testing.T) {
 			`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
 		}},
-		// Its exchange runs inside one engine, and its state restores where
-		// the record's lanes were.
+		// The workers' engines exchange its rows by key group to the keyed
+		// lanes that keep its state, on whichever worker.
 		{name: "a group window", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: held, sql: &sqlplan.Answer{Statements: []sqlplan.Statement{{Output: "m", Inputs: []string{"logs"}, Operator: "window-1"}}},
-			onePod: "a SQL statement with state, as a group window, runs on one pod"},
+			workers: 2, oneWorker: []string{
+				`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
+				`snapshot: each attempt reads it on one of its 2 workers: an overwrite's read ends on one worker`,
+			}},
 		{name: "sql passing streams through", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: held, sql: &sqlplan.Answer{}, workers: 2, oneWorker: []string{
@@ -91,11 +94,15 @@ func TestWorkers(t *testing.T) {
 			workers: 2, oneWorker: []string{
 				`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			}},
+		// A lost lane's part is read again from every split, of its key
+		// groups, from the state before the epoch.
 		{name: "a group window into lane commits", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: destination.Capabilities{Class: destination.TransactionalStream, WriterLanes: 4, LaneCommits: true},
-			sql:    &sqlplan.Answer{Statements: []sqlplan.Statement{{Output: "m", Inputs: []string{"logs"}, Operator: "window-1"}}},
-			onePod: "a SQL statement with state, as a group window, runs on one pod"},
+			sql:     &sqlplan.Answer{Statements: []sqlplan.Statement{{Output: "m", Inputs: []string{"logs"}, Operator: "window-1"}}},
+			workers: 2, oneWorker: []string{
+				`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
+			}},
 		{name: "sql not planned", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: held, workers: 2},

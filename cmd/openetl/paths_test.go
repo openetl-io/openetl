@@ -83,18 +83,31 @@ func TestPlanShowsAWindowsOneExchange(t *testing.T) {
 	if len(problems) != 0 {
 		t.Fatal(problems)
 	}
-	var out bytes.Buffer
-	printTransform(&out, plan.Transform(spec, cat, &a))
-	printPaths(&out, plans)
-	for _, want := range []string{
-		"INSERT INTO minutes  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-",
-		"minutes  split by id -> exchange by key group on region -> statement 1:1, needs region -> writer, needs window_start, region\n",
-	} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("printed\n%s\nwithout %q", out.String(), want)
+	// On one pod and on workers alike: the plan is the same, the exchange
+	// crossing the workers to the keyed lanes that own each row's key group,
+	// which feed their own writer lanes.
+	for _, asked := range []uint32{0, 3} {
+		spec.Resources = &apiv1.JobResources{Workers: asked}
+		workers, onePod, warnings := plan.Workers(spec, cat, caps, false, &a)
+		if workers != int(asked) || onePod != "" || len(warnings) != 0 {
+			t.Fatalf("%d workers asked: %d, %q, %v", asked, workers, onePod, warnings)
 		}
-	}
-	if n := strings.Count(out.String(), "exchange by key group"); n != 1 {
-		t.Errorf("%d exchanges:\n%s", n, out.String())
+		var out bytes.Buffer
+		printPlan(&out, &apiv1.PipelinePlan{Pipeline: "shop", Job: &apiv1.JobPlan{Workers: uint32(workers)}, Transform: plan.Transform(spec, cat, &a), Streams: plans})
+		wants := []string{
+			"INSERT INTO minutes  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-",
+			"minutes  split by id -> exchange by key group on region -> statement 1:1, needs region -> writer, needs window_start, region\n",
+		}
+		if asked > 0 {
+			wants = append(wants, "workers: 3, each of the job's size, and their coordinator\n")
+		}
+		for _, want := range wants {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("%d workers: printed\n%s\nwithout %q", asked, out.String(), want)
+			}
+		}
+		if n := strings.Count(out.String(), "exchange by key group"); n != 1 {
+			t.Errorf("%d workers: %d exchanges:\n%s", asked, n, out.String())
+		}
 	}
 }

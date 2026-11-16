@@ -65,8 +65,12 @@ func (j *Job) OnWorkers(workers int) error {
 		return errs.New(errs.ConfigInvalid, "runner: %d workers", workers)
 	}
 	_, engineSink := j.Destination.(EngineSink)
-	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode(), Stateful: j.stateful()}
-	if why := plan.OnePod(facts); why != "" {
+	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode()}
+	why := plan.OnePod(facts)
+	if why == "" && workers > 1 && j.stateful() && !meshes(j.Dataflow) {
+		why = "a SQL statement with state, as a group window, takes its rows from every worker, and the dataflow's engines don't exchange rows between workers"
+	}
+	if why != "" {
 		return errs.Wrap(errs.ConfigInvalid, &OnePodError{Why: why}, "")
 	}
 	return nil
@@ -306,6 +310,10 @@ func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 	f.cross(refs)
 	for w, rs := range refs {
 		sh.coverage[w] = coverageOf(rs)
+		if f.job.stateful() && w < len(f.ranges) {
+			r := checkpoint.KeyGroupRange(f.ranges[w])
+			sh.coverage[w].KeyGroups = &r
+		}
 	}
 	for name, ss := range sh.splits {
 		// Splits an epoch added come after the assignment's, in the order
@@ -368,7 +376,8 @@ func (f *fleet) place(stream, id string) int {
 // snapshots, quarantine, held cells and files, the replay's progress, which
 // only worker 0 makes, and the columns held whole and schemas that r doesn't
 // have yet. Every worker shapes by the same schemas, and the owner's
-// newest are set once every share is in.
+// newest are set once every share is in. Every worker's keyed lanes have
+// the same windows' watermarks, of which r keeps the least.
 func mergeReady(r *Ready, s *attemptv1.Share) error {
 	got, err := attempt.ReadyOf(s.GetReady())
 	if err != nil {
@@ -389,6 +398,14 @@ func mergeReady(r *Ready, s *attemptv1.Share) error {
 	first(&r.Schemas, got.Schemas)
 	first(&r.OutputSchemas, got.OutputSchemas)
 	first(&r.Delivered, got.Delivered)
+	for name, wm := range got.WindowMarks {
+		if r.WindowMarks == nil {
+			r.WindowMarks = map[string]int64{}
+		}
+		if was, ok := r.WindowMarks[name]; !ok || wm < was {
+			r.WindowMarks[name] = wm
+		}
+	}
 	for name, w := range got.Watermarks {
 		if r.Watermarks == nil {
 			r.Watermarks = map[string]map[string]int64{}
@@ -1063,8 +1080,12 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 			break
 		}
 	}
+	// The attempt's layout of key groups: where the engines exchange rows,
+	// and where a stateful statement's keyed lanes keep them, on one worker
+	// too.
+	laidOut := mesh || j.stateful()
 	var laid plan.Layout
-	if mesh {
+	if laidOut {
 		if err := capLanes(j.keyGroups(), lanes, writers); err != nil {
 			return nil, err
 		}
@@ -1097,7 +1118,7 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 		next[p.worker]++
 		a.Splits = append(a.Splits, &attemptv1.SplitAssignment{Split: positionOf(p.stream, p.split), Lane: ints.Uint32(lane)})
 	}
-	if mesh {
+	if laidOut {
 		for i, r := range laid.Lanes {
 			a.Lanes[i].KeyGroups = attempt.KeyGroups(r.First, r.Last)
 		}
@@ -1137,15 +1158,18 @@ type crossed struct {
 
 // crossing is, for an attempt whose workers' engines exchange rows, by each
 // stream the source reads whose rows they exchange, the destination's
-// streams its rows reach through the exchange.
+// streams its rows reach through the exchange: before the writer, or
+// before a stateful statement, whose keyed lanes feed their own writer
+// lanes.
 func (j *Job) crossing() map[string][]crossed {
 	out := map[string][]crossed{}
 	for _, s := range j.Streams {
 		for _, d := range j.fedBy(s.Name) {
-			if !j.keyGrouped(d) {
+			_, keyed := j.keyedBy(d.Name)
+			if !keyed && !j.keyGrouped(d) {
 				continue
 			}
-			c := crossed{key: d.PrimaryKey}
+			c := crossed{key: j.exchangeKey(d)}
 			if j.SQL != nil {
 				c.output = d.Name
 			}
@@ -1177,12 +1201,13 @@ func (j *Job) fedBy(stream string) []Stream {
 // meshed says an attempt on n workers has their engines exchange rows
 // between them: the workers' dataflow can, and a destination's stream has
 // an exchange before its writer, which every writer lane of the attempt
-// then takes part in.
+// then takes part in, or a stateful statement one before it, which every
+// lane of the attempt does.
 func (j *Job) meshed(n int) bool {
 	if n < 2 || !meshes(j.Dataflow) {
 		return false
 	}
-	return slices.ContainsFunc(j.sinkStreams(), j.keyGrouped)
+	return j.stateful() || slices.ContainsFunc(j.sinkStreams(), j.keyGrouped)
 }
 
 // oneWorker says one worker reads all of s's splits: a destination's stream
@@ -1211,6 +1236,12 @@ func (c *coordinator) runFleet(ctx context.Context, restored *checkpoint.Record,
 		f.acking = &ref
 	}
 	a.FirstEpoch, a.MaxBytes = c.next, f.perWorker()
+	// Every worker's engine starts the attempt at these.
+	assigned := map[string][]checkpoint.SplitState{}
+	for _, s := range a.GetSplits() {
+		assigned[s.GetSplit().GetStream()] = append(assigned[s.GetSplit().GetStream()], splitStateOf(s.GetSplit()))
+	}
+	c.windowFloors = floors(c.job.Streams, assigned)
 	a.ReadStarts = map[string]int64{}
 	for _, s := range c.job.Streams {
 		if !slices.Contains(a.GetDone(), s.Name) {

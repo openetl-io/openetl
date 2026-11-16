@@ -93,6 +93,10 @@ type Ready struct {
 	// Each split's watermark at its lane's barrier, by stream with event
 	// time and split.
 	Watermarks map[string]map[string]int64
+	// By stream a group window reads: its watermark past the exchange into
+	// the window's keyed lanes at their barrier, which the windows closed up
+	// to; the least int64 where it had none.
+	WindowMarks map[string]int64
 }
 
 // LaneReady is a writer lane's part of an epoch.
@@ -194,6 +198,10 @@ type Plan struct {
 	// attempt reads, every worker's, which a lane past an exchange starts
 	// at; missing where one has none.
 	Floors map[string]int64
+	// A redo's, by stream a group window reads: where the windows close at
+	// the barrier of the epoch it redoes, as the record has it; they stay at
+	// the floor before. Missing: they go by the watermarks of what's read.
+	Closes map[string]int64
 	// A worker's, where the workers' engines exchange rows between them:
 	// then its lanes and writer lanes are its part of the attempt's layout
 	// (plan.NewWorkerLayout), and Exchanges send rows to the attempt's
