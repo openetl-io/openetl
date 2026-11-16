@@ -101,6 +101,10 @@ func TestDescribe(t *testing.T) {
 	if !strings.Contains(next, "openetl rewind --yes --workspace analytics shop") {
 		t.Errorf("checkpoint_corrupt's next steps %q", next)
 	}
+	held := Observation{Class: CheckpointCorrupt, Code: "CHECKPOINT_CORRUPT", Message: "held file 1/2/s/part-00000.parquet: not found: restore the file below _held, then resume the pipeline"}
+	if summary, next := describe(held, tg); !strings.Contains(summary, "held file") || strings.Contains(next, "openetl rewind") || !strings.Contains(next, "openetl resume") {
+		t.Errorf("a held file that can't be read: %q, %q", summary, next)
+	}
 	rewound, _ := describe(Observation{Class: CheckpointCorrupt, Taken: []Action{{Kind: "rewind"}}}, tg)
 	if failed, _ := describe(Observation{Class: CheckpointCorrupt}, tg); rewound == failed {
 		t.Errorf("a rewind and a failure have the same summary %q", rewound)
