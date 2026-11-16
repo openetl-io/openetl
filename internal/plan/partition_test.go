@@ -3,6 +3,7 @@ package plan
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -248,9 +249,17 @@ func TestWorkerLayout(t *testing.T) {
 			t.Errorf("%d groups, lanes %v, writers %v: %v %v %v %v", tc.groups, tc.lanes, tc.writers, l.Lanes, l.Writers, l.WriterOf, err)
 		}
 	}
-	for _, bad := range [][2][]int{{{3, 1, 2}, {1, 1, 2}}, {{1, 1}, {1, 2}}, {{1}, {1, 1}}} {
-		if _, err := NewWorkerLayout(8, bad[0], bad[1]); err == nil {
-			t.Errorf("%v laid out", bad)
+	// Workers are numbered from 1, as people see them.
+	for _, bad := range []struct {
+		lanes, writers []int
+		want           string
+	}{
+		{[]int{3, 1, 2}, []int{1, 1, 2}, "worker 1 has 3 lanes over 2 key groups"},
+		{[]int{1, 1}, []int{1, 2}, "worker 2 has 1 lanes and 2 writer lanes"},
+		{[]int{1}, []int{1, 1}, "lanes [1] and writer lanes [1 1]"},
+	} {
+		if _, err := NewWorkerLayout(8, bad.lanes, bad.writers); err == nil || !strings.Contains(err.Error(), bad.want) {
+			t.Errorf("lanes %v, writers %v: %v, want %q", bad.lanes, bad.writers, err, bad.want)
 		}
 	}
 	one, _ := NewLayout(256, 5, 3)
@@ -260,7 +269,7 @@ func TestWorkerLayout(t *testing.T) {
 	l, _ := NewWorkerLayout(256, []int{1, 3}, []int{1, 2})
 	p, err := l.Part(1, 3, 1, 2)
 	if err != nil || !slices.Equal(p.Lanes, l.Lanes[1:]) || !slices.Equal(p.Writers, l.Writers[1:]) || !slices.Equal(p.WriterOf, []int{0, 0, 1}) {
-		t.Errorf("worker 1's part: %v, %v", p, err)
+		t.Errorf("worker 2's part: %v, %v", p, err)
 	}
 	if _, err := l.Part(0, 2, 0, 1); err == nil {
 		t.Error("a part whose lane feeds another's writer lane")

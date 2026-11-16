@@ -90,11 +90,15 @@ SELECT pg_try_advisory_xact_lock(hashtextextended(@data_plane::text, 0));
 -- A data plane's runners and pod launchers reporting now, with the room their
 -- placements use: a launcher's go on using it while their pods run them. An
 -- attempt on workers uses its workers' and its coordinator's, and counts as
--- its pods.
+-- its pods. A launcher's unreaped room is what its placements that have
+-- ended hold until it reports their pods gone or ended.
 SELECT r.*,
     COALESCE(u.cpu, 0)::bigint AS used_cpu,
     COALESCE(u.memory, 0)::bigint AS used_memory,
-    COALESCE(u.attempts, 0)::bigint AS attempts
+    COALESCE(u.attempts, 0)::bigint AS attempts,
+    COALESCE(h.pods, 0)::bigint AS unreaped_pods,
+    COALESCE(h.cpu, 0)::bigint AS unreaped_cpu,
+    COALESCE(h.memory, 0)::bigint AS unreaped_memory
 FROM runners r
 LEFT JOIN LATERAL (
     SELECT sum(d.size_cpu * GREATEST(d.workers, 1) + d.coordinator_cpu) AS cpu,
@@ -103,9 +107,41 @@ LEFT JOIN LATERAL (
     FROM dispatches d
     WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND (d.runner = r.id OR d.launcher = r.id) AND d.state IN ('placed', 'running')
 ) u ON true
+LEFT JOIN LATERAL (
+    SELECT sum(l.pods) AS pods, sum(l.cpu) AS cpu, sum(l.memory) AS memory
+    FROM launches l
+    WHERE l.org_id = r.org_id AND l.data_plane_id = r.data_plane_id AND l.launcher = r.id AND NOT EXISTS (
+        SELECT 1 FROM dispatches d
+        WHERE d.org_id = l.org_id AND d.id = l.id AND d.placements = l.placement AND d.launcher = l.launcher
+            AND d.state IN ('placed', 'running')
+    )
+) h ON true
 WHERE r.org_id = @org_id AND r.data_plane_id = @data_plane_id AND r.attempt = ''
     AND r.report_time >= now() - (sqlc.arg(lapse_ms)::bigint * interval '1 millisecond')
 ORDER BY r.id;
+
+-- name: HoldLaunch :exec
+-- The room an attempt placed on a pod launcher holds of its caps: its pods,
+-- and their CPU and memory.
+INSERT INTO launches (org_id, data_plane_id, launcher, id, placement, pods, cpu, memory)
+SELECT d.org_id, d.data_plane_id, d.launcher, d.id, d.placements, GREATEST(d.workers, 0) + 1,
+    d.size_cpu * GREATEST(d.workers, 1) + d.coordinator_cpu, d.size_memory * GREATEST(d.workers, 1) + d.coordinator_memory
+FROM dispatches d
+WHERE d.org_id = @org_id AND d.id = @id AND d.launcher = @launcher AND d.state = 'placed'
+ON CONFLICT DO NOTHING;
+
+-- name: ReleaseLaunches :exec
+-- A launcher's report, once it has listed its pods, frees the room of its
+-- placements that have ended, but for those in @ids and @placements: with a
+-- pod that hasn't ended, or pods it's still making.
+DELETE FROM launches l
+WHERE l.org_id = @org_id AND l.data_plane_id = @data_plane_id AND l.launcher = @launcher
+    AND (l.id, l.placement) NOT IN (SELECT unnest(@ids::text[]), unnest(@placements::integer[]))
+    AND NOT EXISTS (
+        SELECT 1 FROM dispatches d
+        WHERE d.org_id = l.org_id AND d.id = l.id AND d.placements = l.placement AND d.launcher = l.launcher
+            AND d.state IN ('placed', 'running')
+    );
 
 -- name: PendingAttempts :many
 -- The attempts waiting for room, longest-waiting first within each priority,

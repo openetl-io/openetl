@@ -1122,10 +1122,19 @@ func TestRescale(t *testing.T) {
 	}
 }
 
-// launcher has a pod launcher report its pods, and returns which to delete.
+// launcher has a pod launcher report its pods, none of which has ended, and
+// returns which to delete.
 func (f *fixture) launcher(id string, pods Pods, launched ...Launch) []Launch {
 	f.t.Helper()
-	if _, _, err := f.d.Report(f.t.Context(), Report{Org: f.org, DataPlane: "default", Runner: db.ReportRunnerParams{
+	return f.launcherListing(id, pods, true, launched, launched)
+}
+
+// launcherListing has a pod launcher report the placements it has pods of,
+// those of them with a pod that hasn't ended, and whether it could list
+// them, and returns which to delete.
+func (f *fixture) launcherListing(id string, pods Pods, listed bool, launched, holding []Launch) []Launch {
+	f.t.Helper()
+	if _, _, err := f.d.Report(f.t.Context(), Report{Org: f.org, DataPlane: "default", Listed: listed, Holding: holding, Runner: db.ReportRunnerParams{
 		ID: id, Release: "dev", Protocol: "v1", Features: []string{}, Launchers: []string{LauncherSubprocess}, Platform: "linux/amd64", Pool: "default",
 		Launcher: true, PodMinCpu: pods.Min.CPU, PodMinMemory: pods.Min.Memory, PodMaxCpu: pods.Max.CPU, PodMaxMemory: pods.Max.Memory,
 		MaxPods: int32(pods.MaxPods), MaxPodCpu: pods.MaxCPU,
@@ -1236,9 +1245,74 @@ func TestAttemptInAPod(t *testing.T) {
 	if reap := f.launcher("pods", Pods{Min: resources.M, MaxPods: 1}, Launch{"large", 1}); !slices.Equal(reap, []Launch{{"large", 1}}) {
 		t.Fatalf("reap %v, want large's pod", reap)
 	}
+	// Its pod still holds the launcher's one pod until it's gone, or ended,
+	// and a launcher that couldn't list its pods says nothing of it.
+	f.tick()
+	if got := f.launches("pods"); len(got) != 0 {
+		t.Fatalf("the launcher got %v while large's pod is there", got)
+	}
+	f.launcherListing("pods", Pods{Min: resources.M, MaxPods: 1}, false, nil, nil)
+	f.tick()
+	if got := f.launches("pods"); len(got) != 0 {
+		t.Fatalf("the launcher got %v when it couldn't list its pods", got)
+	}
+	f.launcher("pods", Pods{Min: resources.M, MaxPods: 1})
 	f.tick()
 	if got := f.launches("pods"); len(got) != 1 || got[0].Attempt != "next" {
 		t.Fatalf("the launcher got %v, want next", got)
+	}
+}
+
+// A placement that has ended holds its pods and their CPU in the launcher's
+// caps until the launcher reports them ended or gone; one that's live holds
+// them whatever the launcher says.
+func TestEndedPlacementsHoldTheirPods(t *testing.T) {
+	f := setup(t, Options{})
+	ctx := t.Context()
+	caps := Pods{Min: resources.M, MaxPods: 2, MaxCPU: resources.L.CPU + resources.M.CPU}
+	f.launcher("pods", caps)
+	f.sized("a", resources.L)
+	f.sized("b", resources.M)
+	got := f.launches("pods")
+	slices.SortFunc(got, func(x, y Launch) int { return strings.Compare(x.Attempt, y.Attempt) })
+	if len(got) != 2 || got[0] != (Launch{"a", 1}) || got[1] != (Launch{"b", 1}) {
+		t.Fatalf("the launcher got %v, want a and b", got)
+	}
+	f.sized("c", resources.M)
+	// Nothing listed yet: both are live, so they hold their room.
+	f.launcher("pods", caps)
+	unreaped := func(pods, cpu int64) {
+		t.Helper()
+		rows, err := f.d.Store.PlacementRunners(ctx, db.PlacementRunnersParams{OrgID: f.org, DataPlaneID: "default", LapseMs: time.Minute.Milliseconds()})
+		if err != nil || len(rows) != 1 || rows[0].UnreapedPods != pods || rows[0].UnreapedCpu != cpu {
+			t.Fatalf("placement rows %+v (%v), want %d unreaped pods with %d mCPU", rows, err, pods, cpu)
+		}
+	}
+	unreaped(0, 0)
+	f.tick()
+	if more := f.launches("pods"); len(more) != 0 {
+		t.Fatalf("the launcher got %v with its caps full", more)
+	}
+	// a ends: its pod, still running as it stops, holds its room.
+	if !f.claimAs("pod-a", got[0]) {
+		t.Fatal("a's pod didn't get it")
+	}
+	if ok, err := f.d.Result(ctx, f.org, "default", "pod-a", "a", contract.WorkOutcome{Result: []byte(`{}`)}, false, nil); err != nil || !ok {
+		t.Fatalf("result: %v %v", ok, err)
+	}
+	unreaped(1, resources.L.CPU)
+	f.tick()
+	if more := f.launches("pods"); len(more) != 0 {
+		t.Fatalf("the launcher got %v while a's pod runs", more)
+	}
+	f.launcher("pods", caps, got[0], got[1])
+	unreaped(1, resources.L.CPU)
+	// Listed but ended, it holds nothing.
+	f.launcherListing("pods", caps, true, []Launch{got[0], got[1]}, []Launch{got[1]})
+	unreaped(0, 0)
+	f.tick()
+	if next := f.launches("pods"); len(next) != 1 || next[0] != (Launch{"c", 1}) {
+		t.Fatalf("the launcher got %v, want c", next)
 	}
 }
 
@@ -1300,11 +1374,27 @@ func TestAttemptOnWorkers(t *testing.T) {
 	if w, _, _ := f.d.WorkerAttempt(ctx, f.org, "default", "first", 1, 0); w != nil {
 		t.Fatal("a worker of the placement that moved on got the attempt")
 	}
+	// The placement that moved on holds its 3 pods until the launcher
+	// reports them gone: first fits again on one pod, and second waits.
 	f.tick()
 	launched := f.launches("pods")
-	slices.SortFunc(launched, func(a, b Launch) int { return strings.Compare(a.Attempt, b.Attempt) })
-	if len(launched) != 2 || launched[0] != (Launch{"first", 2}) || launched[1] != (Launch{"second", 1}) {
-		t.Fatalf("the launcher got %v, want first again on one pod, and second's 3 pods", launched)
+	if len(launched) != 1 || launched[0] != (Launch{"first", 2}) {
+		t.Fatalf("the launcher got %v, want first again on one pod, with 3 of its 4 pods still first's last placement's", launched)
+	}
+	rows, err = f.d.Store.PlacementRunners(ctx, db.PlacementRunnersParams{OrgID: f.org, DataPlaneID: "default", LapseMs: time.Minute.Milliseconds()})
+	if err != nil || len(rows) != 1 || rows[0].Attempts != 1 || rows[0].UnreapedPods != 3 || rows[0].UnreapedCpu != resources.S.CPU*2+resources.XS.CPU {
+		t.Fatalf("placement rows %+v (%v), want 1 pod placed, and 3 unreaped with their CPU", rows, err)
+	}
+	f.launcher("pods", Pods{Min: resources.M, MaxPods: 4}, Launch{"first", 1}, Launch{"first", 2})
+	f.tick()
+	if again := f.launches("pods"); len(again) != 0 {
+		t.Fatalf("the launcher got %v while the last placement's pods are there", again)
+	}
+	f.launcher("pods", Pods{Min: resources.M, MaxPods: 4}, Launch{"first", 2})
+	f.tick()
+	launched = append(launched, f.launches("pods")...)
+	if len(launched) != 2 || launched[1] != (Launch{"second", 1}) {
+		t.Fatalf("the launcher got %v, want second's 3 pods once they're gone", launched)
 	}
 	d, err := f.d.Store.GetDispatchOutcome(ctx, db.GetDispatchOutcomeParams{OrgID: f.org, ID: "first"})
 	if err != nil || d.State != "placed" {
