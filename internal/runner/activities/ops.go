@@ -67,7 +67,12 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 		return res, err
 	}
 	if err := readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets()); err != nil {
-		return res, err
+		if errs.CodeOf(err) != errs.ConfigInvalid {
+			return res, err
+		}
+		// A secret the config names that can't be read is the config's to fix.
+		res.Checks, res.Code, res.Message = checkResult(check.FromError(err))
+		return fitResult("connector check", res)
 	}
 	c, role, err := bindConnection(in, cfg.GetConfig(), env)
 	if err != nil {

@@ -337,6 +337,12 @@ func TestCheckConnector(t *testing.T) {
 	if res, err := a.CheckConnector(t.Context(), in); err != nil || res.Code == "" || len(res.Checks) != 0 {
 		t.Errorf("a connector that can't be bound: %+v, %v", res, err)
 	}
+
+	api.cfg.Config.Connector = "locked"
+	api.cfg.Secrets = []*dataplanev1.ExternalSecret{{Field: "marker", Secret: "workspaces/w/secrets/db", Ref: "aws-sm://db"}}
+	if res, err := a.CheckConnector(t.Context(), in); err != nil || res.Code != "CONFIG_INVALID" || !strings.Contains(res.Message, "workspaces/w/secrets/db") {
+		t.Errorf("a secret that can't be read: %+v, %v", res, err)
+	}
 }
 
 // A result too large for the orchestrator, as it travels, fails the op and
