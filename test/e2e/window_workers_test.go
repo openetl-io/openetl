@@ -22,13 +22,13 @@ import (
 )
 
 // A window test's records: record i at windowT0 + i*windowStep, of key
-// k{i % windowKeys}, on partition i % the topic's partitions, at offset i /
+// k{i % windowTestKeys}, on partition i % the topic's partitions, at offset i /
 // the partitions there, so a partition's records come in the order of their
 // time and none is late.
 const (
-	windowKeys = 8
-	windowStep = 10 * time.Millisecond
-	windowSize = 10 * time.Second
+	windowTestKeys = 8
+	windowStep     = 10 * time.Millisecond
+	windowSize     = 10 * time.Second
 )
 
 // produceWindowRound writes records from..from+n-1 of a window test whose
@@ -37,7 +37,7 @@ func produceWindowRound(t *testing.T, cl *kgo.Client, topic string, t0 time.Time
 	t.Helper()
 	recs := make([]*kgo.Record, 0, n)
 	for i := from; i < from+n; i++ {
-		recs = append(recs, &kgo.Record{Topic: topic, Partition: int32(i) % partitions, Key: fmt.Appendf(nil, "k%d", i%windowKeys),
+		recs = append(recs, &kgo.Record{Topic: topic, Partition: int32(i) % partitions, Key: fmt.Appendf(nil, "k%d", i%windowTestKeys),
 			Value: fmt.Appendf(nil, `{"i": %d}`, i), Timestamp: t0.Add(time.Duration(i) * windowStep)})
 	}
 	if err := cl.ProduceSync(t.Context(), recs...).FirstErr(); err != nil {
@@ -193,7 +193,7 @@ func TestKafkaWindowOnWorkersThroughKills(t *testing.T) {
 	want := map[windowRow]bool{}
 	byWindow := map[[2]int]*windowRow{}
 	for i := range produced {
-		w := [2]int{int(time.Duration(i) * windowStep / windowSize), i % windowKeys}
+		w := [2]int{int(time.Duration(i) * windowStep / windowSize), i % windowTestKeys}
 		offset := i / laneLossPartitions
 		r := byWindow[w]
 		if r == nil {
