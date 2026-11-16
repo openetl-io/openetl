@@ -650,6 +650,8 @@ type fakeLauncher struct {
 	// Set: the next list takes what's there, sends a channel on it, and
 	// returns that once the channel is closed.
 	pause chan chan struct{}
+	// How many lists have begun.
+	lists int
 }
 
 func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
@@ -678,6 +680,7 @@ func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
 
 func (f *fakeLauncher) Pods(context.Context) ([]pods.Pod, error) {
 	f.mu.Lock()
+	f.lists++
 	if f.listErr != nil {
 		f.mu.Unlock()
 		return nil, f.listErr
@@ -853,76 +856,103 @@ func TestLauncherReportsWhatHoldsItsCaps(t *testing.T) {
 
 // A report that lists the pods while an older list is still out, as the
 // last report when the launcher stops can, doesn't make that older list's
-// report miss a placement whose pods were made after it began.
+// report miss a placement whose pods were made after it began. The test
+// sends both reports itself, each step on a signal rather than a wait: the
+// worker's own reports are an hour apart, and so is their deadline.
 func TestOverlappingReportsKeepAPlacementBeingMade(t *testing.T) {
 	gate := make(chan struct{})
 	l := &fakeLauncher{gate: gate}
-	api, w, _ := startLauncherWorker(t, l)
+	api, w, _ := startLauncherWorker(t, l, func(w *Worker) { w.ReportEvery = time.Hour })
 	var open sync.Once
 	t.Cleanup(func() { open.Do(func() { close(gate) }) })
+	eventually(t, "the worker's first report", func() bool { return api.lastReport() != nil })
 	launch := work("sync/1/1", contract.RunSyncAttempt, small, nil)
 	launch.Placement = 1
 	api.give(launch)
-	listed := func(r *dataplanev1.ReportRunnerRequest) bool {
-		return slices.ContainsFunc(r.GetLaunched(), func(l *dataplanev1.Launch) bool {
-			return l.GetAttempt() == "sync/1/1" && !l.GetEnded()
-		})
+	key := pods.Name("sync/1/1", 1)
+	// Whether it's making the placement's pods, and whether it's done.
+	makingNow := func() (ok, done bool) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		m := w.making[key]
+		return m != nil, m != nil && !m.done.IsZero()
 	}
-	eventually(t, "a report of the placement whose pods it's making", func() bool {
-		r := api.lastReport()
-		return r != nil && listed(r)
-	})
+	eventually(t, "the launch", func() bool { ok, _ := makingNow(); return ok })
+	api.mu.Lock()
+	before := len(api.reports)
+	api.mu.Unlock()
+	ctx := context.WithoutCancel(t.Context())
 
-	// A list takes what's there, none of the pods yet, and waits; the pods
-	// are made meanwhile, and another report lists them.
+	// The older report's list takes what's there, none of the pods yet, and
+	// waits; the pods are made meanwhile.
 	pause := make(chan chan struct{})
 	l.mu.Lock()
 	l.pause = pause
+	lists := l.lists
 	l.mu.Unlock()
+	older := make(chan error, 1)
+	go func() { older <- w.report(ctx) }()
 	var release chan struct{}
 	select {
 	case release = <-pause:
-	case <-time.After(10 * time.Second):
-		t.Fatal("no list of the pods")
+	case err := <-older:
+		t.Fatalf("the older report ended before its list: %v", err)
 	}
 	open.Do(func() { close(gate) })
-	eventually(t, "the pod", func() bool {
+	eventually(t, "the pods made", func() bool { _, done := makingNow(); return done })
+
+	// The newer report lists the pods while the older list is out, and goes
+	// out first; or it waits for the older list to be done with.
+	newer := make(chan error, 1)
+	go func() { newer <- w.report(ctx) }()
+	listedToo := func() bool {
 		l.mu.Lock()
 		defer l.mu.Unlock()
-		return len(l.pods) == 1
-	})
-	another := make(chan error, 1)
-	go func() { another <- w.report(context.WithoutCancel(t.Context())) }()
-	select {
-	case err := <-another:
-		another <- err
-	case <-time.After(300 * time.Millisecond):
+		return l.lists > lists+1
+	}
+	eventually(t, "the newer report to list the pods, or to wait to", func() bool { return listedToo() || waitsToList() })
+	var newerErr error
+	sent := listedToo()
+	if sent {
+		newerErr = <-newer
 	}
 	close(release)
-	if err := <-another; err != nil {
+	if err := <-older; err != nil {
 		t.Fatal(err)
 	}
-	api.mu.Lock()
-	n := len(api.reports)
-	api.mu.Unlock()
-	eventually(t, "the older list's report", func() bool {
-		api.mu.Lock()
-		defer api.mu.Unlock()
-		return len(api.reports) > n
-	})
+	if !sent {
+		newerErr = <-newer
+	}
+	if newerErr != nil {
+		t.Fatal(newerErr)
+	}
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	seen := false
-	for i, r := range api.reports {
-		switch {
-		case !r.GetListed():
-		case listed(r):
-			seen = true
-		case seen:
-			t.Fatalf("report %d of %d leaves out the placement, whose pod runs", i+1, len(api.reports))
+	got := api.reports[before:]
+	if len(got) != 2 {
+		t.Fatalf("%d reports, want the older and the newer", len(got))
+	}
+	for i, r := range got {
+		if !r.GetListed() || !slices.ContainsFunc(r.GetLaunched(), func(l *dataplanev1.Launch) bool {
+			return l.GetAttempt() == "sync/1/1" && !l.GetEnded()
+		}) {
+			t.Errorf("report %d of 2 leaves out the placement, whose pod runs: %v", i+1, r.GetLaunched())
 		}
 	}
+}
+
+// waitsToList reports whether a goroutine waits for a lock in reportPods:
+// the listing lock, which another list holds.
+func waitsToList() bool {
+	buf := make([]byte, 1<<20)
+	buf = buf[:runtime.Stack(buf, true)]
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "[sync.Mutex.Lock") && strings.Contains(g, ").reportPods(") {
+			return true
+		}
+	}
+	return false
 }
 
 // startLauncher runs a launcher against a fake API until the returned stop is
@@ -934,11 +964,14 @@ func startLauncher(t *testing.T, l pods.Launcher) (api *fakeAPI, stop func()) {
 }
 
 // startLauncherWorker is startLauncher, with the launcher's Worker.
-func startLauncherWorker(t *testing.T, l pods.Launcher) (api *fakeAPI, w *Worker, stop func()) {
+func startLauncherWorker(t *testing.T, l pods.Launcher, opts ...func(*Worker)) (api *fakeAPI, w *Worker, stop func()) {
 	t.Helper()
 	api, w = fakeWorker(t)
 	w.Launcher, w.Pods = l, PodLimits{Min: resources.M, MaxPods: 5}
 	w.Kinds = map[string]Kind{contract.RunSyncAttempt: {StopTimeout: 2 * time.Minute, Checkpoints: true}}
+	for _, o := range opts {
+		o(w)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- w.Run(ctx) }()
