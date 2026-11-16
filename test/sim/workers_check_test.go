@@ -62,6 +62,16 @@ func (m *wModel) onRecord(rec *wRecord) {
 			m.problem("watermark", "%v: the keyed lane of key groups %d-%d was at %d at its barrier, not the record's horizon %d", rec, o.kg.First, o.kg.Last, o.wm, h)
 		}
 	}
+	if m.cfg.exchange {
+		switch {
+		case rec.Floor == nil || rec.Closed == nil:
+			m.problem("record", "%v doesn't say where its epoch's windows started and closed", rec)
+		case *rec.Closed != rec.horizon():
+			m.problem("watermark", "%v says its epoch closed windows at %d, and its keyed lanes were at %d", rec, *rec.Closed, rec.horizon())
+		case *rec.Closed < *rec.Floor:
+			m.problem("watermark", "%v says its epoch's windows started at %d and closed at %d, below", rec, *rec.Floor, *rec.Closed)
+		}
+	}
 	m.stats["records"]++
 	m.stats["sections records named"] += len(rec.Sections)
 	m.stats["pending entries records carried"] += len(rec.Pending)
@@ -81,6 +91,10 @@ func (m *wModel) checkLink(rec, prev *wRecord) {
 			if p := prev.split(s.ID); s.Watermark < p.Watermark {
 				m.problem("watermark", "split %d's watermark went back from %d in %v to %d in %v", s.ID, p.Watermark, prev, s.Watermark, rec)
 			}
+		}
+		// An epoch's windows start where the one before closed them.
+		if rec.Floor != nil && prev.Closed != nil && *rec.Floor != *prev.Closed {
+			m.problem("watermark", "%v says its epoch's windows started at %d, and %v closed them at %d", rec, *rec.Floor, prev, *prev.Closed)
 		}
 	}
 	carried := map[string]bool{}

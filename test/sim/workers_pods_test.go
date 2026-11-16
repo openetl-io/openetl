@@ -406,6 +406,9 @@ func (w *wWorker) share(d decision) {
 		s.Committables[l.idx] = l.staged[e]
 		s.Sections = append(s.Sections, l.named[e].Sections...)
 		s.Pending = append(s.Pending, l.named[e].Pending...)
+		if w.m.cfg.exchange {
+			s.Marks = append(s.Marks, l.named[e].Mark)
+		}
 	}
 	ok, err := w.m.call(w.kill, d, func() error {
 		w.m.route(w, wMsg{kind: "share", attempt: w.a.n, gen: w.gen, worker: w.idx, epoch: e, share: s})

@@ -352,6 +352,11 @@ type wRecord struct {
 	Committables [][]byte              `json:"committables"`
 	Sections     []wSection            `json:"sections,omitempty"`
 	Pending      []wStEntry            `json:"pending,omitempty"`
+	// With the keyed operator: its watermark where the epoch started it,
+	// and at the epoch's barrier, as its lanes' shares say, which closed the
+	// windows up to it. A redo of the epoch closes its windows at Closed.
+	Floor  *int64 `json:"floor,omitempty"`
+	Closed *int64 `json:"closed,omitempty"`
 	// The generations of the shares merged into it, for the checks.
 	sharedBy []uint64
 }
@@ -1004,6 +1009,9 @@ type wCoord struct {
 	settled  map[int][]string
 	asked    map[int]int
 	answered map[int]bool
+	// With the keyed operator: where its watermark starts the next epoch,
+	// the restored record's Closed, then each record's.
+	floor int64
 }
 
 func (c *wCoord) name() string    { return fmt.Sprintf("a%d.co", c.a.n) }
@@ -1246,6 +1254,10 @@ func (c *wCoord) assignAll() {
 		c.succeed()
 		return
 	}
+	c.floor = wNoMark
+	if c.restored != nil && c.restored.Closed != nil {
+		c.floor = *c.restored.Closed
+	}
 	for _, w := range c.a.workers {
 		w.send(c.assignment())
 	}
@@ -1321,6 +1333,7 @@ func (c *wCoord) takeShare(s *wShare) {
 		c    []byte
 	}
 	var cs []lc
+	closed, marked := int64(wEndMark), false
 	for _, w := range slices.Sorted(maps.Keys(c.shares)) {
 		s := c.shares[w]
 		rec.sharedBy = append(rec.sharedBy, s.Gen)
@@ -1329,6 +1342,16 @@ func (c *wCoord) takeShare(s *wShare) {
 		rec.Pending = append(rec.Pending, s.Pending...)
 		for _, l := range slices.Sorted(maps.Keys(s.Committables)) {
 			cs = append(cs, lc{l, s.Committables[l]})
+		}
+		for _, mk := range s.Marks {
+			closed, marked = min(closed, mk), true
+		}
+	}
+	if marked {
+		floor := c.floor
+		rec.Floor, rec.Closed = &floor, &closed
+		if c.m.cfg.broken != "floor-not-carried" {
+			c.floor = closed
 		}
 	}
 	slices.SortFunc(rec.Splits, func(a, b wSplit) int { return a.ID - b.ID })
@@ -1512,6 +1535,8 @@ type wShare struct {
 	Committables map[int][]byte
 	Sections     []wSection
 	Pending      []wStEntry
+	// Each keyed lane's operator watermark at the barrier.
+	Marks []int64
 }
 
 // wInbox keeps each sender's messages in order, and the senders apart.
