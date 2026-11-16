@@ -143,7 +143,8 @@ func TestEngineRefusesSQLItCantPlan(t *testing.T) {
 
 // A group window over a stream read whole, whose watermark holds until the
 // read ends, keeps its state at each barrier, and closes its windows once
-// the read's end moves the watermark to the end of input, in that epoch.
+// the read's end moves the watermark to the end of input, in that epoch,
+// whose snapshot then names no state.
 func TestEngineRunsAGroupWindow(t *testing.T) {
 	ctx := testContext(t)
 	df := &Dataflow{Options: options(t, nil)}
@@ -195,10 +196,11 @@ func TestEngineRunsAGroupWindow(t *testing.T) {
 	if len(ready) != 2 {
 		t.Fatalf("ready: %+v", ready)
 	}
-	// Each epoch names the lane's runs: one more, of what the epoch changed.
+	// Epoch 5 names the lane's run of what it changed; epoch 6 closed every
+	// window, and names none.
 	for i, r := range ready {
 		s := r.Ready.Snapshots
-		if len(s) != 1 || s[0].Operator != a.Statements[0].Operator || len(s[0].Runs) != i+1 || len(s[0].Data) == 0 {
+		if len(s) != 1 || s[0].Operator != a.Statements[0].Operator || len(s[0].Runs) != 1-i || len(s[0].Data) == 0 {
 			t.Fatalf("epoch %d's snapshots: %+v", r.Epoch, s)
 		}
 		for _, run := range s[0].Runs {

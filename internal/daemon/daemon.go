@@ -137,10 +137,13 @@ func Run(ctx context.Context, o Options) error {
 			cfg.APIURL = "http://" + ln.Addr().String()
 		}
 		// A new org has no owner, and nor does one from before API keys.
+		var listOfficial bool
 		tenant, err := st.Bootstrap(ctx, cfg.DataPlane, func(q *db.Queries, org uuid.UUID) error {
-			if err := pkgcatalog.ConnectOfficial(ctx, q, org, cfg.OfficialConnectors); err != nil {
+			connected, err := pkgcatalog.ConnectOfficial(ctx, q, org, cfg.OfficialConnectors)
+			if err != nil {
 				return err
 			}
+			listOfficial = connected
 			owners, err := q.LockOrgOwners(ctx, org)
 			if err != nil || len(owners) > 0 {
 				return err
@@ -213,6 +216,14 @@ func Run(ctx context.Context, o Options) error {
 		}
 		g.Go(func() error { return work.Listen(cpctx) })
 		g.Go(func() error { return serve(cpctx, ln, h, o.Ready, log) })
+		if listOfficial {
+			// Orchestrators list sources when they start, which on a new
+			// install can be before this server connected the official one.
+			g.Go(func() error {
+				srv.ListNewSources(cpctx, []string{pkgcatalog.OfficialName})
+				return nil
+			})
+		}
 		notifier := &webhooks.Notifier{
 			Store: st, Org: tenant.Org, Secrets: keyring, Client: webhooks.Client(netguard.Policy{Allow: allow}),
 			Logger: log.With("role", "server", "component", "webhooks"),

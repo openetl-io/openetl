@@ -134,6 +134,8 @@ pub struct BuiltSection {
     pub open: OpenSection,
     /// Each block's offset and its entries, uncompressed.
     pub blocks: Vec<(u64, Bytes)>,
+    /// The operators whose state it holds, in order.
+    pub operators: Vec<u32>,
 }
 
 /// Builds the run of `changes`, sorted by key and each key once. Sections
@@ -212,6 +214,7 @@ struct SectionWriter {
     raw_bytes: u64,
     groups: Option<(u16, u16)>,
     times: Option<(i64, i64)>,
+    operators: std::collections::BTreeSet<u32>,
 }
 
 impl SectionWriter {
@@ -232,12 +235,16 @@ impl SectionWriter {
             raw_bytes: 0,
             groups: None,
             times: None,
+            operators: std::collections::BTreeSet::new(),
         }
     }
 
     fn add(&mut self, out: &mut BytesMut, k: &[u8], v: Option<&[u8]>) -> Result<()> {
         let group =
             layout::group_of(k).ok_or_else(|| Error::Invalid("a key without a group".into()))?;
+        let op = layout::operator_of(k)
+            .ok_or_else(|| Error::Invalid("a key without an operator".into()))?;
+        self.operators.insert(op.0);
         let time = match self.kind {
             SectionKind::Values => None,
             SectionKind::Rows => layout::parse_row(k).map(|r| r.1),
@@ -377,6 +384,7 @@ impl SectionWriter {
                 filters,
             },
             blocks: self.raw_blocks,
+            operators: self.operators.into_iter().collect(),
         }
     }
 }

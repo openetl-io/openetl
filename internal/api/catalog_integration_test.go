@@ -143,16 +143,21 @@ func TestCatalog(t *testing.T) {
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	bootstrap := func() store.Tenant {
+	// connects is whether the official source is new to the org.
+	bootstrap := func(connects bool) store.Tenant {
 		tenant, err := st.Bootstrap(ctx, "dp1", func(q *db.Queries, org uuid.UUID) error {
-			return pkgcatalog.ConnectOfficial(ctx, q, org, official.String())
+			connected, err := pkgcatalog.ConnectOfficial(ctx, q, org, official.String())
+			if err == nil && connected != connects {
+				t.Errorf("connected the official source %v, want %v", connected, connects)
+			}
+			return err
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return tenant
 	}
-	tenant := bootstrap()
+	tenant := bootstrap(true)
 	keys, err := secrets.Open(ctx, "base64key://"+base64.URLEncoding.EncodeToString([]byte(strings.Repeat("k", 32))), st, []uuid.UUID{tenant.Org})
 	if err != nil {
 		t.Fatal(err)
@@ -360,7 +365,7 @@ func TestCatalog(t *testing.T) {
 	if _, err := conns.DeleteConnectorSource(ctx, connect.NewRequest(&apiv1.DeleteConnectorSourceRequest{Name: "connectorSources/official"})); err != nil {
 		t.Fatal(err)
 	}
-	bootstrap()
+	bootstrap(false)
 	sources, err := conns.ListConnectorSources(ctx, connect.NewRequest(&apiv1.ListConnectorSourcesRequest{}))
 	if err != nil {
 		t.Fatal(err)

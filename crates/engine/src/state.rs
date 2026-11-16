@@ -1,11 +1,13 @@
 //! Where a job's stateful operators keep their state, and how the record
 //! names it. Each operator's lanes write runs below a directory of the
 //! job's state URL of the operator's own, a run per lane at each barrier
-//! that changed something. A lane's snapshot names every run it reads, and
-//! counts once the epoch's record does: a run no committed record names is
-//! never read, and retention deletes it. A restore opens what the record
-//! names, by each lane's own range of key groups, so state moves to any
-//! number of lanes, and reads nothing until a lane needs it.
+//! that changed something. A lane's snapshot names the runs that hold what
+//! it reads, less what's dead: windows deleted and timers fired, which
+//! the operator's horizon, its watermark, has passed. It counts once the
+//! epoch's record does: a run no committed record names is never read,
+//! and retention deletes it. A restore opens what the record names, by
+//! each lane's own range of key groups, so state moves to any number of
+//! lanes, and reads nothing until a lane needs it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};

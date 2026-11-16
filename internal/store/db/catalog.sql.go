@@ -12,7 +12,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const connectOfficialSource = `-- name: ConnectOfficialSource :exec
+const connectOfficialSource = `-- name: ConnectOfficialSource :execrows
 WITH first AS (
     UPDATE orgs SET official_connectors_connected = true
     WHERE id = $3 AND NOT official_connectors_connected
@@ -31,9 +31,12 @@ type ConnectOfficialSourceParams struct {
 
 // Connects the official source once: an org that ever had it doesn't get it
 // back after deleting it.
-func (q *Queries) ConnectOfficialSource(ctx context.Context, arg ConnectOfficialSourceParams) error {
-	_, err := q.db.Exec(ctx, connectOfficialSource, arg.Name, arg.Url, arg.OrgID)
-	return err
+func (q *Queries) ConnectOfficialSource(ctx context.Context, arg ConnectOfficialSourceParams) (int64, error) {
+	result, err := q.db.Exec(ctx, connectOfficialSource, arg.Name, arg.Url, arg.OrgID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteCatalogPackages = `-- name: DeleteCatalogPackages :exec
