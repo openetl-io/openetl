@@ -57,6 +57,29 @@ export function partFailed(p: PreflightPart): boolean {
   return p.items.some(itemFailed) || (!p.ok && !p.skipped);
 }
 
+/** A preflight failed if a part failed or was skipped, which leaves it unfinished, whatever its ok says. */
 export function preflightFailed(r: PreflightResult): boolean {
-  return !r.ok || r.parts.some(partFailed);
+  return !r.ok || r.parts.some((p) => partFailed(p) || !!p.skipped);
+}
+
+const filled = (template: string, params: Record<string, string>) =>
+  templateParts(template, params).map((p) => (typeof p === "string" ? p : p.value)).join("");
+
+/** "title: message: detail", the placeholders filled, as the API words a failed item for its result when the connector gives no message. */
+export function itemError(it: CheckItem): string {
+  let m = filled(it.message || "The check failed.", it.params);
+  if (it.detail) m = `${m.replace(/\.$/, "")}: ${it.detail}`;
+  const t = filled(it.title, it.params);
+  return t ? `${t}: ${m}` : m;
+}
+
+/**
+ * Whether a failed check's or part's own code and message say something its first failed item doesn't: there's no failed item, or
+ * they aren't what the API takes from that item when the connector gives no code, its code, or INTERNAL, and its itemError.
+ */
+export function failureSaysMore(r: { code: string; message: string; items: CheckItem[] }): boolean {
+  const it = r.items.find(itemFailed);
+  if (!it) return true;
+  if (!r.code && !r.message) return false;
+  return r.code !== (it.code || "INTERNAL") || r.message !== itemError(it);
 }

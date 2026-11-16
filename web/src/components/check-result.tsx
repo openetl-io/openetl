@@ -4,7 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { CheckItem, CheckResult } from "@/gen/openetl/api/v1/connection_pb";
-import { checkCounts, checkFailed, itemFailed, itemStatus, templateParts, type ItemStatus } from "@/lib/checks";
+import { checkCounts, checkFailed, failureSaysMore, itemFailed, itemStatus, templateParts, type ItemStatus } from "@/lib/checks";
 import { cn } from "@/lib/utils";
 
 type Mark = { icon: LucideIcon; className: string; label: string };
@@ -33,7 +33,7 @@ export function Template({ text, params }: { text: string; params: Record<string
   );
 }
 
-/** A failure that no item explains: the result's or the part's own code and message. */
+/** The result's or the part's own code and message, when no failed item says as much. */
 export function FailureNote({ title, code, message }: { title: string; code: string; message: string }) {
   return (
     <Alert variant="destructive">
@@ -178,6 +178,7 @@ export function CheckResultView({ result }: { result: CheckResult }) {
   }
   return (
     <div className="grid gap-2">
+      {failed && failureSaysMore(result) && <FailureNote title="The check failed" code={result.code} message={result.message} />}
       <p className="text-sm text-muted-foreground">
         {failed ? "The check failed" : "The check passed"}: {checkCounts(items)}.
       </p>

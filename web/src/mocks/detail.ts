@@ -24,7 +24,7 @@ import {
 import { CheckItemSchema, CheckResultSchema, type CheckItem, type CheckResult } from "@/gen/openetl/api/v1/connection_pb";
 import { PreflightPartSchema, PreflightResultSchema, type PreflightResult } from "@/gen/openetl/api/v1/pipeline_pb";
 import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
-import { itemFailed, templateParts } from "@/lib/checks";
+import { itemError, itemFailed } from "@/lib/checks";
 import { destinations, pipelines, sources, syncs } from "./fixtures";
 import { flinkClusters, sparkClusters } from "./workspace";
 
@@ -427,19 +427,6 @@ const checks: Record<string, (id: string, destination: boolean) => Answer> = {
     ],
   }),
 };
-
-const render = (t: string, params: Record<string, string>) =>
-  templateParts(t, params)
-    .map((p) => (typeof p === "string" ? p : p.value))
-    .join("");
-
-/** "title: message: detail", the placeholders filled, as the API gives a failed item's text. */
-function itemError(it: CheckItem): string {
-  let m = render(it.message || "The check failed.", it.params);
-  if (it.detail) m = `${m.replace(/\.$/, "")}: ${it.detail}`;
-  const t = render(it.title, it.params);
-  return t ? `${t}: ${m}` : m;
-}
 
 /** As the API settles a result: failed with a code or a failed item, whose code and text it takes when it has no code of its own. */
 function verdict(code: string, message: string, items: CheckItem[]): { ok: boolean; code: string; message: string } {

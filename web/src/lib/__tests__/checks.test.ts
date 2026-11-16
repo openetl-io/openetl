@@ -1,8 +1,8 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { CheckItemSchema, CheckResultSchema } from "@/gen/openetl/api/v1/connection_pb";
+import { type CheckItem, CheckItemSchema, CheckResultSchema } from "@/gen/openetl/api/v1/connection_pb";
 import { PreflightPartSchema, PreflightResultSchema } from "@/gen/openetl/api/v1/pipeline_pb";
-import { checkCounts, checkFailed, itemStatus, partFailed, preflightFailed, templateParts } from "../checks";
+import { checkCounts, checkFailed, failureSaysMore, itemStatus, partFailed, preflightFailed, templateParts } from "../checks";
 
 describe("templateParts", () => {
   const p = { host: "db.example.com", port: "5432", a: "{host}", empty: "" };
@@ -72,8 +72,37 @@ describe("pass or fail", () => {
     // The API sends a skipped part as not ok.
     expect(partFailed(part({ ok: false, skipped: "the source's check failed" }))).toBe(false);
     const result = (ok: boolean, ...parts: ReturnType<typeof part>[]) => create(PreflightResultSchema, { ok, parts });
-    expect(preflightFailed(result(true, part({ ok: true }), part({ ok: false, skipped: "x" })))).toBe(false);
+    expect(preflightFailed(result(true, part({ ok: true }), part({ ok: true, status: "warning" })))).toBe(false);
+    // A skipped part leaves the preflight unfinished, as the CLI says, whatever ok says.
+    expect(preflightFailed(result(true, part({ ok: true }), part({ ok: false, skipped: "x" })))).toBe(true);
     expect(preflightFailed(result(true, part({ ok: true, status: "failed" })))).toBe(true);
     expect(preflightFailed(result(false, part({ ok: true })))).toBe(true);
+  });
+});
+
+describe("failureSaysMore", () => {
+  const failed = create(CheckItemSchema, {
+    name: "net.connect",
+    status: "failed",
+    title: "Reach {address}",
+    message: "Can't reach {address}.",
+    detail: "no route to host",
+    code: "TRANSIENT",
+    params: { address: "db:5432" },
+  });
+  const own = (code: string, message: string, ...items: CheckItem[]) => create(CheckResultSchema, { ok: false, code, message, items });
+  it("is what the API words from the first failed item, or more", () => {
+    expect(failureSaysMore(own("TRANSIENT", "Reach db:5432: Can't reach db:5432: no route to host", item("passed"), failed, item("failed")))).toBe(false);
+    expect(failureSaysMore(own("", "", failed))).toBe(false);
+    expect(failureSaysMore(own("AUTH_INVALID", "Reach db:5432: Can't reach db:5432: no route to host", failed))).toBe(true);
+    expect(failureSaysMore(own("TRANSIENT", "the checks ran out of time", failed))).toBe(true);
+    expect(failureSaysMore(own("TRANSIENT", "the checks ran out of time", item("passed")))).toBe(true);
+  });
+  it("words an item without a code, a title, a message or a detail as the API does", () => {
+    expect(failureSaysMore(own("INTERNAL", "The check failed.", item("broken")))).toBe(true);
+    const bare = create(CheckItemSchema, { name: "x", status: "failed" });
+    expect(failureSaysMore(own("INTERNAL", "The check failed.", bare))).toBe(false);
+    const titled = create(CheckItemSchema, { name: "x", status: "failed", title: "Read {table}", detail: "gone" });
+    expect(failureSaysMore(own("INTERNAL", "Read {table}: The check failed: gone", titled))).toBe(false);
   });
 });

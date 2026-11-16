@@ -93,9 +93,23 @@ describe("CheckResultView", () => {
     expect(t).toContain("the checks ran out of time");
     expect(t).toContain("1 passed, 1 skipped.");
   });
-  it("leaves its own message to the failed item", () => {
-    const r = create(CheckResultSchema, { ok: false, code: "TRANSIENT", message: "Reach db.example.com:5432: Can't reach it.", items: [failed] });
-    expect(text(html(<CheckResultView result={r} />))).not.toContain("Can't reach it.");
+  it("leaves its own code and message to the failed item they come from", () => {
+    const message = "Reach db.example.com:5432: Can't reach db.example.com:5432: dial tcp 10.0.4.12:5432: connect: no route to host\n<b>second line</b>";
+    const t = text(html(<CheckResultView result={create(CheckResultSchema, { ok: false, code: "TRANSIENT", message, items: [failed] })} />));
+    expect(t).not.toContain("The check failed: TRANSIENT");
+    expect(t).toContain("The check failed: 1 failed.");
+  });
+  it("shows its own code and message beside a failed item when they say more", () => {
+    const auth = create(CheckItemSchema, { name: "auth", status: "failed", title: "Sign in", message: "The password is wrong.", code: "AUTH_INVALID" });
+    for (const [code, message] of [
+      ["TRANSIENT", "the checks ran out of time"],
+      ["AUTH_INVALID", "the checks ran out of time"],
+      ["TRANSIENT", "Sign in: The password is wrong."],
+    ]) {
+      const t = text(html(<CheckResultView result={create(CheckResultSchema, { ok: false, code, message, items: [passed, auth] })} />));
+      expect(t).toContain(`The check failed: ${code}${message}`);
+      expect(t).toContain("The check failed: 1 passed, 1 failed.");
+    }
   });
   it("passes with warnings", () => {
     const warning = create(CheckItemSchema, { name: "w", status: "warning", title: "W" });
@@ -130,5 +144,15 @@ describe("PreflightView", () => {
     const t = text(html(<PreflightView result={r} />));
     expect(t).toContain("Failed: Source orders: pipeline's streams");
     expect(t).toContain("1 failed.");
+  });
+  it("shows a part's own code and message beside a failed item when they say more", () => {
+    const own = part({ role: "source", stage: "check", ok: false, code: "TRANSIENT", message: "the source's check didn't finish within 1m0s", items: [failed] });
+    const t = text(html(<PreflightView result={create(PreflightResultSchema, { ok: false, parts: [own] })} />));
+    expect(t).toContain("Failed: TRANSIENTthe source's check didn't finish within 1m0s");
+    expect(t).toContain("1 failed.");
+    // A plan's problem, as the API makes the part's code and message from it.
+    const problem = create(CheckItemSchema, { name: "plan.problem.1", status: "failed", title: "The plan", message: 'no stream "s"', code: "CONFIG_INVALID" });
+    const plan = part({ role: "sync", stage: "plan", ok: false, code: "CONFIG_INVALID", message: 'The plan: no stream "s"', items: [problem] });
+    expect(text(html(<PreflightView result={create(PreflightResultSchema, { ok: false, parts: [plan] })} />))).not.toContain("Failed: CONFIG_INVALID");
   });
 });

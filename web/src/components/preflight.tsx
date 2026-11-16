@@ -7,7 +7,7 @@ import { CheckItemList, FailureNote } from "@/components/check-result";
 import { ErrorNote } from "@/components/empty";
 import { PipelineService, type PreflightPart, type PreflightResult } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorMessage } from "@/lib/api";
-import { checkCounts, itemFailed, partFailed, preflightFailed } from "@/lib/checks";
+import { checkCounts, failureSaysMore, itemFailed, partFailed, preflightFailed } from "@/lib/checks";
 import { cn } from "@/lib/utils";
 
 const stageLabel: Record<string, string> = { check: "Connection", preflight: "Pipeline's streams", plan: "Plan" };
@@ -50,7 +50,7 @@ function Part({ part }: { part: PreflightPart }) {
         <PartMark part={part} />
         {partTitle(part)}
       </h3>
-      {unexplained && <FailureNote title="Failed" code={part.code} message={part.message} />}
+      {partFailed(part) && failureSaysMore(part) && <FailureNote title="Failed" code={part.code} message={part.message} />}
       {what && <p className="text-sm break-words text-muted-foreground">{what}</p>}
       {part.items.length > 0 && <CheckItemList items={part.items} />}
     </section>
