@@ -110,6 +110,20 @@ type Worker struct {
 	results   sync.WaitGroup
 	// A launcher's pods it has said ended badly, or logged as stuck.
 	told map[string]bool
+	// The placements whose pods a launcher is making, or made since its
+	// last list of its pods began, by name.
+	making map[string]*making
+	// Held from a launcher's list of its pods until it's added what it's
+	// making: a list can't drop what an older list, still out, missed.
+	listing sync.Mutex
+}
+
+// making is a placement whose pods a launcher is making, and when it
+// stopped; zero until it has.
+type making struct {
+	attempt   string
+	placement int32
+	done      time.Time
 }
 
 // PodLimits are the jobs a pod launcher takes, and its caps.
@@ -142,6 +156,7 @@ func (w *Worker) log() *slog.Logger {
 func (w *Worker) Run(ctx context.Context) error {
 	w.running = map[string]*Work{}
 	w.told = map[string]bool{}
+	w.making = map[string]*making{}
 	w.drain = make(chan struct{})
 	w.sharedCPU, _ = resources.Self()
 	base := context.WithoutCancel(ctx)
@@ -290,20 +305,45 @@ func (w *Worker) reportPods(ctx context.Context, req *dataplanev1.ReportRunnerRe
 	if w.Pods.Max != (resources.Size{}) {
 		req.Pods.MaxSize = protoSize(w.Pods.Max)
 	}
+	w.listing.Lock()
+	defer w.listing.Unlock()
+	began := time.Now()
 	launched, err := w.Launcher.Pods(ctx)
 	if err != nil {
-		// Reaping waits for the next report.
+		// Reaping, and freeing what ended placements hold of the caps, wait
+		// for the next report.
 		w.log().Warn("listing the launcher's pods failed", "err", err)
 		return nil
 	}
-	// Once for an attempt's placement and its workers' pods.
-	seen := map[string]bool{}
-	for _, p := range launched {
-		if key := pods.Name(p.Attempt, p.Placement); !seen[key] {
-			seen[key] = true
-			req.Launched = append(req.Launched, &dataplanev1.Launch{Attempt: p.Attempt, Placement: uint32(max(0, p.Placement))})
+	req.Listed = true
+	// Once for an attempt's placement and its workers' pods, ended once they
+	// all have.
+	seen := map[string]*dataplanev1.Launch{}
+	add := func(attempt string, placement int32) *dataplanev1.Launch {
+		key := pods.Name(attempt, placement)
+		if l, ok := seen[key]; ok {
+			return l
 		}
+		l := &dataplanev1.Launch{Attempt: attempt, Placement: uint32(max(0, placement)), Ended: true}
+		seen[key] = l
+		req.Launched = append(req.Launched, l)
+		return l
 	}
+	for _, p := range launched {
+		l := add(p.Attempt, p.Placement)
+		l.Ended = l.Ended && p.Ended
+	}
+	// Pods it's making may be missing from the list, so the placements stay
+	// in reports until one whose list began after it stopped making them.
+	w.mu.Lock()
+	for key, m := range w.making {
+		if !m.done.IsZero() && m.done.Before(began) {
+			delete(w.making, key)
+			continue
+		}
+		add(m.attempt, m.placement).Ended = false
+	}
+	w.mu.Unlock()
 	return launched
 }
 
@@ -479,7 +519,16 @@ func (w *Worker) launch(base, results context.Context, m *dataplanev1.Work) {
 		Workers:     workersOf(m),
 		Coordinator: resources.Size{CPU: m.GetCoordinator().GetCpuMillis(), Memory: m.GetCoordinator().GetMemoryBytes()},
 	}
+	mk := &making{attempt: l.Attempt, placement: l.Placement}
+	w.mu.Lock()
+	w.making[pods.Name(l.Attempt, l.Placement)] = mk
+	w.mu.Unlock()
 	w.handlers.Go(func() {
+		defer func() {
+			w.mu.Lock()
+			mk.done = time.Now()
+			w.mu.Unlock()
+		}()
 		wait := time.Second
 		for {
 			ctx, cancel := context.WithTimeout(base, 30*time.Second)

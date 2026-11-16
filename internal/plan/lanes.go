@@ -55,7 +55,7 @@ func NewWorkerLayout(groups int, lanes, writers []int) (Layout, error) {
 	for i, ws := range writers {
 		n := lanes[i]
 		if ws < 1 || n < ws {
-			return Layout{}, fmt.Errorf("plan: worker %d has %d lanes and %d writer lanes: each worker needs a writer lane, and each writer lane a lane", i, n, ws)
+			return Layout{}, fmt.Errorf("plan: worker %d has %d lanes and %d writer lanes: each worker needs a writer lane, and each writer lane a lane", i+1, n, ws)
 		}
 		own := l.Writers[first : first+ws]
 		owned := 0
@@ -66,7 +66,7 @@ func NewWorkerLayout(groups int, lanes, writers []int) (Layout, error) {
 			owned += r.size()
 		}
 		if owned < n {
-			return Layout{}, fmt.Errorf("plan: worker %d has %d lanes over %d key groups: each lane needs one", i, n, owned)
+			return Layout{}, fmt.Errorf("plan: worker %d has %d lanes over %d key groups: each lane needs one", i+1, n, owned)
 		}
 		feeders := make([]int, len(own))
 		for w := range feeders {

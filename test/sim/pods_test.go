@@ -20,6 +20,8 @@ import (
 // dispatcher's rows, the launchers and the pods: a launcher makes a
 // placement's pods, workers' first, deletes those it made if one can't be
 // made, and on each report reaps the pods of placements that ended. A
+// placement holds its room in the launcher's caps from when it's placed
+// until it has ended and a report lists no pod of it that hasn't. A
 // coordinator's pod claims its placement before its start deadline, and
 // checks first that the job can run on workers: if not, the same attempt is
 // placed again on one pod. It says where its workers join, fails the attempt
@@ -33,7 +35,8 @@ import (
 //
 // The model's contract, checked on every seed:
 //   - caps: the attempts placed on a launcher hold no more pods or CPU,
-//     counting each worker and the coordinator, than it takes;
+//     counting each worker and the coordinator, than it takes, and nor do
+//     its pods that haven't ended with those it's yet to make;
 //   - gang: a launch makes all of a placement's pods, or leaves none;
 //   - join: a worker is told to join only its own placement's
 //     coordinator, and joins no other;
@@ -67,6 +70,7 @@ var podsBroken = []struct{ name, invariant, what string }{
 	{"stale-target", "join", "an attempt placed again from running keeps where its workers joined its last coordinator"},
 	{"join-unbounded", "liveness", "a coordinator waits for its workers to join for as long as it takes"},
 	{"workers-unreaped", "reaped", "a launcher reaps an ended placement's coordinator's pod, not its workers'"},
+	{"room-at-end", "caps", "the placer gives a placement's room back when it ends, not once its launcher reports its pods gone or ended"},
 }
 
 type pState uint8
@@ -149,6 +153,8 @@ type pPod struct {
 	epochs int
 	// A worker's: the coordinator it joined.
 	co *pPod
+	// Its attempt's size, or a coordinator's of workers.
+	size resources.Size
 }
 
 func (p *pPod) name() string {
@@ -159,9 +165,19 @@ func (p *pPod) name() string {
 }
 
 type pLauncher struct {
-	id   string
-	caps dispatch.Pods
-	pods []*pPod
+	id    string
+	caps  dispatch.Pods
+	pods  []*pPod
+	holds []*pHold
+}
+
+// pHold is the room a placement holds of its launcher's caps, as the
+// dispatcher's launches rows do.
+type pHold struct {
+	d         *pDispatch
+	placement int
+	pods      int
+	total     resources.Size
 }
 
 type pModel struct {
@@ -292,15 +308,27 @@ func (m *pModel) finish(d *pDispatch, outcome string) {
 	m.tracef("%s finished: %s", d.id, outcome)
 }
 
-// held is what an attempt holds of its launcher as the placer counts it.
-// As the dispatcher's placement query does, only placed and running
-// attempts count: a finished placement's pods that still run until the
-// launcher's next report reaps them hold nothing, in the product too.
+// held is what an attempt's placement holds of its launcher as the placer
+// counts it.
 func (m *pModel) held(d *pDispatch) (pods int, total resources.Size) {
-	if d.workers == 0 || m.broken == "gang-as-one-pod" {
+	if m.broken == "gang-as-one-pod" {
+		return 1, d.pipe.size
+	}
+	return needs(d)
+}
+
+// needs is what an attempt's placement's pods need between them: each
+// worker's and its coordinator's, or its one pod's.
+func needs(d *pDispatch) (pods int, total resources.Size) {
+	if d.workers == 0 {
 		return 1, d.pipe.size
 	}
 	return d.workers + 1, d.pipe.size.Times(d.workers).Add(sizing.Coordinator)
+}
+
+// liveAt says a placement of an attempt still waits to start or runs.
+func liveAt(d *pDispatch, placement int) bool {
+	return d.placement == placement && (d.state == pPlaced || d.state == pRunning)
 }
 
 // place is a placement pass: the launchers and the attempts waiting, as the
@@ -331,6 +359,16 @@ func (m *pModel) place() {
 	if len(requests) == 0 {
 		return
 	}
+	// What placements that ended hold until their pods are reported gone
+	// or ended.
+	for i, l := range m.launchers {
+		for _, h := range l.holds {
+			if !liveAt(h.d, h.placement) && m.broken != "room-at-end" {
+				runners[i].Unreaped += h.pods
+				runners[i].Used = runners[i].Used.Add(h.total)
+			}
+		}
+	}
 	for _, dec := range dispatch.Plan(runners, requests, map[string]int64{}, pReserveAfter*time.Second) {
 		d := byID[dec.ID]
 		if dec.Runner == "" {
@@ -341,6 +379,9 @@ func (m *pModel) place() {
 		d.launcher = slices.IndexFunc(m.launchers, func(l *pLauncher) bool { return l.id == dec.Runner })
 		d.state, d.launched, d.launchFails, d.deadline = pPlaced, false, 0, m.tick+pStartTimeout
 		d.placement++
+		pods, total := m.held(d)
+		l := m.launchers[d.launcher]
+		l.holds = append(l.holds, &pHold{d: d, placement: d.placement, pods: pods, total: total})
 		if d.workers > 0 {
 			m.stats["gangs placed"]++
 		}
@@ -389,7 +430,10 @@ func (m *pModel) launch() {
 				failed = true
 				break
 			}
-			p := &pPod{d: d, placement: d.placement, worker: w, launcher: d.launcher, startAt: m.tick + m.rng.IntN(3)}
+			p := &pPod{d: d, placement: d.placement, worker: w, launcher: d.launcher, startAt: m.tick + m.rng.IntN(3), size: d.pipe.size}
+			if w == 0 && d.workers > 0 {
+				p.size = sizing.Coordinator
+			}
 			switch {
 			case m.stuck > 0 && m.rng.IntN(100) < 10:
 				m.stuck--
@@ -433,14 +477,27 @@ func seq(from, to int) []int {
 }
 
 // live says a pod's placement still waits to start or runs.
-func live(p *pPod) bool {
-	return p.d.placement == p.placement && (p.d.state == pPlaced || p.d.state == pRunning)
-}
+func live(p *pPod) bool { return liveAt(p.d, p.placement) }
 
-// tend is a launcher's report: it deletes the pods of placements that
-// ended, and says how a placement's pod that ended without its result did.
+// tend is a launcher's report: it lists its pods, which frees the room of
+// placements that ended with none of their pods left that hasn't, then
+// deletes the pods of placements that ended, and says how a placement's
+// pod that ended without its result did.
 func (m *pModel) tend() {
+	type placement struct {
+		d *pDispatch
+		n int
+	}
 	for li, l := range m.launchers {
+		holding := map[placement]bool{}
+		for _, p := range l.pods {
+			if !p.ended {
+				holding[placement{p.d, p.placement}] = true
+			}
+		}
+		l.holds = slices.DeleteFunc(l.holds, func(h *pHold) bool {
+			return !liveAt(h.d, h.placement) && !holding[placement{h.d, h.placement}]
+		})
 		for _, p := range slices.Clone(l.pods) {
 			if !live(p) {
 				if m.broken == "workers-unreaped" && p.worker > 0 {
@@ -652,6 +709,26 @@ func (m *pModel) checkCaps() {
 		}
 		if l.caps.MaxCPU > 0 && cpu > l.caps.MaxCPU {
 			m.problem("caps", "%s holds %d mCPU, and takes %d", l.id, cpu, l.caps.MaxCPU)
+		}
+		// What it has: pods that haven't ended, whatever their placement,
+		// and those it's yet to make.
+		has, using := 0, resources.Size{}
+		for _, p := range l.pods {
+			if !p.ended {
+				has, using = has+1, using.Add(p.size)
+			}
+		}
+		for _, d := range m.all {
+			if d.state == pPlaced && d.launcher == i && !d.launched {
+				pods, total := needs(d)
+				has, using = has+pods, using.Add(total)
+			}
+		}
+		if l.caps.MaxPods > 0 && has > l.caps.MaxPods {
+			m.problem("caps", "%s has %d pods that haven't ended or are to be made, and takes %d", l.id, has, l.caps.MaxPods)
+		}
+		if l.caps.MaxCPU > 0 && using.CPU > l.caps.MaxCPU {
+			m.problem("caps", "%s's pods that haven't ended or are to be made have %d mCPU, and it takes %d", l.id, using.CPU, l.caps.MaxCPU)
 		}
 	}
 }

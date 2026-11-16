@@ -467,11 +467,16 @@ message ReportRunnerRequest {
   // sends its pool's jobs from min_size up to it, and it makes a pod for
   // each.
   PodLauncher pods = 12;
-  // A launcher's pods that are still there, so the answer can say which to
-  // delete.
+  // A launcher's pods that are still there, and the placements it's making
+  // pods for, so the answer can say which to delete. A placement holds room
+  // in the launcher's caps until it has ended and has no pod left that
+  // hasn't.
   repeated Launch launched = 13;
   // The one attempt a pod runs; nothing is placed on such a runner.
   string attempt = 14;
+  // The launcher listed its pods, so launched has them all; unset, launched
+  // says nothing of which have gone.
+  bool listed = 15;
 }
 
 message PodLauncher {
@@ -489,6 +494,9 @@ message Launch {
   string attempt = 1;
   // Which of the attempt's placements, which goes up each time it's placed.
   uint32 placement = 2;
+  // In a report: every pod of it that's left has ended, and the launcher
+  // isn't making more.
+  bool ended = 3;
 }
 
 message Resources {

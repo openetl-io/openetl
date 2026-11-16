@@ -213,7 +213,9 @@ func status(phase corev1.PodPhase, cs ...corev1.ContainerStatus) corev1.PodStatu
 	return corev1.PodStatus{Phase: phase, ContainerStatuses: cs}
 }
 
-// Pods says which ended and how, and which are stuck.
+// Pods says which ended and how, and which are stuck. A pod being deleted is
+// there, and hasn't ended, until it has stopped: the launcher's caps count it
+// until then.
 func TestPodsStates(t *testing.T) {
 	k, c := launcher(t)
 	add := func(attempt string, st corev1.PodStatus) {
@@ -221,11 +223,15 @@ func TestPodsStates(t *testing.T) {
 		l.Attempt = attempt
 		p := k.Pod(l)
 		p.Status = st
+		if attempt == "stopping" {
+			p.DeletionTimestamp, p.Finalizers = &metav1.Time{Time: time.Now()}, []string{"test"}
+		}
 		if _, err := c.CoreV1().Pods("etl").Create(t.Context(), p, metav1.CreateOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	add("running", status(corev1.PodRunning))
+	add("stopping", status(corev1.PodRunning))
 	add("pulling", status(corev1.PodPending, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "no such image"}}}))
 	add("starting", status(corev1.PodPending, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}}))
 	add("oom", status(corev1.PodFailed, corev1.ContainerStatus{Name: "runner", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}}}))
@@ -247,8 +253,8 @@ func TestPodsStates(t *testing.T) {
 	for _, p := range got {
 		byAttempt[p.Attempt] = p
 	}
-	if len(got) != 7 {
-		t.Fatalf("got %d pods, want 7: %+v", len(got), got)
+	if len(got) != 8 {
+		t.Fatalf("got %d pods, want 8: %+v", len(got), got)
 	}
 	check := func(attempt string, ended bool, code errs.Code, has string) {
 		t.Helper()
@@ -261,6 +267,7 @@ func TestPodsStates(t *testing.T) {
 		}
 	}
 	check("running", false, 0, "")
+	check("stopping", false, 0, "")
 	check("starting", false, 0, "")
 	check("oom", true, errs.ResourceExhausted, "went over its memory limit, 4608Mi")
 	check("crashed", true, errs.Transient, "exit code 1 (Error): daemon: the runner's token isn't a runner token")
@@ -276,8 +283,8 @@ func TestPodsStates(t *testing.T) {
 	if err := k.Delete(t.Context(), byAttempt["done"]); err != nil {
 		t.Fatalf("deleting again: %v, want nil", err)
 	}
-	if got, _ := k.Pods(t.Context()); len(got) != 6 {
-		t.Errorf("%d pods after a delete, want 6", len(got))
+	if got, _ := k.Pods(t.Context()); len(got) != 7 {
+		t.Errorf("%d pods after a delete, want 7", len(got))
 	}
 }
 
@@ -300,9 +307,7 @@ func TestProcesses(t *testing.T) {
 	if err := p.Delete(t.Context(), pods[0]); err != nil {
 		t.Fatal(err)
 	}
-	if pods, _ := p.Pods(t.Context()); len(pods) != 0 {
-		t.Fatalf("pods %+v after a delete", pods)
-	}
+	gone(t, p)
 
 	l.Attempt = "b/1"
 	if err := p.Launch(t.Context(), l); err != nil {
@@ -321,6 +326,110 @@ func TestProcesses(t *testing.T) {
 			t.Fatalf("pods %+v, want b's ended", pods)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// gone waits for p to have no processes.
+func gone(t *testing.T, p *Processes) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pods, _ := p.Pods(t.Context())
+		if len(pods) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pods %+v after a delete", pods)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A deleted process is there, not ended, until it has stopped, as a pod
+// being deleted is, so the launcher's caps count it until then; launching
+// it meanwhile fails for now. One that ended goes at once.
+func TestDeletedProcessesStayUntilTheyStop(t *testing.T) {
+	dir := t.TempDir()
+	ready, stopping := filepath.Join(dir, "ready"), filepath.Join(dir, "stopping")
+	p := &Processes{Command: []string{"/bin/sh", "-c", `trap 'touch "` + stopping + `"; sleep 2; exit 0' TERM; touch "` + ready + `$OPENETL_WORKER"; while :; do sleep 0.05; done`}}
+	t.Cleanup(p.Close)
+	l := Launch{Attempt: "a/1", Placement: 1, Kind: contract.RunSyncAttempt, Size: resources.S, Workers: 1, Coordinator: resources.XS}
+	if err := p.Launch(t.Context(), l); err != nil {
+		t.Fatal(err)
+	}
+	pods, _ := p.Pods(t.Context())
+	if len(pods) != 2 {
+		t.Fatalf("pods %+v, want the attempt's and its worker's", pods)
+	}
+	var co Pod
+	for _, pod := range pods {
+		if pod.Worker == 0 {
+			co = pod
+		}
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	await := func(path, what string) {
+		t.Helper()
+		for {
+			if _, err := os.Stat(path); err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("waited too long for %s", what)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	await(ready, "the attempt's process to start")
+	if err := p.Delete(t.Context(), co); err != nil {
+		t.Fatal(err)
+	}
+	await(stopping, "the deleted process's SIGTERM")
+	if pods, _ := p.Pods(t.Context()); len(pods) != 2 || slices.ContainsFunc(pods, func(pod Pod) bool { return pod.Ended }) {
+		t.Fatalf("pods %+v while one stops, want both, neither ended", pods)
+	}
+	if err := p.Launch(t.Context(), l); errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "still stopping") {
+		t.Fatalf("got %v, want a transient failure for the process stopping", err)
+	}
+	stopped := func() bool {
+		pods, _ := p.Pods(t.Context())
+		return len(pods) == 1 && pods[0].Worker == 1
+	}
+	for !stopped() {
+		if time.Now().After(deadline) {
+			pods, _ = p.Pods(t.Context())
+			t.Fatalf("pods %+v, want the worker's alone once the attempt's stopped", pods)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := p.Launch(t.Context(), l); err != nil {
+		t.Fatalf("launching again once it stopped: %v", err)
+	}
+	pods, _ = p.Pods(t.Context())
+	if len(pods) != 2 {
+		t.Fatalf("pods %+v, want both again", pods)
+	}
+
+	ended := &Processes{Command: []string{"/bin/sh", "-c", "exit 0"}}
+	t.Cleanup(ended.Close)
+	if err := ended.Launch(t.Context(), Launch{Attempt: "b/1", Placement: 1, Kind: contract.RunSyncAttempt, Size: resources.S}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		pods, _ := ended.Pods(t.Context())
+		if len(pods) == 1 && pods[0].Ended {
+			if err := ended.Delete(t.Context(), pods[0]); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pods %+v, want b's ended", pods)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pods, _ := ended.Pods(t.Context()); len(pods) != 0 {
+		t.Fatalf("pods %+v after deleting one that ended", pods)
 	}
 }
 

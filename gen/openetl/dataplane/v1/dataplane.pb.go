@@ -2532,11 +2532,16 @@ type ReportRunnerRequest struct {
 	// sends its pool's jobs from min_size up to it, and it makes a pod for
 	// each.
 	Pods *PodLauncher `protobuf:"bytes,12,opt,name=pods,proto3" json:"pods,omitempty"`
-	// A launcher's pods that are still there, so the answer can say which to
-	// delete.
+	// A launcher's pods that are still there, and the placements it's making
+	// pods for, so the answer can say which to delete. A placement holds room
+	// in the launcher's caps until it has ended and has no pod left that
+	// hasn't.
 	Launched []*Launch `protobuf:"bytes,13,rep,name=launched,proto3" json:"launched,omitempty"`
 	// The one attempt a pod runs; nothing is placed on such a runner.
-	Attempt       string `protobuf:"bytes,14,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	Attempt string `protobuf:"bytes,14,opt,name=attempt,proto3" json:"attempt,omitempty"`
+	// The launcher listed its pods, so launched has them all; unset, launched
+	// says nothing of which have gone.
+	Listed        bool `protobuf:"varint,15,opt,name=listed,proto3" json:"listed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2669,6 +2674,13 @@ func (x *ReportRunnerRequest) GetAttempt() string {
 	return ""
 }
 
+func (x *ReportRunnerRequest) GetListed() bool {
+	if x != nil {
+		return x.Listed
+	}
+	return false
+}
+
 type PodLauncher struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Jobs with this much CPU or memory, or more, go to pods.
@@ -2745,7 +2757,10 @@ type Launch struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	Attempt string                 `protobuf:"bytes,1,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	// Which of the attempt's placements, which goes up each time it's placed.
-	Placement     uint32 `protobuf:"varint,2,opt,name=placement,proto3" json:"placement,omitempty"`
+	Placement uint32 `protobuf:"varint,2,opt,name=placement,proto3" json:"placement,omitempty"`
+	// In a report: every pod of it that's left has ended, and the launcher
+	// isn't making more.
+	Ended         bool `protobuf:"varint,3,opt,name=ended,proto3" json:"ended,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2792,6 +2807,13 @@ func (x *Launch) GetPlacement() uint32 {
 		return x.Placement
 	}
 	return 0
+}
+
+func (x *Launch) GetEnded() bool {
+	if x != nil {
+		return x.Ended
+	}
+	return false
 }
 
 type Resources struct {
@@ -3955,7 +3977,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
 	"checkpoint\x18\x04 \x01(\v2#.openetl.dataplane.v1.CheckpointRefR\n" +
 	"checkpoint\"\x19\n" +
-	"\x17ReportRetentionResponse\"\xab\x04\n" +
+	"\x17ReportRetentionResponse\"\xc3\x04\n" +
 	"\x13ReportRunnerRequest\x12\x16\n" +
 	"\x06runner\x18\x01 \x01(\tR\x06runner\x12\x18\n" +
 	"\arelease\x18\x02 \x01(\tR\arelease\x12\x1a\n" +
@@ -3971,15 +3993,17 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\arunning\x18\v \x03(\v2!.openetl.dataplane.v1.RunningWorkR\arunning\x125\n" +
 	"\x04pods\x18\f \x01(\v2!.openetl.dataplane.v1.PodLauncherR\x04pods\x128\n" +
 	"\blaunched\x18\r \x03(\v2\x1c.openetl.dataplane.v1.LaunchR\blaunched\x12\x18\n" +
-	"\aattempt\x18\x0e \x01(\tR\aattempt\"\xc6\x01\n" +
+	"\aattempt\x18\x0e \x01(\tR\aattempt\x12\x16\n" +
+	"\x06listed\x18\x0f \x01(\bR\x06listed\"\xc6\x01\n" +
 	"\vPodLauncher\x12:\n" +
 	"\bmin_size\x18\x01 \x01(\v2\x1f.openetl.dataplane.v1.ResourcesR\aminSize\x12:\n" +
 	"\bmax_size\x18\x02 \x01(\v2\x1f.openetl.dataplane.v1.ResourcesR\amaxSize\x12\x19\n" +
 	"\bmax_pods\x18\x03 \x01(\rR\amaxPods\x12$\n" +
-	"\x0emax_cpu_millis\x18\x04 \x01(\x03R\fmaxCpuMillis\"@\n" +
+	"\x0emax_cpu_millis\x18\x04 \x01(\x03R\fmaxCpuMillis\"V\n" +
 	"\x06Launch\x12\x18\n" +
 	"\aattempt\x18\x01 \x01(\tR\aattempt\x12\x1c\n" +
-	"\tplacement\x18\x02 \x01(\rR\tplacement\"M\n" +
+	"\tplacement\x18\x02 \x01(\rR\tplacement\x12\x14\n" +
+	"\x05ended\x18\x03 \x01(\bR\x05ended\"M\n" +
 	"\tResources\x12\x1d\n" +
 	"\n" +
 	"cpu_millis\x18\x01 \x01(\x03R\tcpuMillis\x12!\n" +

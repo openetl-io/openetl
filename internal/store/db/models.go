@@ -367,6 +367,17 @@ type LaneSample struct {
 	LaneRows             int64
 }
 
+type Launch struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	Launcher    string
+	ID          string
+	Placement   int32
+	Pods        int32
+	Cpu         int64
+	Memory      int64
+}
+
 type Org struct {
 	ID                          uuid.UUID
 	Name                        string

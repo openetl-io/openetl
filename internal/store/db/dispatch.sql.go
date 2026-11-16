@@ -683,6 +683,28 @@ func (q *Queries) GetDispatchWorkflow(ctx context.Context, arg GetDispatchWorkfl
 	return workflow_id, err
 }
 
+const holdLaunch = `-- name: HoldLaunch :exec
+INSERT INTO launches (org_id, data_plane_id, launcher, id, placement, pods, cpu, memory)
+SELECT d.org_id, d.data_plane_id, d.launcher, d.id, d.placements, GREATEST(d.workers, 0) + 1,
+    d.size_cpu * GREATEST(d.workers, 1) + d.coordinator_cpu, d.size_memory * GREATEST(d.workers, 1) + d.coordinator_memory
+FROM dispatches d
+WHERE d.org_id = $1 AND d.id = $2 AND d.launcher = $3 AND d.state = 'placed'
+ON CONFLICT DO NOTHING
+`
+
+type HoldLaunchParams struct {
+	OrgID    uuid.UUID
+	ID       string
+	Launcher *string
+}
+
+// The room an attempt placed on a pod launcher holds of its caps: its pods,
+// and their CPU and memory.
+func (q *Queries) HoldLaunch(ctx context.Context, arg HoldLaunchParams) error {
+	_, err := q.db.Exec(ctx, holdLaunch, arg.OrgID, arg.ID, arg.Launcher)
+	return err
+}
+
 const insertAttempt = `-- name: InsertAttempt :exec
 INSERT INTO attempts (org_id, id, pipeline_id, sync_id, attempt, size_cpu, size_memory, size_reason, workers, one_pod)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -1147,7 +1169,10 @@ const placementRunners = `-- name: PlacementRunners :many
 SELECT r.org_id, r.data_plane_id, r.id, r.release, r.protocol, r.features, r.launchers, r.platform, r.report_time, r.pool, r.capacity_cpu, r.capacity_memory, r.reserved_cpu, r.reserved_memory, r.orphan_cpu, r.orphan_memory, r.draining, r.launcher, r.pod_min_cpu, r.pod_min_memory, r.pod_max_cpu, r.pod_max_memory, r.max_pods, r.max_pod_cpu, r.attempt,
     COALESCE(u.cpu, 0)::bigint AS used_cpu,
     COALESCE(u.memory, 0)::bigint AS used_memory,
-    COALESCE(u.attempts, 0)::bigint AS attempts
+    COALESCE(u.attempts, 0)::bigint AS attempts,
+    COALESCE(h.pods, 0)::bigint AS unreaped_pods,
+    COALESCE(h.cpu, 0)::bigint AS unreaped_cpu,
+    COALESCE(h.memory, 0)::bigint AS unreaped_memory
 FROM runners r
 LEFT JOIN LATERAL (
     SELECT sum(d.size_cpu * GREATEST(d.workers, 1) + d.coordinator_cpu) AS cpu,
@@ -1156,6 +1181,15 @@ LEFT JOIN LATERAL (
     FROM dispatches d
     WHERE d.org_id = r.org_id AND d.data_plane_id = r.data_plane_id AND (d.runner = r.id OR d.launcher = r.id) AND d.state IN ('placed', 'running')
 ) u ON true
+LEFT JOIN LATERAL (
+    SELECT sum(l.pods) AS pods, sum(l.cpu) AS cpu, sum(l.memory) AS memory
+    FROM launches l
+    WHERE l.org_id = r.org_id AND l.data_plane_id = r.data_plane_id AND l.launcher = r.id AND NOT EXISTS (
+        SELECT 1 FROM dispatches d
+        WHERE d.org_id = l.org_id AND d.id = l.id AND d.placements = l.placement AND d.launcher = l.launcher
+            AND d.state IN ('placed', 'running')
+    )
+) h ON true
 WHERE r.org_id = $1 AND r.data_plane_id = $2 AND r.attempt = ''
     AND r.report_time >= now() - ($3::bigint * interval '1 millisecond')
 ORDER BY r.id
@@ -1196,12 +1230,16 @@ type PlacementRunnersRow struct {
 	UsedCpu        int64
 	UsedMemory     int64
 	Attempts       int64
+	UnreapedPods   int64
+	UnreapedCpu    int64
+	UnreapedMemory int64
 }
 
 // A data plane's runners and pod launchers reporting now, with the room their
 // placements use: a launcher's go on using it while their pods run them. An
 // attempt on workers uses its workers' and its coordinator's, and counts as
-// its pods.
+// its pods. A launcher's unreaped room is what its placements that have
+// ended hold until it reports their pods gone or ended.
 func (q *Queries) PlacementRunners(ctx context.Context, arg PlacementRunnersParams) ([]PlacementRunnersRow, error) {
 	rows, err := q.db.Query(ctx, placementRunners, arg.OrgID, arg.DataPlaneID, arg.LapseMs)
 	if err != nil {
@@ -1240,6 +1278,9 @@ func (q *Queries) PlacementRunners(ctx context.Context, arg PlacementRunnersPara
 			&i.UsedCpu,
 			&i.UsedMemory,
 			&i.Attempts,
+			&i.UnreapedPods,
+			&i.UnreapedCpu,
+			&i.UnreapedMemory,
 		); err != nil {
 			return nil, err
 		}
@@ -1390,6 +1431,39 @@ func (q *Queries) RecordAttemptUsage(ctx context.Context, arg RecordAttemptUsage
 		arg.IdleSeconds,
 		arg.LaneRows,
 		arg.OrgID,
+	)
+	return err
+}
+
+const releaseLaunches = `-- name: ReleaseLaunches :exec
+DELETE FROM launches l
+WHERE l.org_id = $1 AND l.data_plane_id = $2 AND l.launcher = $3
+    AND (l.id, l.placement) NOT IN (SELECT unnest($4::text[]), unnest($5::integer[]))
+    AND NOT EXISTS (
+        SELECT 1 FROM dispatches d
+        WHERE d.org_id = l.org_id AND d.id = l.id AND d.placements = l.placement AND d.launcher = l.launcher
+            AND d.state IN ('placed', 'running')
+    )
+`
+
+type ReleaseLaunchesParams struct {
+	OrgID       uuid.UUID
+	DataPlaneID string
+	Launcher    string
+	Ids         []string
+	Placements  []int32
+}
+
+// A launcher's report, once it has listed its pods, frees the room of its
+// placements that have ended, but for those in @ids and @placements: with a
+// pod that hasn't ended, or pods it's still making.
+func (q *Queries) ReleaseLaunches(ctx context.Context, arg ReleaseLaunchesParams) error {
+	_, err := q.db.Exec(ctx, releaseLaunches,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.Launcher,
+		arg.Ids,
+		arg.Placements,
 	)
 	return err
 }

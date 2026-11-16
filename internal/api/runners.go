@@ -74,13 +74,19 @@ func (s *Server) ReportRunner(ctx context.Context, req *connect.Request[dataplan
 		params.Launcher, params.PodMinCpu, params.PodMinMemory, params.PodMaxCpu, params.PodMaxMemory = true, low.CPU, low.Memory, high.CPU, high.Memory
 		params.MaxPods, params.MaxPodCpu = int32(min(p.GetMaxPods(), math.MaxInt32)), p.GetMaxCpuMillis()
 	}
-	stop, drain, err := s.Dispatch.Report(ctx, dispatch.Report{Org: s.Tenant.Org, DataPlane: dp, Running: running, Runner: params})
-	if err != nil {
-		return nil, err
-	}
 	launched := make([]dispatch.Launch, len(m.GetLaunched()))
+	var holding []dispatch.Launch
 	for i, l := range m.GetLaunched() {
 		launched[i] = dispatch.Launch{Attempt: l.GetAttempt(), Placement: placementOf(l.GetPlacement())}
+		if !l.GetEnded() {
+			holding = append(holding, launched[i])
+		}
+	}
+	stop, drain, err := s.Dispatch.Report(ctx, dispatch.Report{
+		Org: s.Tenant.Org, DataPlane: dp, Running: running, Runner: params, Listed: m.GetListed(), Holding: holding,
+	})
+	if err != nil {
+		return nil, err
 	}
 	reap, err := s.Dispatch.Reap(ctx, s.Tenant.Org, launched)
 	if err != nil {

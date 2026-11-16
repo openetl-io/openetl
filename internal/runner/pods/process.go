@@ -34,10 +34,14 @@ type process struct {
 	done chan struct{}
 	// How long it has to stop once it's deleted.
 	grace time.Duration
+	// It's being deleted, and is there until it has stopped, as a pod is.
+	deleted bool
 }
 
 // Launch starts l's processes: its workers', if it has any, and its own.
-// If one can't start, it stops those it started.
+// If one can't start, it stops those it started. One that's there already
+// counts, unless it's being deleted: that fails, so a later launch starts
+// once it has stopped.
 func (p *Processes) Launch(_ context.Context, l Launch) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -47,14 +51,18 @@ func (p *Processes) Launch(_ context.Context, l Launch) error {
 	var started []*process
 	for _, worker := range l.pods() {
 		name := WorkerName(l.Attempt, l.Placement, worker)
-		if _, ok := p.procs[name]; ok {
+		there, ok := p.procs[name]
+		if ok && !there.deleted {
 			continue
 		}
-		pr, err := p.start(l, worker, name)
+		var pr *process
+		err := errs.New(errs.Transient, "pods: process %s is still stopping", name)
+		if !ok {
+			pr, err = p.start(l, worker, name)
+		}
 		if err != nil {
 			for _, s := range started {
-				delete(p.procs, s.pod.Name)
-				go stop(s)
+				p.delete(s)
 			}
 			return err
 		}
@@ -86,6 +94,9 @@ func (p *Processes) start(l Launch, worker int, name string) (*process, error) {
 		case worker == 0:
 			pr.pod.Failure = errs.New(errs.Transient, "its process %s ended without the attempt's result", name)
 		}
+		if pr.deleted && p.procs[name] == pr {
+			delete(p.procs, name)
+		}
 		close(pr.done)
 	}()
 	return pr, nil
@@ -102,16 +113,26 @@ func (p *Processes) Pods(context.Context) ([]Pod, error) {
 }
 
 // Delete stops a running process as Kubernetes stops a pod: SIGTERM, then
-// SIGKILL after its grace.
+// SIGKILL after its grace. Pods lists it until it has stopped.
 func (p *Processes) Delete(_ context.Context, pod Pod) error {
 	p.mu.Lock()
-	pr, ok := p.procs[pod.Name]
-	delete(p.procs, pod.Name)
-	p.mu.Unlock()
-	if ok {
-		go stop(pr)
+	defer p.mu.Unlock()
+	if pr, ok := p.procs[pod.Name]; ok {
+		p.delete(pr)
 	}
 	return nil
+}
+
+// delete deletes pr; p.mu is held.
+func (p *Processes) delete(pr *process) {
+	switch {
+	case pr.deleted:
+	case pr.pod.Ended:
+		delete(p.procs, pr.pod.Name)
+	default:
+		pr.deleted = true
+		go stop(pr)
+	}
 }
 
 func stop(pr *process) {

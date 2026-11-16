@@ -93,10 +93,13 @@ type Runner struct {
 	Pool     string
 	Capacity resources.Size
 	// What's placed on it, and what it runs that isn't any more; a launcher's
-	// pods' too.
+	// pods' too, and its unreaped pods'.
 	Used resources.Size
 	// What's placed on it.
 	Attempts int
+	// A pod launcher's pods of placements that have ended, until it reports
+	// them gone or ended.
+	Unreaped int
 	Draining bool
 	// Set for a pod launcher, which makes a pod for each attempt placed on it
 	// rather than run it.
@@ -186,8 +189,9 @@ const DefaultReserveAfter = 2 * time.Minute
 //
 // A request goes to a pod launcher of its pool instead if it's large enough
 // for one, or no runner of its pool could ever take it, and the launcher's
-// caps leave room. A request on workers goes only to a launcher, which takes
-// its coordinator and every worker, or none of them.
+// caps leave room, counting its unreaped pods. A request on workers goes only
+// to a launcher, which takes its coordinator and every worker, or none of
+// them.
 //
 // A request that has waited reserveAfter goes first if it fits. If it doesn't,
 // it reserves the runner with the most room, so nothing else goes there until
@@ -279,7 +283,7 @@ func (p *planner) fits(i int, r Request) bool {
 	if rn.Pods == nil {
 		return r.Workers <= 0 && r.Size.Fits(p.room(i))
 	}
-	return fitsEver(rn, r) && (rn.Pods.MaxPods == 0 || rn.Attempts+r.pods() <= rn.Pods.MaxPods) &&
+	return fitsEver(rn, r) && (rn.Pods.MaxPods == 0 || rn.Attempts+rn.Unreaped+r.pods() <= rn.Pods.MaxPods) &&
 		(rn.Pods.MaxCPU == 0 || rn.Used.CPU+r.total().CPU <= rn.Pods.MaxCPU)
 }
 

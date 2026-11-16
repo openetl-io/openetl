@@ -113,7 +113,7 @@ By default, a connector does not get the role that IRSA or Pod Identity gives th
 Each job has a size, from `xs` (0.5 vCPU, 1 GiB) to `xl` (8 vCPUs, 16 GiB), which the pipeline's `spec.resources` sets or openetl picks. The orchestrators place it in its pool (`spec.resources.pool`, `default` if not set):
 
 - **On a shared runner** with room. A runner's room is its limits less `OPENETL_RESERVE` (0.5 vCPU and 512 MiB), so in `runner-default.yaml` it's 3.5 vCPUs and 7.5 GiB. Keep its requests equal to its limits.
-- **In a separate pod** created by the pool's launcher for jobs at or above `OPENETL_POD_MIN_SIZE` (`m` here). This also applies when no runner in the pool can fit the job. Pod requests and limits include the job's size plus the reserve. `OPENETL_MAX_PODS` (20) and `OPENETL_MAX_POD_CPU` (64) limit total pod capacity. Jobs wait when these limits are reached.
+- **In a separate pod** created by the pool's launcher for jobs at or above `OPENETL_POD_MIN_SIZE` (`m` here). This also applies when no runner in the pool can fit the job. Pod requests and limits include the job's size plus the reserve. `OPENETL_MAX_PODS` (20) and `OPENETL_MAX_POD_CPU` (64) limit total pod capacity. Jobs wait when these limits are reached. A pod counts until it stops, after its job has ended too: [Room for every pod](#room-for-every-pod) explains this.
 
 Jobs wait until capacity is available. Before stopping, a runner finishes jobs at a checkpoint. It allows up to 2 minutes for a sync and 10 minutes for a stream. Its termination grace period covers that time. Jobs are then placed again.
 
@@ -227,6 +227,8 @@ kubectl -n openetl delete networkpolicy openetl-attempt-workers
 
 `OPENETL_MAX_PODS` (default 20) and `OPENETL_MAX_POD_CPU` (default 64 vCPUs) count every pod of a job: its workers and its coordinator. A job waits until all of them fit. A job that needs more than the limits allow never fits, even on an empty launcher. For example, 20 workers need 21 pods. Such a job fails after it has waited 2 minutes, and its message names the limit.
 
+The limits count a job's pods until they stop, not until the job ends. When a job ends, or the orchestrators place it again, its pods keep their room until the launcher reports them stopped or gone. The launcher reports every 10 seconds, and then deletes the pods of jobs that have ended. If the launcher deletes a pod that still runs, the pod keeps its room until it stops: up to 2 minutes and 30 seconds for a sync, and 10 minutes and 30 seconds for a stream. So the next job can wait about 10 seconds after a job ends, and longer while a pod stops. If the launcher cannot list its pods, the room stays held until it can.
+
 To let larger jobs run, raise the limits:
 
 1. Add the limits to the `data` of the ConfigMap patch in your `kustomization.yaml`. Set `OPENETL_MAX_PODS` to at least the workers plus one. Set `OPENETL_MAX_POD_CPU` to at least the workers times the job's vCPUs, plus 0.5 vCPU for the coordinator:
@@ -264,7 +266,7 @@ The launcher deletes the pods when the attempt ends, and their logs with them. T
 
 #### The process launcher
 
-`OPENETL_LAUNCHER=process`, for development and tests, starts a process for each worker and one for the coordinator, on the launcher's own machine. Each coordinator listens on 127.0.0.1 at a free port, which only that machine reaches. Leave `OPENETL_ATTEMPT_LISTEN` unset on such a launcher, or give it port 0: its processes take its settings, so every coordinator would listen at the same address. With any other port, `openetld` does not start. The processes also take the launcher's log settings, so by default their logs go to the launcher's standard error.
+`OPENETL_LAUNCHER=process`, for development and tests, starts a process for each worker and one for the coordinator, on the launcher's own machine. Each coordinator listens on 127.0.0.1 at a free port, which only that machine reaches. Leave `OPENETL_ATTEMPT_LISTEN` unset on such a launcher, or give it port 0: its processes take its settings, so every coordinator would listen at the same address. With any other port, `openetld` does not start. The processes also take the launcher's log settings, so by default their logs go to the launcher's standard error. As a pod does, a process that the launcher stops counts against `OPENETL_MAX_PODS` and `OPENETL_MAX_POD_CPU` until it has exited.
 
 ### Spot nodes
 
