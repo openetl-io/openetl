@@ -322,7 +322,7 @@ func TestWorkersGoToALauncherAllOrNone(t *testing.T) {
 }
 
 // A gang holds its pods and their CPU in the pass that places it; once it
-// ends, the store's counts give them back.
+// ends and its pods are gone, the store's counts give them back.
 func TestAPlacedGangUsesItsPods(t *testing.T) {
 	pods := launcher("pods", Pods{MaxPods: 6})
 	ds := Plan([]Runner{pods}, []Request{onWorkers("a", 2, resources.S, time.Minute), onWorkers("b", 2, resources.S, time.Second), onWorkers("c", 2, resources.S, 0)}, nil, DefaultReserveAfter)
@@ -332,6 +332,24 @@ func TestAPlacedGangUsesItsPods(t *testing.T) {
 	ds = Plan([]Runner{pods}, []Request{onWorkers("c", 2, resources.S, 0)}, nil, DefaultReserveAfter)
 	if got := placed(ds); got["c"] != "pods" {
 		t.Fatalf("got %v, want c placed once the others have gone", got)
+	}
+}
+
+// The pods of a launcher's placements that have ended count in its caps
+// until it reports them gone or ended: what would take it over either cap
+// waits.
+func TestUnreapedPodsCountInTheCaps(t *testing.T) {
+	pods := launcher("pods", Pods{MaxPods: 4, MaxCPU: 6000})
+	// An ended gang's 2 s workers and xs coordinator: 3 pods, 2.5 vCPUs.
+	pods.Unreaped, pods.Used = 3, resources.S.Times(2).Add(resources.XS)
+	ds := Plan([]Runner{pods}, []Request{onWorkers("gang", 2, resources.S, time.Second), sized("l", resources.L, time.Second), sized("s", resources.S, 0)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["s"] != "pods" || len(got) != 1 {
+		t.Fatalf("got %v, want s alone: the gang's 3 pods and l's 4 vCPUs are over the caps", got)
+	}
+	pods.Unreaped, pods.Used = 0, resources.Size{}
+	ds = Plan([]Runner{pods}, []Request{onWorkers("gang", 2, resources.S, time.Second)}, nil, DefaultReserveAfter)
+	if got := placed(ds); got["gang"] != "pods" {
+		t.Fatalf("got %v, want the gang once the pods are gone", got)
 	}
 }
 

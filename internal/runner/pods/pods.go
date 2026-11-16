@@ -52,7 +52,9 @@ type Pod struct {
 type Launcher interface {
 	// Launch makes l's pod. A pod that's there already counts.
 	Launch(ctx context.Context, l Launch) error
-	// Pods lists the pods it made that are still there.
+	// Pods lists the pods it made that are still there, those being deleted
+	// too until they've stopped: the launcher's caps count a pod until it
+	// has ended or gone.
 	Pods(ctx context.Context) ([]Pod, error)
 	// Delete deletes a pod, which stops at a checkpoint first if it's
 	// running; a pod that's gone counts.

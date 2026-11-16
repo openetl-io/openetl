@@ -236,10 +236,13 @@ func runnersOf(rows []db.PlacementRunnersRow) ([]Runner, int64) {
 		reserved += r.UsedCpu
 		runners[i] = Runner{
 			RunnerFacts: RunnerFacts{ID: r.ID, Release: r.Release, Protocol: r.Protocol, Platform: r.Platform, Features: r.Features, Launchers: r.Launchers},
-			Pool:        r.Pool, Draining: r.Draining, Attempts: int(r.Attempts),
+			Pool:        r.Pool, Draining: r.Draining, Attempts: int(r.Attempts), Unreaped: int(r.UnreapedPods),
 			Capacity: resources.Size{CPU: r.CapacityCpu, Memory: r.CapacityMemory},
-			Used:     resources.Size{CPU: r.UsedCpu + r.OrphanCpu, Memory: r.UsedMemory + r.OrphanMemory},
-			Pods:     podsOf(r),
+			Used: resources.Size{
+				CPU:    r.UsedCpu + r.OrphanCpu + r.UnreapedCpu,
+				Memory: r.UsedMemory + r.OrphanMemory + r.UnreapedMemory,
+			},
+			Pods: podsOf(r),
 		}
 	}
 	return runners, reserved
@@ -316,6 +319,11 @@ type Report struct {
 	DataPlane string
 	Runner    db.ReportRunnerParams
 	Running   []RunningWork
+	// A pod launcher listed its pods: Holding is its placements with a pod
+	// that hasn't ended, or whose pods it's making. The room its other
+	// placements held goes once they've ended.
+	Listed  bool
+	Holding []Launch
 }
 
 // RunningWork is what a report says of one running piece of work.
@@ -415,7 +423,14 @@ func (d *Dispatcher) Report(ctx context.Context, r Report) (stop, drain []string
 				return err
 			}
 		}
-		return q.ReportRunner(ctx, params)
+		if err := q.ReportRunner(ctx, params); err != nil || !r.Listed || !params.Launcher {
+			return err
+		}
+		release := db.ReleaseLaunchesParams{OrgID: r.Org, DataPlaneID: r.DataPlane, Launcher: id, Ids: []string{}, Placements: []int32{}}
+		for _, l := range r.Holding {
+			release.Ids, release.Placements = append(release.Ids, l.Attempt), append(release.Placements, l.Placement)
+		}
+		return q.ReleaseLaunches(ctx, release)
 	})
 	slices.Sort(stop)
 	slices.Sort(drain)
@@ -729,6 +744,11 @@ func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) 
 			}
 			if err := q.PlaceDispatch(ctx, place); err != nil {
 				return err
+			}
+			if dec.Launch {
+				if err := q.HoldLaunch(ctx, db.HoldLaunchParams{OrgID: org, ID: dec.ID, Launcher: &dec.Runner}); err != nil {
+					return err
+				}
 			}
 		}
 		if len(decisions) == 0 {

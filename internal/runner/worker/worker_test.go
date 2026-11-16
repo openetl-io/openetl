@@ -642,9 +642,19 @@ type fakeLauncher struct {
 	deleted  []string
 	fail     error
 	tries    int
+	// Set: a launch waits for it to close.
+	gate chan struct{}
+	// Listing fails with it.
+	listErr error
 }
 
 func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
+	f.mu.Lock()
+	gate := f.gate
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tries++
@@ -665,6 +675,9 @@ func (f *fakeLauncher) Launch(_ context.Context, l pods.Launch) error {
 func (f *fakeLauncher) Pods(context.Context) ([]pods.Pod, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	var out []pods.Pod
 	for _, p := range f.pods {
 		out = append(out, *p)
@@ -769,6 +782,61 @@ func TestLauncherMakesPods(t *testing.T) {
 	if rs := api.launchResults(5); len(rs) != 1 || !rs[0].GetNoCapacity() {
 		t.Errorf("results %v, want it placed again", rs)
 	}
+}
+
+// A launcher's reports say which placements hold room in its caps: those
+// whose pods it's making, though none is listed yet, and those with a pod
+// that hasn't ended. A report whose list of pods failed says so, and lists
+// none.
+func TestLauncherReportsWhatHoldsItsCaps(t *testing.T) {
+	gate := make(chan struct{})
+	l := &fakeLauncher{gate: gate}
+	api, _ := startLauncher(t, l)
+	var open sync.Once
+	// Before the launcher stops, which waits for the launch.
+	t.Cleanup(func() { open.Do(func() { close(gate) }) })
+	launch := work("sync/1/1", contract.RunSyncAttempt, small, nil)
+	launch.Placement, launch.Workers, launch.Coordinator = 3, 1, &dataplanev1.Resources{CpuMillis: 500, MemoryBytes: 1 << 30}
+	api.give(launch)
+	held := func(r *dataplanev1.ReportRunnerRequest, ended bool) bool {
+		return r.GetListed() && len(r.GetLaunched()) == 1 && r.GetLaunched()[0].GetAttempt() == "sync/1/1" &&
+			r.GetLaunched()[0].GetPlacement() == 3 && r.GetLaunched()[0].GetEnded() == ended
+	}
+	eventually(t, "a report of the placement whose pods it's making", func() bool {
+		l.mu.Lock()
+		made := len(l.pods)
+		l.mu.Unlock()
+		return made == 0 && held(api.lastReport(), false)
+	})
+	open.Do(func() { close(gate) })
+	eventually(t, "the pods", func() bool {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return len(l.pods) == 2
+	})
+	api.mu.Lock()
+	api.reports = nil
+	api.mu.Unlock()
+	eventually(t, "reports of the pods", func() bool { return held(api.lastReport(), false) })
+
+	l.end(pods.WorkerName("sync/1/1", 3, 1), nil)
+	api.mu.Lock()
+	api.reports = nil
+	api.mu.Unlock()
+	eventually(t, "a report", func() bool { return api.lastReport() != nil })
+	if r := api.lastReport(); !held(r, false) {
+		t.Fatalf("report %v with the coordinator's pod running, want its placement held", r)
+	}
+	l.end(pods.Name("sync/1/1", 3), errs.New(errs.Transient, "its pod ended without the attempt's result"))
+	eventually(t, "a report of the placement ended", func() bool { return held(api.lastReport(), true) })
+
+	l.mu.Lock()
+	l.listErr = errs.New(errs.Transient, "pods: the API server is down")
+	l.mu.Unlock()
+	eventually(t, "a report without the list", func() bool {
+		r := api.lastReport()
+		return r != nil && !r.GetListed() && len(r.GetLaunched()) == 0 && r.GetPods() != nil
+	})
 }
 
 // startLauncher runs a launcher against a fake API until the returned stop is
