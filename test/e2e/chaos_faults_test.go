@@ -156,7 +156,8 @@ func (b *faultBook) count(pipeline, what string) {
 }
 
 // decide is what the proxy does with a request under the pipeline, as it
-// arrives: of kind, and for a record, of generation gen.
+// arrives: of kind, and for a record or HEAD, written by the attempt of
+// generation gen, 0 if unknown.
 func (b *faultBook) decide(slot int, pipeline string, kind int, gen int64) action {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -164,8 +165,11 @@ func (b *faultBook) decide(slot int, pipeline string, kind int, gen int64) actio
 	if f == nil {
 		return action{}
 	}
-	if kind == reqRecord {
-		f.records.Received(gen)
+	switch {
+	case kind != reqOther && gen > 0:
+		f.records.Seen(gen)
+	case kind == reqHead:
+		f.counts["HEAD without a generation"]++
 	}
 	armed := ""
 	if len(f.armed) > 0 && (!f.strict || f.records.Ready()) {
@@ -212,9 +216,9 @@ func (b *faultBook) decide(slot int, pipeline string, kind int, gen int64) actio
 	}
 }
 
-// wrote notes a successful write under the pipeline by the slot's runner,
-// of a request that arrived at `at`.
-func (b *faultBook) wrote(slot int, pipeline string, kind int, gen int64, at time.Time) {
+// wrote notes a successful write under the pipeline by the slot's runner:
+// for a HEAD, one naming a record of generation committed, 0 if none.
+func (b *faultBook) wrote(slot int, pipeline string, kind int, committed int64) {
 	if kind == reqOther {
 		return
 	}
@@ -228,10 +232,9 @@ func (b *faultBook) wrote(slot int, pipeline string, kind int, gen int64, at tim
 	switch kind {
 	case reqRecord:
 		f.recorded[slot] = true
-		f.records.Wrote(gen, at, time.Now())
 	case reqHead:
 		f.recorded[slot] = false
-		f.records.Head(at)
+		f.records.Committed(committed, time.Now())
 	}
 }
 
