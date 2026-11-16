@@ -93,6 +93,8 @@ type Ready struct {
 	// Each split's watermark at its lane's barrier, by stream with event
 	// time and split.
 	Watermarks map[string]map[string]int64
+	// Each engine's part of each stateful operator's epoch.
+	Operators []checkpoint.OperatorPart
 }
 
 // LaneReady is a writer lane's part of an epoch.

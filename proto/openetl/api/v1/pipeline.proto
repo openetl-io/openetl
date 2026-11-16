@@ -1252,6 +1252,49 @@ message Checkpoint {
   repeated CheckpointStream streams = 7;
   // What the attempt that committed it had used by then.
   Usage usage = 8;
+  // What each of a SQL transform's stateful operators did in the epoch,
+  // and held at its barrier, on every worker.
+  repeated OperatorStats operators = 9;
+}
+
+// OperatorStats is what a stateful operator of a SQL transform did in an
+// epoch, on every lane of every worker, and held at the epoch's barrier.
+message OperatorStats {
+  // Its ID, as TransformPlan.operators has it.
+  string operator = 1;
+  // Rows of its stream that reached it.
+  uint64 rows_in = 2;
+  // Its output's rows it wrote, by op; rows the output quarantined aren't
+  // counted.
+  uint64 inserts = 3;
+  uint64 updates = 4;
+  uint64 deletes = 5;
+  // Rows it quarantined as late: past their windows' allowed lateness.
+  uint64 late_rows = 6;
+  // The windows, or sessions, whose state it keeps: open, or closed and
+  // kept for their lateness.
+  int64 windows = 7;
+  // Its watermark: the least of its lanes'. Unset while a lane has none,
+  // and at the end of input.
+  google.protobuf.Timestamp watermark = 8;
+  // Its input has ended, and every window closed.
+  bool end_of_input = 9;
+  // What its state held in memory, its block caches included.
+  uint64 memory_bytes = 10;
+  // The bytes on object storage of the state that the checkpoint names.
+  uint64 stored_bytes = 11;
+  // Its requests to object storage in the epoch: writing its state at the
+  // barrier, reading it, and opening what a checkpoint names.
+  StateRequests barrier_requests = 12;
+  StateRequests read_requests = 13;
+  StateRequests restore_requests = 14;
+}
+
+// StateRequests are requests of one kind to object storage, and their
+// bytes.
+message StateRequests {
+  uint64 count = 1;
+  uint64 bytes = 2;
 }
 
 message CheckpointStream {

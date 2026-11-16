@@ -161,8 +161,30 @@ export function checkpoints(name: string): Checkpoint[] {
           plannedLevel: reread ? DeliveryLevel.EXACTLY_ONCE : DeliveryLevel.UNSPECIFIED,
         };
       }),
+      operators: name.endsWith("/pipelines/shop-to-lake") ? windowStats(i, s.lastCommitTime ?? s.endTime) : [],
     }),
   );
+}
+
+/** shop-to-lake's group window at its i-th newest checkpoint, committed at commit: a sync's read ends 3 minutes behind it. */
+function windowStats(i: number, commit?: { seconds: bigint; nanos: number }) {
+  const rows = BigInt(18_000 - i * 211);
+  return [
+    {
+      operator: "window-29faae33810aefa5",
+      rowsIn: rows,
+      inserts: 58n,
+      updates: i === 0 ? 3n : 0n,
+      lateRows: i === 0 ? 2n : 0n,
+      windows: BigInt(412 + i),
+      watermark: ts(ms(commit) - 3 * 60_000),
+      memoryBytes: 6_815_744n,
+      storedBytes: 48_234_496n,
+      barrierRequests: { count: 4n, bytes: 1_310_720n },
+      readRequests: { count: 37n, bytes: 151_552n },
+      restoreRequests: { count: i === 0 ? 28n : 0n, bytes: i === 0 ? 57_344n : 0n },
+    },
+  ];
 }
 
 export function holds(name: string): Hold[] {

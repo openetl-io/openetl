@@ -3,10 +3,12 @@ import { useQuery } from "@connectrpc/connect-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Empty, ErrorNote } from "@/components/empty";
 import { Section } from "@/components/detail-header";
-import { SqlMessages, SqlOperators, SqlStatement, SqlStreams, SqlView } from "@/components/sql-plan";
+import { SqlMessages, SqlOperatorStats, SqlOperators, SqlStatement, SqlStreams, SqlView } from "@/components/sql-plan";
+import { RelativeTime } from "@/components/relative-time";
 import type { Marks } from "@/components/code-view";
 import { Passthrough, PipelineService, type Pipeline } from "@/gen/openetl/api/v1/pipeline_pb";
 import { errorMessage } from "@/lib/api";
+import { dateOf } from "@/lib/format";
 import { notDelivered, partOf, parts, sqlMessages } from "@/lib/sql-plan";
 
 const CodeView = lazy(() => import("@/components/code-view"));
@@ -14,6 +16,8 @@ const CodeView = lazy(() => import("@/components/code-view"));
 /** A pipeline's SQL transform: its statements as written, and how they plan against the source's latest catalog. */
 export function SqlTab({ pipeline }: { pipeline: Pipeline }) {
   const plan = useQuery(PipelineService.method.getPipelinePlan, { name: pipeline.name });
+  const last = useQuery(PipelineService.method.listCheckpoints, { parent: pipeline.name, pageSize: 1 }, { refetchInterval: 15_000 });
+  const checkpoint = last.data?.checkpoints[0];
   const engine = pipeline.spec?.transform?.engine;
   const sql = engine?.case === "sql" ? engine.value : undefined;
   const transform = plan.data?.plan?.transform;
@@ -82,6 +86,20 @@ export function SqlTab({ pipeline }: { pipeline: Pipeline }) {
           )}
         </Section>
       </div>
+      {checkpoint && checkpoint.operators.length > 0 && (
+        <Section title="At the last checkpoint">
+          <p className="text-muted-foreground">
+            What each stateful operator did in epoch {checkpoint.epoch.toString()}, on every worker, and what it held at the epoch's end.
+            {checkpoint.commitTime && (
+              <>
+                {" "}Committed <RelativeTime date={dateOf(checkpoint.commitTime)!} />.
+              </>
+            )}{" "}
+            Late rows are quarantined with the code <code className="font-mono text-[0.8125rem] text-foreground">late</code>.
+          </p>
+          <SqlOperatorStats checkpoint={checkpoint} operators={transform?.operators ?? []} />
+        </Section>
+      )}
     </div>
   );
 }

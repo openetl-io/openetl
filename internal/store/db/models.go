@@ -87,6 +87,7 @@ type CheckpointMirror struct {
 	Progress           []byte
 	Usage              []byte
 	Operators          []string
+	OperatorStats      []byte
 }
 
 type CheckpointRequest struct {

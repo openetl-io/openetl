@@ -488,6 +488,9 @@ func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
 	ready.Delivered = r.GetDelivered()
 	ready.Holds = attempt.HoldsOf(r.GetHolds())
 	ready.Watermarks = attempt.WatermarksOf(r.GetWatermarks())
+	for _, o := range r.GetOperators() {
+		ready.Operators = append(ready.Operators, attempt.OperatorOf(o))
+	}
 	return ready, nil
 }
 

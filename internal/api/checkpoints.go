@@ -153,11 +153,15 @@ func (s *Server) ReportCheckpoint(ctx context.Context, req *connect.Request[data
 			return nil, err
 		}
 	}
+	stats, err := marshalOperatorStats(m.GetOperatorStats())
+	if err != nil {
+		return nil, err
+	}
 	var b bigints
 	arg := db.InsertMirroredCheckpointParams{
 		OrgID: s.Tenant.Org, PipelineID: id, RunID: m.GetRunId(), CommitTime: created, Streams: raw, Progress: progress, Usage: usage,
-		Operators: append([]string{}, m.GetOperators()...),
-		Epoch:     b.of("epoch", m.GetEpoch()), Generation: b.of("generation", m.GetGeneration()),
+		Operators: append([]string{}, m.GetOperators()...), OperatorStats: stats,
+		Epoch: b.of("epoch", m.GetEpoch()), Generation: b.of("generation", m.GetGeneration()),
 	}
 	if p := m.GetPrevious(); p != nil {
 		e, g := b.of("previous.epoch", p.GetEpoch()), b.of("previous.generation", p.GetGeneration())
@@ -540,6 +544,9 @@ func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1
 				return nil, err
 			}
 		}
+		if c.Operators, err = unmarshalOperatorStats(r.OperatorStats); err != nil {
+			return nil, err
+		}
 		for _, st := range streams {
 			c.Streams = append(c.Streams, &apiv1.CheckpointStream{
 				Name: st.Name, Rows: st.Rows, QuarantinedRows: st.QuarantinedRows, CollapsedRows: st.CollapsedRows,
@@ -550,6 +557,41 @@ func (s *Server) ListCheckpoints(ctx context.Context, req *connect.Request[apiv1
 		res.Checkpoints = append(res.Checkpoints, c)
 	}
 	return connect.NewResponse(res), nil
+}
+
+// marshalOperatorStats is ops as checkpoint_mirror.operator_stats keeps
+// them: nil for none.
+func marshalOperatorStats(ops []*apiv1.OperatorStats) ([]byte, error) {
+	if len(ops) == 0 {
+		return nil, nil
+	}
+	raw := make([]json.RawMessage, len(ops))
+	for i, o := range ops {
+		b, err := protojson.Marshal(o)
+		if err != nil {
+			return nil, err
+		}
+		raw[i] = b
+	}
+	return json.Marshal(raw)
+}
+
+func unmarshalOperatorStats(b []byte) ([]*apiv1.OperatorStats, error) {
+	if len(b) == 0 {
+		return nil, nil
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]*apiv1.OperatorStats, len(raw))
+	for i, r := range raw {
+		out[i] = &apiv1.OperatorStats{}
+		if err := protojson.Unmarshal(r, out[i]); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // schemaVersions maps each stream's schema digests to their versions, keyed
