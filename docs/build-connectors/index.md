@@ -132,7 +132,7 @@ The config schema is a JSON Schema, draft 2020-12. OpenETL validates configs aga
 | `x-advanced` | A field | Shown after the others in its section, and marked advanced. |
 | `x-when` | A field | It applies only when other fields have these values: `{"consumer.type": "efo"}`, or a list of values, `{"mode": ["a", "b"]}`. Paths are dotted from the config's root, and a field that isn't set has its default. It hides the field in a form; validate the config in the connector too. |
 | `x-format` | A field | What a text field holds, beyond JSON Schema's `format`: `duration` (Go's syntax, `500ms`, `1m30s`), `date-time` (RFC 3339), `uri`, `email`, `hostname`, `regex` or `multiline`. |
-| `oneOf` of `const` | A field | Values with labels: `"oneOf": [{"const": "efo", "title": "Enhanced fan-out", "description": "…"}]`. A plain `enum` works too, shown as its values. |
+| `oneOf` of `const` | A field | Values with labels: `"oneOf": [{"const": "efo", "title": "Enhanced fan-out", "description": "…"}]`. A plain `enum` works too, shown as its values. A `oneOf` or `anyOf` gives values only when each of its branches has a `const`. |
 | `default`, `examples`, `minimum`, `maximum`, `pattern`, `deprecated` | A field | As in JSON Schema; the form shows each. |
 
 `openetl connector package` refuses a schema that would break a form: an `x-group` the root doesn't declare, an `x-when` on a field that doesn't exist or on a value it can't take, a `default` that isn't one of a field's values, or an `x-format` it doesn't know. The conformance kit's `spec` check finds the same, and flags fields without a description.
