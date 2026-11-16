@@ -110,6 +110,8 @@ A keyed lane's watermark is the least of its senders' watermarks, through `Sende
 
 [`crates/engine/src/window`](../../crates/engine/src/window) is the operator. A window's state is its accumulators and how many times its row has been given, under its group keys and start. A session's state is every session of its keys. Each output row has an `_openetl_id` and a seq from its key and that count, so a replay gives the same rows.
 
+At each barrier, a keyed lane adds its part of the operator's epoch to `EpochReady.operators`: the rows it took and wrote, the rows it quarantined as late, the windows whose state it began and stopped keeping, its watermark, what its state held in memory, and the runs its snapshot names with their sizes. The engine adds up its lanes' parts, takes the least watermark, and adds the operator's block cache and its run store's requests since the last epoch (`Counts`). A worker's share carries its engine's in its `EpochReady`, and the coordinator adds every worker's into the record (`checkpoint.Operators`). The record counts an operator's windows on from the record it restored, and from 0 where that holds none of the operator's state, as after a reset. A run named by several lanes counts once. The runner reports the record's numbers to the control plane with the checkpoint, and records the `openetl.operator.*` metrics at each commit.
+
 ## Checkpoints
 
 [`internal/checkpoint`](../../internal/checkpoint) keeps each pipeline's checkpoint log under `{org}/{pipeline}/_checkpoints/` in object storage. Records are immutable, and `HEAD` points to the latest record. Compare-and-swap updates use conditional writes on S3, GCS and Azure Blob Storage. This prevents two attempts from advancing the same `HEAD` concurrently.

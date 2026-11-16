@@ -158,7 +158,7 @@ Each statement's card shows:
 |---|---|
 | **INSERT INTO** | The output it writes, and the destination table it goes to if the pipeline names one |
 | Its place | The line and column where the statement starts |
-| **Row-wise** | The kind of statement. Only row-wise statements run. |
+| **Row-wise** or **Group window** | The kind of statement. A row-wise statement changes one row at a time. A group window adds up rows by windows of time. |
 | **Replaces stream** | The output takes the place of the source's stream of the same name. |
 | **Primary key** | The output's key. **None, so append only** means rows are only added, never merged. |
 | **Reads** | The source's streams it reads, and the views it reads them through |
@@ -177,6 +177,19 @@ Below the cards, **State** lists each statement that keeps state between rows, s
 **Passed through** lists the source's streams that no statement writes, and **Not delivered** the ones left out.
 
 If the statements have errors, the **Plan** side says so, and the errors are at the top, each with its place. If the statements could not be planned, for example because no runner answered, a note at the top says why.
+
+If a statement keeps state, **At the last checkpoint** shows what it did in the pipeline's newest epoch. An epoch is the rows between two checkpoints. The numbers add up every worker of the pipeline. Each row shows:
+
+- **Operator**: the statement's operator, and its output.
+- **Watermark**: the time in the rows before which the statement expects no more rows, and how far it was behind the commit. A window of time closes when the watermark reaches its end. **None yet** means that a part of the stream has had no rows. **End of input** means that the read ended and every window closed.
+- **Windows**: the windows the statement keeps: open ones, and closed ones that can still take late rows.
+- **Rows in**: the rows of the stream that reached the statement in the epoch.
+- **Written**: the rows it wrote to its output in the epoch, as new rows, updates and deletes.
+- **Late**: the rows that came too late for their window, which OpenETL quarantined with the code `late`. [Quarantined rows](#quarantined-rows) shows them under the output.
+- **State**: how much state the statement held in memory, and how much the checkpoint keeps in the data plane's storage.
+- **Requests**: its requests to the data plane's storage in the epoch, with their bytes: **Writes** of its state at the checkpoint, **Reads** of state it needed, and **Restores**, which open the state that a checkpoint names after a restart.
+
+[Aggregate by windows of time](../pipelines/windows.md) explains watermarks, windows and late rows.
 
 ### Syncs
 

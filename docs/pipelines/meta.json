@@ -12,6 +12,7 @@
     "holds-and-quarantine",
     "schema-changes",
     "sql-transforms",
+    "windows",
     "workers",
     "troubleshooting"
   ]

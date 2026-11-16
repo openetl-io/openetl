@@ -414,14 +414,14 @@ A stream with `eventTime` has a watermark: a time before which no more of the st
 
 - A split's watermark is the latest event time that the split has read, less `watermark.delay`. It never goes back. A row with a null event time does not move it.
 - The engine moves the watermark this way only if the stream is read in the order of its event time: with `cdc` or `stream`, or with `incremental` and `cursor` set to the `eventTime` column. A stream read in another order, such as with `full_refresh`, holds each split's watermark until the split's read ends. The watermark is then the end of input. The next read of such a stream starts with no watermark.
-- In a continuous pipeline, a split that has read no rows for 1 minute is idle. Its watermark moves to the current time, less the delay, and keeps moving while the split is idle. If the split waits for a checkpoint's barrier, the move comes after the barrier.
-- When a split of a stream read in event-time order completes its read, its watermark moves to the current time, less the delay.
+- In a continuous pipeline, a split that has read no rows for 1 minute is idle. Its watermark moves to the current time, less the delay, and keeps moving while the split is idle. If the split waits for a checkpoint's barrier, the move comes after the barrier. A move counts as something the source emitted, so while a split is idle the pipeline commits about one epoch each `delivery.commit.interval`, or each 15 seconds if the interval is shorter, even with no rows.
+- When a split of a stream read in event-time order completes its read, its watermark moves to the current time, less the delay, not to the end of input. So a sync of such a stream closes only the windows that end before then, and the next sync goes on with the rest. A run that is not followed by another sync leaves those windows open.
 - The stream's watermark in each of the job's lanes is the least of the watermarks of the splits that the lane reads. A lane without splits of the stream does not hold it back. The watermark of a statement's output is the least of the watermarks of the streams the statement reads.
 - Each checkpoint records each split's watermark. A job that restores a checkpoint starts each split at the recorded watermark. The next sync's read starts each split at the watermark its read ended with, and a split the source adds at the least of those watermarks.
 - If the `eventTime` column holds values other than timestamps or dates, the sync fails with `CONFIG_INVALID`.
 - A [group window](../sql.md#group-windows) closes when the watermark reaches the window's end. Rows that come after the watermark has passed their time are late, and `watermark.lateness` says how long a closed window still takes them.
 
-`openetl plan` has a note for each stream with event time. The note names the column and says how the stream's watermark moves. The `openetl.job.watermark` metric gives each stream's watermark ([Monitoring](../../self-host/monitoring.md#pipeline-signals)).
+`openetl plan` has a note for each stream with event time. The note names the column and says how the stream's watermark moves. The `openetl.job.watermark` metric gives each stream's watermark, and `openetl.operator.watermark` each group window's ([Monitoring](../../self-host/monitoring.md#stateful-operators)). [Aggregate by windows of time](../../pipelines/windows.md) explains watermarks with examples.
 
 ### Settings and holds of outputs
 

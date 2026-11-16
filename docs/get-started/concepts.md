@@ -40,6 +40,8 @@ A stream's **write mode** specifies how to write it:
 
 A pipeline can have a **transform**, which changes rows between the source and the destination. A **SQL transform** is SQL statements that the engine runs as it copies. Each `INSERT INTO` statement reads streams and writes an **output**, which the destination gets as a stream.
 
+A **group window** is a SQL statement that adds up rows by windows of time, such as each minute. It uses each row's **event time**: the time in the row, such as when an order was placed. A **watermark** is the time before which no more rows are expected. When the watermark passes a window's end, the window closes and its row is written. A row that comes after its window closed is **late**. [Aggregate by windows of time](../pipelines/windows.md) explains them.
+
 ## Syncs, schedules and continuous pipelines
 
 A **scheduled** pipeline copies data in **syncs**. A sync reads the selected data, writes it and stops. The pipeline's **schedule** specifies an interval or cron expression for starting syncs. You can also select **Sync now** in the console to start a sync manually.

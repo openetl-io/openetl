@@ -114,7 +114,7 @@ The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the d
 
 ## Group windows
 
-A group window aggregates a stream's rows by windows of their event time, and by the columns its `GROUP BY` names. It writes one row for each window and key:
+A group window aggregates a stream's rows by windows of their event time, and by the columns its `GROUP BY` names. [Aggregate by windows of time](../pipelines/windows.md) is the guide to them. It writes one row for each window and key:
 
 ```sql
 INSERT INTO revenue_by_minute
@@ -189,7 +189,7 @@ How the stream is read decides when windows close:
 | Read | Pipeline | When windows close |
 |---|---|---|
 | `full_refresh` | Scheduled | The watermark holds until the sync's read ends. Every window closes at the end of the read. The next sync starts its windows again, from the whole stream. |
-| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. A window that is still open goes on in the next sync, which restores its state. |
+| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. It does not move to the end of input. A window that is still open goes on in the next sync, which restores its state. Without a later sync, it stays open. |
 | `stream` | Continuous | The watermark follows the rows as they come. Each window closes while the pipeline runs. |
 
 A group window over a stream read another way is a problem in the plan:
@@ -210,7 +210,8 @@ A group window keeps each window's aggregates as state, by key group, until its 
 - At each checkpoint, each lane writes what its state changed since the last checkpoint, if anything, as a file under `_state/`, next to the pipeline's checkpoints. The checkpoint record names the files that hold the state. A file that no checkpoint names, such as one from an epoch that did not commit, is never read.
 - The next attempt restores the state that its checkpoint names, on any number of lanes. A continuous pipeline's attempt that restarts, or a sync's attempt that fails, goes on with its open windows. Each window's row has every row of the window, each one time.
 - The engine reads a file of state when a lane first needs it, not at the start of the attempt.
-- A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names.
+- A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names. It does so when it starts, and after every 10 checkpoints.
+- Each checkpoint records what the operator did in its epoch, on every worker: its rows, its late rows, its watermark, the windows it keeps, its state's size and its requests to object storage. The console's **SQL** tab shows the last checkpoint's, and the `openetl.operator.*` metrics give them ([Monitoring](../self-host/monitoring.md#stateful-operators)).
 - To build a window's state again from the stream, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)). A run deletes the files of the dropped state once none of the records it keeps names them.
 - After a reset, each window's row comes only from the rows that the new read returns. If the read starts partway through a window, `merge` replaces that window's row with a row of part of its rows. A window that the new read does not reach keeps its row in the destination. Start the read where it includes every row of the windows it changes, or correct those rows in the destination.
 - A pipeline with a group window runs on one pod, whatever its `resources.workers`.
