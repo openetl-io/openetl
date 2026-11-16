@@ -701,6 +701,19 @@ func TestAnswer(t *testing.T) {
 	}
 }
 
+// tidy drops Unicode's bidirectional marks and tag characters, and takes a
+// line or paragraph separator as a line break: a newline in a detail, a
+// space elsewhere.
+func TestTidy(t *testing.T) {
+	s := "a\u200eb\u200fc\u061cd\U000E0001\U000E0041\U000E007Fe\u2028f\u2029g\nh\ti\x1bj\u202ek"
+	if got, want := tidy(s, 100, false), "abcde f g h i j k"; got != want {
+		t.Errorf("a text: %q, want %q", got, want)
+	}
+	if got, want := tidy(s, 100, true), "abcde\nf\ng\nh\ti j k"; got != want {
+		t.Errorf("a detail: %q, want %q", got, want)
+	}
+}
+
 // answer keeps the items that fit in maxAnswerBytes, and fails an answer
 // with more, whatever the items it drops say.
 func TestAnswerSize(t *testing.T) {

@@ -117,16 +117,22 @@ func tidyItem(it *protocolv1.CheckItem) {
 	}
 }
 
-// tidy is s as valid UTF-8 with a space for each control character, newline
-// and tab kept in a detail, and cut at a rune boundary to at most limit
-// bytes, "…" ending what's cut. The control characters are C0's and C1's,
-// DEL, and Unicode's bidirectional overrides and isolates.
+// tidy is s as valid UTF-8 without Unicode's bidirectional marks and tag
+// characters, and with a space for each other control character, and cut at
+// a rune boundary to at most limit bytes, "…" ending what's cut. The other
+// control characters are C0's and C1's, DEL, Unicode's bidirectional
+// overrides and isolates, and its line and paragraph separators. A detail
+// keeps newline and tab, and has a newline for each separator.
 func tidy(s string, limit int, detail bool) string {
 	s = strings.Map(func(r rune) rune {
 		switch {
 		case detail && (r == '\n' || r == '\t'):
 			return r
-		case r < 0x20, r >= 0x7f && r <= 0x9f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		case detail && (r == '\u2028' || r == '\u2029'):
+			return '\n'
+		case r == '\u061c', r == '\u200e', r == '\u200f', r >= 0xe0000 && r <= 0xe007f:
+			return -1
+		case r < 0x20, r >= 0x7f && r <= 0x9f, r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, r == '\u2028', r == '\u2029':
 			return ' '
 		}
 		return r
