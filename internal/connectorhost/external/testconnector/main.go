@@ -166,15 +166,16 @@ func (bulky) Checks() []check.Check {
 }
 
 // leaky's check shows the AWS token the runner gave it, in texts with control
-// characters and longer than a host keeps, and it has more items than an
-// answer may.
+// characters and longer than a host keeps, and its AWS secret key and session
+// token in params; it has more items than an answer may.
 type leaky struct{ echo }
 
 func (leaky) Checks() []check.Check {
 	token := os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN")
 	checks := []check.Check{{
 		Name: "token", Title: "Use " + token + "\x1b]52;c;ZXZpbA==\x07", Field: "aws." + token, Description: strings.Repeat("é", 1500),
-		Params: check.Params{"token": token, "long": strings.Repeat("v", 2000)},
+		Params: check.Params{"token": token, "long": strings.Repeat("v", 2000),
+			"secret_key": os.Getenv("AWS_SECRET_ACCESS_KEY"), "session_token": os.Getenv("AWS_SESSION_TOKEN")},
 		Run: func(_ context.Context, p *check.Probe) error {
 			p.Found("found \u202e" + token)
 			return nil

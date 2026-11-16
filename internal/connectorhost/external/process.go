@@ -85,10 +85,11 @@ func (a AWS) env(dir string) []string {
 }
 
 // secrets are the secret values env gives the process: a role's token, or
-// the runner's own secret key and session token.
+// the runner's own secret key, session token and container authorization
+// token. A variable the runner doesn't have is the empty string.
 func (a AWS) secrets() []string {
 	if a.Inherit && a.URL == "" {
-		return []string{os.Getenv("AWS_SECRET_ACCESS_KEY"), os.Getenv("AWS_SESSION_TOKEN")}
+		return []string{os.Getenv("AWS_SECRET_ACCESS_KEY"), os.Getenv("AWS_SESSION_TOKEN"), os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN")}
 	}
 	return []string{a.Token}
 }

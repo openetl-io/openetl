@@ -642,6 +642,37 @@ func TestCheckAnswerKept(t *testing.T) {
 	}
 }
 
+// A connector that inherits the runner's AWS variables has their secrets
+// taken out of its answer.
+func TestCheckAnswerKeptInherited(t *testing.T) {
+	secrets := map[string]string{
+		"AWS_SECRET_ACCESS_KEY":             "runner-secret-key",
+		"AWS_SESSION_TOKEN":                 "runner-session-token",
+		"AWS_CONTAINER_AUTHORIZATION_TOKEN": "runner-container-token",
+	}
+	for name, value := range secrets {
+		t.Setenv(name, value)
+	}
+	src := NewSource(exe("source-leaky"), nil, Options{AWS: AWS{Inherit: true}})
+	defer func() { _ = src.Close() }()
+	r, err := src.CheckReport(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := r.Items[0]
+	b, _ := json.Marshal(it)
+	for name, value := range secrets {
+		if strings.Contains(string(b), value) {
+			t.Errorf("the item shows %s", name)
+		}
+	}
+	for _, p := range []string{"token", "secret_key", "session_token"} {
+		if it.Params[p] != "[redacted]" {
+			t.Errorf("the param %s is %q", p, it.Params[p])
+		}
+	}
+}
+
 // answer takes out secrets as written and escaped, makes texts valid and
 // cuts them, and keeps each item's status.
 func TestAnswer(t *testing.T) {
