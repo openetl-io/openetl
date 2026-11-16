@@ -330,6 +330,18 @@ func TestPreflightPartTime(t *testing.T) {
 		t.Errorf("a destination's preflight that runs out of time: %v, %q, %+v", err, parts(gs), gs[4])
 	}
 
+	// With less time than the SDK's slack, what a part answers in time or why
+	// its connector failed is kept.
+	p.preflightDestination = pass
+	p.checkSource = func(context.Context) (check.Report, error) { return check.Of(context.Background(), builtIn{}), nil }
+	p.checkDestination = func(context.Context) (check.Report, error) {
+		return check.Report{}, errs.New(errs.Internal, "connector: exited unexpectedly")
+	}
+	gs, err = p.run(t.Context(), "", "")
+	if err != nil || gs[0].Code != "AUTH_INVALID" || len(gs[0].Items) != 1 || gs[1].Code != "INTERNAL" || gs[1].Message != "connector: exited unexpectedly" {
+		t.Errorf("parts that fail in time: %v, %q, %+v, %+v", err, parts(gs), gs[0], gs[1])
+	}
+
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	if _, cancel, had := within(ctx, 2*time.Minute); had > time.Minute-closeMargin || had < time.Minute-closeMargin-time.Second {

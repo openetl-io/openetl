@@ -2,6 +2,7 @@ package activities
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"time"
@@ -213,7 +214,7 @@ const answerSlack = 2 * time.Second
 
 // runPart runs a part, what, with at most budget of ctx's time, and is
 // whether it passed. The part has what the connector answered, or, without
-// items, why it didn't answer; one that fails as it runs out of time says
+// items, why it didn't answer; one that fails for running out of time says
 // how long it had.
 func runPart(ctx context.Context, g *contract.CheckGroup, budget time.Duration, what string, run func(context.Context) (check.Report, error)) bool {
 	pctx, cancel, had := within(ctx, budget)
@@ -225,11 +226,29 @@ func runPart(ctx context.Context, g *contract.CheckGroup, budget time.Duration, 
 			return true
 		}
 	}
-	if d, _ := pctx.Deadline(); time.Until(d) < answerSlack && ctx.Err() == nil {
+	if d, _ := pctx.Deadline(); time.Until(d) < answerSlack && ctx.Err() == nil && ranOut(r, err) {
 		err = errs.New(errs.Transient, "%s didn't finish within %v", what, had.Round(time.Second))
 	}
 	if err != nil {
 		g.Code, g.Message = errs.CodeOf(err).String(), errs.ToProto(err).GetMessage()
+	}
+	return false
+}
+
+// ranOut is whether a part that returned r and err stopped for its time:
+// err is a deadline's or a cancellation's, or, without err, an item of r
+// timed out or r's error is a deadline's.
+func ranOut(r check.Report, err error) bool {
+	if err != nil {
+		return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	}
+	if errors.Is(r.Err(), context.DeadlineExceeded) {
+		return true
+	}
+	for _, it := range r.Items {
+		if it.Failure != nil && it.Failure.Reason == check.TimedOut.Name {
+			return true
+		}
 	}
 	return false
 }
