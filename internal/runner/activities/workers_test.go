@@ -361,20 +361,68 @@ func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
 	if len(starts) != len(want) {
 		t.Errorf("%d regions' windows landed, want %d", len(starts), len(want))
 	}
-	// Writer lanes are numbered by worker, as many on each.
-	all := stagedLanes(t, filepath.Join(out, ".epochs"))
-	lanes := 0
-	for _, ls := range all {
-		for l := range ls {
-			lanes = max(lanes, l+1)
+	// Each worker writes with a destination process of its own.
+	procs := writerProcesses(t, filepath.Join(out, ".epochs"))
+	wrote := map[string]bool{}
+	for l := range stagedLanes(t, filepath.Join(out, ".epochs"))["tens"] {
+		wrote[procs[l]] = true
+	}
+	if len(wrote) != 2 {
+		t.Errorf("the windows were staged from %d of the workers' processes %v, want both", len(wrote), procs)
+	}
+}
+
+// A Spark or Flink transform's attempt placed on workers goes back to one
+// pod before its transform is set up: this runner, which can run neither,
+// would fail at that setup.
+func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	connectors, store := filepath.Join(dir, "connectors"), filepath.Join(dir, "store")
+	for _, d := range []string{connectors, store} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
 		}
 	}
-	var first, second bool
-	for l := range all["tens"] {
-		first, second = first || l < lanes/2, second || l >= lanes/2
+	script := fmt.Sprintf("#!/bin/sh\n%s=connector exec %q -test.run='^$'\n", processEnv, exe)
+	if err := os.WriteFile(filepath.Join(connectors, "destination-lanes"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if !first || !second {
-		t.Errorf("the windows were staged on writer lanes %v of %d, want both workers'", all["tens"], lanes)
+	dst, err := structpb.NewStruct(map[string]any{"dir": filepath.Join(dir, "out")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, err := checkpoint.NewFSStore(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tr := range map[string]*apiv1.Transform{
+		"spark": {Engine: &apiv1.Transform_Spark{Spark: &apiv1.SparkTransform{Cluster: "c"}}},
+		"flink": {Engine: &apiv1.Transform_Flink{Flink: &apiv1.FlinkTransform{Cluster: "c"}}},
+	} {
+		api := &workersAPI{spec: &dataplanev1.GetSyncSpecResponse{
+			OrgId: "org", PipelineId: "p", Version: "v1",
+			Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: &structpb.Struct{}},
+			Destination: &apiv1.ConnectorConfig{Connector: "lanes", Config: dst},
+			Pipeline:    &apiv1.PipelineSpec{Transform: tr},
+		}}
+		mux := http.NewServeMux()
+		mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+		srv := httptest.NewServer(mux)
+		s := &Sync{
+			API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), Checkpoints: checkpoints, Storage: store,
+			Connectors: connectorhost.Env{Connectors: connectors},
+		}
+		wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: 2, Size: resources.S, Received: time.Now()}, nil)
+		_, err := s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
+		srv.Close()
+		var onePod *worker.OnePod
+		if !errors.As(err, &onePod) || onePod.Why != "a Spark or Flink transform runs on one pod" {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 
@@ -637,8 +685,41 @@ type laneDir struct{ dir string }
 
 func (d *laneDir) Capabilities() destination.Capabilities { return destination.Capabilities{} }
 
+// Open keeps, as .epochs/writer-LANE, the process the lane writes from: one
+// per worker, whose destination is its own.
 func (d *laneDir) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
-	return &laneWriter{dir: d.dir, gen: cfg.Generation, lane: cfg.Lane, pending: map[string][]json.RawMessage{}}, os.MkdirAll(filepath.Join(d.dir, ".epochs"), 0o750)
+	w := &laneWriter{dir: d.dir, gen: cfg.Generation, lane: cfg.Lane, pending: map[string][]json.RawMessage{}}
+	if err := os.MkdirAll(filepath.Join(d.dir, ".epochs"), 0o750); err != nil {
+		return nil, err
+	}
+	return w, os.WriteFile(w.path(fmt.Sprintf("writer-%d", cfg.Lane)), []byte(strconv.Itoa(os.Getpid())), 0o600)
+}
+
+// writerProcesses are the processes that opened each writer lane, as
+// laneDir keeps them in dir.
+func writerProcesses(t *testing.T, dir string) map[int]string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[int]string{}
+	for _, e := range entries {
+		lane, ok := strings.CutPrefix(e.Name(), "writer-")
+		if !ok {
+			continue
+		}
+		l, err := strconv.Atoi(lane)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[l] = string(b)
+	}
+	return out
 }
 
 type laneWriter struct {

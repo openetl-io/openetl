@@ -398,7 +398,7 @@ Statements that the engine does not run, such as `GROUP BY` without a window, jo
 
 If no runner takes the statements within 30 seconds, or a stream's columns are not known yet, the plan has a note that starts with `transform.sql wasn't planned`. The sync plans the statements when it starts, and fails with `CONFIG_INVALID` if they have errors.
 
-If a runner takes the statements and fails to plan them, the fault is in OpenETL, not in the statements. The note says what failed, and the plan also has a warning that starts with `OpenETL failed to plan transform.sql`. `openetl apply` prints the warning too. Apply still accepts the pipeline.
+If a runner takes the statements and fails to plan them, the fault is in OpenETL, not in the statements. The plan has a warning that starts with `OpenETL failed to plan transform.sql` and says what failed. If `openetl apply` creates or changes the pipeline, it prints the warning too. Apply still accepts the pipeline.
 
 ## In the console
 

@@ -110,7 +110,8 @@ func TestPlanSQLNotPlanned(t *testing.T) {
 			t.Errorf("%s: notes %q", c.name, out.GetNotes())
 		}
 		w := out.GetWarnings()
-		if failed := c.name == "refused"; failed != (len(w) == 1) || failed && !strings.HasPrefix(w[0].GetMessage(), "OpenETL failed to plan transform.sql") {
+		if failed := c.name == "refused"; failed != (len(w) == 1) || failed && (!strings.HasPrefix(w[0].GetMessage(), "OpenETL failed to plan transform.sql") ||
+			!strings.Contains(w[0].GetMessage(), `a runner of data plane "dp1" failed: CONFIG_INVALID: stream orders column id: x isn't a type the engine knows.`)) {
 			t.Errorf("%s: warnings %v", c.name, w)
 		}
 	}
