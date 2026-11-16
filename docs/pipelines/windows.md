@@ -152,7 +152,7 @@ A group window keeps its state under an ID that the plan shows. Some edits keep 
 
 Without step 4, a changed or new window starts from now: its windows hold only the rows that the pipeline reads after the change. A window that is open at the change loses the rows read before. A stream read with `full_refresh` is read whole at each sync, so a changed or new window over it holds every row from the next sync on.
 
-A changed `watermark.delay` or `watermark.lateness` keeps the state. Each window keeps the time that its state expires at, which it got when it opened. So a higher lateness does not apply to a window that opened before the change, and does not bring back a window whose state is gone.
+A changed `watermark.delay` or `watermark.lateness` keeps the state. Each window keeps the time that its state expires at, which it got when it opened. So a higher lateness does not extend the state of a window that opened before the change, and does not bring back a window whose state is gone.
 
 After such a window's state is gone, a row that comes within the new lateness starts the window again, with that row alone. Under `merge`, the window's new row then replaces the row that had every earlier row of the window. This can occur for each window that opened before the change, until the watermark passes the window's end plus the new lateness. To prevent it, read the stream again as [Build the state again](#build-the-state-again) describes.
 
