@@ -21,10 +21,11 @@ import {
   type QuarantineFile,
   type StreamSchema,
 } from "@/gen/openetl/api/v1/pipeline_pb";
-import { CheckItemSchema, CheckResultSchema, type CheckResult } from "@/gen/openetl/api/v1/connection_pb";
+import { CheckItemSchema, CheckResultSchema, type CheckItem, type CheckResult } from "@/gen/openetl/api/v1/connection_pb";
 import { PreflightPartSchema, PreflightResultSchema, type PreflightResult } from "@/gen/openetl/api/v1/pipeline_pb";
 import { LogEntrySchema, SyncState, type LogEntry, type Sync } from "@/gen/openetl/api/v1/sync_pb";
-import { destinations, pipelines, syncs } from "./fixtures";
+import { itemError, itemFailed } from "@/lib/checks";
+import { destinations, pipelines, sources, syncs } from "./fixtures";
 import { flinkClusters, sparkClusters } from "./workspace";
 
 // What a pipeline's tabs and a sync's page read, made up from the pipeline
@@ -112,6 +113,9 @@ export function plan(name: string): PipelinePlan | undefined {
           : "the destination commits each epoch with its checkpoint",
     })),
     notes: p.spec?.destination?.ref === "raw-archive" ? ["each sync writes a new set of Parquet files under the run's prefix"] : [],
+    warnings: p.name.endsWith("/orders-to-warehouse")
+      ? [{ stream: "public.order_items", message: "each attempt reads it on one of its 4 workers: it has no cursor to split its reads by" }]
+      : [],
   });
 }
 
@@ -163,8 +167,30 @@ export function checkpoints(name: string): Checkpoint[] {
           plannedLevel: reread ? DeliveryLevel.EXACTLY_ONCE : DeliveryLevel.UNSPECIFIED,
         };
       }),
+      operators: name.endsWith("/pipelines/shop-to-lake") ? windowStats(i, s.lastCommitTime ?? s.endTime) : [],
     }),
   );
+}
+
+/** shop-to-lake's group window at its i-th newest checkpoint, committed at commit: a sync's read ends 3 minutes behind it. */
+function windowStats(i: number, commit?: { seconds: bigint; nanos: number }) {
+  const rows = BigInt(18_000 - i * 211);
+  return [
+    {
+      operator: "window-29faae33810aefa5",
+      rowsIn: rows,
+      inserts: 58n,
+      updates: i === 0 ? 3n : 0n,
+      lateRows: i === 0 ? 2n : 0n,
+      windows: BigInt(412 + i),
+      watermark: ts(ms(commit) - 3 * 60_000),
+      memoryBytes: 6_815_744n,
+      storedBytes: 48_234_496n,
+      barrierRequests: { count: 4n, bytes: 1_310_720n },
+      readRequests: { count: 37n, bytes: 151_552n },
+      restoreRequests: { count: i === 0 ? 28n : 0n, bytes: i === 0 ? 57_344n : 0n },
+    },
+  ];
 }
 
 export function holds(name: string): Hold[] {
@@ -329,73 +355,213 @@ export function quarantineLines(parent: string, path: string, limit: number) {
   return { lines: lines.slice(0, n), more: Number(f.rows) > n };
 }
 
-/** A check's result: Kinesis says what it looked at, and one of its streams can't be read; the others report only a result. */
-export function checkResult(connector: string): CheckResult {
-  if (connector !== "kinesis") return create(CheckResultSchema, { ok: true, version: "0.2.0" });
-  const item = (name: string, title: string, status: string, o: { message?: string; code?: string; fix?: string; field?: string } = {}) =>
-    create(CheckItemSchema, { name, title, status, ...o });
-  return create(CheckResultSchema, {
-    ok: false,
-    code: "PERMISSION_DENIED",
-    message: "kinesis: clickstream-prod: GetRecords: AccessDeniedException",
-    version: "0.2.0",
-    items: [
-      item("connect", "Reach Kinesis in eu-west-1", "passed", { message: "Listed 14 streams." }),
-      item("stream.clickstream-prod.describe", "Describe clickstream-prod", "passed", { message: "Active, 4 open shards, 24 hours' retention, KMS encrypted." }),
-      item("stream.clickstream-prod.read", "Read clickstream-prod", "failed", {
-        code: "PERMISSION_DENIED",
-        message: "GetRecords: AccessDeniedException",
-        fix: "Allow kinesis:GetShardIterator and kinesis:GetRecords on arn:aws:kinesis:eu-west-1:*:stream/clickstream-prod.",
-        field: "streams",
-      }),
-      item("stream.clickstream-prod.retention", "Retention of clickstream-prod", "warning", {
-        message: "24 hours: a scheduled read more than a day apart loses records.",
-        fix: "Raise the stream's retention, or schedule reads more often than daily.",
-      }),
-      item("consumer", "Enhanced fan-out consumer", "skipped", { message: "consumer.type is polling." }),
-    ],
+type ItemInit = Partial<Pick<CheckItem, "message" | "code" | "fix" | "field" | "description" | "reason" | "detail" | "params">>;
+
+// Items as a connector sends them: title, message, fix and description are templates that params fill.
+const item = (name: string, kind: string, status: string, title: string, o: ItemInit = {}) => create(CheckItemSchema, { name, kind, status, title, ...o });
+
+const aws = (region: string) =>
+  item("aws.identity", "authentication", "passed", "Sign in to AWS in {region}", {
+    message: "Signed in as {identity}.",
+    description: "Calls sts:GetCallerIdentity with the configured credentials, because every other call needs them.",
+    params: { region, identity: "arn:aws:sts::123456789012:assumed-role/openetl-runner/i-0a1b2c3d" },
   });
+
+// What the runner answers for a check: its items, and a code and message only for what failed besides them.
+type Answer = { items: CheckItem[]; code?: string; message?: string };
+
+const checks: Record<string, (id: string, destination: boolean) => Answer> = {
+  // Passes, with a warning.
+  postgres: (id, destination) => {
+    const host = `${id}.internal`;
+    const params = { host, address: `${host}:5432`, database: id.replace(/-db$/, ""), user: "openetl" };
+    return {
+      items: [
+        item("net.dns", "connection", "passed", "Resolve {host}", { message: "{host} resolves to {ips}.", params: { ...params, ips: "10.0.4.12" } }),
+        item("net.connect", "connection", "passed", "Reach {address}", { params }),
+        item("db.connect", "authentication", "passed", "Sign in to {database} as {user}", { message: "PostgreSQL {version}.", params: { ...params, version: "16.4" } }),
+        item("pg.certificate", "connection", "warning", "Verify the certificate of {address}", {
+          message: "The certificate of {address} expires on {expires}.",
+          fix: "Renew the certificate.",
+          code: "TRANSIENT",
+          reason: "certificate_expiring",
+          description: "Checks the certificate the server presents, because a sync can't connect once it has expired.",
+          params: { ...params, expires: "2026-11-30" },
+        }),
+        ...(destination
+          ? [
+              item("pg.create", "permission", "passed", "Create tables in {schema}", {
+                description: "Checks that the connector's user may create and alter the tables a sync writes.",
+                params: { ...params, schema: "analytics" },
+              }),
+            ]
+          : [
+              item("pg.select", "permission", "passed", "Read the tables in {schema}", {
+                message: "{user} can read {count} tables.",
+                description: "Checks that the connector's user may SELECT from the schema's tables.",
+                params: { ...params, schema: "public", count: "12" },
+              }),
+              item("pg.replication", "permission", "skipped", "Read the write-ahead log", { message: "the source reads with queries, not CDC" }),
+            ]),
+      ],
+    };
+  },
+  // Fails, with a detail, a fix, a field and a reason.
+  kafka: () => {
+    const params = { brokers: "kafka-1.internal:9092, kafka-2.internal:9092", mechanism: "SCRAM-SHA-512", user: "openetl" };
+    return {
+      items: [
+        item("net.connect", "connection", "passed", "Reach {brokers}", { params }),
+        item("kafka.auth", "authentication", "failed", "Sign in to the brokers as {user}", {
+          message: "The upstream rejected the credentials.",
+          fix: "Check the credentials in the config and the secrets they name.",
+          field: "sasl_password",
+          code: "AUTH_INVALID",
+          reason: "credentials_rejected",
+          detail:
+            "kafka: client has run out of available brokers to talk to: 2 errors occurred:\n" +
+            "\t* kafka server: SASL Authentication failed: Authentication failed during authentication due to invalid credentials with SASL mechanism SCRAM-SHA-512\n" +
+            "\t* kafka server: SASL Authentication failed: Authentication failed during authentication due to invalid credentials with SASL mechanism SCRAM-SHA-512",
+          description: "Signs in with SASL {mechanism}, because the connector reads and writes as this user.",
+          params,
+        }),
+        item("kafka.topics", "permission", "skipped", "Describe the topics", { message: "needs kafka.auth, which failed" }),
+      ],
+    };
+  },
+  kinesis: () => ({
+    items: [aws("eu-west-1"), item("kinesis.list", "connection", "passed", "Reach Kinesis in {region}", { message: "Listed {count} streams.", params: { region: "eu-west-1", count: "14" } })],
+  }),
+  // Failed, and no item says why: the checks ran out of time.
+  s3: () => ({
+    code: "TRANSIENT",
+    message: "the checks ran out of time: context deadline exceeded",
+    items: [
+      aws("eu-west-1"),
+      item("s3.bucket", "resource", "skipped", "Find the bucket {bucket}", {
+        message: "the checks stopped before it ran: context deadline exceeded",
+        params: { bucket: "acme-raw-archive" },
+      }),
+      item("s3.write", "permission", "skipped", "Write to {bucket}", {
+        message: "the checks stopped before it ran: context deadline exceeded",
+        params: { bucket: "acme-raw-archive" },
+      }),
+    ],
+  }),
+};
+
+/** As the API settles a result: failed with a code or a failed item, whose code and text it takes when it has no code of its own. */
+function verdict(code: string, message: string, items: CheckItem[]): { ok: boolean; code: string; message: string } {
+  const f = items.find(itemFailed);
+  if (f && !code) return { ok: false, code: f.code || "INTERNAL", message: itemError(f) };
+  return { ok: !f && !code, code, message };
 }
 
-/** A pipeline's preflight: the Kinesis source's streams fail to read and its schedule outlasts retention; other pipelines pass. */
+const answer = (r: { name: string; spec?: { connector: string } }): Answer =>
+  checks[r.spec?.connector ?? ""]?.(r.name.slice(r.name.lastIndexOf("/") + 1), r.name.includes("/destinations/")) ?? { items: [] };
+
+/** A check's result: a Postgres source passes with a warning, Kafka can't sign in, S3 runs out of time; others report only a result. */
+export function checkResult(r: { name: string; spec?: { connector: string } }): CheckResult {
+  const a = answer(r);
+  return create(CheckResultSchema, { version: "0.2.0", items: a.items, ...verdict(a.code ?? "", a.message ?? "", a.items) });
+}
+
+/** The plan's problems and warnings as the API makes them items, of the kind configuration; or one item that passed. */
+function planItems(pl: PipelinePlan | undefined): CheckItem[] {
+  const kind = "configuration";
+  const items = [
+    ...(pl?.problems ?? []).map((message, i) =>
+      item(`plan.problem.${i + 1}`, kind, "failed", "The plan", { message, code: "CONFIG_INVALID", reason: "config_invalid" }),
+    ),
+    ...(pl?.warnings ?? []).map((w, i) =>
+      w.stream
+        ? item(`plan.warning.${i + 1}`, kind, "warning", "Stream {stream}", { message: w.message, params: { stream: w.stream } })
+        : item(`plan.warning.${i + 1}`, kind, "warning", "The plan", { message: w.message }),
+    ),
+  ];
+  return items.length > 0 ? items : [item("plan", kind, "passed", "The plan", { message: `${pl?.streams.length ?? 0} streams, no problems` })];
+}
+
+/**
+ * A pipeline's preflight as the runner runs it and the API settles it: the Kinesis source can't read its stream; a Kafka source fails
+ * its check, so its preflight and the plan are skipped, and the destination's preflight too, as a sync can't be planned; the S3
+ * destination's check runs out of time, so its preflight is skipped.
+ */
 export function preflightResult(pipeline: Pipeline): PreflightResult {
-  const item = (name: string, title: string, status: string, o: { message?: string; code?: string; fix?: string; field?: string } = {}) =>
-    create(CheckItemSchema, { name, title, status, ...o });
   const ws = pipeline.name.slice(0, pipeline.name.indexOf("/pipelines/"));
   const src = `${ws}/sources/${pipeline.spec?.source?.ref ?? ""}`;
   const dst = `${ws}/destinations/${pipeline.spec?.destination?.ref ?? ""}`;
-  const part = (role: string, stage: string, o: Partial<{ ok: boolean; code: string; message: string; skipped: string; items: ReturnType<typeof item>[] }> = {}) =>
-    create(PreflightPartSchema, { role, stage, resource: role === "source" ? src : role === "destination" ? dst : "", ok: true, ...o });
+  // A part as the API settles it: ok only without a code, a failed item or a skip.
+  const part = (role: string, stage: string, o: { code?: string; message?: string; skipped?: string; items?: CheckItem[] } = {}) => {
+    const items = o.items ?? [];
+    const v = verdict(o.code ?? "", o.message ?? "", items);
+    const resource = role === "source" ? src : role === "destination" ? dst : "";
+    return create(PreflightPartSchema, { role, stage, resource, skipped: o.skipped ?? "", items, ...v, ok: v.ok && !o.skipped });
+  };
+  const srcCheck = part("source", "check", answer(sources.find((s) => s.name === src) ?? { name: src }));
+  const dstCheck = part("destination", "check", answer(destinations.find((d) => d.name === dst) ?? { name: dst }));
   const kinesis = pipeline.spec?.source?.ref === "clickstream";
+  const stream = { stream: "clickstream-prod" };
+  // The runner settles what a sync reads and writes only after the source's check passed; invoices-cleaned's SQL can't be settled.
+  const unsettled = pipeline.name.endsWith("/invoices-cleaned")
+    ? { code: "CONFIG_INVALID", message: "transform.sql:9:10: GROUP BY without a window: transforms don't run updating statements yet (tier 5)" }
+    : undefined;
+  const planned = srcCheck.ok && !unsettled;
+  // The parts in the order they ran. The API adds the plan's problems and warnings to a plan part that passed.
   const parts = [
-    part("source", "check", { items: kinesis ? [item("connect", "Reach Kinesis in eu-west-1", "passed", { message: "Listed 14 streams." })] : [] }),
-    part("destination", "check"),
-    kinesis
-      ? part("source", "preflight", {
-          ok: false,
-          code: "PERMISSION_DENIED",
-          message: "kinesis: clickstream-prod: GetRecords: AccessDeniedException",
-          items: [
-            item("stream.clickstream-prod.describe", "Describe clickstream-prod", "passed", { message: "Active, 4 open shards, 24 hours' retention, KMS encrypted." }),
-            item("stream.clickstream-prod.read", "Read clickstream-prod", "failed", {
-              code: "PERMISSION_DENIED",
-              message: "GetRecords: AccessDeniedException",
-              fix: "Allow kinesis:GetShardIterator and kinesis:GetRecords on arn:aws:kinesis:eu-west-1:*:stream/clickstream-prod.",
-              field: "streams",
-            }),
-            item("stream.clickstream-prod.start", "Where clickstream-prod's first read starts", "warning", {
-              message: "startTimestamp is 3 days ago, older than the stream's 24 hours' retention: the first read starts at the oldest record still held.",
-              fix: "Set startTimestamp within the last 24 hours, or startPosition to earliest.",
-              field: "startTimestamp",
-            }),
-            item("stream.clickstream-prod.consumer", "Enhanced fan-out consumer", "skipped", { message: "consumer.type is polling." }),
-          ],
-        })
-      : part("source", "preflight"),
-    part("destination", "preflight"),
-    part("sync", "plan", {
-      items: [item("plan.warning.1", "Stream clickstream-prod", "warning", { message: "Rows with the same content become one row within each epoch." })],
-    }),
+    srcCheck,
+    dstCheck,
+    !srcCheck.ok
+      ? part("sync", "plan", { skipped: "the source's check failed" })
+      : unsettled
+        ? part("sync", "plan", unsettled)
+        : part("sync", "plan", { items: planItems(plan(pipeline.name)) }),
+    !srcCheck.ok
+      ? part("source", "preflight", { skipped: "the source's check failed" })
+      : !planned
+        ? part("source", "preflight", { skipped: "a sync can't be planned" })
+        : kinesis
+          ? part("source", "preflight", {
+              items: [
+                item("stream.describe", "resource", "passed", "Describe {stream}", {
+                  message: "Active, {shards} open shards, {retention} retention.",
+                  params: { ...stream, shards: "4", retention: "24 hours" },
+                }),
+                item("stream.read", "permission", "failed", "Read {stream}", {
+                  message: "{principal} has no {privilege} on {object}.",
+                  fix: "Grant {privilege} on {object} to {principal}.",
+                  field: "stream",
+                  code: "PERMISSION_DENIED",
+                  reason: "privilege_missing",
+                  detail:
+                    "operation error Kinesis: GetRecords, https response error StatusCode: 400, RequestID: 4c1e9f2a-7b3d-4e8f-a6c5-0d9e8f7a6b5c,\n" +
+                    "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/openetl-runner/i-0a1b2c3d is not authorized to perform: " +
+                    "kinesis:GetRecords on resource: arn:aws:kinesis:eu-west-1:123456789012:stream/clickstream-prod because no identity-based " +
+                    "policy allows the kinesis:GetRecords action",
+                  description: "Reads a record from each shard as the connector's role, because a sync reads them the same way.",
+                  params: {
+                    ...stream,
+                    principal: "openetl-runner",
+                    privilege: "kinesis:GetRecords",
+                    object: "arn:aws:kinesis:eu-west-1:123456789012:stream/clickstream-prod",
+                  },
+                }),
+                item("stream.start", "configuration", "warning", "Where {stream}'s first read starts", {
+                  message: "startTimestamp is {start}, older than the stream's {retention} retention: the first read starts at the oldest record still held.",
+                  fix: "Set startTimestamp within the last {retention}, or startPosition to earliest.",
+                  field: "startTimestamp",
+                  reason: "start_outside_retention",
+                  params: { ...stream, start: "3 days ago", retention: "24 hours" },
+                }),
+                item("stream.consumer", "resource", "skipped", "Register an enhanced fan-out consumer", { message: "consumer.type is {type}.", params: { type: "polling" } }),
+              ],
+            })
+          : part("source", "preflight"),
+    !dstCheck.ok
+      ? part("destination", "preflight", { skipped: "the destination's check failed" })
+      : planned
+        ? part("destination", "preflight")
+        : part("destination", "preflight", { skipped: "a sync can't be planned" }),
   ];
-  return create(PreflightResultSchema, { ok: parts.every((p) => p.ok || p.skipped), version: pipeline.version, parts });
+  return create(PreflightResultSchema, { ok: parts.every((p) => p.ok), version: pipeline.version, parts });
 }

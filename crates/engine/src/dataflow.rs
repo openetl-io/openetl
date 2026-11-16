@@ -30,9 +30,11 @@ use openetl_normalize::{
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
     Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, LaneMetrics,
-    Metrics, QuarantineCause, QuarantineFile, ReplayProgress, Rows, SchemaChange, Split,
-    SplitWatermarks, StagedStream, StreamHolds, StreamMetrics, events_response, hold_cause,
+    Metrics, OperatorEpoch, QuarantineCause, QuarantineFile, ReplayProgress, Rows, SchemaChange,
+    Split, SplitWatermarks, StagedStream, StateRequests, StreamHolds, StreamMetrics,
+    events_response, hold_cause,
 };
+use openetl_state::runs::{Counts, Requests};
 use prost::Message;
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::TcpListener;
@@ -2301,6 +2303,42 @@ struct Pieces {
     /// By stream a group window reads: the least of its keyed lanes'
     /// watermarks at the barrier.
     window_marks: BTreeMap<String, i64>,
+    /// What each operator's keyed lanes did, by operator.
+    operators: BTreeMap<String, OperatorEpoch>,
+}
+
+impl Pieces {
+    /// Adds a keyed lane's part of an operator's epoch: counts add up, and
+    /// the watermark is the least, or none while a lane has none.
+    fn operator(&mut self, op: OperatorEpoch) {
+        let Some(to) = self.operators.get_mut(&op.operator) else {
+            self.operators.insert(op.operator.clone(), op);
+            return;
+        };
+        to.rows_in += op.rows_in;
+        to.inserts += op.inserts;
+        to.updates += op.updates;
+        to.deletes += op.deletes;
+        to.late += op.late;
+        to.windows_opened += op.windows_opened;
+        to.windows_dropped += op.windows_dropped;
+        to.watermark = to.watermark.zip(op.watermark).map(|(a, b)| a.min(b));
+        to.memory_bytes += op.memory_bytes;
+        to.runs.extend(op.runs);
+        if let (Some(a), Some(b)) = (to.barrier.as_mut(), op.barrier) {
+            a.count += b.count;
+            a.bytes += b.bytes;
+        }
+    }
+}
+
+/// `now`'s requests less `was`'s.
+fn requests(now: Requests, was: Requests) -> Option<StateRequests> {
+    let d = now - was;
+    Some(StateRequests {
+        count: d.count,
+        bytes: d.bytes,
+    })
 }
 
 /// Which epochs each writer lane has crossed or ended on each stream.
@@ -2313,6 +2351,9 @@ struct Alignment {
     ready: u64,
     highest: u64,
     pieces: BTreeMap<u64, Pieces>,
+    /// Each operator's requests to object storage when its last epoch was
+    /// ready.
+    requests: HashMap<String, Counts>,
     /// The job's span, and the span of the next epoch to become ready,
     /// which opened when the one before it was ready.
     job: Span,
@@ -2331,6 +2372,7 @@ impl Alignment {
             ready: first_epoch - 1,
             highest: first_epoch - 1,
             pieces: BTreeMap::new(),
+            requests: HashMap::new(),
         }
     }
 
@@ -2416,7 +2458,22 @@ impl Flow {
             held,
             snapshots,
             window_marks,
+            operators,
         } = align.pieces.remove(&n).unwrap_or_default();
+        let mut operators: Vec<OperatorEpoch> = operators.into_values().collect();
+        if let Some(state) = &plan.state.job {
+            for op in &mut operators {
+                let stores = state.stores(&op.operator);
+                let now = stores.counts();
+                let was = align
+                    .requests
+                    .insert(op.operator.clone(), now)
+                    .unwrap_or_default();
+                op.lookup = requests(now.lookup, was.lookup);
+                op.restore = requests(now.restore, was.restore);
+                op.memory_bytes += stores.cache_bytes() as u64;
+            }
+        }
         let mut by_stream: HashMap<String, Vec<_>> = HashMap::new();
         for s in held {
             by_stream.entry(s.stream).or_default().extend(s.files);
@@ -2474,6 +2531,7 @@ impl Flow {
                 output_schemas,
                 watermarks,
                 window_watermarks: window_marks.into_iter().collect(),
+                operators,
             })),
         })
     }
@@ -5819,6 +5877,49 @@ pub(crate) mod tests {
         assert!(named[0].iter().any(|r| r.contains("/e1/")), "{named:?}");
         assert!(named[1].iter().any(|r| r.contains("/e2/")), "{named:?}");
         assert!(named[1].is_superset(&named[0]), "{named:?}");
+        // Both lanes' parts of the operator add up to one report an epoch:
+        // twelve rows in, three windows written each epoch, six opened in
+        // the first and every one dropped once it closed, with no lateness.
+        let ops: Vec<&OperatorEpoch> = ready.iter().flat_map(|r| &r.operators).collect();
+        assert_eq!(ops.len(), 2, "{ops:?}");
+        let got: Vec<_> = ops
+            .iter()
+            .map(|o| {
+                (
+                    o.rows_in,
+                    o.inserts,
+                    o.updates,
+                    o.deletes,
+                    o.late,
+                    o.windows_opened,
+                    o.windows_dropped,
+                    o.watermark,
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (12, 3, 0, 0, 0, 6, 3, Some(100 * SEC)),
+                (0, 3, 0, 0, 0, 0, 3, Some(watermark::END)),
+            ]
+        );
+        assert!(ops[0].memory_bytes > 0, "{:?}", ops[0]);
+        for (n, o) in ops.iter().enumerate() {
+            let runs: BTreeSet<String> = o.runs.keys().cloned().collect();
+            assert_eq!(runs, named[n], "epoch {}", n + 1);
+            for (run, bytes) in &o.runs {
+                let size = std::fs::metadata(state.path().join(run)).unwrap().len();
+                assert_eq!(*bytes, size, "{run}");
+            }
+            let written = named[n]
+                .iter()
+                .filter(|r| r.contains(&format!("/e{}/", n + 1)))
+                .count() as u64;
+            let barrier = o.barrier.unwrap();
+            assert_eq!(barrier.count, written, "epoch {}", n + 1);
+            assert!(barrier.bytes > 0);
+        }
     }
 
     /// A lane holds a window open until each of its splits' watermarks
@@ -5880,6 +5981,12 @@ pub(crate) mod tests {
         assert_eq!(quarantined(&ready, "minutes"), 1);
         let q: Vec<_> = ready.iter().flat_map(|r| &r.quarantine).collect();
         assert_eq!(causes(q[0]), [("late", "", "", 1)]);
+        let op = &ready[0].operators[0];
+        assert_eq!(
+            (op.rows_in, op.inserts, op.updates, op.late),
+            (5, 2, 1, 1),
+            "{op:?}"
+        );
     }
 
     /// A restore resumes a window's state from the record's snapshots, in

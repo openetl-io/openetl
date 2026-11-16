@@ -1,6 +1,6 @@
 ---
 title: Troubleshoot a pipeline
-description: Diagnose waiting jobs, failed syncs, stale data and connection errors, then verify recovery.
+description: Diagnose waiting jobs, failed syncs, stale data, connection errors and failed checks, then verify recovery.
 ---
 
 Start with the pipeline's page in the console. Check its state, latest sync, **Incidents**, and messages above **Streams**. A scheduled pipeline runs in syncs; a continuous pipeline keeps a job running. [Schedules](./schedules.md) explains when a scheduled sync should start.
@@ -52,7 +52,27 @@ To test the whole pipeline, including the permissions on each stream it reads an
 openetl preflight PIPELINE
 ```
 
-Each item that fails names the config field it concerns and gives a fix. An `Auth` incident may have paused the pipeline. An editor can update its secret with `openetl secret set NAME`, or apply corrected connection config. Run the checks again before resuming. Platform administrators manage runner authentication separately through [runner tokens](../self-host/access.md#rotate-a-runner-token).
+An `Auth` incident may have paused the pipeline. An editor can update its secret with `openetl secret set NAME`, or apply corrected connection config. Run the checks again before resuming. Platform administrators manage runner authentication separately through [runner tokens](../self-host/access.md#rotate-a-runner-token).
+
+## A check or preflight fails
+
+`openetl check` and `openetl preflight` exit with status `1` when the check or the preflight ran and failed, and with `2` when it could not run. [Pipeline CLI commands](../reference/pipeline-cli.md#text-output) explains each line of their output. Find your case:
+
+| What you see | What it means | What to do |
+|---|---|---|
+| An item marked `failed`, with `fix:` and `field:` under it | The connector found a problem with the config or the upstream system. `detail:` gives the upstream system's own error. | Do what `fix:` says. If `field:` names a config field, correct it and apply the source or destination again. Then run the check again. |
+| An item marked `warning` | The check still passes. The pipeline can run, but not as configured or not as well as it could. | Do what `fix:` says when you can. |
+| An item marked `skipped`, such as `needs schema.create, which failed` | The connector did not examine it, because an item it needs failed. | Correct the item it names, then run the check again. |
+| A part marked `skipped`, such as `destination warehouse's preflight: skipped, the destination's check failed` | The preflight did not run that part, because a part before it failed. `a sync can't be planned` means that the sync's plan failed. A skipped part fails the preflight. | Correct the part that failed first, then run the preflight again. |
+| `failed its check` with an error code and a message on the same line, and no item marked `failed` | The check failed for a reason that no item explains. Some connectors report one error and no items. | Read the code and the message, and correct the cause. Then run the check again. |
+| A preflight part marked `failed` with a code and a message, and no items | The part's connector did not start or did not answer, or the part ran out of time. For example, `TRANSIENT: the source's preflight didn't finish within 2m0s`. A check has 1 minute, and a connector's preflight has 2 minutes. | Read the message. If the connector did not start, check its version and the runner's log. For a time-out, check the network path from the runner to the upstream system, and the upstream system's load. Then run the preflight again. |
+| `the sync's plan: failed` | The plan has problems, which show as failed items. Or the runner could not settle what a sync reads and writes, for example because the source's discovery failed. Then the part has a code and a message, and both connectors' preflights are skipped with `a sync can't be planned`. | Read the code and the message, or the plan's failed items. Correct the pipeline or the source, then run the preflight again. |
+| `INTERNAL: the connector answered with` and a number of items or bytes | The connector sent more items or more text than OpenETL keeps from one answer. OpenETL kept the first items, and failed the check. A text that ends with `…` was also cut. | Report it to the connector's maintainers, with the connector's version. [The limits](../build-connectors/checks.md#what-the-platform-does-with-the-answer) are in Build connectors. |
+| Exit status `2`, with `openetl: unavailable: the check couldn't run: no runner of data plane "DATA_PLANE" took it within 1m0s` | No runner of the data plane took the check. The result says nothing about the connection. | Check the runners, as in [A sync waits or never starts](#a-sync-waits-or-never-starts). For `openetl check`, `--data-plane` selects another data plane. |
+| Exit status `2`, with `the check couldn't run: TRANSIENT: the destination's check didn't answer within 1m0s` | The connector did not answer its check within 1 minute. The result says nothing about the connection. | Check the network path from the runner to the upstream system, then run the check again. |
+| Exit status `2`, with another message that starts `the check couldn't run` or `the preflight couldn't run` | The runner could not run the operation, for example because the connector did not start. | Read the code and the message. Correct the cause, then run the command again. |
+
+The console's **Check** and **Preflight** show the same items. [Use the console](../use/index.md#sources-destinations-and-connectors) explains how to read them.
 
 ## A sync fails repeatedly
 

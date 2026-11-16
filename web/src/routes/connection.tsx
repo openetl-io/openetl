@@ -61,10 +61,7 @@ function useCheck(kind: Kind, name: string) {
   };
 }
 
-function ConnectionPage({ kind }: { kind: Kind }) {
-  const params = routes[kind].useParams() as { workspace: string; source?: string; destination?: string };
-  const { workspace } = params;
-  const id = (kind === "source" ? params.source : params.destination) ?? "";
+function ConnectionPage({ kind, workspace, id }: { kind: Kind; workspace: string; id: string }) {
   const name = `workspaces/${workspace}/${kind}s/${id}`;
   const source = useQuery(SourceService.method.getSource, { name }, { enabled: kind === "source" });
   const destination = useQuery(DestinationService.method.getDestination, { name }, { enabled: kind === "destination" });
@@ -152,5 +149,15 @@ function ConnectionPage({ kind }: { kind: Kind }) {
   );
 }
 
-export const SourcePage = () => <ConnectionPage kind="source" />;
-export const DestinationPage = () => <ConnectionPage kind="destination" />;
+/**
+ * A source's or destination's page, mounted again for each one: the router keeps a route's component when only its params change,
+ * and a check's result belongs to the one it ran on.
+ */
+function Connection({ kind }: { kind: Kind }) {
+  const params = routes[kind].useParams() as { workspace: string; source?: string; destination?: string };
+  const id = (kind === "source" ? params.source : params.destination) ?? "";
+  return <ConnectionPage key={`${params.workspace}/${id}`} kind={kind} workspace={params.workspace} id={id} />;
+}
+
+export const SourcePage = () => <Connection kind="source" />;
+export const DestinationPage = () => <Connection kind="destination" />;

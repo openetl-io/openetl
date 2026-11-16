@@ -5,7 +5,7 @@ description: Rename, filter and reshape a pipeline's streams with SQL statements
 
 A SQL transform changes rows between the source and the destination. You write `INSERT INTO … SELECT` statements in the pipeline's `transform.sql`. Each statement reads a source's stream and writes an **output**, which the destination gets as a stream. The engine runs the statements as it copies, in scheduled and continuous pipelines, with no other system to run.
 
-The statements are row-wise: they rename, compute, filter and unnest columns, one input row at a time. [SQL transforms](../reference/sql.md) in the reference lists every statement, operator and function, and what is refused.
+Most statements are row-wise: they rename, compute, filter and unnest columns, one input row at a time. A group window adds up rows by windows of their time ([Aggregate by windows of time](./windows.md)). [SQL transforms](../reference/sql.md) in the reference lists every statement, operator and function, and what is refused.
 
 ## Before you start
 
@@ -266,18 +266,9 @@ FROM orders
 GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 ```
 
-The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. With `incremental`, a window that is open at the end of a sync goes on in the next sync, from the state that the checkpoint keeps. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates, the reads they take and when rows are written. On [workers](./workers.md#group-windows-on-workers), each worker keeps the windows of the keys that it owns.
+The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. With `incremental`, a window that is open at the end of a sync goes on in the next sync, from the state that the checkpoint keeps. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. On [workers](./workers.md#group-windows-on-workers), each worker keeps the windows of the keys that it owns.
 
-### Change a group window
-
-A group window keeps state between syncs, under an ID that the plan shows. Other names for the columns, a new column through a view and a `HAVING` over the aggregates that the statement computes keep the ID and the state. Another output name, window size, key or aggregate gives the window a new ID, and its state starts empty.
-
-1. Edit the statement.
-2. Run `openetl plan -f FILE`, and read the `state` section of `transform.sql`. Each window shows `kept`, `new`, `changed` or `dropped`.
-3. Run `openetl apply -f FILE`. The next sync drops the state of each changed or dropped window.
-4. If the stream is not read with `full_refresh`, and a changed or new window must include the rows that the pipeline read before, read the stream again. A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again ([Read streams again from the start](./positions.md#read-streams-again-from-the-start)). Run `openetl reset --stream STREAM NAME`.
-
-A stream read with `full_refresh` is read whole at each sync, so a changed or new window over it holds every row from the next sync on. Over another stream, without step 4, a changed or new window holds only the rows read after the change. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
+[Aggregate by windows of time](./windows.md) explains event time and watermarks, when each window's row is written, late rows, the state that windows keep, and how to change a window's statement. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates and the rules.
 
 ## Changelog streams
 
@@ -403,7 +394,7 @@ workspaces/default/pipelines/shop-to-lake (version known after apply)
 openetl: the plan has problems, so apply would refuse it
 ```
 
-Statements that the engine does not run, such as `GROUP BY`, joins and window functions, are problems too. [What's refused](../reference/sql.md#whats-refused) lists them with their messages.
+Statements that the engine does not run, such as `GROUP BY` without a window, joins and window functions, are problems too. [What's refused](../reference/sql.md#whats-refused) lists them with their messages.
 
 If no runner takes the statements within 30 seconds, or a stream's columns are not known yet, the plan has a note that starts with `transform.sql wasn't planned`. The sync plans the statements when it starts, and fails with `CONFIG_INVALID` if they have errors.
 

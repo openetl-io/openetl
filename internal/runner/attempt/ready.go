@@ -30,6 +30,8 @@ type Ready struct {
 	// By stream a group window reads: its watermark past the exchange at
 	// the keyed lanes' barrier.
 	WindowMarks map[string]int64
+	// As openetl.engine.v1.EpochReady's.
+	Operators []checkpoint.OperatorPart
 }
 
 // Holds are a stream's holds at its barrier.
@@ -60,7 +62,34 @@ func (r Ready) EpochReady(e *protocolv1.Epoch) *enginev1.EpochReady {
 	for _, q := range r.Quarantine {
 		p.Quarantine = append(p.Quarantine, QuarantineProto(q))
 	}
+	for _, o := range r.Operators {
+		p.Operators = append(p.Operators, OperatorProto(o))
+	}
 	return p
+}
+
+// OperatorOf is an operator's part of an epoch as the engine reports it.
+func OperatorOf(p *enginev1.OperatorEpoch) checkpoint.OperatorPart {
+	req := func(r *enginev1.StateRequests) checkpoint.Requests {
+		return checkpoint.Requests{Count: r.GetCount(), Bytes: r.GetBytes()}
+	}
+	return checkpoint.OperatorPart{
+		Operator: p.GetOperator(), RowsIn: p.GetRowsIn(), Inserts: p.GetInserts(), Updates: p.GetUpdates(), Deletes: p.GetDeletes(),
+		Late: p.GetLate(), Opened: p.GetWindowsOpened(), Dropped: p.GetWindowsDropped(), Watermark: p.Watermark,
+		MemoryBytes: p.GetMemoryBytes(), Runs: p.GetRuns(), Barrier: req(p.GetBarrier()), Lookup: req(p.GetLookup()), Restore: req(p.GetRestore()),
+	}
+}
+
+// OperatorProto is o as the engine reports it.
+func OperatorProto(o checkpoint.OperatorPart) *enginev1.OperatorEpoch {
+	req := func(r checkpoint.Requests) *enginev1.StateRequests {
+		return &enginev1.StateRequests{Count: r.Count, Bytes: r.Bytes}
+	}
+	return &enginev1.OperatorEpoch{
+		Operator: o.Operator, RowsIn: o.RowsIn, Inserts: o.Inserts, Updates: o.Updates, Deletes: o.Deletes,
+		Late: o.Late, WindowsOpened: o.Opened, WindowsDropped: o.Dropped, Watermark: o.Watermark,
+		MemoryBytes: o.MemoryBytes, Runs: o.Runs, Barrier: req(o.Barrier), Lookup: req(o.Lookup), Restore: req(o.Restore),
+	}
 }
 
 // ReadyOf is what a share's EpochReady carries. It fails on what a worker
@@ -76,6 +105,9 @@ func ReadyOf(p *enginev1.EpochReady) (Ready, error) {
 	}
 	for _, q := range p.GetQuarantine() {
 		r.Quarantine = append(r.Quarantine, QuarantineOf(q))
+	}
+	for _, o := range p.GetOperators() {
+		r.Operators = append(r.Operators, OperatorOf(o))
 	}
 	return r, nil
 }

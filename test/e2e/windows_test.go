@@ -202,6 +202,44 @@ func TestGroupWindowFromKafka(t *testing.T) {
 	if rows := windowRows(t, table, "region"); len(rows) != 6 {
 		t.Errorf("rows %v, want the first three minutes'", rows)
 	}
+	operatorStats(t, name, 14, 6, 1, 1, 3, base.Add(185*time.Second))
+}
+
+// operatorStats waits until the pipeline's checkpoints say its one stateful
+// operator took rows records in, wrote inserts and updates and no deletes,
+// and quarantined late rows, and that the newest keeps windows at
+// watermark.
+func operatorStats(t *testing.T, name string, rows, inserts, updates, late uint64, windows int64, watermark time.Time) {
+	t.Helper()
+	var got string
+	want := fmt.Sprintf("in %d, %d/%d/0, late %d; newest: %d windows at %s", rows, inserts, updates, late, windows, watermark.UTC().Format(time.RFC3339))
+	read := func() bool {
+		res, err := pipelines().ListCheckpoints(t.Context(), connect.NewRequest(&apiv1.ListCheckpointsRequest{Parent: "workspaces/default/pipelines/" + name, PageSize: 1000}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		cps := res.Msg.GetCheckpoints()
+		var in, ins, upd, del, lt uint64
+		ids := map[string]bool{}
+		for _, c := range cps {
+			for _, o := range c.GetOperators() {
+				ids[o.GetOperator()] = true
+				in, ins, upd, del, lt = in+o.GetRowsIn(), ins+o.GetInserts(), upd+o.GetUpdates(), del+o.GetDeletes(), lt+o.GetLateRows()
+			}
+		}
+		if len(cps) == 0 || len(ids) != 1 || len(cps[0].GetOperators()) != 1 {
+			got = fmt.Sprintf("%d checkpoints, operators %v", len(cps), ids)
+			return false
+		}
+		newest := cps[0].GetOperators()[0]
+		got = fmt.Sprintf("in %d, %d/%d/%d, late %d; newest: %d windows at %s", in, ins, upd, del, lt, newest.GetWindows(), newest.GetWatermark().AsTime().UTC().Format(time.RFC3339))
+		return got == want
+	}
+	for deadline := time.Now().Add(30 * time.Second); !read(); time.Sleep(500 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the operator's numbers: got %s, want %s", got, want)
+		}
+	}
 }
 
 // A scheduled pipeline with a tumbling window over a table read with

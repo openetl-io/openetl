@@ -361,6 +361,9 @@ type Record struct {
 	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
 	Snapshots []Snapshot              `json:"snapshots,omitempty"`
+	// What each stateful operator did in the epoch, and held at its
+	// barrier.
+	Operators []Operator `json:"operators,omitempty"`
 	// Records quarantined in this epoch. Files no record lists are orphans.
 	Quarantine []QuarantineFile `json:"quarantine,omitempty"`
 	// Streams whose barrier was placed without a resume point, on any of

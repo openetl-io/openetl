@@ -58,6 +58,15 @@ func TestMain(m *testing.M) {
 	case "timed":
 		sdk.Serve(timedEvents)
 		return
+	case "locked":
+		sdk.Serve(lockedSource)
+		return
+	case "dies":
+		sdk.Serve(dyingSource)
+		return
+	case "chatty":
+		sdk.Serve(chattySource)
+		return
 	case "worker":
 		os.Exit(workerProcess())
 	}

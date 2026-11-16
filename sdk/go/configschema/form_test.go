@@ -109,3 +109,42 @@ func TestLint(t *testing.T) {
 		}
 	}
 }
+
+// Valid schemas that a form reads without a problem: a oneOf whose branches
+// aren't all consts, boolean subschemas, and an x-when on null.
+func TestLintValidSchemas(t *testing.T) {
+	for name, schema := range map[string]string{
+		"a oneOf of a const and a type": `{"properties": {
+			"size": {"default": 100, "oneOf": [{"const": "auto"}, {"type": "integer", "minimum": 1}]},
+			"batch": {"type": "integer", "x-when": {"size": 5}}}}`,
+		"boolean subschemas": `{"properties": {"extra": false, "any": true, "tags": {"type": "array", "items": false}}}`,
+		"an x-when on null":  `{"properties": {"mode": {"type": ["string", "null"], "enum": ["a", null]}, "b": {"type": "string", "x-when": {"mode": null}}}}`,
+	} {
+		if p := Lint([]byte(schema)); len(p) != 0 {
+			t.Errorf("%s: %v", name, p)
+		}
+	}
+	f, err := ReadForm([]byte(`{"properties": {
+		"size": {"default": 100, "oneOf": [{"const": "auto"}, {"type": "integer"}]},
+		"extra": false, "any": true, "tags": {"type": "array", "items": false},
+		"b": {"x-when": {"size": null, "any": [null, 1]}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, x := range f.Fields {
+		names = append(names, x.Name)
+	}
+	if got := strings.Join(names, ","); got != "size,any,tags,b" {
+		t.Errorf("fields %s, want every property but the one that can't be set", got)
+	}
+	if size := f.Fields[0]; len(size.Options) != 0 {
+		t.Errorf("size takes any integer, but has the options %v", size.Options)
+	}
+	// By field: any, then size.
+	b := f.Fields[3]
+	if len(b.When) != 2 || len(b.When[0].Values) != 2 || string(b.When[0].Values[0]) != "null" ||
+		len(b.When[1].Values) != 1 || string(b.When[1].Values[0]) != "null" {
+		t.Errorf("x-when on null: %+v", b.When)
+	}
+}

@@ -608,7 +608,7 @@ func runAttempt(ctx context.Context, job Job) (res Result, err error) {
 
 	c := &coordinator{job: &job, sess: sess, w: w, ws: ws, log: log, res: &res, pending: make(map[uint64]*epochState), applied: applied, reset: reset,
 		resetStreams: resetStreams, reported: map[string]*arrow.Schema{}, reportedOutputs: map[string]*arrow.Schema{}, measures: map[string]metric.MeasurementOption{},
-		holds: holds, holdPlans: holdPlans}
+		holds: holds, holdPlans: holdPlans, windows: checkpoint.KeptWindows(restored)}
 	for _, p := range holdPlans {
 		c.replaying = c.replaying || p.Replay != nil
 	}
@@ -1415,6 +1415,9 @@ type coordinator struct {
 	// Nil: the attempt has no workers, and its lanes run here. Set: w is the
 	// workers' first writer lane, through them.
 	fleet *fleet
+	// Owned by the committer: the windows each stateful operator kept as of
+	// the last record.
+	windows map[string]int64
 }
 
 func (c *coordinator) writerLanes() int {
@@ -1940,6 +1943,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		Committables: make([][]byte, len(st.descs)),
 		Files:        recordFiles(st.flow.Files()),
 		Snapshots:    checkpoint.KeptSnapshots(st.flow.Snapshots),
+		Operators:    checkpoint.Operators(st.flow.Operators, c.windows),
 		Quarantine:   st.flow.Quarantine,
 		Sync:         c.job.Sync,
 		Flink:        st.flink,
@@ -2010,6 +2014,9 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 			c.windowFloors = map[string]int64{}
 		}
 		c.windowFloors[name] = closed
+	}
+	for _, o := range rec.Operators {
+		c.windows[o.Operator] = o.Windows
 	}
 	e := destination.Epoch{Generation: c.sess.Generation(), N: n}
 	c.dropStaged(ctx, e, len(rec.Files) > 0)
@@ -2192,6 +2199,9 @@ func (c *coordinator) measure(ctx context.Context, rec *checkpoint.Record, ready
 		for name, o := range rec.Outputs {
 			c.measureHolds(ctx, name, o.Holds, ready.Holds[name], rec.CreatedAt)
 		}
+	}
+	for _, o := range rec.Operators {
+		measureOperator(ctx, c.job.Org, c.job.Pipeline, o, rec.CreatedAt)
 	}
 }
 

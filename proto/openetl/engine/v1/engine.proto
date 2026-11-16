@@ -549,11 +549,58 @@ message EpochReady {
   // stream, each at its lane's barrier: every split a lane has, complete
   // ones included.
   map<string, SplitWatermarks> watermarks = 10;
+  // Each stateful operator's part of the epoch on this engine's lanes.
+  // Every engine of an attempt reports its own, which add up.
+  repeated OperatorEpoch operators = 11;
   // Each stream a group window reads: its watermark past the exchange into
   // the window's keyed lanes at their barrier, the least of every sender's
   // of the attempt and never below the floor, which the windows closed up
   // to; the least int64 where it has none.
-  map<string, int64> window_watermarks = 11;
+  map<string, int64> window_watermarks = 12;
+}
+
+// OperatorEpoch is what an engine's lanes of one stateful operator did in
+// an epoch, and what they held at their barriers.
+message OperatorEpoch {
+  string operator = 1;
+  // Rows of the statement's stream that reached its lanes.
+  uint64 rows_in = 2;
+  // The output's rows it wrote, by op: those the output quarantined aren't
+  // counted.
+  uint64 inserts = 3;
+  uint64 updates = 4;
+  uint64 deletes = 5;
+  // Rows it quarantined as late, past their windows' allowed lateness.
+  uint64 late = 6;
+  // Windows, or sessions, whose state it began keeping, and stopped
+  // keeping: closed past their lateness, or merged into another session.
+  uint64 windows_opened = 7;
+  uint64 windows_dropped = 8;
+  // The least of its lanes' watermarks at their barriers, in microseconds
+  // since the Unix epoch; the largest int64 is the end of input. Unset: a
+  // lane has none yet.
+  optional int64 watermark = 9;
+  // What its lanes' state held in memory as their barriers began, the
+  // epoch's changes included, and its block cache when the epoch was ready.
+  uint64 memory_bytes = 10;
+  // The runs its lanes' snapshots name, below the job's state URL, with
+  // their bytes: the same run from several lanes or engines is one.
+  map<string, uint64> runs = 11;
+  // The runs its lanes wrote at their barriers of the epoch, and their
+  // bytes.
+  StateRequests barrier = 12;
+  // Its reads of blocks and of runs' indexes and filters since the
+  // engine's last ready epoch: one made near a barrier can count in the
+  // epoch next to it, and every one counts once.
+  StateRequests lookup = 13;
+  StateRequests restore = 14;
+}
+
+// StateRequests are requests of one kind to object storage, and their
+// bytes.
+message StateRequests {
+  uint64 count = 1;
+  uint64 bytes = 2;
 }
 
 message SplitWatermarks {

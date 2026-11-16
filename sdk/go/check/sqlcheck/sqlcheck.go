@@ -118,20 +118,28 @@ func (k *Kit) fail(err error) error {
 // acquire gives the shared handle, opening it if no check has it, and
 // holds it until p's run ends.
 func (k *Kit) acquire(ctx context.Context, p *check.Probe) (*sql.DB, error) {
+	db, err := k.hold(ctx)
+	if err != nil {
+		return nil, err
+	}
+	p.Cleanup(func(context.Context) { k.release() })
+	return db, nil
+}
+
+// hold gives the shared handle, opening it if no check has it, and counts
+// one more user. The mutex is free again even if open panics.
+func (k *Kit) hold(ctx context.Context) (*sql.DB, error) {
 	k.mu.Lock()
+	defer k.mu.Unlock()
 	if k.db == nil {
 		db, err := k.open(ctx)
 		if err != nil {
-			k.mu.Unlock()
 			return nil, err
 		}
 		k.db = db
 	}
-	db := k.db
 	k.users++
-	k.mu.Unlock()
-	p.Cleanup(func(context.Context) { k.release() })
-	return db, nil
+	return k.db, nil
 }
 
 func (k *Kit) release() {

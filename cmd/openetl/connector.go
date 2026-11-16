@@ -85,7 +85,7 @@ func runConnector(ctx context.Context, args []string, out io.Writer) error {
 	case "spec":
 		return runConnectorSpec(ctx, args[1:], out)
 	case "check":
-		return runConnectorCheck(ctx, args[1:], out)
+		return checkStatus(runConnectorCheck(ctx, args[1:], out))
 	case "discover":
 		return runConnectorDiscover(ctx, args[1:], out)
 	case "read":

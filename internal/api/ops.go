@@ -160,13 +160,23 @@ func (s *Server) mayNeedSetup(ctx context.Context, role, connector, digest strin
 	return !ok || r.Manifest == nil && (r.Spec == nil || r.Spec.GetSetup())
 }
 
+// checkResult is r as the API gives it: not ok if r has a code or a failed
+// item.
 func checkResult(r contract.ConnectorOpResult) *apiv1.CheckResult {
-	return &apiv1.CheckResult{Ok: r.Code == "", Code: r.Code, Message: r.Message, Version: r.Version, Items: apiItems(r.Checks)}
+	out := &apiv1.CheckResult{Version: r.Version, Items: apiItems(r.Checks)}
+	out.Ok, out.Code, out.Message = verdict(r.Code, r.Message, out.Items)
+	return out
 }
 
 // runOp runs a connector operation on c, on the data plane dp or the
 // default, and waits for it.
 func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
+	return s.runOpAs(ctx, dp, c, in, "the "+in.Op+" couldn't run")
+}
+
+// runOpAs is runOp whose error, if the operation couldn't run, starts with
+// lead.
+func (s *Server) runOpAs(ctx context.Context, dp string, c connection, in contract.ConnectorOpInput, lead string) (contract.ConnectorOpResult, error) {
 	dp = cmp.Or(dp, s.DefaultDataPlane)
 	if _, err := s.Store.GetDataPlane(ctx, db.GetDataPlaneParams{OrgID: s.Tenant.Org, ID: dp}); errors.Is(err, pgx.ErrNoRows) {
 		return contract.ConnectorOpResult{}, invalid("data plane %q doesn't exist", dp)
@@ -190,12 +200,19 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 		}
 	}()
 	res, err := s.Ops.Run(ctx, in)
-	if err == nil {
-		return res, nil
+	if err != nil {
+		return res, s.opError(lead, in, err)
 	}
+	return res, nil
+}
+
+// opError is the API's error for operation in that couldn't run or finish:
+// lead, then what happened. It's no verdict on the connector's config: a
+// failed check is a result, not an error.
+func (s *Server) opError(lead string, in contract.ConnectorOpInput, err error) error {
 	if f, ok := errors.AsType[*orchestration.Failure](err); ok {
 		if f.Code == contract.NoRunner {
-			return res, connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner of data plane %q took the %s within %s", dp, in.Op, contract.OpPickup))
+			return connect.NewError(connect.CodeUnavailable, fmt.Errorf("%s: no runner of data plane %q took it within %s", lead, in.DataPlane, contract.OpPickup))
 		}
 		code := connect.CodeFailedPrecondition
 		switch f.Code {
@@ -204,13 +221,13 @@ func (s *Server) runOp(ctx context.Context, dp string, c connection, in contract
 		case errs.Transient.String(), errs.RateLimited.String(), errs.DestinationUnavailable.String(), errs.Internal.String():
 			code = connect.CodeUnavailable
 		}
-		return res, connect.NewError(code, fmt.Errorf("%s: %s", f.Code, f.Message))
+		return connect.NewError(code, fmt.Errorf("%s: %s", lead, f.Error()))
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return res, err
+		return err
 	}
 	s.log().Error("connector operation failed", "op", in.Op, "err", err)
-	return res, connect.NewError(connect.CodeUnavailable, fmt.Errorf("the %s failed: %w", in.Op, err))
+	return connect.NewError(connect.CodeUnavailable, fmt.Errorf("%s: %w", lead, err))
 }
 
 // sendOp records the operation, so the data plane's runners may read the

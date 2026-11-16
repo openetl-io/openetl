@@ -4,11 +4,14 @@ package e2e
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -25,6 +28,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/openetl-io/openetl/internal/checkpoint"
 )
 
 // chaosPool keeps a runner going in each slot. Each slot reaches the API
@@ -302,9 +307,6 @@ func (s *slot) stop(pipeline string, sig syscall.Signal) bool {
 	if pod == 0 {
 		return false
 	}
-	if sig == syscall.SIGKILL {
-		s.pool.book.podDied(pipeline)
-	}
 	if syscall.Kill(pod, sig) != nil {
 		return false
 	}
@@ -335,8 +337,7 @@ func (s *slot) workerPIDs(pipeline string) []int {
 }
 
 // stopWorker kills a worker's pod of the pipeline, and waits for it to die.
-func (s *slot) stopWorker(pipeline string, pid int) bool {
-	s.pool.book.podDied(pipeline)
+func (s *slot) stopWorker(pid int) bool {
 	if syscall.Kill(pid, syscall.SIGKILL) != nil {
 		return false
 	}
@@ -355,7 +356,7 @@ func (s *slot) crashWorker(pipeline string) bool {
 		pid = w.pids[1]
 	}
 	s.mu.Unlock()
-	if !openetld(pid) || !s.stopWorker(pipeline, pid) {
+	if !openetld(pid) || !s.stopWorker(pid) {
 		s.pool.book.count(pipeline, "crash with no worker to kill")
 		return false
 	}
@@ -493,31 +494,64 @@ const (
 	reqHead
 )
 
-var recordName = regexp.MustCompile(`^\d{20}-g\d{20}\.json$`)
+var recordName = regexp.MustCompile(`^\d{20}-g(\d{20})\.json$`)
 
-// classify returns the pipeline a path-style request is under, and whether
-// it writes a checkpoint record or HEAD.
-func classify(r *http.Request) (pipeline string, kind int) {
+// A checkpoint write's generations: of the attempt that writes, and for a
+// HEAD, of the record it names; 0 where unknown or none.
+type gens struct{ writer, record int64 }
+
+// classify returns the pipeline a path-style request is under, whether it
+// writes a checkpoint record or HEAD, and its generations: a record's from
+// its name, a HEAD's from its body, which it reads and puts back.
+func classify(r *http.Request) (pipeline string, kind int, g gens) {
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 4)
 	if len(parts) < 4 {
-		return "", reqOther
+		return "", reqOther, g
 	}
 	pipeline, rest := parts[2], parts[3]
 	if r.Method != http.MethodPut {
-		return pipeline, reqOther
+		return pipeline, reqOther, g
 	}
-	switch name, ok := strings.CutPrefix(rest, "_checkpoints/"); {
-	case ok && name == "HEAD":
-		return pipeline, reqHead
-	case ok && recordName.MatchString(name):
-		return pipeline, reqRecord
+	name, ok := strings.CutPrefix(rest, "_checkpoints/")
+	if ok && name == "HEAD" {
+		return pipeline, reqHead, headGens(r)
 	}
-	return pipeline, reqOther
+	if m := recordName.FindStringSubmatch(name); ok && m != nil {
+		gen, err := strconv.ParseInt(m[1], 10, 64)
+		if err == nil {
+			return pipeline, reqRecord, gens{writer: gen, record: gen}
+		}
+	}
+	return pipeline, reqOther, g
+}
+
+// headGens reads a HEAD write's generations from its body, the JSON of a
+// checkpoint.Head, inside an aws-chunked body too, and puts the body back.
+func headGens(r *http.Request) gens {
+	body, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil {
+		return gens{}
+	}
+	from, to := bytes.IndexByte(body, '{'), bytes.LastIndexByte(body, '}')
+	if from < 0 || to < from {
+		return gens{}
+	}
+	var h checkpoint.Head
+	if json.Unmarshal(body[from:to+1], &h) != nil || h.Generation > math.MaxInt64 {
+		return gens{}
+	}
+	g := gens{writer: int64(h.Generation)}
+	if h.Record != nil && h.Record.Generation <= math.MaxInt64 {
+		g.record = int64(h.Record.Generation)
+	}
+	return g
 }
 
 func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	pipeline, kind := classify(r)
-	act := p.slot.pool.book.decide(p.slot.i, pipeline, kind)
+	pipeline, kind, gen := classify(r)
+	act := p.slot.pool.book.decide(p.slot.i, pipeline, kind, gen.writer)
 	if act.delay > 0 {
 		time.Sleep(act.delay)
 	}
@@ -543,7 +577,7 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = res.Body.Close() }()
 	ok := res.StatusCode/100 == 2
 	if ok {
-		p.slot.pool.book.wrote(p.slot.i, pipeline, kind)
+		p.slot.pool.book.wrote(p.slot.i, pipeline, kind, gen.record)
 	} else if killAfter {
 		p.slot.pool.book.count(pipeline, "missed crash "+act.point+": the write failed")
 	}

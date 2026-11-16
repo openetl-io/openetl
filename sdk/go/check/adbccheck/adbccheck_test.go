@@ -265,10 +265,10 @@ func TestKit(t *testing.T) {
 		t.Fatal(got)
 	}
 	res := rendered(t, r)
-	if f := res["denied"].Failure; f.Reason != "permission_denied" || f.Params["sqlstate"] != "42501" {
+	if f := res["denied"].Failure; f.Reason != "permission_denied" || res["denied"].Params["sqlstate"] != "42501" {
 		t.Errorf("denied: %+v", f)
 	}
-	if f := res["gone"].Failure; f.Reason != "not_found" || f.Message != "The table doesn't exist." || f.Params["sqlstate"] != "42P01" {
+	if f := res["gone"].Failure; f.Reason != "not_found" || f.Message != "The table doesn't exist." || res["gone"].Params["sqlstate"] != "42P01" {
 		t.Errorf("an Unknown status with a SQLSTATE: %+v", f)
 	}
 	if f := res["users"].Failure; f.Reason != "not_found" || f.Message != "The table public.users doesn't exist." {
@@ -410,6 +410,28 @@ func TestKitSharedByRuns(t *testing.T) {
 	}
 	if db.overlaps.Load() > 0 || db.closedUnderCall.Load() > 0 {
 		t.Errorf("%d calls overlapped, and the connection closed %d times under a call", db.overlaps.Load(), db.closedUnderCall.Load())
+	}
+}
+
+// An opener that panics fails its check and gives the turn back: a later
+// run opens the database again.
+func TestOpenerPanics(t *testing.T) {
+	db := &fakeDB{answers: map[string]any{"ok": true}}
+	var opened atomic.Int32
+	k := New(func(context.Context) (adbc.Database, error) {
+		if opened.Add(1) == 1 {
+			panic("the driver panicked")
+		}
+		return db, nil
+	})
+	r := check.Run(t.Context(), []check.Check{k.Connect()})
+	if statuses(r) != "db.connect=failed" || !strings.Contains(r.Items[0].Failure.Detail, "the driver panicked") {
+		t.Fatalf("%s %+v", statuses(r), r.Items[0].Failure)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if r := check.Run(ctx, []check.Check{k.Connect(), k.Query("a", "Q", "ok")}); !r.OK() {
+		t.Errorf("a later run: %s %v", statuses(r), r.Err())
 	}
 }
 

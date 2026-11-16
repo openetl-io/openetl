@@ -492,6 +492,9 @@ func readyOf(r *enginev1.EpochReady, plan runner.Plan) (*runner.Ready, error) {
 	ready.Holds = attempt.HoldsOf(r.GetHolds())
 	ready.Watermarks = attempt.WatermarksOf(r.GetWatermarks())
 	ready.WindowMarks = attempt.WindowMarksOf(r.GetWindowWatermarks())
+	for _, o := range r.GetOperators() {
+		ready.Operators = append(ready.Operators, attempt.OperatorOf(o))
+	}
 	return ready, nil
 }
 

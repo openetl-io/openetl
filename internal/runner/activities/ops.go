@@ -2,9 +2,11 @@ package activities
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
-	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -50,8 +52,9 @@ type Ops struct {
 	Engine engineclient.Options
 }
 
-// CheckConnector checks a source or destination. A failed check is a result,
-// not an error.
+// CheckConnector checks a source or destination. What its connector
+// answers is a result, failed or not; a connector that didn't start or
+// didn't answer is a *contract.Failure, which isn't retried.
 func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	cfg, err := a.config(ctx, in)
 	if err != nil {
@@ -60,29 +63,105 @@ func (a *Ops) CheckConnector(ctx context.Context, in contract.ConnectorOpInput) 
 	res := contract.ConnectorOpResult{Version: cfg.GetVersion()}
 	env, release, err := a.opEnv(ctx, in, cfg)
 	defer release()
-	if err == nil {
-		err = readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets())
+	if err != nil {
+		return res, err
 	}
-	r := check.FromError(err)
-	if err == nil {
-		r = checkConnection(ctx, in, cfg.GetConfig(), env)
+	if err := readSecrets(ctx, a.Secrets, cfg.GetConfig(), cfg.GetSecrets()); err != nil {
+		if errs.CodeOf(err) != errs.ConfigInvalid {
+			return res, err
+		}
+		// A secret the config names that can't be read is the config's to fix.
+		res.Checks, res.Code, res.Message = checkResult(check.FromError(err))
+		return fitResult("connector check", res)
+	}
+	c, role, err := bindConnection(in, cfg.GetConfig(), env)
+	if err != nil {
+		// The SDK answers a config it can't bind as a failed check.
+		res.Checks, res.Code, res.Message = checkResult(check.FromError(err))
+		return fitResult("connector check", res)
+	}
+	defer connectorhost.Close(c)
+	if err := connectorhost.Start(ctx, c); err != nil {
+		return res, unanswered(ctx, err)
+	}
+	cctx, cancel, had := within(ctx, checkTimeout)
+	defer cancel()
+	r, err := runCheck(cctx, c)
+	if err != nil {
+		if cctx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			err = errs.New(errs.Transient, "the %s's check didn't answer within %v", role, had.Round(time.Second))
+		}
+		return res, unanswered(ctx, err)
 	}
 	res.Checks, res.Code, res.Message = checkResult(r)
+	return fitResult("connector check", res)
+}
+
+// maxResultBytes is the most bytes of an op's result with items, as
+// encoding/json writes it for the workflow, which escapes <, > and & to six
+// bytes each. The result travels as a workflow's, which must stay under the
+// orchestrator's payload limit (Temporal's is 2 MB) with room for the
+// workflow's own fields.
+const maxResultBytes = 3 << 19 // 1.5 MiB
+
+// fitResult is res of op, or, when res is larger than maxResultBytes as it
+// travels, a *contract.Failure, which isn't retried.
+func fitResult(op string, res contract.ConnectorOpResult) (contract.ConnectorOpResult, error) {
+	b, err := json.Marshal(res)
+	if err != nil {
+		return contract.ConnectorOpResult{}, errs.Wrap(errs.Internal, err, "the "+op+"'s result")
+	}
+	if len(b) > maxResultBytes {
+		return contract.ConnectorOpResult{}, &contract.Failure{Code: errs.Internal.String(), Message: fmt.Sprintf(
+			"the result of the %s is %d bytes, and a result has at most %d: the connectors answered with too much", op, len(b), maxResultBytes)}
+	}
 	return res, nil
 }
 
-// checkResult is r as a result: its items, filled in, and the code and
-// message of its error, which a failed item gives even when the connector's
-// answer had no error; empty when r is OK.
+// unanswered is err, from a connector that didn't start or didn't answer, as
+// an op's error that isn't retried; or ctx's error once ctx is done.
+func unanswered(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return &contract.Failure{Code: errs.CodeOf(err).String(), Message: errs.ToProto(err).GetMessage()}
+}
+
+// The time a check and a preflight have, within their op's; closeMargin is
+// what they leave of the op's time for closing the connectors and
+// answering. A preflight op has 10 minutes: what's left after the
+// connectors start, their checks, and both preflights' time is for
+// settling what a sync reads and writes.
+const (
+	checkTimeout     = time.Minute
+	preflightTimeout = 2 * time.Minute
+	closeMargin      = 15 * time.Second
+)
+
+// within is ctx with at most budget, and closeMargin of ctx's own time left
+// after it; and how long that is.
+func within(ctx context.Context, budget time.Duration) (context.Context, context.CancelFunc, time.Duration) {
+	if d, ok := ctx.Deadline(); ok {
+		budget = max(0, min(budget, time.Until(d)-closeMargin))
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	return ctx, cancel, budget
+}
+
+// checkResult is r as a result: its items, as the connector answers them,
+// templates and params unfilled, and the code and message of its error,
+// which a failed item gives even when the connector's answer had no error;
+// empty when r is OK.
 func checkResult(r check.Report) (items []contract.CheckItem, code, message string) {
-	for _, it := range r.Items {
-		it = it.Rendered()
-		c := contract.CheckItem{Name: it.Name, Title: it.Title, Status: it.Status.String(), Message: it.Message, Field: it.Field}
-		if f := it.Failure; f != nil {
-			c.Code, c.Fix = errs.Code(f.ErrorCode()).String(), f.Fix
-			if f.Detail != "" {
-				c.Message = strings.TrimSuffix(c.Message, ".") + ": " + f.Detail
-			}
+	ps, _ := r.Proto()
+	for _, p := range ps {
+		c := contract.CheckItem{
+			Name: p.GetName(), Title: p.GetTitle(), Status: check.Status(p.GetStatus()).String(), Message: p.GetMessage(),
+			Fix: p.GetFix(), Field: p.GetField(), Description: p.GetDescription(), Reason: p.GetReason(),
+			Kind: check.Kind(p.GetKind()).String(), Params: p.GetParams(), Detail: p.GetDetail(), Duration: p.GetDuration().AsDuration(),
+		}
+		if e := p.GetError(); e != nil {
+			c.Code = errs.Code(e.GetCode()).String()
 		}
 		items = append(items, c)
 	}
@@ -117,38 +196,32 @@ func opDigests(in contract.ConnectorOpInput, digest string) (source, destination
 	return "", digest
 }
 
-// checkConnection runs a source's or destination's check.
-func checkConnection(ctx context.Context, in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) check.Report {
+// bindConnection binds a source's or destination's connector, unstarted,
+// and says which it is.
+func bindConnection(in contract.ConnectorOpInput, cfg *apiv1.ConnectorConfig, env connectorhost.Env) (c any, role string, err error) {
 	raw, err := protojson.Marshal(cfg.GetConfig())
 	if err != nil {
-		return check.FromError(err)
+		return nil, "", err
 	}
 	name, _ := connectorhost.SplitRef(cfg.GetConnector())
 	if in.SourceID != "" {
-		src, err := connectorhost.NewSource(name, raw, env)
-		if err != nil {
-			return check.FromError(err)
-		}
-		defer connectorhost.Close(src)
-		return runCheck(ctx, src)
+		c, err = connectorhost.NewSource(name, raw, env)
+		return c, roleSource, err
 	}
-	dst, err := connectorhost.NewDestination(name, raw, env)
-	if err != nil {
-		return check.FromError(err)
-	}
-	defer connectorhost.Close(dst)
-	return runCheck(ctx, dst)
+	c, err = connectorhost.NewDestination(name, raw, env)
+	return c, roleDestination, err
 }
 
 // runCheck runs c's check, a source's or a destination's: an external
-// connector's report of its answer, or a built-in one's run here.
-func runCheck(ctx context.Context, c any) check.Report {
+// connector's report of its answer, or a built-in one's run here. The error
+// is an external connector's that didn't answer.
+func runCheck(ctx context.Context, c any) (check.Report, error) {
 	if e, ok := c.(interface {
-		CheckReport(context.Context) check.Report
+		CheckReport(context.Context) (check.Report, error)
 	}); ok {
 		return e.CheckReport(ctx)
 	}
-	return check.Of(ctx, c)
+	return check.Of(ctx, c), nil
 }
 
 // DiscoverSource discovers a source's catalog and reports it to the API,

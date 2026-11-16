@@ -3,6 +3,7 @@ syntax = "proto3";
 package openetl.api.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -213,10 +214,12 @@ message CheckDestinationResponse {
 }
 
 // CheckResult is a connector's answer to Check. A connector without a check
-// of its own only validates its config.
+// of its own passes with no items.
 message CheckResult {
+  // It has no code and no item failed; warnings don't count.
   bool ok = 1;
-  // When not ok: a code of the error taxonomy, such as AUTH_INVALID.
+  // When not ok: a code of the error taxonomy, such as AUTH_INVALID; the
+  // first failed item's, and its rendered text, if the connector gave none.
   string code = 2;
   string message = 3;
   // The source or destination version checked.
@@ -226,21 +229,44 @@ message CheckResult {
   repeated CheckItem items = 5;
 }
 
-// CheckItem is one thing a connector's check looked at: reaching the
-// service, a permission, a stream.
+// CheckItem is one thing a connector's check or preflight looked at:
+// reaching the service, a permission, a stream.
+//
+// title, message, fix and description are templates, as the connector sent
+// them. A placeholder is {name}, with name matching [a-z][a-z0-9_]*, and
+// params holds its value; a placeholder without a param stays as written,
+// and text without placeholders is plain text. Render them to show an item.
 message CheckItem {
   // Unique within the result, such as stream.clicks.read.
   string name = 1;
+  // A template.
   string title = 2;
   // passed, warning, failed or skipped.
   string status = 3;
+  // A template: what it found when passed, why when failed or warning, and
+  // why it wasn't checked when skipped.
   string message = 4;
-  // When failed: a code of the error taxonomy.
+  // When failed or warning: a code of the error taxonomy, if it has one.
   string code = 5;
-  // What to do about a failure or a warning.
+  // A template: what to do about a failure or a warning.
   string fix = 6;
   // The config field it concerns, as a dotted path; empty if none.
   string field = 7;
+  // What it verifies: configuration, connection, authentication,
+  // permission, resource, compatibility, quota or custom; empty if
+  // unspecified.
+  string kind = 8;
+  // A template: what it verifies, and why the connector needs it.
+  string description = 9;
+  // When failed or warning: the kind of failure, lowercase words joined by
+  // _, such as connection_refused or a connector's own; empty if none.
+  string reason = 10;
+  // The placeholders' values, by name.
+  map<string, string> params = 11;
+  // The cause's text, such as the upstream's error. Not a template.
+  string detail = 12;
+  // How long it took; unset if it didn't run.
+  google.protobuf.Duration duration = 13;
 }
 
 message DiscoverSourceRequest {

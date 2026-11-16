@@ -97,6 +97,8 @@ type Ready struct {
 	// the window's keyed lanes at their barrier, which the windows closed up
 	// to; the least int64 where it had none.
 	WindowMarks map[string]int64
+	// Each engine's part of each stateful operator's epoch.
+	Operators []checkpoint.OperatorPart
 }
 
 // LaneReady is a writer lane's part of an epoch.

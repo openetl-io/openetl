@@ -252,7 +252,7 @@ openetl apply -f faker-to-parquet.yaml
 
 An apply stores all documents together or stores none. Its output identifies each resource as "created", "updated" or "unchanged", followed by warnings.
 
-After the apply, a runner runs a [preflight](../get-started/concepts.md#checks-and-preflights) of each pipeline that the apply created or changed. The preflight checks the pipeline's source and destination and its streams, refreshes the source's catalog, and plans the sync. The runner also checks each other source and destination that changed, and discovers those sources. The output shows `checked` with their names. A failure only gives a warning: the applied documents stay, and a new pipeline still starts. To skip all of this, use `--no-check`. To run a pipeline's preflight at any time, use `openetl preflight NAME`.
+After the apply, a runner runs a [preflight](../get-started/concepts.md#checks-and-preflights) of each pipeline that the apply created or changed. The preflight checks the pipeline's source and destination, plans the sync, and checks the streams that the pipeline reads and writes. The runner also checks each other source and destination that changed, and discovers those sources. The output shows `checked` with the names of those that passed. Under `the apply stands, but its checks found:`, it lists each failure and each warning, with its fix, as [`apply`](../reference/pipeline-cli.md#apply-and-plan) shows. A failure does not undo the apply: the applied documents stay, and a new pipeline still starts. To skip all of this, use `--no-check`. To run a pipeline's preflight at any time, use `openetl preflight NAME`.
 
 A new scheduled pipeline starts its first sync immediately. An updated pipeline waits for its schedule or a manual `openetl sync`.
 
@@ -454,7 +454,7 @@ order by id, _openetl_seq desc;
 | `openetl versions NAME` | List its versions, newest first |
 | `openetl rescale --size SIZE NAME` | Size its jobs until its next version; a running job restarts at a checkpoint. `--size auto` gives the spec back its say |
 | `openetl check source NAME`, `openetl check destination NAME` | Check that a runner can reach the source or destination with its config |
-| `openetl preflight NAME` | Check the pipeline's source and destination and the streams it reads and writes, refresh the source's catalog, and print its plan; fails if any part fails |
+| `openetl preflight NAME` | Check the pipeline's source and destination and the streams it reads and writes, refresh the source's catalog, and print its plan; fails if any part fails or is skipped |
 | `openetl discover NAME` | List a source's streams and their columns, and refresh the catalog plans read |
 | `openetl holds NAME` | List the columns and cells the pipeline holds back, why, and the ways to clear each |
 | `openetl holds release NAME STREAM COLUMN` | Patch a hold's values in on the pipeline's next run; `--new-version`, before the names, sends a column held whole to a new column, `COLUMN__v2`, instead |

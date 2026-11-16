@@ -1,7 +1,15 @@
 import { create } from "@bufbuild/protobuf";
 import { describe, expect, it } from "vitest";
-import { CatalogPackageSchema, ConnectorSourceSchema } from "@/gen/openetl/api/v1/connector_pb";
-import { appliedState, applyCommand, failingSources, manualLabel, packageSource, packageText, sortPackages, sourceLabel } from "../catalog";
+import {
+  CatalogPackageSchema,
+  type CatalogRole,
+  CatalogRoleSchema,
+  type ConfigField,
+  ConfigFieldSchema,
+  ConfigGroupSchema,
+  ConnectorSourceSchema,
+} from "@/gen/openetl/api/v1/connector_pb";
+import { appliedState, applyCommand, configSections, failingSources, manualLabel, packageSource, packageText, sortPackages, sourceLabel } from "../catalog";
 
 const pkg = (p: Partial<{ title: string; package: string; source: string; official: boolean; version: string; appliedVersion: string; updateAvailable: boolean; tags: string[] }>) =>
   create(CatalogPackageSchema, { title: p.package, version: "1.0.0", source: "connectorSources/official", ...p });
@@ -47,5 +55,43 @@ describe("catalog", () => {
   it("finds the sources that failed to list", () => {
     const s = [create(ConnectorSourceSchema, { name: "connectorSources/a" }), create(ConnectorSourceSchema, { name: "connectorSources/b", error: "401" })];
     expect(failingSources(s).map((x) => x.name)).toEqual(["connectorSources/b"]);
+  });
+});
+
+describe("configSections", () => {
+  const field = (path: string, o: Partial<{ group: string; advanced: boolean; fields: ConfigField[] }> = {}) =>
+    create(ConfigFieldSchema, { name: path.slice(path.lastIndexOf(".") + 1), path, ...o });
+  const role = (config: ConfigField[]) =>
+    create(CatalogRoleSchema, {
+      config,
+      groups: [create(ConfigGroupSchema, { id: "connection", title: "Connection" }), create(ConfigGroupSchema, { id: "reading", title: "Reading" })],
+    });
+  const shown = (r: CatalogRole) => configSections(r).map((s) => [s.id, s.rows.map((x) => `${x.depth}:${x.label}`)]);
+
+  it("puts a nested field in its own group, by its path, and the rest in their parent's", () => {
+    const consumer = field("consumer", {
+      group: "connection",
+      fields: [field("consumer.name"), field("consumer.interval", { group: "reading", fields: [field("consumer.interval.jitter")] })],
+    });
+    expect(shown(role([field("topic", { group: "connection" }), consumer]))).toEqual([
+      ["connection", ["0:topic", "0:consumer", "1:name"]],
+      ["reading", ["0:consumer.interval", "1:jitter"]],
+    ]);
+  });
+
+  it("puts the fields in no group the role declares first, and an object's advanced fields last", () => {
+    const tls = field("tls", { fields: [field("tls.ca", { advanced: true }), field("tls.mode")] });
+    expect(shown(role([field("region", { group: "nowhere" }), tls, field("stream", { group: "reading" })]))).toEqual([
+      ["", ["0:region", "0:tls", "1:mode", "1:ca"]],
+      ["reading", ["0:stream"]],
+    ]);
+  });
+
+  it("starts a field back in an earlier section at the left", () => {
+    const a = field("a", { group: "connection", fields: [field("a.b", { group: "reading", fields: [field("a.b.c", { group: "connection" })] })] });
+    expect(shown(role([a]))).toEqual([
+      ["connection", ["0:a", "0:a.b.c"]],
+      ["reading", ["0:a.b"]],
+    ]);
   });
 });
