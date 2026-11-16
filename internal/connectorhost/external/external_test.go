@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/resources"
@@ -598,6 +599,26 @@ func TestPreflightReport(t *testing.T) {
 	}
 }
 
+// A call's error keeps its code, its wait and what it wraps, and its text
+// as an answer's error has it.
+func TestCallError(t *testing.T) {
+	p := &process{secrets: []string{"s3cr3t"}}
+	st, err := status.New(codes.Unknown, "").WithDetails(&protocolv1.Error{Code: protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID,
+		Message: "dial postgres://u:s3cr3t@h\x1b[2J\u202e\u200e: " + strings.Repeat("x", 5000), RetryAfter: durationpb.New(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = p.failure(errs.FromStatus(st.Err()))
+	if m := errs.ToProto(err).GetMessage(); errs.CodeOf(err) != errs.AuthInvalid || errs.RetryAfterOf(err) != time.Minute || len(m) != maxDetail ||
+		!strings.HasPrefix(m, "dial postgres://u:[redacted]@h [2J : x") {
+		t.Errorf("a classified error: %v, %v, %d bytes", errs.CodeOf(err), errs.RetryAfterOf(err), len(m))
+	}
+	err = p.failure(errs.FromStatus(status.Error(codes.DeadlineExceeded, "s3cr3t didn't answer")))
+	if !errors.Is(err, context.DeadlineExceeded) || err.Error() != "INTERNAL: [redacted] didn't answer: context deadline exceeded" {
+		t.Errorf("a deadline: %v", err)
+	}
+}
+
 // A check that dies or doesn't answer in time is the check's error, not a
 // report.
 func TestCheckUnanswered(t *testing.T) {
@@ -671,6 +692,16 @@ func TestCheckAnswerKeptInherited(t *testing.T) {
 		if it.Params[p] != "[redacted]" {
 			t.Errorf("the param %s is %q", p, it.Params[p])
 		}
+	}
+}
+
+// What a connector's call fails with is kept as its answers are.
+func TestDiscoverErrorKept(t *testing.T) {
+	src := NewSource(exe("source-leaky"), nil, Options{AWS: AWS{URL: "http://127.0.0.1:1/creds", Token: "lease-t0ken/+"}})
+	defer func() { _ = src.Close() }()
+	_, err := src.Discover(t.Context())
+	if m := errs.ToProto(err).GetMessage(); len(m) != maxDetail || !strings.HasPrefix(m, "dial [redacted] [2J  : refused...") || strings.Contains(m, "t0ken") {
+		t.Errorf("%v, %d bytes: %.60q", errs.CodeOf(err), len(m), m)
 	}
 }
 

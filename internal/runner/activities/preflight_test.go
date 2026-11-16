@@ -395,3 +395,26 @@ func TestPreflightPipeline(t *testing.T) {
 		t.Errorf("parts\n %q\nwant\n %q\n%+v", got, want, res.Preflight[1])
 	}
 }
+
+// A plan that the source's Discover fails has its error without the
+// source's secrets or control characters.
+func TestPreflightPlanError(t *testing.T) {
+	dir := t.TempDir()
+	testConnector(t, dir, "source-chatty", "chatty")
+	cfg, err := structpb.NewStruct(map[string]any{"password": "hunter2-s3cr3t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := &dataplanev1.GetSyncSpecResponse{
+		OrgId: "org", PipelineId: "p", Version: "v1", Pipeline: &apiv1.PipelineSpec{},
+		Source: &apiv1.ConnectorConfig{Connector: "chatty", Config: cfg}, Destination: &apiv1.ConnectorConfig{Connector: "stdout", Config: &structpb.Struct{}},
+	}
+	a := &Ops{Connectors: connectorhost.Env{Connectors: dir}, API: opsAPI{spec: spec}}
+	res, err := a.PreflightPipeline(t.Context(), contract.ConnectorOpInput{OpID: "op", OrgID: "org", PipelineID: "p", Version: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := res.Preflight[2]; g.Code != "AUTH_INVALID" || g.Message != "dial postgres://u:[redacted]@db [2J : refused" {
+		t.Errorf("the plan: %q, %+v", parts(res.Preflight), g)
+	}
+}

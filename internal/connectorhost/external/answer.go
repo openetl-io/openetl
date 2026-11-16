@@ -1,14 +1,12 @@
 package external
 
 import (
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/sdk/go/check"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
@@ -107,19 +105,6 @@ func itemBytes(it *protocolv1.CheckItem) int {
 		n += len(k) + len(v)
 	}
 	return n
-}
-
-// unanswered is why a connector didn't answer a check or a preflight, as
-// answer takes an answer's error: err is what a call to it returned.
-func (p *process) unanswered(err error) error {
-	err = p.failure(errs.FromStatus(err))
-	e, ok := errors.AsType[*errs.Error](err)
-	if !ok {
-		return err
-	}
-	c := *e
-	c.Msg = newRedactor(p.secrets).fit(e.Msg, maxDetail, false)
-	return &c
 }
 
 // eachText puts f of each of it's texts but its params in its place, with

@@ -74,7 +74,7 @@ func (c *instance) checkReport(ctx context.Context) (check.Report, error) {
 	}
 	resp, err := protocolv1.NewConnectorServiceClient(p.conn).Check(ctx, &protocolv1.CheckRequest{Config: p.config})
 	if err != nil {
-		return check.Report{}, p.unanswered(err)
+		return check.Report{}, p.failure(errs.FromStatus(err))
 	}
 	return answer(p.secrets, resp), nil
 }
@@ -99,7 +99,7 @@ func preflightReport(p *process, resp interface {
 		return check.Report{}, nil
 	}
 	if err != nil {
-		return check.Report{}, p.unanswered(err)
+		return check.Report{}, p.failure(errs.FromStatus(err))
 	}
 	return answer(p.secrets, resp), nil
 }

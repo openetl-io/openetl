@@ -57,6 +57,9 @@ func TestMain(m *testing.M) {
 	case "dies":
 		sdk.Serve(dyingSource)
 		return
+	case "chatty":
+		sdk.Serve(chattySource)
+		return
 	case "worker":
 		os.Exit(workerProcess())
 	}

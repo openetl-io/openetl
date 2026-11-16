@@ -167,8 +167,13 @@ func (bulky) Checks() []check.Check {
 
 // leaky's check shows the AWS token the runner gave it, in texts with control
 // characters and longer than a host keeps, and its AWS secret key and session
-// token in params; it has more items than an answer may.
+// token in params; it has more items than an answer may. Its Discover fails
+// showing the token too.
 type leaky struct{ echo }
+
+func (leaky) Discover(context.Context) (source.Catalog, error) {
+	return source.Catalog{}, fmt.Errorf("dial %s\x1b[2J\u202e\u2028: refused%s", os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN"), strings.Repeat(".", 5000))
+}
 
 func (leaky) Checks() []check.Check {
 	token := os.Getenv("AWS_CONTAINER_AUTHORIZATION_TOKEN")

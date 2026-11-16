@@ -123,8 +123,8 @@ type process struct {
 	// The config, with secret names in place of the secrets.
 	config []byte
 	// The values of the secrets the connector may have: its config's, which
-	// it gets on the proxy and raw tiers, and its AWS credentials'. No answer
-	// to a check or a preflight shows them.
+	// it gets on the proxy and raw tiers, and its AWS credentials'. Neither
+	// its answers to checks and preflights nor its calls' errors show them.
 	secrets []string
 	// Set once the spec is read; logs relayed before then aren't scrubbed.
 	hs    atomic.Pointer[hostservices.Services]
@@ -152,7 +152,9 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 	if log == nil {
 		log = slog.Default()
 	}
-	p := &process{dir: dir, exited: make(chan struct{}), log: log.With("connector", filepath.Base(exe)), meter: opts.Meter}
+	// The connector has its AWS credentials from the start, so the spec's
+	// call's error is redacted of them too.
+	p := &process{dir: dir, exited: make(chan struct{}), log: log.With("connector", filepath.Base(exe)), meter: opts.Meter, secrets: opts.AWS.secrets()}
 	var lc net.ListenConfig
 	hostLn, err := lc.Listen(ctx, "unix", hostSocket)
 	if err != nil {
@@ -201,7 +203,6 @@ func start(ctx context.Context, exe string, kind protocolv1.ConnectorKind, confi
 	for _, s := range secrets {
 		p.secrets = append(p.secrets, s.Reveal())
 	}
-	p.secrets = append(p.secrets, opts.AWS.secrets()...)
 	tier := spec.GetEgress().GetTier()
 	hs := hostservices.New(hostservices.Options{
 		Policy:        opts.Egress,
@@ -349,8 +350,10 @@ func (p *process) kill() {
 	_ = p.cmd.Process.Kill()
 }
 
-// failure is why the connector exited, if it exits soon, or else err. A
-// call can fail before the exit is seen.
+// failure is why the connector exited, if it exits soon, or else err, a
+// call's error, with the connector's text as answer has an answer's error:
+// without the secrets' values, tidied and cut. A call can fail before the
+// exit is seen.
 func (p *process) failure(err error) error {
 	t := time.NewTimer(100 * time.Millisecond)
 	defer t.Stop()
@@ -358,8 +361,14 @@ func (p *process) failure(err error) error {
 	case <-p.exited:
 		return p.exitError()
 	case <-t.C:
+	}
+	e, ok := errors.AsType[*errs.Error](err)
+	if !ok {
 		return err
 	}
+	c := *e
+	c.Msg = newRedactor(p.secrets).fit(e.Msg, maxDetail, false)
+	return &c
 }
 
 // exitError classifies an exit nobody asked for. Call it after exited.

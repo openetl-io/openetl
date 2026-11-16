@@ -286,6 +286,29 @@ func (dies) Discover(context.Context) (source.Catalog, error) { return source.Ca
 
 func (dies) Read(context.Context, source.ReadRequest, source.Emitter) error { return nil }
 
+// chattySource's Discover fails quoting its password, among control
+// characters.
+var chattySource = sdk.Connector{
+	Name:         "chatty",
+	ConfigSchema: []byte(`{"type": "object", "properties": {"password": {"type": "string", "x-secret": true}}}`),
+	Egress:       sdk.Egress{Tier: sdk.EgressRaw},
+	Source: func(config []byte, _ host.Host) (source.Source, error) {
+		var c struct{ Password string }
+		if err := json.Unmarshal(config, &c); err != nil {
+			return nil, err
+		}
+		return chatty(c.Password), nil
+	},
+}
+
+type chatty string
+
+func (c chatty) Discover(context.Context) (source.Catalog, error) {
+	return source.Catalog{}, sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, fmt.Errorf("dial postgres://u:%s@db\x1b[2J\u202e: refused", string(c)))
+}
+
+func (chatty) Read(context.Context, source.ReadRequest, source.Emitter) error { return nil }
+
 // A check the connector answers is a result, failed or not; a connector
 // that doesn't answer is a failure of the op, which isn't retried.
 func TestCheckConnector(t *testing.T) {
