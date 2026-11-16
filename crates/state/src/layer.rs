@@ -546,14 +546,11 @@ impl StateBackend for Layer {
         *h = (*h).max(horizon);
     }
 
-    fn horizon(&self, op: OperatorId) -> i64 {
-        let stored = self
-            .horizons
-            .range((op, 0)..=(op, u32::MAX))
-            .map(|(_, h)| *h)
-            .max()
-            .unwrap_or(i64::MIN);
-        stored.max(self.moved.get(&op).copied().unwrap_or(i64::MIN))
+    fn horizon(&self, op: OperatorId, group: KeyGroup) -> i64 {
+        match u16::try_from(group) {
+            Ok(g) if self.range.contains(group) => self.horizon_in(op, g),
+            _ => i64::MIN,
+        }
     }
 
     fn set_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64) {

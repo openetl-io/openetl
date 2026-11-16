@@ -451,3 +451,49 @@ async fn a_reset_starts_with_no_horizon() {
     assert!(named(&two[0]).unwrap().horizons.is_empty());
     assert_eq!(sections(&two), [(2, SectionKind::Rows, 0, 0)]);
 }
+
+/// Reading restored values sections whole holds no more at once than the
+/// block cache's bound, however many blocks they have: each read's blocks
+/// go once their keys are taken.
+#[tokio::test]
+async fn reading_restored_values_whole_stays_within_the_cache_bound() {
+    let objects = bucket();
+    let small = RunConfig {
+        block_bytes: 256,
+        ..RunConfig::default()
+    };
+    let s = RunStores::new(objects.clone(), small.clone());
+    let mut l = lane(&s, 1, 1, (0, 15), &[]).await;
+    let key = |i: u32| format!("key-{i:06}");
+    for i in 0..20_000u32 {
+        l.put(
+            A,
+            KeyRef::new(i % 16, key(i).as_bytes()),
+            b(&format!("value {i}")),
+        );
+    }
+    let record = l.barrier(1).await.unwrap();
+    let written = runs(&record[0]).unwrap()[0].sections[0].raw_bytes;
+    let bound = 16 << 10;
+    assert!(written > 20 * bound, "{written} bytes of values");
+    let r = RunStores::new(
+        objects,
+        RunConfig {
+            cache_bytes: usize::try_from(bound).unwrap(),
+            ..small
+        },
+    );
+    let mut back = lane(&r, 2, 2, (0, 15), &record).await;
+    for i in 0..20_000u32 {
+        back.put(A, KeyRef::new(i % 16, key(i).as_bytes()), b("again"));
+    }
+    let two = back.barrier(2).await.unwrap();
+    // The restored section, all of it overridden, goes.
+    assert_eq!(sections(&two), [(2, SectionKind::Values, 0, 15)]);
+    assert!(r.counts().restore.count > 20, "{:?}", r.counts());
+    let peak = r.learned_peak();
+    assert!(
+        peak > 0 && peak <= bound,
+        "held {peak} bytes at once, over {bound}"
+    );
+}

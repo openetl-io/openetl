@@ -188,10 +188,12 @@ pub trait StateBackend: Send {
     /// it wants. `i64::MIN` is no horizon.
     fn expire(&mut self, op: OperatorId, horizon: i64);
 
-    /// The operator's latest horizon in the lane's key groups, or
-    /// `i64::MIN` for none. A consumer that restores goes on from at least
-    /// it, so that it sets no timer and appends no row the horizon passed.
-    fn horizon(&self, op: OperatorId) -> i64;
+    /// The operator's horizon in a key group of the lane, or `i64::MIN` for
+    /// none. Lanes restored onto one may bring their groups different
+    /// horizons. What's at or before a group's is gone, so a consumer takes
+    /// it as the least of its watermark in that group: it sets no timer
+    /// and appends no row there that the horizon passed.
+    fn horizon(&self, op: OperatorId, group: KeyGroup) -> i64;
 
     /// Sets a timer for the key at `time`. A timer is set or not: setting
     /// it again changes nothing. A timer at or before the operator's

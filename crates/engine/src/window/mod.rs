@@ -202,8 +202,6 @@ pub struct Operator {
     key_groups: u32,
     /// In microseconds; `i64::MIN` until it advances.
     watermark: i64,
-    /// It has taken its state's horizon as its watermark's least.
-    resumed: bool,
 }
 
 impl Operator {
@@ -254,7 +252,6 @@ impl Operator {
             lateness: lateness.max(0).saturating_mul(per_micro),
             key_groups,
             watermark: i64::MIN,
-            resumed: false,
             plan,
         })
     }
@@ -277,13 +274,13 @@ impl Operator {
         format!("transform.sql {}, writing {}: {why}", self.at, self.output)
     }
 
-    /// A restored operator goes on from at least the watermark its state's
-    /// horizon was moved to, so it sets no timer the horizon has passed.
-    fn resume<S: StateBackend>(&mut self, state: &S) {
-        if !self.resumed {
-            self.resumed = true;
-            self.watermark = self.watermark.max(state.horizon(self.id));
-        }
+    /// The watermark in key group `g`, in the event time's unit: at least
+    /// the state's horizon there. A restore can bring a lane groups whose
+    /// horizons differ, and each closed its windows up to its own: a
+    /// window there whose end that passed is closed, as its timer is gone.
+    fn watermark_in<S: StateBackend>(&self, state: &S, g: u32) -> i64 {
+        let horizon = state.horizon(self.id, g).saturating_mul(self.per_micro);
+        self.watermark().max(horizon)
     }
 
     /// Takes a batch of the statement's input: the columns it reads.
@@ -292,7 +289,6 @@ impl Operator {
         state: &mut S,
         input: &RecordBatch,
     ) -> Result<Out, JobError> {
-        self.resume(state);
         let mut out = Out::default();
         let plan = self.plan.clone();
         let (ran, failed) = steps::run_rows(&plan.input.steps, input.clone(), true)
@@ -537,12 +533,12 @@ impl Operator {
         rows_of: &(dyn Fn(usize) -> usize + Sync),
         out: &mut Out,
     ) -> Result<Vec<Emit>, JobError> {
-        let w = self.watermark();
         let size = self.size();
         // Each window's rows, by its group, keys and start.
         let mut slots: BTreeMap<(u32, Vec<u8>, i64), Vec<usize>> = BTreeMap::new();
         for &(r, t) in take {
             let mut placed = false;
+            let w = self.watermark_in(state, groups[r]);
             for s in self.starts(t) {
                 let end = s.saturating_add(size);
                 if end.saturating_add(self.lateness) <= w {
@@ -591,7 +587,7 @@ impl Operator {
                 }
             }
             let name = slot_key(&k, s);
-            let closed = end <= w;
+            let closed = end <= self.watermark_in(state, g);
             if fresh {
                 let timer = match closed {
                     true => EXPIRE,
@@ -645,7 +641,6 @@ impl Operator {
         rows_of: &(dyn Fn(usize) -> usize + Sync),
         out: &mut Out,
     ) -> Result<(Vec<Emit>, Lists), JobError> {
-        let w = self.watermark();
         let mut by_key: BTreeMap<Keys, Vec<(usize, i64)>> = BTreeMap::new();
         for &(r, t) in take {
             by_key
@@ -664,6 +659,7 @@ impl Operator {
         let mut emits = Vec::new();
         let mut lists = Vec::new();
         for (((g, k), rs), value) in by_key.into_iter().zip(got) {
+            let w = self.watermark_in(state, g);
             let mut list = match &value {
                 Some(v) => self.decode_sessions(v)?,
                 None => Vec::new(),
@@ -792,15 +788,15 @@ impl Operator {
 
     /// Moves the watermark to `t`, in microseconds, if it's later: closes
     /// every window it reaches the end of, giving its row, and forgets
-    /// those past their allowed lateness. Its timers fired, it moves
-    /// state's horizon to `t`: state drops what's at or before it.
+    /// those past their allowed lateness. A group whose state's horizon is
+    /// past `t` has fired its timers to there already. Its timers fired, it
+    /// moves state's horizon to `t`: state drops what's at or before it.
     pub async fn advance<S: StateBackend>(
         &mut self,
         state: &mut S,
         t: i64,
     ) -> Result<Out, JobError> {
         let mut out = Out::default();
-        self.resume(state);
         if t <= self.watermark {
             return Ok(out);
         }

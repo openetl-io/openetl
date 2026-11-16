@@ -185,11 +185,11 @@ impl StateBackend for View<'_> {
             .retain(|k, e| *e == NEVER || !(mine(k.0, k.1) && s.gone(k.0, k.1, *e)));
     }
 
-    fn horizon(&self, op: OperatorId) -> i64 {
-        (self.range.first..=self.range.last)
-            .map(|g| self.s.horizon(op, g))
-            .max()
-            .unwrap_or(i64::MIN)
+    fn horizon(&self, op: OperatorId, group: u32) -> i64 {
+        match self.range.contains(group) {
+            true => self.s.horizon(op, group),
+            false => i64::MIN,
+        }
     }
 
     fn set_timer(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64) {
@@ -464,7 +464,7 @@ impl World {
                 let h = self.rng.watermark();
                 l.layer.expire(op, h);
                 m.expire(op, h);
-                assert_eq!(l.layer.horizon(op), m.horizon(op), "{ctx}: horizon");
+                assert_eq!(l.layer.horizon(op, g), m.horizon(op, g), "{ctx}: horizon");
             }
             56..=62 => {
                 let time = self.rng.time();

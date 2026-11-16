@@ -32,12 +32,13 @@
 //! recorded, an older attempt, or sections no longer named, are orphans
 //! for retention.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::{Add, Range, Sub};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use bytes::Bytes;
+use futures_util::stream::FuturesUnordered;
 use futures_util::{StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions};
@@ -318,6 +319,8 @@ struct Shared {
     cache: Mutex<BlockCache>,
     /// The next run a lane opens or writes: its blocks' key in the cache.
     next_id: AtomicU64,
+    /// The most bytes a lane held at once reading values sections whole.
+    learn_peak: AtomicU64,
 }
 
 impl Shared {
@@ -347,6 +350,7 @@ impl RunStores {
                 counters: Counters::default(),
                 cache,
                 next_id: AtomicU64::new(0),
+                learn_peak: AtomicU64::new(0),
             }),
         }
     }
@@ -358,6 +362,13 @@ impl RunStores {
     /// The block cache's bytes.
     pub fn cache_bytes(&self) -> usize {
         lock(&self.shared.cache).bytes()
+    }
+
+    /// The most bytes a lane has held at once reading the values sections
+    /// it restored whole, read and decoded: within the block cache's
+    /// bound, or one block where that's larger.
+    pub fn learned_peak(&self) -> u64 {
+        self.shared.learn_peak.load(Ordering::Relaxed)
     }
 
     fn open_store(
@@ -1284,13 +1295,20 @@ impl RunStore {
         }
         let need = self.unopened(unknown.iter().map(|&i| &self.sections[v][i]));
         self.open_runs(need).await?;
-        let restore = &self.counters().restore;
-        let mut reads = Vec::new();
+        // What it reads and decodes at once stays within the block cache's
+        // bound, the share of the job's memory the store's blocks have, or
+        // one block where that's larger. Each read's blocks go once their
+        // keys are taken.
+        let config = &self.shared.config;
+        let budget = u64::try_from(config.cache_bytes).unwrap_or(u64::MAX).max(1);
+        // Each read: a section's blocks near each other, with what reading
+        // and decoding them holds, its weight, within the budget.
+        let mut queue: VecDeque<(usize, Range<u64>, Vec<BlockMeta>, u64)> = VecDeque::new();
         for &i in &unknown {
             let sec = &self.sections[v][i];
             let groups = sec.handle.groups;
             let open = sec.run.section(SectionKind::Values)?;
-            let mine: Vec<&BlockMeta> = open
+            let mut mine: Vec<&BlockMeta> = open
                 .blocks
                 .iter()
                 .filter(
@@ -1302,30 +1320,80 @@ impl RunStore {
                     },
                 )
                 .collect();
-            for (span, bs) in self.spans(mine) {
-                let read = self.read_blocks(&sec.run, span, bs, restore);
-                reads.push(async move { read.await.map(|blocks| (i, blocks)) });
-            }
-        }
-        let read = futures_util::stream::iter(reads)
-            .buffer_unordered(self.shared.config.concurrency.max(1))
-            .try_collect::<Vec<_>>()
-            .await?;
-        let mut entries: HashMap<usize, Vec<(u128, bool)>> =
-            unknown.iter().map(|&i| (i, Vec::new())).collect();
-        for (i, blocks) in read {
-            let groups = self.sections[v][i].handle.groups;
-            let mine = entries.entry(i).or_default();
-            for (_, block) in blocks {
-                let mut at = 0;
-                while at < block.len() {
-                    let (k, val) = format::entry(&block, &mut at)?;
-                    if layout::group_of(&k).is_some_and(|g| groups.contains(g.into())) {
-                        mine.push((key_hash(&k), val.is_none()));
+            mine.sort_by_key(|b| b.offset);
+            mine.dedup_by_key(|b| b.offset);
+            let mut read: Option<(Range<u64>, Vec<BlockMeta>, u64)> = None;
+            for b in mine {
+                let raw = u64::from(b.raw);
+                if let Some((span, bs, decoded)) = &mut read {
+                    let end = span.end.max(b.end());
+                    if b.offset <= span.end + config.gap_bytes
+                        && end - span.start <= config.max_read_bytes
+                        && end - span.start + *decoded + raw <= budget
+                    {
+                        span.end = end;
+                        bs.push(b.clone());
+                        *decoded += raw;
+                        continue;
                     }
                 }
+                if let Some((span, bs, decoded)) = read.take() {
+                    let weight = span.end - span.start + decoded;
+                    queue.push_back((i, span, bs, weight));
+                }
+                read = Some((b.offset..b.end(), vec![b.clone()], raw));
+            }
+            if let Some((span, bs, decoded)) = read {
+                let weight = span.end - span.start + decoded;
+                queue.push_back((i, span, bs, weight));
             }
         }
+        let mut entries: HashMap<usize, Vec<(u128, bool)>> =
+            unknown.iter().map(|&i| (i, Vec::new())).collect();
+        let peak = {
+            let this: &RunStore = self;
+            let restore = &this.counters().restore;
+            let mut reading = FuturesUnordered::new();
+            let (mut held, mut peak) = (0u64, 0u64);
+            loop {
+                while let Some(&(i, _, _, weight)) = queue.front() {
+                    let full = held.saturating_add(weight) > budget
+                        || reading.len() >= config.concurrency.max(1);
+                    if full && !reading.is_empty() {
+                        break;
+                    }
+                    let Some((_, span, bs, _)) = queue.pop_front() else {
+                        break;
+                    };
+                    held += weight;
+                    peak = peak.max(held);
+                    let run = this.sections[v][i].run.clone();
+                    reading.push(async move {
+                        let refs: Vec<&BlockMeta> = bs.iter().collect();
+                        let blocks = this.read_blocks(&run, span, refs, restore).await?;
+                        Ok::<_, Error>((i, weight, blocks))
+                    });
+                }
+                let Some(done) = reading.next().await else {
+                    break;
+                };
+                let (i, weight, blocks) = done?;
+                let groups = this.sections[v][i].handle.groups;
+                let mine = entries.entry(i).or_default();
+                for (_, block) in blocks {
+                    let mut at = 0;
+                    while at < block.len() {
+                        let (k, val) = format::entry(&block, &mut at)?;
+                        if layout::group_of(&k).is_some_and(|g| groups.contains(g.into())) {
+                            mine.push((key_hash(&k), val.is_none()));
+                        }
+                    }
+                }
+                held -= weight;
+            }
+            peak
+        };
+        self.shared.learn_peak.fetch_max(peak, Ordering::Relaxed);
         for (i, e) in entries {
             self.sections[v][i].content = Some(Content::new(e));
         }

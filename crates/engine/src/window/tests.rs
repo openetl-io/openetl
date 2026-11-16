@@ -95,8 +95,12 @@ fn ranges(lanes: u32) -> Vec<KeyGroupRange> {
 struct Table(BTreeMap<String, String>);
 
 impl Table {
-    fn apply(&mut self, out: &super::Out, key: &[&str]) {
-        let Some(t) = &out.rows else { return };
+    /// Applies what `out` gave, and gives the keys of its rows.
+    fn apply(&mut self, out: &super::Out, key: &[&str]) -> Vec<String> {
+        let mut written = Vec::new();
+        let Some(t) = &out.rows else {
+            return written;
+        };
         let b = &t.batch;
         let ops: Vec<&str> = t
             .control
@@ -127,7 +131,9 @@ impl Table {
                     self.0.insert(k.join("|"), all.join(" "));
                 }
             }
+            written.push(k.join("|"));
         }
+        written
     }
 }
 
@@ -139,6 +145,8 @@ struct Run {
     table: Table,
     rejected: usize,
     key: Vec<&'static str>,
+    /// How many rows the output was given of each key.
+    writes: BTreeMap<String, usize>,
 }
 
 impl Run {
@@ -172,6 +180,13 @@ impl Run {
             table: Table::default(),
             rejected: 0,
             key: vec!["window_start", "region"],
+            writes: BTreeMap::new(),
+        }
+    }
+
+    fn give(&mut self, out: &super::Out) {
+        for k in self.table.apply(out, &self.key) {
+            *self.writes.entry(k).or_default() += 1;
         }
     }
 
@@ -179,11 +194,12 @@ impl Run {
         let all = batch(&self.ops[0], rows);
         let need = self.ops[0].plan.need.clone();
         let groups = key_groups(&all, &need, GROUPS).unwrap();
-        for (i, l) in self.layers.iter_mut().enumerate() {
+        for i in 0..self.layers.len() {
+            let range = self.layers[i].range();
             let mine: Vec<u32> = groups
                 .iter()
                 .enumerate()
-                .filter(|(_, g)| l.range().contains(**g))
+                .filter(|(_, g)| range.contains(**g))
                 .map(|(r, _)| r as u32)
                 .collect();
             if mine.is_empty() {
@@ -192,18 +208,22 @@ impl Run {
             let part =
                 arrow_select::take::take_record_batch(&all, &arrow_array::UInt32Array::from(mine))
                     .unwrap();
-            let out = self.ops[i].rows(l, &part).await.unwrap();
+            let out = self.ops[i].rows(&mut self.layers[i], &part).await.unwrap();
             self.rejected += out.rejected.len();
-            self.table.apply(&out, &self.key);
+            self.give(&out);
         }
     }
 
     async fn advance(&mut self, t: i64) {
-        for (op, l) in self.ops.iter_mut().zip(&mut self.layers) {
-            let out = op.advance(l, t).await.unwrap();
-            assert!(out.failed.is_empty(), "{:?}", out.failed);
-            self.table.apply(&out, &self.key);
+        for i in 0..self.ops.len() {
+            self.advance_lane(i, t).await;
         }
+    }
+
+    async fn advance_lane(&mut self, i: usize, t: i64) {
+        let out = self.ops[i].advance(&mut self.layers[i], t).await.unwrap();
+        assert!(out.failed.is_empty(), "{:?}", out.failed);
+        self.give(&out);
     }
 
     async fn barrier(&mut self, epoch: u64) -> Vec<Snapshot> {
@@ -707,11 +727,11 @@ async fn the_final_rows_dont_depend_on_order_barriers_or_lanes() {
                         // restores it on other lanes.
                         generation += 1;
                         lanes = 1 + u32::try_from(next(&mut s) % 4).unwrap();
-                        let table = run.table.clone();
+                        let (table, rejected) = (run.table.clone(), run.rejected);
                         let watermark = run.ops[0].watermark;
                         run = Run::new(sql, 0, &bucket, generation, epoch, lanes, &snaps).await;
                         run.key = key.clone();
-                        run.table = table;
+                        (run.table, run.rejected) = (table, rejected);
                         run.advance(watermark).await;
                     }
                 }
@@ -811,16 +831,16 @@ async fn epochs(sql: &str, lateness: i64, load: Load) -> Epochs {
             stores = RunStores::new(objects.clone(), config.clone());
             counted = Counts::default();
             let lanes = [1, 3, 2][usize::try_from(epoch / 10 % 3).unwrap()];
-            let table = run.table.clone();
+            let (table, rejected) = (run.table.clone(), run.rejected);
             run = Run::new(sql, lateness, &stores, epoch + 1, epoch + 1, lanes, &snaps).await;
-            run.table = table;
+            (run.table, run.rejected) = (table, rejected);
             run.advance(watermark).await;
         }
     }
     run.advance(i64::MAX).await;
     let end = run.barrier(load.epochs + 1).await;
     named.push(named_sections(&end));
-    assert_eq!(run.rejected, 0, "{sql}");
+    assert_eq!(run.rejected, 0, "{sql}: rows late, across every attempt");
     Epochs {
         table: run.table,
         named,
@@ -936,4 +956,52 @@ async fn a_restored_window_goes_on_from_its_states_horizon() {
         rows[0].contains("window_start=1970-01-01T00:02:00Z"),
         "{rows:?}"
     );
+}
+
+/// Two lanes whose state's horizons differ restore onto one lane, each key
+/// group keeping its own: a window that the lagging group's horizon hadn't
+/// passed closes once, on time, and a row of a window that the leading
+/// group's horizon passed is late.
+#[tokio::test]
+async fn groups_restored_with_different_horizons_each_keep_theirs() {
+    let objects = Arc::new(ObjectStorage::new(
+        Arc::new(object_store::memory::InMemory::new()),
+        object_store::path::Path::from("state"),
+    ));
+    let stores = RunStores::new(objects.clone(), RunConfig::default());
+    let mut run = Run::new(TUMBLE, 0, &stores, 1, 1, 2, &[]).await;
+    let op = &run.ops[0];
+    let group = |region: &'static str| -> u32 {
+        key_groups(&batch(op, &[(region, 1, 1)]), &op.plan.need, GROUPS).unwrap()[0]
+    };
+    const NAMES: [&str; 12] = [
+        "eu", "us", "apac", "latam", "mena", "a", "b", "c", "d", "e", "f", "g",
+    ];
+    let lead = *NAMES.iter().find(|n| group(n) < GROUPS / 2).unwrap();
+    let lag = *NAMES.iter().find(|n| group(n) >= GROUPS / 2).unwrap();
+    run.rows(&[
+        (lead, 1, 10 * SEC),
+        (lead, 1, 70 * SEC),
+        (lag, 1, 10 * SEC),
+        (lag, 1, 70 * SEC),
+    ])
+    .await;
+    // The leading lane has closed both minutes, the lagging one the first.
+    run.advance_lane(0, 2 * MIN).await;
+    run.advance_lane(1, MIN + SEC).await;
+    let snaps = run.barrier(1).await;
+    let (table, writes) = (run.table.clone(), run.writes.clone());
+    let stores = RunStores::new(objects, RunConfig::default());
+    let mut back = Run::new(TUMBLE, 0, &stores, 2, 2, 1, &snaps).await;
+    (back.table, back.writes) = (table, writes);
+    // Restored at the least of the lanes' watermarks.
+    back.advance(MIN + SEC).await;
+    back.rows(&[(lag, 1, 80 * SEC), (lead, 1, 80 * SEC)]).await;
+    assert_eq!(back.rejected, 1, "the leading group's second minute closed");
+    back.advance(2 * MIN).await;
+    back.advance(i64::MAX).await;
+    assert_eq!(back.writes.len(), 4, "{:?}", back.writes);
+    assert!(back.writes.values().all(|n| *n == 1), "{:?}", back.writes);
+    let second = &back.table.0[&format!("1970-01-01T00:01:00Z|{lag}")];
+    assert!(second.ends_with("total=2 n=2 hi=1"), "{second}");
 }
