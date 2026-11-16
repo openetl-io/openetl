@@ -162,6 +162,49 @@ func TestPruneWithNothingRestoredDeletesEarlierState(t *testing.T) {
 	}
 }
 
+// As a lane's sections die, its records stop naming their runs: a run
+// stays while a kept record names any of it, as one lane after a rescale
+// does when the other's part of it is dead, and goes once none does.
+func TestPruneKeepsARunUntilNoKeptRecordNamesAnyOfIt(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	a := claim(t, l, "a")
+	r1, r2, r3 := run(t, store, lane("w", 1, 1)), run(t, store, lane("w", 1, 2)), run(t, store, lane("w", 1, 3))
+	commitNaming(t, a, 1, r1)
+	commitNaming(t, a, 2, r1, r2)
+	rec := commitNaming(t, a, 3, r2, r3)
+	b := claim(t, l, "b")
+	if _, err := b.Prune(t.Context(), rec, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runs(t, store), []string{r1, r2, r3}; !slices.Equal(got, want) {
+		t.Fatalf("after epoch 3, state %v, want %v: epoch 2 names %s", got, want, r1)
+	}
+	// Two lanes restored from epoch 3: the low one's part of r3 is all
+	// that's left of r2 and r3.
+	r4 := run(t, store, "w/g2/e4/kg128-255.run")
+	four := &checkpoint.Record{Epoch: 4, Streams: map[string]checkpoint.StreamState{"s": {State: []byte{4}}}, Snapshots: []checkpoint.Snapshot{
+		{Operator: "w", KeyGroups: checkpoint.KeyGroupRange{Last: 127}, Layout: 1, Data: []byte("R"), Runs: []string{r3}},
+		{Operator: "w", KeyGroups: checkpoint.KeyGroupRange{First: 128, Last: 255}, Layout: 1, Data: []byte("R"), Runs: []string{r4}},
+	}}
+	if err := b.Commit(t.Context(), four); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Prune(t.Context(), four, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runs(t, store), []string{r2, r3, r4}; !slices.Equal(got, want) {
+		t.Fatalf("after epoch 4, state %v, want %v", got, want)
+	}
+	five := commitNaming(t, b, 5, r4)
+	if _, err := b.Prune(t.Context(), five, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runs(t, store), []string{r3, r4}; !slices.Equal(got, want) {
+		t.Fatalf("after epoch 5, state %v, want %v", got, want)
+	}
+}
+
 func TestKeptSnapshotsLeaveOutOperatorsThatWroteNothing(t *testing.T) {
 	snap := func(op string, first int, runs ...string) checkpoint.Snapshot {
 		return checkpoint.Snapshot{Operator: op, KeyGroups: checkpoint.KeyGroupRange{First: first, Last: first + 127}, Runs: runs}
