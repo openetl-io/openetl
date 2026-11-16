@@ -33,7 +33,7 @@ func TestOnlyAPodOrADedicatedRunnerOwnsAPipelinesConnectors(t *testing.T) {
 // Children finds a parent's child processes by the start of their names,
 // and only its own.
 func TestChildrenAreTheParentsByName(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), "sleep", "30")
+	cmd := exec.CommandContext(t.Context(), "/bin/sleep", "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

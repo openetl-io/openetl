@@ -30,13 +30,17 @@ func Owner(h Host, pipeline string) int {
 	return h.PID
 }
 
+// pgrep is where macOS and Linux's procps both install it, so no directory
+// on PATH chooses what runs.
+const pgrep = "/usr/bin/pgrep"
+
 // Children are the PIDs of parent's child processes whose names start with
 // prefix; none for a parent of 0.
 func Children(ctx context.Context, parent int, prefix string) []int {
 	if parent <= 0 {
 		return nil
 	}
-	out, _ := exec.CommandContext(ctx, "pgrep", "-P", strconv.Itoa(parent), "^"+prefix).Output()
+	out, _ := exec.CommandContext(ctx, pgrep, "-P", strconv.Itoa(parent), "^"+prefix).Output()
 	var pids []int
 	for _, f := range strings.Fields(string(out)) {
 		if pid, err := strconv.Atoi(f); err == nil {
