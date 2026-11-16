@@ -102,13 +102,13 @@ A longer lateness keeps each window's state longer, so the job keeps more state.
 
 ### See late rows
 
-Late rows are quarantined as rows of the window's output, not of the stream. To list them, run:
+A late row that comes after its window's lateness is quarantined as a row of the window's output, not of the stream. Late rows that go into their windows are not counted apart. To list the quarantined ones, run:
 
 ```sh
 openetl quarantine --stream views_by_minute PIPELINE
 ```
 
-The list adds up rows by cause, so late rows show as the code `late`. In the console, the output's **Quarantined** number opens the same files ([Quarantined rows](../use/index.md#quarantined-rows)). The **SQL** tab's **At the last checkpoint** table shows the late rows of the last epoch, and the `openetl.operator.rows.late` metric counts them ([Watch a window](#watch-a-window)).
+The list adds up rows by cause, so late rows show as the code `late`. In the console, the output's **Quarantined** number opens the same files ([Quarantined rows](../use/index.md#quarantined-rows)). The **SQL** tab's **At the last checkpoint** table shows how many the last epoch quarantined, and the `openetl.operator.rows.late` metric counts them ([Watch a window](#watch-a-window)).
 
 ## Windows across syncs
 
@@ -132,16 +132,14 @@ A group window keeps state for each window that is open, or closed and within it
 
 ### Build the state again
 
-To build a window's state again from the stream, reset the stream that the window reads:
+To build a window's state again from the stream, reset the stream that the window reads. The reset drops the stream's position, its watermark and the state of every statement that reads it. The next run reads the stream again from where the source starts a new read, and builds the state from those rows. The files of the dropped state are deleted once no kept checkpoint names them.
+
+> [!WARNING]
+> A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again. If the new read starts partway through a window, that window's row is written again from only part of its rows, and under `merge` it replaces the row that had all of them. [Read streams again from the start](./positions.md#read-streams-again-from-the-start) has what the destination gets.
 
 ```sh
 openetl reset --stream page_views PIPELINE
 ```
-
-The reset drops the stream's position, its watermark and the state of every statement that reads it. The next run reads the stream again from where the source starts a new read, and builds the state from those rows. The files of the dropped state are deleted once no kept checkpoint names them.
-
-> [!WARNING]
-> A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again. If the new read starts partway through a window, that window's row is written again from only part of its rows. [Read streams again from the start](./positions.md#read-streams-again-from-the-start) has what the destination gets.
 
 ## Change a window's statement
 
@@ -154,7 +152,7 @@ A group window keeps its state under an ID that the plan shows. Some edits keep 
 
 Without step 4, a changed or new window starts from now: its windows hold only the rows that the pipeline reads after the change. A window that is open at the change loses the rows read before. A stream read with `full_refresh` is read whole at each sync, so a changed or new window over it holds every row from the next sync on.
 
-A changed `watermark.delay` or `watermark.lateness` keeps the state. A window that is open when the lateness changes keeps the time that its state expires at, which it got when it opened.
+A changed `watermark.delay` or `watermark.lateness` keeps the state. A window that is open when the lateness changes keeps the time that its state expires at, which it got when it opened. So a higher lateness does not bring back a window whose state is gone. A row for such a window that comes within the new lateness starts the window again, with that row alone. Under `merge`, the window's new row then replaces the row that had every earlier row of the window. Until the windows that were open at the change have expired, expect such rows, or read the stream again as [Build the state again](#build-the-state-again) describes.
 
 ## Watch a window
 
@@ -163,5 +161,5 @@ The console's **SQL** tab shows, under **At the last checkpoint**, what each win
 The same numbers are metrics, with the operator's ID as `openetl.operator` ([Monitoring](../self-host/monitoring.md#stateful-operators)). Watch these:
 
 - `openetl.operator.watermark.lag` grows when a split is behind the others. A window's row waits until the watermark reaches the window's end, so a growing lag delays the rows.
-- `openetl.operator.rows.late` counts rows that came after their lateness. If it grows, raise `watermark.delay` or `watermark.lateness`.
+- `openetl.operator.rows.late` counts late rows that came after their window's lateness, which OpenETL quarantined. If it grows, raise `watermark.delay` or `watermark.lateness`. A raised lateness applies to windows that open after the change. A late row of an older window can replace that window's row with a row of itself alone, as [Change a window's statement](#change-a-windows-statement) describes.
 - `openetl.operator.windows` and `openetl.operator.state.memory` grow with the keys and the lateness.

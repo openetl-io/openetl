@@ -291,6 +291,30 @@ async fn lateness_gives_a_window_again_until_it_passes() {
     assert!(run.table.0.values().next().unwrap().contains("total=7 n=2"));
 }
 
+/// A higher lateness doesn't bring back a window whose state went under
+/// the lower one: a row for it within the new lateness starts the window
+/// again from that row alone, whose row then takes the window's place.
+#[tokio::test]
+async fn a_raised_lateness_starts_a_gone_window_again() {
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(TUMBLE, 0, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[("eu", 5, 1), ("eu", 2, 10)]).await;
+    run.advance(MIN + 5).await;
+    assert!(run.table.0.values().next().unwrap().contains("total=7 n=2"));
+    let snaps = run.barrier(1).await;
+    let table = run.table.clone();
+    let mut run = Run::new(TUMBLE, MIN, &bucket, 2, 2, 1, &snaps).await;
+    run.table = table;
+    run.advance(MIN + 5).await;
+    run.rows(&[("eu", 4, 20)]).await;
+    assert_eq!(run.rejected, 0);
+    assert!(
+        run.table.0.values().next().unwrap().contains("total=4 n=1"),
+        "{:?}",
+        run.table
+    );
+}
+
 /// A window that no longer passes HAVING leaves the output.
 #[tokio::test]
 async fn a_window_given_again_that_fails_having_is_deleted() {

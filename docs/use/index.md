@@ -181,11 +181,11 @@ If the statements have errors, the **Plan** side says so, and the errors are at 
 If a statement keeps state, **At the last checkpoint** shows what it did in the pipeline's newest epoch. An epoch is the rows between two checkpoints. The numbers add up every worker of the pipeline. Each row shows:
 
 - **Operator**: the statement's operator, and its output.
-- **Watermark**: the time in the rows before which the statement expects no more rows, and how far it was behind the commit. A window of time closes when the watermark reaches its end. **None yet** means that a part of the stream has had no rows. **End of input** means that the read ended and every window closed.
+- **Watermark**: the time in the rows before which the statement expects no more rows, and how far it was behind the commit. A window of time closes when the watermark reaches its end. **None** means that a part of the stream has had no rows, or that the watermark is outside the years 1 to 9999. **End of input** means that the read ended and every window closed.
 - **Windows**: the windows the statement keeps: open ones, and closed ones that can still take late rows.
 - **Rows in**: the rows of the stream that reached the statement in the epoch.
 - **Written**: the rows it wrote to its output in the epoch, as new rows, updates and deletes.
-- **Late**: the rows that came too late for their window, which OpenETL quarantined with the code `late`. [Quarantined rows](#quarantined-rows) shows them under the output.
+- **Late**: the late rows that came after their window had closed and its allowed lateness had passed, which OpenETL quarantined with the code `late`. Late rows that still went into their window are not in this count. [Quarantined rows](#quarantined-rows) shows them under the output.
 - **State**: how much state the statement held in memory, and how much the checkpoint keeps in the data plane's storage.
 - **Requests**: its requests to the data plane's storage in the epoch, with their bytes: **Writes** of its state at the checkpoint, **Reads** of state it needed, and **Restores**, which open the state that a checkpoint names after a restart.
 
