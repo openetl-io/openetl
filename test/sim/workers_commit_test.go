@@ -140,6 +140,7 @@ var variantShapes = map[string]wShape{
 	"merge-drops-tombstones": {exchange: "on", state: "merge"},
 	"drop-by-first":          {exchange: "on", state: "drop"},
 	"drop-tombstones":        {exchange: "on", state: "vdrop"},
+	"restore-keeps-passed":   {exchange: "on", state: "drop"},
 	"pending-epoch-only":     {exchange: "on", state: "pending"},
 	"pending-to-memory-only": {exchange: "on", state: "pending,-lazy"},
 	"lazy-stale-handles":     {exchange: "on", state: "lazy,merge,drop,dedupe"},

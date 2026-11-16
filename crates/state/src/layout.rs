@@ -8,7 +8,9 @@
 //! keys: `0x00 | group u16 | operator u32 | kind u8 | rest`, where rest is
 //! - for a value (`v`): the key;
 //! - for a set's id (`s`): the id, with its expiry as the value;
-//! - for a set's horizon (`h`): nothing, with the horizon as the value;
+//! - for a set's horizon (`h`): nothing, with the horizon as the value.
+//!   Stores once kept a set's horizon so; a store now keeps an operator's
+//!   horizon beside its versions, and a layer reads this one as well;
 //! - for a row (`r`): `time | key length u32 | key | seq u64`. A group's
 //!   rows sort by the time they fall due, so the rows a watermark releases
 //!   are one range.
@@ -109,14 +111,23 @@ pub fn row(group: u16, op: OperatorId, time: i64, key: &[u8], seq: u64) -> Bytes
 /// The keys of an operator's rows in a group at or before `watermark`:
 /// `[start, end)`.
 pub fn rows_due(group: u16, op: OperatorId, watermark: i64) -> (Bytes, Bytes) {
-    let start = keyed(group, op, Kind::Row, 0).freeze();
-    let end = match watermark.checked_add(1) {
-        Some(next) => {
+    rows_due_after(group, op, i64::MIN, watermark)
+}
+
+/// As [`rows_due`], of the rows after `after`; `i64::MIN` for all of them.
+pub fn rows_due_after(group: u16, op: OperatorId, after: i64, watermark: i64) -> (Bytes, Bytes) {
+    let at = |t: Option<i64>| match t {
+        Some(t) => {
             let mut b = keyed(group, op, Kind::Row, 8);
-            b.put_u64(flip(next));
+            b.put_u64(flip(t));
             b.freeze()
         }
-        None => successor(&start),
+        None => successor(&keyed(group, op, Kind::Row, 0)),
+    };
+    let end = at(watermark.checked_add(1));
+    let start = match after {
+        i64::MIN => keyed(group, op, Kind::Row, 0).freeze(),
+        a => at(a.checked_add(1)),
     };
     (start, end)
 }
@@ -147,12 +158,31 @@ pub fn timer(op: OperatorId, time: i64, group: u16, key: &[u8]) -> Bytes {
 
 /// The keys of an operator's timers at or before `watermark`: `[start, end)`.
 pub fn timers_due(op: OperatorId, watermark: i64) -> (Bytes, Bytes) {
-    let start = timed(op, i64::MIN, 0).freeze();
-    let end = match watermark.checked_add(1) {
-        Some(next) => timed(op, next, 0).freeze(),
-        None => successor(&start[..TIMED_HEAD - 8]),
+    timers_due_after(op, i64::MIN, watermark)
+}
+
+/// As [`timers_due`], of the timers after `after`; `i64::MIN` for all of
+/// them.
+pub fn timers_due_after(op: OperatorId, after: i64, watermark: i64) -> (Bytes, Bytes) {
+    let at = |t: Option<i64>| match t {
+        Some(t) => timed(op, t, 0).freeze(),
+        None => successor(&timed(op, i64::MIN, 0)[..TIMED_HEAD - 8]),
+    };
+    let end = at(watermark.checked_add(1));
+    let start = match after {
+        i64::MIN => timed(op, i64::MIN, 0).freeze(),
+        a => at(a.checked_add(1)),
     };
     (start, end)
+}
+
+/// The operator of any key of this layout.
+pub fn operator_of(k: &[u8]) -> Option<OperatorId> {
+    match *k.first()? {
+        KEYED => u32_at(k, 3).map(OperatorId),
+        TIMED => u32_at(k, 1).map(OperatorId),
+        _ => None,
+    }
 }
 
 /// A timer key's time, group and key.
@@ -439,6 +469,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// After a horizon, the rows and timers due are those past it, and
+    /// `i64::MIN` is no horizon.
+    #[test]
+    fn what_is_due_after_a_horizon_is_past_it() {
+        for after in TIMES {
+            for w in TIMES {
+                let (rs, re) = rows_due_after(5, OP, after, w);
+                let (ts, te) = timers_due_after(OP, after, w);
+                for t in TIMES {
+                    let due = t <= w && (after == i64::MIN || t > after);
+                    let r = row(5, OP, t, b"k", 1);
+                    assert_eq!(rs <= r && r < re, due, "row {t} after {after} to {w}");
+                    let k = timer(OP, t, 5, b"k");
+                    assert_eq!(ts <= k && k < te, due, "timer {t} after {after} to {w}");
+                }
+            }
+        }
+        assert_eq!(operator_of(&row(1, OP, 0, b"k", 0)), Some(OP));
+        assert_eq!(operator_of(&timer(OP, 0, 1, b"k")), Some(OP));
+        assert_eq!(operator_of(&value(1, OP, b"")), Some(OP));
+        assert_eq!(operator_of(b"\x02"), None);
     }
 
     #[test]

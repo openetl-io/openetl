@@ -347,7 +347,8 @@ async fn a_batch_reads_neighbouring_blocks_at_once() {
 }
 
 /// A barrier with nothing to change writes nothing, and nor does a delete
-/// of a key no run can hold.
+/// of a key no run can hold, or one that leaves nothing live: the record
+/// then names no run.
 #[tokio::test]
 async fn a_barrier_writes_only_what_changed() {
     let bucket = Bucket::new();
@@ -371,7 +372,8 @@ async fn a_barrier_writes_only_what_changed() {
     l.delete(OP, k);
     let second = l.barrier(4).await.unwrap();
     assert_ne!(second, first);
-    assert_eq!(s.counts().barrier.count, 2);
+    assert!(runs(&second[0]).unwrap().is_empty());
+    assert_eq!(s.counts().barrier.count, 1);
     let mut r = Layer::open(&s, 2, 5, KeyGroupRange::new(0, 3), &second)
         .await
         .unwrap();
@@ -734,9 +736,168 @@ async fn check_recorded(stores: &RunStores, record: &[Snapshot]) {
 }
 
 fn recorded(path: &str) -> std::path::PathBuf {
+    recorded_in(RECORDED, path)
+}
+
+fn recorded_in(folder: &str, path: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(RECORDED)
+        .join(folder)
         .join(path)
+}
+
+/// Where runs of format 1 named by snapshots of version 2 are recorded:
+/// with horizons, each section's operators, and dead sections left out.
+const RECORDED_V2: &str = "tests/testdata/snapshots-v2";
+
+/// What the snapshots of version 2 hold: two lanes over 16 key groups and
+/// three epochs, recorded after the third, once operator 1's horizon is
+/// at 100 and operator 9's at 120. Changing it changes nothing recorded.
+async fn record_dropping(stores: &RunStores) -> Vec<Snapshot> {
+    let ops = [OperatorId(1), OperatorId(9)];
+    let mut ls = Vec::new();
+    for r in [KeyGroupRange::new(0, 7), KeyGroupRange::new(8, 15)] {
+        ls.push(Layer::open(stores, 1, 1, r, &[]).await.unwrap());
+    }
+    for g in 0..16u32 {
+        let l = lane(&mut ls, g);
+        let (k1, k9) = (format!("key-{g}-1"), format!("key-{g}-9"));
+        let (k1, k9) = (KeyRef::new(g, k1.as_bytes()), KeyRef::new(g, k9.as_bytes()));
+        l.put(ops[0], k1, b(&format!("value-{g}-1")));
+        l.append(ops[0], k1, i64::from(g) * 10, b(&format!("row-{g}")));
+        l.set_timer(ops[0], k1, i64::from(g));
+        l.put(ops[1], k9, b(&format!("value-{g}-9")));
+        l.set_timer(ops[1], k9, 50 + i64::from(g));
+        let id = format!("id-{g}");
+        let expires = if g % 2 == 0 {
+            NEVER
+        } else {
+            100 + i64::from(g)
+        };
+        l.insert_new(ops[1], &[KeyRef::new(g, id.as_bytes())], &[0], &[expires])
+            .await
+            .unwrap();
+    }
+    for l in &mut ls {
+        l.barrier(1).await.unwrap();
+    }
+    for g in 0..16u32 {
+        let k = format!("key-{g}-1");
+        lane(&mut ls, g).put(
+            ops[0],
+            KeyRef::new(g, k.as_bytes()),
+            b(&format!("again-{g}")),
+        );
+    }
+    for l in &mut ls {
+        l.fire(ops[0], 100, usize::MAX).await.unwrap();
+        l.take_rows(ops[0], 100, usize::MAX).await.unwrap();
+        l.expire(ops[0], 100);
+        l.barrier(2).await.unwrap();
+    }
+    for g in (0..16u32).step_by(4) {
+        let k = format!("key-{g}-9");
+        lane(&mut ls, g).delete(ops[1], KeyRef::new(g, k.as_bytes()));
+    }
+    let mut record = Vec::new();
+    for l in &mut ls {
+        l.fire(ops[1], 200, usize::MAX).await.unwrap();
+        l.expire(ops[1], 120);
+        record.extend(l.barrier(3).await.unwrap());
+    }
+    record
+}
+
+/// Restores what [`record_dropping`] wrote onto 3 lanes and reads every
+/// kind of state.
+async fn check_dropping(stores: &RunStores, record: &[Snapshot]) {
+    let ops = [OperatorId(1), OperatorId(9)];
+    let mut rows = Vec::new();
+    for s in record {
+        assert_eq!(s.data[1], 2, "a snapshot of version 2");
+        let named = openetl_state::runs::named(s).unwrap();
+        assert_eq!(named.horizons.len(), 2, "{named:?}");
+        let sections: Vec<&openetl_state::runs::SectionRef> =
+            named.runs.iter().flat_map(|r| &r.sections).collect();
+        assert!(sections.iter().all(|s| s.operators.is_some()));
+        // Epoch 1's timers went everywhere, and its rows where the
+        // horizon passed them all.
+        assert!(!sections.iter().any(|s| s.kind == SectionKind::Timers));
+        rows.extend(
+            sections
+                .iter()
+                .filter(|s| s.kind == SectionKind::Rows)
+                .map(|s| (s.groups.first, s.times)),
+        );
+    }
+    assert_eq!(rows, [(8, Some((80, 150)))], "the rows straddling 100");
+    let mut ls = Vec::new();
+    for r in [(0, 4), (5, 11), (12, 15)] {
+        let r = KeyGroupRange::new(r.0, r.1);
+        ls.push(Layer::open(stores, 2, 4, r, record).await.unwrap());
+    }
+    for g in 0..16u32 {
+        let l = lane(&mut ls, g);
+        let (k1, k9) = (format!("key-{g}-1"), format!("key-{g}-9"));
+        let (k1, k9) = (KeyRef::new(g, k1.as_bytes()), KeyRef::new(g, k9.as_bytes()));
+        assert_eq!(
+            l.get(ops[0], &[k1]).await.unwrap(),
+            [Some(b(&format!("again-{g}")))]
+        );
+        let want = (g % 4 != 0).then(|| b(&format!("value-{g}-9")));
+        assert_eq!(l.get(ops[1], &[k9]).await.unwrap(), [want], "{g}");
+        let rows = l.rows(ops[0], &[(k1, i64::from(g) * 10)]).await.unwrap();
+        let want = match g * 10 <= 100 {
+            true => vec![],
+            false => vec![b(&format!("row-{g}"))],
+        };
+        assert_eq!(rows, [want], "{g}");
+        let id = format!("id-{g}");
+        let fresh = l
+            .insert_new(ops[1], &[KeyRef::new(g, id.as_bytes())], &[10], &[NEVER])
+            .await
+            .unwrap();
+        assert_eq!(fresh, [g % 2 == 1], "{g}");
+    }
+    for l in &mut ls {
+        for op in ops {
+            assert!(l.fire(op, i64::MAX, usize::MAX).await.unwrap().is_empty());
+        }
+        let due = l.take_rows(ops[0], i64::MAX, usize::MAX).await.unwrap();
+        let range = l.range();
+        let want: Vec<u32> = (11..16).filter(|g| range.contains(*g)).collect();
+        assert_eq!(due.iter().map(|r| r.group).collect::<Vec<_>>(), want);
+    }
+}
+
+/// Runs of format 1 named by snapshots of version 2, recorded when it was
+/// made, restore.
+#[tokio::test]
+async fn recorded_snapshots_of_version_2_restore() {
+    if recording(RECORDED_V2) {
+        let bucket = Bucket::new();
+        let config = RunConfig {
+            block_bytes: 160,
+            ..Default::default()
+        };
+        let record = record_dropping(&stores(&bucket, config)).await;
+        check_dropping(&stores(&bucket, RunConfig::default()), &record).await;
+        for name in named_runs(&record).unwrap() {
+            let path = recorded_in(RECORDED_V2, &name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bucket.read(&name).await).unwrap();
+        }
+        std::fs::write(recorded_in(RECORDED_V2, "record"), snapshot_lines(&record)).unwrap();
+    }
+    let text = std::fs::read_to_string(recorded_in(RECORDED_V2, "record")).unwrap();
+    let record = parse_snapshots(&text);
+    let bucket = Bucket::new();
+    for name in named_runs(&record).unwrap() {
+        let data = std::fs::read(recorded_in(RECORDED_V2, &name)).unwrap();
+        bucket.write(&name, data).await;
+    }
+    let s = stores(&bucket, RunConfig::default());
+    check_dropping(&s, &record).await;
+    assert_eq!(s.counts().barrier.count, 0);
 }
 
 /// Each snapshot as a line: its first and last key group, its layout and
@@ -768,12 +929,18 @@ fn parse_snapshots(text: &str) -> Vec<Snapshot> {
         .collect()
 }
 
-/// Runs of format 1, recorded when it was made, restore: a later format
-/// must still read them. `OPENETL_STATE_RECORD=1` records them anew, which
-/// only a new format may do, into a folder of its own.
+/// Whether `OPENETL_STATE_RECORD` names `folder`: then a test records it
+/// anew, which only a new format or snapshot version may do, into a folder
+/// of its own.
+fn recording(folder: &str) -> bool {
+    std::env::var("OPENETL_STATE_RECORD").is_ok_and(|f| folder.rsplit('/').next() == Some(&f))
+}
+
+/// Runs of format 1 and their snapshots of version 1, recorded when they
+/// were made, restore: a later format must still read them.
 #[tokio::test]
 async fn recorded_runs_restore() {
-    if std::env::var("OPENETL_STATE_RECORD").is_ok() {
+    if recording(RECORDED) {
         let bucket = Bucket::new();
         // Small blocks, so runs have several, raw and compressed.
         let config = RunConfig {

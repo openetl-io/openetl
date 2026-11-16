@@ -132,13 +132,15 @@ func TestWindowStateOutlivesTheEngine(t *testing.T) {
 		t.Errorf("%s has %d rows, want the minute's two", counts, n)
 	}
 
-	// A later attempt restored the runs the killed one's record named.
+	// A later attempt restored the minute's state, which its counts show.
+	// Closed, the minute's state is dead: the latest record names none of
+	// the runs that held it, and names key c's open minute.
 	rec := latestRecord(t, name)
 	if rec.Generation <= killed.Generation {
 		t.Fatalf("the latest record is of generation %d, the killed attempt's %d", rec.Generation, killed.Generation)
 	}
-	before := stateRuns(killed)
-	if after := stateRuns(rec); !slices.ContainsFunc(after, func(r string) bool { return slices.Contains(before, r) }) {
-		t.Errorf("generation %d's record names %v, none of %v that it restored", rec.Generation, after, before)
+	before, after := stateRuns(killed), stateRuns(rec)
+	if len(after) == 0 || slices.ContainsFunc(after, func(r string) bool { return slices.Contains(before, r) }) {
+		t.Errorf("generation %d's record names %v, with the closed minute's %v", rec.Generation, after, before)
 	}
 }

@@ -17,7 +17,7 @@ use bytes::Bytes;
 
 use crate::layer::ENTRY_OVERHEAD;
 use crate::layout;
-use crate::store::{BoxFuture, Change, Snapshot, Store, Stores};
+use crate::store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
 use crate::{Error, KeyGroupRange, LAYOUT, NEVER, Result};
 
 /// Versions by name, shared by every handle of the bucket.
@@ -77,6 +77,12 @@ impl MemoryBucket {
             }
         }
         let mut groups = Vec::new();
+        let horizons: Horizons = sources
+            .iter()
+            .flat_map(|v| v.horizons.iter())
+            .filter(|((_, g), _)| range.contains(*g))
+            .map(|(k, h)| (*k, *h))
+            .collect();
         for g in range.first..=range.last {
             let group = match sources.iter().find(|v| v.range.contains(g)) {
                 Some(v) => v.group(g)?,
@@ -94,6 +100,7 @@ impl MemoryBucket {
             range,
             groups,
             bytes,
+            horizons,
             committed: Vec::new(),
         })
     }
@@ -123,6 +130,7 @@ struct Group {
 struct Version {
     range: KeyGroupRange,
     groups: Vec<Group>,
+    horizons: Horizons,
 }
 
 impl Version {
@@ -142,6 +150,7 @@ pub struct MemoryStore {
     /// Group `range.first + i` at `i`.
     groups: Vec<Group>,
     bytes: usize,
+    horizons: Horizons,
     /// The versions it committed, by epoch.
     committed: Vec<(u64, String)>,
 }
@@ -176,7 +185,12 @@ impl MemoryStore {
         }
     }
 
-    fn apply(&mut self, epoch: u64, changes: Vec<Change>) -> Result<Vec<Snapshot>> {
+    fn apply(
+        &mut self,
+        epoch: u64,
+        changes: Vec<Change>,
+        horizons: &Horizons,
+    ) -> Result<Vec<Snapshot>> {
         let name = format!(
             "g{}/e{epoch}/kg{}-{}",
             self.generation, self.range.first, self.range.last
@@ -194,14 +208,14 @@ impl MemoryStore {
             })?;
             placed.push((i, k, v));
         }
-        let mut horizons = Vec::new();
+        let mut kept = Vec::new();
         for (i, k, v) in placed {
             let g = &mut self.groups[i];
             let map = Arc::make_mut(&mut g.map);
             if let (Some((group, op)), Some(v)) = (layout::parse_horizon(&k), &v) {
                 let h = layout::parse_time_value(v)
                     .ok_or_else(|| Error::Corrupt("a horizon that isn't a time".into()))?;
-                horizons.push((i, group, op, h));
+                kept.push((i, group, op, h));
             }
             let old = match v {
                 Some(v) => {
@@ -216,7 +230,7 @@ impl MemoryStore {
         }
         // Set entries at or before their group's new horizon can never be
         // live again.
-        for (i, group, op, h) in horizons {
+        for (i, group, op, h) in kept {
             let (start, end) = layout::set_range(group, op);
             let g = &mut self.groups[i];
             let map = Arc::make_mut(&mut g.map);
@@ -231,10 +245,53 @@ impl MemoryStore {
                 }
             }
         }
+        // What an operator's horizon moved past is gone: its rows and
+        // timers, and its set's entries that expire.
+        for (&(op, group), &h) in horizons {
+            let moved = self.horizons.get(&(op, group)).is_none_or(|was| h > *was);
+            if !moved || h == i64::MIN {
+                continue;
+            }
+            let (Some(i), Ok(gr)) = (
+                group
+                    .checked_sub(self.range.first)
+                    .and_then(|i| usize::try_from(i).ok())
+                    .filter(|_| self.range.contains(group)),
+                u16::try_from(group),
+            ) else {
+                continue;
+            };
+            self.horizons.insert((op, group), h);
+            let g = &mut self.groups[i];
+            let map = Arc::make_mut(&mut g.map);
+            let (set, set_end) = layout::set_range(gr, op);
+            let rows = layout::rows_due(gr, op, h);
+            let timers = layout::timers_due(op, h);
+            let mut gone: Vec<Bytes> = Vec::new();
+            for (start, end) in [(set, set_end), rows, timers] {
+                let range = (Bound::Included(&start[..]), Bound::Excluded(&end[..]));
+                gone.extend(
+                    map.range::<[u8], _>(range)
+                        .filter(|(k, v)| match layout::section_of(k) {
+                            Some(layout::SectionKind::Set) => {
+                                layout::parse_time_value(v).is_some_and(|e| e != NEVER && e <= h)
+                            }
+                            _ => true,
+                        })
+                        .map(|(k, _)| k.clone()),
+                );
+            }
+            for k in gone {
+                if let Some(v) = map.remove(&k) {
+                    g.bytes -= size(&k, &v);
+                }
+            }
+        }
         self.bytes = self.groups.iter().map(|g| g.bytes).sum();
         let version = Arc::new(Version {
             range: self.range,
             groups: self.groups.clone(),
+            horizons: self.horizons.clone(),
         });
         self.bucket.lock().insert(name.clone(), version);
         self.committed.push((epoch, name.clone()));
@@ -281,8 +338,17 @@ impl Store for MemoryStore {
         Box::pin(std::future::ready(Ok(out)))
     }
 
-    fn commit(&mut self, epoch: u64, changes: Vec<Change>) -> BoxFuture<'_, Result<Vec<Snapshot>>> {
-        let snapshots = self.apply(epoch, changes);
+    fn horizons(&self) -> Horizons {
+        self.horizons.clone()
+    }
+
+    fn commit<'a>(
+        &'a mut self,
+        epoch: u64,
+        changes: Vec<Change>,
+        horizons: &'a Horizons,
+    ) -> BoxFuture<'a, Result<Vec<Snapshot>>> {
+        let snapshots = self.apply(epoch, changes, horizons);
         Box::pin(std::future::ready(snapshots))
     }
 
@@ -309,6 +375,7 @@ mod tests {
     use crate::OperatorId;
 
     const OP: OperatorId = OperatorId(1);
+    static NONE: Horizons = Horizons::new();
 
     fn counted(s: &MemoryStore) -> usize {
         s.groups
@@ -352,7 +419,9 @@ mod tests {
                 };
                 changes.insert(k, v);
             }
-            let snaps = s.apply(epoch, changes.into_iter().collect()).unwrap();
+            let snaps = s
+                .apply(epoch, changes.into_iter().collect(), &NONE)
+                .unwrap();
             assert_eq!(s.memory_bytes(), counted(&s), "epoch {epoch}");
             let all: BTreeMap<Bytes, Bytes> = s
                 .groups
@@ -384,10 +453,11 @@ mod tests {
             .collect();
         changes.push((layout::set(1, OP, b"a"), Some(layout::time_value(1))));
         changes.sort();
-        s.apply(1, changes).unwrap();
+        s.apply(1, changes, &NONE).unwrap();
         s.apply(
             2,
             vec![(layout::horizon(0, OP), Some(layout::time_value(5)))],
+            &NONE,
         )
         .unwrap();
         let ids = [b"a", b"b", b"c"].map(|id| layout::set(0, OP, id));
@@ -401,6 +471,7 @@ mod tests {
         s.apply(
             3,
             vec![(layout::horizon(0, OP), Some(layout::time_value(i64::MAX)))],
+            &NONE,
         )
         .unwrap();
         assert!(s.groups[0].map.contains_key(&ids[2]));
@@ -435,16 +506,55 @@ mod tests {
         assert_eq!(reads(&part, layout::timers_due(OP, i64::MAX)), 100);
     }
 
+    /// An operator's horizon drops its rows, timers and expiring set
+    /// entries at or before it, in its group alone, and a version keeps it
+    /// for the stores that open it.
+    #[test]
+    fn an_operators_horizon_drops_what_it_passed_and_stays_with_the_version() {
+        let bucket = MemoryBucket::new();
+        let range = KeyGroupRange::new(0, 1);
+        let mut s = bucket.open_store(1, range, &[]).unwrap();
+        let other = OperatorId(2);
+        let mut changes: Vec<Change> = Vec::new();
+        for g in 0..2u16 {
+            for op in [OP, other] {
+                for t in [5, 15] {
+                    changes.push((layout::row(g, op, t, b"k", 1), Some(Bytes::new())));
+                    changes.push((layout::timer(op, t, g, b"k"), Some(Bytes::new())));
+                }
+                changes.push((layout::set(g, op, b"x"), Some(layout::time_value(5))));
+                changes.push((layout::set(g, op, b"y"), Some(layout::time_value(NEVER))));
+            }
+        }
+        changes.sort();
+        s.apply(1, changes.clone(), &NONE).unwrap();
+        let horizons = Horizons::from([((OP, 0), 10)]);
+        let snap = s.apply(2, vec![], &horizons).unwrap();
+        let held = |s: &MemoryStore| -> usize { s.groups.iter().map(|g| g.map.len()).sum() };
+        assert_eq!(held(&s), changes.len() - 3);
+        for gone in [
+            layout::row(0, OP, 5, b"k", 1),
+            layout::timer(OP, 5, 0, b"k"),
+            layout::set(0, OP, b"x"),
+        ] {
+            assert!(!s.groups[0].map.contains_key(&gone));
+        }
+        let r = bucket.open_store(2, range, &snap).unwrap();
+        assert_eq!(r.horizons(), horizons);
+        assert_eq!(held(&r), changes.len() - 3);
+        assert_eq!(r.memory_bytes(), counted(&r));
+    }
+
     #[test]
     fn a_version_is_never_overwritten() {
         let bucket = MemoryBucket::new();
         let range = KeyGroupRange::new(0, 0);
         let mut a = bucket.open_store(3, range, &[]).unwrap();
         let mut b = bucket.open_store(3, range, &[]).unwrap();
-        a.apply(1, vec![]).unwrap();
-        assert!(matches!(b.apply(1, vec![]), Err(Error::Store(_))));
+        a.apply(1, vec![], &NONE).unwrap();
+        assert!(matches!(b.apply(1, vec![], &NONE), Err(Error::Store(_))));
         let mut c = bucket.open_store(4, range, &[]).unwrap();
-        c.apply(1, vec![]).unwrap();
+        c.apply(1, vec![], &NONE).unwrap();
         assert_eq!(bucket.len(), 2);
     }
 
@@ -453,10 +563,10 @@ mod tests {
         let bucket = MemoryBucket::new();
         let range = KeyGroupRange::new(0, 3);
         let mut old = bucket.open_store(1, range, &[]).unwrap();
-        let snap = old.apply(1, vec![]).unwrap();
+        let snap = old.apply(1, vec![], &NONE).unwrap();
         let mut s = bucket.open_store(2, range, &snap).unwrap();
         for e in 2..=5 {
-            s.apply(e, vec![]).unwrap();
+            s.apply(e, vec![], &NONE).unwrap();
         }
         assert_eq!(bucket.len(), 5);
         s.release(4).await.unwrap();
