@@ -2229,6 +2229,7 @@ async fn run_frames(
             req.window_steps = r.steps.clone();
             req.limits = (r.memory > 0).then_some(openetl_proto::engine::v1::Limits {
                 memory_bytes: r.memory,
+                ..Default::default()
             });
         }
     }

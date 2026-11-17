@@ -40,7 +40,7 @@ mod store;
 pub use layer::{Layer, Memory};
 pub use layout::{LAYOUT, SectionKind};
 pub use memory::MemoryBucket;
-pub use runs::{MergeConfig, ObjectStorage, Objects, RunConfig, RunStores};
+pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, RunConfig, RunStores};
 pub use store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
 
 /// A key's group, out of the pipeline's key groups, as routing gives it.

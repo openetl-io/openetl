@@ -278,6 +278,11 @@ func (k *Kubernetes) WorkerPod(l Launch, worker int) *corev1.Pod {
 		name, value, _ := strings.Cut(v, "=")
 		c.Env = append(c.Env, corev1.EnvVar{Name: name, Value: value})
 	}
+	// Its engines take half of its scratch: connectors' files and the
+	// runner's cache take the rest.
+	if k.Scratch > 0 {
+		c.Env = append(c.Env, corev1.EnvVar{Name: "OPENETL_SCRATCH", Value: strconv.FormatInt(k.Scratch/2, 10)})
+	}
 	size := l.Size
 	podIP := corev1.EnvVar{Name: "OPENETL_POD_IP", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"}}}
 	switch {

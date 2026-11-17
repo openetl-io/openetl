@@ -5042,6 +5042,13 @@ components:
                          the epoch next to it, as a read can.
                 mergeReadRequests:
                     $ref: '#/components/schemas/StateRequests'
+                diskReads:
+                    allOf:
+                        - $ref: '#/components/schemas/StateRequests'
+                    description: |-
+                        Its reads of state that the runner's disk cache answered in the epoch,
+                         which aren't requests to object storage, and their bytes. They can
+                         count in the epoch next to it, as reads can.
             description: |-
                 OperatorStats is what a stateful operator of a SQL transform did in an
                  epoch, on every lane of every worker, and held at the epoch's barrier.

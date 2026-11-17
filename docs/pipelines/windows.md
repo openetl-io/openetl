@@ -127,6 +127,9 @@ A group window keeps state for each window that is open, or closed and within it
 - After a failure, or between syncs, the next run opens the state that its checkpoint names, and reads each file when it first needs it.
 - The engine stops keeping a window's state when the watermark passes the window's end plus the lateness.
 - Each lane merges some of its files in the background, once it holds more than 8 files of windows' values. A checkpoint names the merged file in place of the files it replaces.
+- The state can be larger than the job's memory. If a lane's changes since the last checkpoint pass its part of the job's memory, or the engine nears its memory limit, the lane writes them to a file before the checkpoint. The next checkpoint names that file with the others. A file of an epoch that fails is never read.
+- The engine keeps what it reads of the files, and the files it writes, in a cache on the runner's local disk. So it reads each part of a file from the checkpoint store once in the job. The cache is only a copy. The engine deletes it when the job ends, and a new run starts with an empty cache. [Scratch disk](../self-host/index.md#scratch-disk) has its size.
+- If the state still does not fit in the job's memory, the run fails with `RESOURCE_EXHAUSTED`, and the message says to run the pipeline with a larger `resources.size`.
 - A checkpoint names only the files that hold state still in use. When every window that a file holds has closed and its lateness has passed, or newer files hold all of it, the next checkpoints stop naming it. When every window has closed and its lateness has passed, a checkpoint names no file of the window's state.
 - A run keeps the last 10 checkpoints. When it starts, and every 10 checkpoints after, it deletes each file of state that none of those checkpoints names. So the files of state follow how long windows stay open, and do not grow with the number of checkpoints.
 

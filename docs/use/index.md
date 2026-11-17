@@ -214,6 +214,7 @@ If a statement keeps state, **At the last checkpoint** shows what it did in the 
   - **Reads** read the state that it needed.
   - **Restores** open the state that a checkpoint names after a restart. They also read that state once, whole, to find what is still in use.
   - **Merges** count the files of state that the checkpoint wrote to merge other files, and the reads of the files that they merge.
+  - **From disk** counts the reads of state that the runner's disk cache answered. They are not requests to the data plane's storage.
 
   A read, a restore or a merge's read made near the checkpoint can count in the next epoch instead.
 

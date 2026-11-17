@@ -22,6 +22,8 @@ var (
 	operatorStateStored, _  = meter.Int64Gauge("openetl.operator.state.stored", metric.WithUnit("By"), metric.WithDescription("The bytes on object storage of the state that a stateful operator's last checkpoint names"))
 	operatorRequests, _     = meter.Int64Counter("openetl.operator.state.requests", metric.WithUnit("{request}"), metric.WithDescription("A stateful operator's requests to object storage in committed epochs, by kind"))
 	operatorRequestBytes, _ = meter.Int64Counter("openetl.operator.state.request.bytes", metric.WithUnit("By"), metric.WithDescription("The bytes of a stateful operator's requests to object storage in committed epochs, by kind"))
+	operatorDiskReads, _    = meter.Int64Counter("openetl.operator.state.disk.reads", metric.WithUnit("{read}"), metric.WithDescription("A stateful operator's reads of state that the runner's disk cache answered, in place of object storage, in committed epochs"))
+	operatorDiskBytes, _    = meter.Int64Counter("openetl.operator.state.disk.read.bytes", metric.WithUnit("By"), metric.WithDescription("The bytes of a stateful operator's reads of state that the runner's disk cache answered in committed epochs"))
 )
 
 // measureOperator records what o did in the epoch of a record made at now.
@@ -46,6 +48,8 @@ func measureOperator(ctx context.Context, org, pipeline string, o checkpoint.Ope
 		add(operatorRequests, r.Count, with("openetl.request.kind", kind))
 		add(operatorRequestBytes, r.Bytes, with("openetl.request.kind", kind))
 	}
+	add(operatorDiskReads, o.Disk.Count, attrs)
+	add(operatorDiskBytes, o.Disk.Bytes, attrs)
 	operatorWindows.Record(ctx, o.Windows, attrs)
 	operatorStateMemory.Record(ctx, ints.Int64Clamped(o.MemoryBytes), attrs)
 	operatorStateStored.Record(ctx, ints.Int64Clamped(o.StoredBytes), attrs)

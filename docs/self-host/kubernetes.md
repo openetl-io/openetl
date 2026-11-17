@@ -144,7 +144,8 @@ For each attempt, the launcher makes a pod for each worker, then the coordinator
 
 - the labels `app.kubernetes.io/managed-by: openetl`, `app.kubernetes.io/component: attempt`, `openetl.io/data-plane`, `openetl.io/pool`, `openetl.io/job` (`batch` or `stream`) and `openetl.io/pipeline`, the pipeline's ID;
 - the annotations `openetl.io/attempt` and `openetl.io/placement`;
-- requests equal to its limits, and `OPENETL_POD_SCRATCH` of ephemeral storage, 10 GiB unless you set it.
+- requests equal to its limits, and `OPENETL_POD_SCRATCH` of ephemeral storage, 10 GiB unless you set it;
+- `OPENETL_SCRATCH` set to half of `OPENETL_POD_SCRATCH`, the disk its engine may use ([Scratch disk](./index.md#scratch-disk)).
 
 No label tells a coordinator's pod from a worker's pod. The reserve is the launcher's `OPENETL_RESERVE`, 0.5 vCPU and 512 MiB unless you set it. If you set `OPENETL_POD_MAX_SIZE`, it must allow both the job's size and `xs`.
 

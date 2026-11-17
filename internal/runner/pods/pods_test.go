@@ -98,7 +98,7 @@ func TestPodFromTemplate(t *testing.T) {
 		t.Errorf("a batch pod's node affinity %v, want the template's", exprs)
 	}
 	c := &p.Spec.Containers[1]
-	if e := env(c); e["OPENETL_ATTEMPT"] != "run/attempt/1" || e["OPENETL_PLACEMENT"] != "2" || e["OPENETL_POOL"] != "big" || e["OPENETL_CAPACITY"] != "2,4294967296" || e["OPENETL_API_URL"] == "" {
+	if e := env(c); e["OPENETL_ATTEMPT"] != "run/attempt/1" || e["OPENETL_PLACEMENT"] != "2" || e["OPENETL_POOL"] != "big" || e["OPENETL_CAPACITY"] != "2,4294967296" || e["OPENETL_API_URL"] == "" || e["OPENETL_SCRATCH"] != "5368709120" {
 		t.Errorf("env %v", e)
 	}
 	if len(p.Spec.Containers[0].Env) != 0 {

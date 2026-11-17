@@ -41,9 +41,11 @@ const orphanGenerations = 16
 
 // StateDir holds a pipeline's state, next to its checkpoints: each stateful
 // operator's runs, {org}/{pipeline}/_state/{dir}/g{g}/e{N}/kg{first}-{last}.run,
-// in a directory of the operator's that the engine names, and its merges'
-// outputs, named .merge.run for the epoch whose record first names them. A
-// record's snapshots name them below it.
+// in a directory of the operator's that the engine names; its early
+// flushes before a barrier, ….earlyN.run, which the epoch's record names
+// with the barrier's; and its merges' outputs, named .merge.run for the
+// epoch whose record first names them. A record's snapshots name them
+// below it.
 const StateDir = "_state"
 
 // Prune deletes what no later attempt can need, once the session has

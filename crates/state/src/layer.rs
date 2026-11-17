@@ -37,7 +37,10 @@ impl Memory {
 /// A lane's state, for its range of key groups and every operator of the
 /// lane, as [`StateBackend`] serves it. The open epoch's changes stay in
 /// memory until [`Layer::barrier`] commits them, or [`Layer::discard`]
-/// drops them.
+/// drops them. Under memory pressure, [`Layer::flush`] writes them to the
+/// store early, which reads them from then on: before the barrier, where
+/// the layer may pass [`Layer::set_flush_at`]'s bound, and wherever its
+/// consumer calls it.
 pub struct Layer {
     store: Box<dyn Store>,
     range: KeyGroupRange,
@@ -61,6 +64,11 @@ pub struct Layer {
     fault: Option<Error>,
     /// A barrier failed, so the layer is unusable.
     failed: bool,
+    /// The open epoch's changes past which a read flushes them first; 0
+    /// for never.
+    flush_at: usize,
+    /// Early flushes it made.
+    flushes: u64,
 }
 
 impl Layer {
@@ -108,7 +116,54 @@ impl Layer {
             appended: 0,
             fault: None,
             failed: false,
+            flush_at: 0,
+            flushes: 0,
         })
+    }
+
+    /// Has each read first flush the open epoch's changes early once they
+    /// hold more than `bytes`, where the store takes early flushes; 0 for
+    /// never, as a layer that may write nothing needs.
+    pub fn set_flush_at(&mut self, bytes: usize) {
+        self.flush_at = bytes;
+    }
+
+    /// The early flushes it made.
+    pub fn flushes(&self) -> u64 {
+        self.flushes
+    }
+
+    /// Writes the open epoch's changes to the store before its barrier, so
+    /// their memory goes, where the store takes that; the store reads them
+    /// from then on, and the barrier's snapshots name them. Whether it
+    /// wrote. They count once a record names those snapshots, as the
+    /// barrier's own do; if the epoch fails, what it wrote is never read.
+    /// After an error the layer is unusable, as after a barrier's.
+    pub async fn flush(&mut self) -> Result<bool> {
+        self.usable()?;
+        if self.changes.is_empty() || self.fault.is_some() || !self.store.flushes() {
+            return Ok(false);
+        }
+        self.failed = true;
+        let changes = std::mem::take(&mut self.changes)
+            .into_iter()
+            .filter(|(k, v)| !self.passed(k, v.as_deref()))
+            .collect();
+        self.store
+            .flush(self.epoch, changes, &self.horizons)
+            .await?;
+        self.change_bytes = 0;
+        self.flushes += 1;
+        self.failed = false;
+        Ok(true)
+    }
+
+    /// Flushes the open epoch's changes early if they passed the bound.
+    async fn relieve(&mut self) -> Result<()> {
+        if self.flush_at > 0 && self.change_bytes > self.flush_at {
+            self.flush().await?;
+        }
+        Ok(())
     }
 
     pub fn range(&self) -> KeyGroupRange {
@@ -160,6 +215,7 @@ impl Layer {
     /// Drops the open epoch's changes, which failed: the layer is as the
     /// last barrier left it, and the epoch is open again.
     pub fn discard(&mut self) {
+        self.store.discard(self.epoch);
         self.changes.clear();
         self.change_bytes = 0;
         self.moved.clear();
@@ -390,6 +446,7 @@ impl Layer {
 impl StateBackend for Layer {
     async fn get(&mut self, op: OperatorId, keys: &[KeyRef<'_>]) -> Result<Vec<Option<Bytes>>> {
         self.usable()?;
+        self.relieve().await?;
         let mut out = Vec::with_capacity(keys.len());
         let mut missing = Vec::new();
         let mut at = Vec::new();
@@ -451,6 +508,7 @@ impl StateBackend for Layer {
         slots: &[(KeyRef<'_>, i64)],
     ) -> Result<Vec<Vec<Bytes>>> {
         self.usable()?;
+        self.relieve().await?;
         let mut out = Vec::with_capacity(slots.len());
         for (k, time) in slots {
             let g = self.group(k.group)?;
@@ -473,6 +531,7 @@ impl StateBackend for Layer {
         limit: usize,
     ) -> Result<Vec<DueRow>> {
         self.usable()?;
+        self.relieve().await?;
         let mut out = Vec::new();
         for g in self.groups() {
             if out.len() >= limit {
@@ -506,6 +565,7 @@ impl StateBackend for Layer {
         expires: &[i64],
     ) -> Result<Vec<bool>> {
         self.usable()?;
+        self.relieve().await?;
         if ids.len() != at.len() || ids.len() != expires.len() {
             return Err(Error::Invalid(format!(
                 "{} ids, {} times and {} expiries",
@@ -590,6 +650,7 @@ impl StateBackend for Layer {
 
     async fn fire(&mut self, op: OperatorId, watermark: i64, limit: usize) -> Result<Vec<Timer>> {
         self.usable()?;
+        self.relieve().await?;
         let least = self.least_horizon(op);
         let mut out = Vec::new();
         if least > i64::MIN && least >= watermark {

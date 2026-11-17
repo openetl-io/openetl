@@ -2,6 +2,9 @@
 //! ends the process at the job's memory limit. An allocator can't
 //! return an error that reaches the job, so the runner reads this exit code as
 //! RESOURCE_EXHAUSTED instead; a restart resumes from the last checkpoint.
+//! Before that, near the limit, stateful operators flush their state's
+//! changes early, and fail the job themselves where their state is what
+//! doesn't fit: [`pressure`], and [`set_state`] for what the state holds.
 
 #![allow(unsafe_code)]
 
@@ -19,6 +22,8 @@ const EXIT_OVER_LIMIT: i32 = 75;
 static HELD: AtomicIsize = AtomicIsize::new(0);
 static LIMIT: AtomicUsize = AtomicUsize::new(usize::MAX);
 static EXITING: AtomicBool = AtomicBool::new(false);
+/// What the job's state holds of HELD, as its operators last counted.
+static STATE: AtomicUsize = AtomicUsize::new(0);
 
 /// What a thread counts before it adds to HELD: lanes' threads allocating at
 /// once would otherwise all write its one cache line. So HELD trails what
@@ -92,8 +97,16 @@ fn over_limit() {
     if EXITING.swap(true, Relaxed) {
         return;
     }
-    let _ = std::io::stderr()
-        .write_all(b"{\"level\":\"ERROR\",\"message\":\"the engine reached its memory limit\"}\n");
+    // No allocation: a line of a fixed size, on the stack.
+    let mut line = [0u8; 160];
+    let mut w = std::io::Cursor::new(&mut line[..]);
+    let _ = writeln!(
+        w,
+        "{{\"level\":\"ERROR\",\"message\":\"the engine reached its memory limit, with {} MiB of it the state's\"}}",
+        STATE.load(Relaxed) >> 20
+    );
+    let n = usize::try_from(w.position()).unwrap_or(0);
+    let _ = std::io::stderr().write_all(&line[..n]);
     std::process::exit(EXIT_OVER_LIMIT);
 }
 
@@ -109,6 +122,25 @@ pub fn set_limit(bytes: u64) {
 /// How many bytes the process's allocations hold now.
 pub fn held() -> u64 {
     HELD.load(Relaxed).max(0) as u64
+}
+
+/// The limit, if there's one.
+pub fn limit() -> Option<u64> {
+    match LIMIT.load(Relaxed) {
+        usize::MAX => None,
+        n => Some(n as u64),
+    }
+}
+
+/// Whether the process holds more than seven eighths of its limit: what
+/// can be released should be, before the limit ends it.
+pub fn pressure() -> bool {
+    limit().is_some_and(|l| held() > l / 8 * 7)
+}
+
+/// Notes what the job's state holds in memory, in bytes.
+pub fn set_state(bytes: u64) {
+    STATE.store(usize::try_from(bytes).unwrap_or(usize::MAX), Relaxed);
 }
 
 #[cfg(test)]

@@ -1351,6 +1351,10 @@ message OperatorStats {
   // the epoch next to it, as a read can.
   StateRequests merge_write_requests = 15;
   StateRequests merge_read_requests = 16;
+  // Its reads of state that the runner's disk cache answered in the epoch,
+  // which aren't requests to object storage, and their bytes. They can
+  // count in the epoch next to it, as reads can.
+  StateRequests disk_reads = 17;
 }
 
 // StateRequests are requests of one kind to object storage, and their

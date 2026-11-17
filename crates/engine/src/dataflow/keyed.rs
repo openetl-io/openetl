@@ -454,6 +454,8 @@ enum Standing {
 struct Keyed {
     statement: usize,
     output: usize,
+    /// Its operator's ID.
+    id: String,
     op: Operator,
     layer: Layer,
     ls: LaneStream,
@@ -577,6 +579,7 @@ pub(super) async fn run(
             JobError::new(err.code, cant_open(err.message))
         })?;
         op.open(&mut layer);
+        layer.set_flush_at(state.flush_at(plan.layout.lanes().len()));
         let event_time = t.inputs[st.input].event_time.as_ref();
         let floor = event_time.map_or(watermark::NONE, |e| e.floor);
         let closes_at = event_time
@@ -597,6 +600,7 @@ pub(super) async fn run(
         let mut w = Keyed {
             statement: i,
             output,
+            id: id.clone(),
             op,
             layer,
             ls,
@@ -803,6 +807,7 @@ impl Keyed {
             .map_err(|e| JobError::internal(e.to_string()))?,
         };
         let out = self.op.rows(&mut self.layer, &input).await?;
+        self.relieve(lane).await?;
         self.counts.late += out
             .rejected
             .iter()
@@ -826,9 +831,49 @@ impl Keyed {
     async fn advance(&mut self, lane: &Lane, wm: i64) -> Result<(), JobError> {
         self.wm = wm;
         let out = self.op.advance(&mut self.layer, wm).await?;
+        self.relieve(lane).await?;
         self.give(lane, out).await?;
         let s = self.output;
         lane.all(s, || super::Out::Watermark(s, wm)).await
+    }
+
+    /// Near the engine's memory limit, flushes the epoch's changes early, if
+    /// they're enough to be worth a run, and counts what the state holds:
+    /// if, flushed, it's still more than the job lets it hold, the job
+    /// fails, saying what to raise, rather than reach the limit. A lane
+    /// past its part of the memory flushes as it next reads.
+    async fn relieve(&mut self, lane: &Lane) -> Result<(), JobError> {
+        let flow = lane.flow.clone();
+        let Some(state) = &flow.plan.state.job else {
+            return Ok(());
+        };
+        let pressed = state.pressure();
+        if pressed && !state.read_only() && self.layer.memory().changes >= crate::state::MIN_EARLY {
+            self.layer.flush().await.map_err(|e| {
+                crate::state::state_error(&format!("operator {}'s state", self.id), &e)
+            })?;
+        }
+        let held = state.hold(&self.id, lane.lane, self.layer.memory().total());
+        let budget = state.budget();
+        if !pressed || budget == 0 || held <= budget {
+            return Ok(());
+        }
+        let (at, output) = flow.plan.transform.as_ref().map_or_else(
+            || (String::new(), String::new()),
+            |t| {
+                let st = &t.sql.statements[self.statement];
+                (st.at.to_string(), st.output.clone())
+            },
+        );
+        Err(JobError::new(
+            ErrorCode::ResourceExhausted,
+            format!(
+                "transform.sql {at}: the group window writing {output} keeps more state in memory than the job's size allows: its lanes and caches hold {} MiB, past the {} MiB, half of the job's {} MiB, that state may hold, with the engine near its memory limit. Run the pipeline with a larger resources.size",
+                held >> 20,
+                budget >> 20,
+                state.memory() >> 20
+            ),
+        ))
     }
 
     /// Quarantines rows of a batch of the input as the output's.

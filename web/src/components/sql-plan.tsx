@@ -278,6 +278,7 @@ export function SqlOperatorStats({ checkpoint, operators }: { checkpoint: Checkp
                   <div>
                     Merges {requests(s.mergeWriteRequests)} written, {requests(s.mergeReadRequests)} read
                   </div>
+                  <div className="text-muted-foreground">From disk {requests(s.diskReads)}</div>
                 </TableCell>
               </TableRow>
             );

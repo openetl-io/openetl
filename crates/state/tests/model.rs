@@ -1,9 +1,12 @@
 //! The layer against a model of a few maps, over random sequences of the
 //! primitives, barriers, recorded or not, failed epochs, kills and restores
 //! of a recorded epoch onto other numbers of lanes, older attempts still
-//! writing, released versions, and merges landing at any barrier, over
-//! each store. Each seed is a sequence: `OPENETL_STATE_SEEDS=n` runs n of
-//! them, and `OPENETL_STATE_SEED=s` the one.
+//! writing, released versions, merges landing at any barrier, and early
+//! flushes at any point, kills between them and the barrier among them,
+//! over each store. Over runs, a seed has a disk cache or not, which may
+//! be small enough to evict or have its files corrupted at any point.
+//! Each seed is a sequence: `OPENETL_STATE_SEEDS=n` runs n of them, and
+//! `OPENETL_STATE_SEED=s` the one.
 
 #![allow(clippy::unwrap_used)]
 
@@ -14,8 +17,8 @@ use bytes::Bytes;
 use object_store::memory::InMemory;
 use object_store::path::Path;
 use openetl_state::{
-    DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, MergeConfig, NEVER, ObjectStorage,
-    OperatorId, Result, RunConfig, RunStores, Snapshot, StateBackend, Stores, Timer,
+    DiskCache, DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, MergeConfig, NEVER,
+    ObjectStorage, OperatorId, Result, RunConfig, RunStores, Snapshot, StateBackend, Stores, Timer,
 };
 
 const GROUPS: u32 = 16;
@@ -306,10 +309,28 @@ struct Lane {
     layer: Layer,
 }
 
+/// How a seed over runs keeps a disk cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Disk {
+    Off,
+    On,
+    /// Small enough that it evicts as it goes.
+    Evicting,
+    /// Its files are damaged at random points.
+    Corrupted,
+}
+
 struct World {
     seed: u64,
     rng: Rng,
     stores: Arc<dyn Stores>,
+    disk: Option<(Arc<DiskCache>, Disk)>,
+    /// A lane's changes past which a read flushes them early; 0: never.
+    flush_at: usize,
+    /// Early flushes made, by a call or past the bound, and kills between
+    /// one and the barrier.
+    flushes: u64,
+    kills_after_flush: u64,
     /// Whether the store holds in memory exactly what it keeps, as the
     /// memory bucket does, and runs don't.
     exact: bool,
@@ -358,6 +379,8 @@ impl World {
             )
             .await
             .unwrap_or_else(|e| panic!("{}: open: {e}", self.ctx()));
+            let mut layer = layer;
+            layer.set_flush_at(self.flush_at);
             self.lanes.push(Lane { range, layer });
         }
         self.now = from.map_or_else(Logical::default, |e| self.records[&e].0.clone());
@@ -375,6 +398,12 @@ impl World {
     }
 
     async fn step(&mut self) {
+        if self.rng.chance(4) {
+            return self.flush().await;
+        }
+        if self.disk.as_ref().is_some_and(|d| d.1 == Disk::Corrupted) && self.rng.chance(3) {
+            return self.corrupt();
+        }
         let op = self.rng.pick(&OPS);
         let value = Bytes::from(format!("{}", self.step));
         let all = KeyGroupRange::new(0, GROUPS - 1);
@@ -535,11 +564,68 @@ impl World {
         }
     }
 
+    /// Early flushes of some lanes' open epoch, and at times a kill
+    /// before the barrier: a restore from a record sees none of it.
+    async fn flush(&mut self) {
+        let ctx = self.ctx();
+        for l in &mut self.lanes {
+            if self.rng.chance(60) {
+                let flushes = l.layer.flushes();
+                let wrote = l
+                    .layer
+                    .flush()
+                    .await
+                    .unwrap_or_else(|e| panic!("{ctx}: flush: {e}"));
+                if wrote {
+                    assert_eq!(l.layer.memory().changes, 0, "{ctx}");
+                    assert_eq!(l.layer.flushes(), flushes + 1, "{ctx}");
+                }
+            }
+        }
+        if self.rng.chance(25) {
+            let from = self.records.keys().last().copied();
+            let lanes = self.rng.pick(&LANES);
+            self.kills_after_flush += 1;
+            self.open(lanes, from).await;
+        }
+    }
+
+    /// Damages the disk cache's files: flips bytes, or cuts them short.
+    fn corrupt(&mut self) {
+        let Some((disk, _)) = &self.disk else {
+            return;
+        };
+        let mut files: Vec<_> = std::fs::read_dir(disk.dir())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        files.sort();
+        for f in files {
+            let Ok(mut b) = std::fs::read(&f) else {
+                continue;
+            };
+            if b.is_empty() || !self.rng.chance(50) {
+                continue;
+            }
+            match self.rng.chance(50) {
+                true => {
+                    for _ in 0..1 + self.rng.below(4) {
+                        let i = self.rng.below(b.len());
+                        b[i] ^= 0x5a;
+                    }
+                }
+                false => b.truncate(self.rng.below(b.len())),
+            }
+            std::fs::write(&f, &b).unwrap();
+        }
+    }
+
     /// Every lane's barrier of the open epoch, and its record, or none.
     async fn barrier(&mut self) {
         let ctx = self.ctx();
         let mut snapshots = Vec::new();
         for l in &mut self.lanes {
+            self.flushes += l.layer.flushes();
             let got = l.layer.barrier(self.epoch).await;
             snapshots.extend(got.unwrap_or_else(|e| panic!("{ctx}: barrier: {e}")));
             let memory = l.layer.memory();
@@ -627,10 +713,11 @@ impl World {
     }
 }
 
-/// Runs over an in-memory object store, with blocks, filters, a cache
+/// Runs over an in-memory object store, with blocks, filters, caches
 /// and reads that vary by seed: tiny blocks and filters that let most keys
 /// through, so lookups go past false positives and scans across blocks.
-fn runs(seed: u64) -> RunStores {
+/// The disk cache, if any, is in `dir`.
+fn runs(seed: u64, dir: &std::path::Path) -> (RunStores, Option<(Arc<DiskCache>, Disk)>) {
     let mut rng = Rng(seed ^ 0x5eed);
     let config = RunConfig {
         block_bytes: rng.pick(&[1, 40, 200, 4096]),
@@ -654,15 +741,56 @@ fn runs(seed: u64) -> RunStores {
             wait: rng.chance(50),
         }),
     };
-    let objects = ObjectStorage::new(Arc::new(InMemory::new()), Path::from("state"));
-    RunStores::new(Arc::new(objects), config)
+    let objects = Arc::new(ObjectStorage::new(
+        Arc::new(InMemory::new()),
+        Path::from("state"),
+    ));
+    let disk = match rng.below(5) {
+        0 => Disk::Off,
+        1 => Disk::Evicting,
+        2 => Disk::Corrupted,
+        _ => Disk::On,
+    };
+    let limit = match disk {
+        Disk::Evicting => rng.pick(&[64, 2048, 16 << 10]),
+        _ => 64 << 20,
+    };
+    match disk {
+        Disk::Off => (RunStores::new(objects, config), None),
+        _ => {
+            let cache = DiskCache::open(&dir.join("disk"), limit).unwrap();
+            let stores = RunStores::with_disk(objects, config, cache.clone(), "op");
+            (stores, Some((cache, disk)))
+        }
+    }
 }
 
-async fn run(seed: u64, stores: Arc<dyn Stores>, exact: bool) {
+/// What a seed did that the model checked.
+#[derive(Default)]
+struct Ran {
+    flushes: u64,
+    kills_after_flush: u64,
+}
+
+async fn run(
+    seed: u64,
+    stores: Arc<dyn Stores>,
+    exact: bool,
+    disk: Option<(Arc<DiskCache>, Disk)>,
+) -> Ran {
+    let mut rng = Rng(seed ^ 0xf1u64);
+    let flush_at = match exact {
+        true => 0,
+        false => rng.pick(&[0, 0, 1, 64, 512, 4096]),
+    };
     let mut w = World {
         seed,
         rng: Rng(seed),
         stores,
+        disk,
+        flush_at,
+        flushes: 0,
+        kills_after_flush: 0,
         exact,
         generation: 0,
         epoch: 1,
@@ -684,6 +812,10 @@ async fn run(seed: u64, stores: Arc<dyn Stores>, exact: bool) {
         }
     }
     w.sweep(true).await;
+    Ran {
+        flushes: w.flushes + w.lanes.iter().map(|l| l.layer.flushes()).sum::<u64>(),
+        kills_after_flush: w.kills_after_flush,
+    }
 }
 
 fn seeds() -> Vec<u64> {
@@ -703,7 +835,7 @@ fn the_layer_matches_the_model() {
         .build()
         .unwrap();
     for seed in seeds() {
-        rt.block_on(run(seed, Arc::new(MemoryBucket::new()), true));
+        rt.block_on(run(seed, Arc::new(MemoryBucket::new()), true, None));
     }
 }
 
@@ -712,15 +844,59 @@ fn the_layer_matches_the_model_over_runs() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let mut merges = 0;
+    let (mut merges, mut flushes, mut kills, mut early) = (0, 0, 0, 0);
+    let mut by_disk: std::collections::HashMap<&str, u64> = Default::default();
     for seed in seeds() {
-        let stores = runs(seed);
-        rt.block_on(run(seed, Arc::new(stores.clone()), false));
-        merges += stores.counts().merges;
+        let dir = tempfile::tempdir().unwrap();
+        let (stores, disk) = runs(seed, dir.path());
+        let ran = rt.block_on(run(seed, Arc::new(stores.clone()), false, disk.clone()));
+        let c = stores.counts();
+        merges += c.merges;
+        early += c.early.count;
+        flushes += ran.flushes;
+        kills += ran.kills_after_flush;
+        let mut count = |k: &'static str, n: u64| *by_disk.entry(k).or_default() += n;
+        match &disk {
+            None => {
+                assert_eq!(c.disk.count, 0, "seed {seed}");
+                count("seeds without a disk cache", 1);
+            }
+            Some((cache, mode)) => {
+                let d = cache.counts();
+                assert_eq!(c.disk.count, d.hits, "seed {seed}");
+                count("seeds with a disk cache", 1);
+                count("disk hits", d.hits);
+                match mode {
+                    Disk::Evicting => count("segments evicted", d.evicted),
+                    Disk::Corrupted => count("corrupt entries read", d.corrupt),
+                    _ => {}
+                }
+            }
+        }
     }
-    println!("{} seeds over runs: {merges} merges", seeds().len());
+    let mut by_disk: Vec<_> = by_disk.into_iter().collect();
+    by_disk.sort();
+    println!(
+        "{} seeds over runs: {merges} merges, {flushes} early flushes ({early} runs), {kills} kills after one; {by_disk:?}",
+        seeds().len()
+    );
     // A seed may merge nothing, as most of one seed's configs do.
     if std::env::var("OPENETL_STATE_SEED").is_err() && seeds().len() >= 100 {
-        assert!(merges as usize >= seeds().len(), "{merges} merges");
+        let n = seeds().len() as u64;
+        assert!(merges >= n, "{merges} merges");
+        assert!(
+            flushes >= n && early >= n,
+            "{flushes} early flushes, {early} runs"
+        );
+        assert!(kills >= n / 4, "{kills} kills after an early flush");
+        for (what, at_least) in [
+            ("seeds without a disk cache", n / 10),
+            ("disk hits", n * 10),
+            ("segments evicted", n / 10),
+            ("corrupt entries read", n / 10),
+        ] {
+            let got = by_disk.iter().find(|(k, _)| *k == what).map_or(0, |e| e.1);
+            assert!(got >= at_least, "{what}: {got}");
+        }
     }
 }

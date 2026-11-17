@@ -272,6 +272,7 @@ async fn a_slow_writer_lane_slows_its_senders_within_the_links_bound() {
     let mut es = mesh(&[(1, 1), (1, 1)], |_, req| {
         req.limits = Some(openetl_proto::engine::v1::Limits {
             memory_bytes: 16 << 20,
+            ..Default::default()
         });
     })
     .await;
@@ -325,6 +326,7 @@ async fn a_link_queues_within_its_bound() {
     let mut req = request(&[(1, 1), (1, 1)], 0, &addrs);
     req.limits = Some(openetl_proto::engine::v1::Limits {
         memory_bytes: 16 << 20,
+        ..Default::default()
     });
     let plan = Arc::new(Plan::from_request(req).unwrap());
     // An eighth of the job's memory, for its one link.
@@ -1409,6 +1411,7 @@ mod windows {
                 // An eighth of it for the one link: its least, MIN_BUFFER.
                 req.limits = Some(openetl_proto::engine::v1::Limits {
                     memory_bytes: 2 << 20,
+                    ..Default::default()
                 });
                 req
             },

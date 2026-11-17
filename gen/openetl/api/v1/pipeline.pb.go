@@ -7177,8 +7177,12 @@ type OperatorStats struct {
 	// the epoch next to it, as a read can.
 	MergeWriteRequests *StateRequests `protobuf:"bytes,15,opt,name=merge_write_requests,json=mergeWriteRequests,proto3" json:"merge_write_requests,omitempty"`
 	MergeReadRequests  *StateRequests `protobuf:"bytes,16,opt,name=merge_read_requests,json=mergeReadRequests,proto3" json:"merge_read_requests,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Its reads of state that the runner's disk cache answered in the epoch,
+	// which aren't requests to object storage, and their bytes. They can
+	// count in the epoch next to it, as reads can.
+	DiskReads     *StateRequests `protobuf:"bytes,17,opt,name=disk_reads,json=diskReads,proto3" json:"disk_reads,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OperatorStats) Reset() {
@@ -7319,6 +7323,13 @@ func (x *OperatorStats) GetMergeWriteRequests() *StateRequests {
 func (x *OperatorStats) GetMergeReadRequests() *StateRequests {
 	if x != nil {
 		return x.MergeReadRequests
+	}
+	return nil
+}
+
+func (x *OperatorStats) GetDiskReads() *StateRequests {
+	if x != nil {
+		return x.DiskReads
 	}
 	return nil
 }
@@ -9278,7 +9289,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"commitTime\x12:\n" +
 	"\astreams\x18\a \x03(\v2 .openetl.api.v1.CheckpointStreamR\astreams\x12+\n" +
 	"\x05usage\x18\b \x01(\v2\x15.openetl.api.v1.UsageR\x05usage\x12;\n" +
-	"\toperators\x18\t \x03(\v2\x1d.openetl.api.v1.OperatorStatsR\toperators\"\xe3\x05\n" +
+	"\toperators\x18\t \x03(\v2\x1d.openetl.api.v1.OperatorStatsR\toperators\"\xa1\x06\n" +
 	"\rOperatorStats\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x12\x17\n" +
 	"\arows_in\x18\x02 \x01(\x04R\x06rowsIn\x12\x18\n" +
@@ -9297,7 +9308,9 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\rread_requests\x18\r \x01(\v2\x1d.openetl.api.v1.StateRequestsR\freadRequests\x12H\n" +
 	"\x10restore_requests\x18\x0e \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x0frestoreRequests\x12O\n" +
 	"\x14merge_write_requests\x18\x0f \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x12mergeWriteRequests\x12M\n" +
-	"\x13merge_read_requests\x18\x10 \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x11mergeReadRequests\";\n" +
+	"\x13merge_read_requests\x18\x10 \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x11mergeReadRequests\x12<\n" +
+	"\n" +
+	"disk_reads\x18\x11 \x01(\v2\x1d.openetl.api.v1.StateRequestsR\tdiskReads\";\n" +
 	"\rStateRequests\x12\x14\n" +
 	"\x05count\x18\x01 \x01(\x04R\x05count\x12\x14\n" +
 	"\x05bytes\x18\x02 \x01(\x04R\x05bytes\"\xa2\x03\n" +
@@ -9850,70 +9863,71 @@ var file_openetl_api_v1_pipeline_proto_depIdxs = []int32{
 	104, // 141: openetl.api.v1.OperatorStats.restore_requests:type_name -> openetl.api.v1.StateRequests
 	104, // 142: openetl.api.v1.OperatorStats.merge_write_requests:type_name -> openetl.api.v1.StateRequests
 	104, // 143: openetl.api.v1.OperatorStats.merge_read_requests:type_name -> openetl.api.v1.StateRequests
-	14,  // 144: openetl.api.v1.CheckpointStream.level:type_name -> openetl.api.v1.DeliveryLevel
-	14,  // 145: openetl.api.v1.CheckpointStream.planned_level:type_name -> openetl.api.v1.DeliveryLevel
-	102, // 146: openetl.api.v1.ListCheckpointsResponse.checkpoints:type_name -> openetl.api.v1.Checkpoint
-	132, // 147: openetl.api.v1.Hold.start_time:type_name -> google.protobuf.Timestamp
-	109, // 148: openetl.api.v1.Hold.cause:type_name -> openetl.api.v1.HoldCause
-	110, // 149: openetl.api.v1.Hold.refused:type_name -> openetl.api.v1.HoldRefusal
-	111, // 150: openetl.api.v1.Hold.ways_out:type_name -> openetl.api.v1.HoldWayOut
-	19,  // 151: openetl.api.v1.HoldCause.kind:type_name -> openetl.api.v1.HoldCause.Kind
-	20,  // 152: openetl.api.v1.HoldWayOut.action:type_name -> openetl.api.v1.HoldWayOut.Action
-	108, // 153: openetl.api.v1.ListHoldsResponse.holds:type_name -> openetl.api.v1.Hold
-	108, // 154: openetl.api.v1.ReleaseHoldResponse.hold:type_name -> openetl.api.v1.Hold
-	108, // 155: openetl.api.v1.DiscardHoldResponse.hold:type_name -> openetl.api.v1.Hold
-	119, // 156: openetl.api.v1.QuarantineFile.causes:type_name -> openetl.api.v1.QuarantineCause
-	132, // 157: openetl.api.v1.QuarantineFile.commit_time:type_name -> google.protobuf.Timestamp
-	132, // 158: openetl.api.v1.ListQuarantineRequest.since:type_name -> google.protobuf.Timestamp
-	118, // 159: openetl.api.v1.ListQuarantineResponse.files:type_name -> openetl.api.v1.QuarantineFile
-	53,  // 160: openetl.api.v1.PipelineStream.ColumnsEntry.value:type_name -> openetl.api.v1.PipelineColumn
-	57,  // 161: openetl.api.v1.PipelineService.GetPipeline:input_type -> openetl.api.v1.GetPipelineRequest
-	59,  // 162: openetl.api.v1.PipelineService.ListPipelines:input_type -> openetl.api.v1.ListPipelinesRequest
-	61,  // 163: openetl.api.v1.PipelineService.DeletePipeline:input_type -> openetl.api.v1.DeletePipelineRequest
-	63,  // 164: openetl.api.v1.PipelineService.PausePipeline:input_type -> openetl.api.v1.PausePipelineRequest
-	71,  // 165: openetl.api.v1.PipelineService.ResumePipeline:input_type -> openetl.api.v1.ResumePipelineRequest
-	73,  // 166: openetl.api.v1.PipelineService.RemovePipelineOverride:input_type -> openetl.api.v1.RemovePipelineOverrideRequest
-	69,  // 167: openetl.api.v1.PipelineService.RescalePipeline:input_type -> openetl.api.v1.RescalePipelineRequest
-	65,  // 168: openetl.api.v1.PipelineService.ResetPipeline:input_type -> openetl.api.v1.ResetPipelineRequest
-	67,  // 169: openetl.api.v1.PipelineService.RewindPipeline:input_type -> openetl.api.v1.RewindPipelineRequest
-	75,  // 170: openetl.api.v1.PipelineService.SyncPipeline:input_type -> openetl.api.v1.SyncPipelineRequest
-	77,  // 171: openetl.api.v1.PipelineService.ListPipelineVersions:input_type -> openetl.api.v1.ListPipelineVersionsRequest
-	79,  // 172: openetl.api.v1.PipelineService.GetPipelineVersion:input_type -> openetl.api.v1.GetPipelineVersionRequest
-	81,  // 173: openetl.api.v1.PipelineService.GetPipelinePlan:input_type -> openetl.api.v1.GetPipelinePlanRequest
-	89,  // 174: openetl.api.v1.PipelineService.PreflightPipeline:input_type -> openetl.api.v1.PreflightPipelineRequest
-	100, // 175: openetl.api.v1.PipelineService.ListStreamSchemas:input_type -> openetl.api.v1.ListStreamSchemasRequest
-	106, // 176: openetl.api.v1.PipelineService.ListCheckpoints:input_type -> openetl.api.v1.ListCheckpointsRequest
-	112, // 177: openetl.api.v1.PipelineService.ListHolds:input_type -> openetl.api.v1.ListHoldsRequest
-	114, // 178: openetl.api.v1.PipelineService.ReleaseHold:input_type -> openetl.api.v1.ReleaseHoldRequest
-	116, // 179: openetl.api.v1.PipelineService.DiscardHold:input_type -> openetl.api.v1.DiscardHoldRequest
-	120, // 180: openetl.api.v1.PipelineService.ListQuarantine:input_type -> openetl.api.v1.ListQuarantineRequest
-	122, // 181: openetl.api.v1.PipelineService.ReadQuarantineFile:input_type -> openetl.api.v1.ReadQuarantineFileRequest
-	58,  // 182: openetl.api.v1.PipelineService.GetPipeline:output_type -> openetl.api.v1.GetPipelineResponse
-	60,  // 183: openetl.api.v1.PipelineService.ListPipelines:output_type -> openetl.api.v1.ListPipelinesResponse
-	62,  // 184: openetl.api.v1.PipelineService.DeletePipeline:output_type -> openetl.api.v1.DeletePipelineResponse
-	64,  // 185: openetl.api.v1.PipelineService.PausePipeline:output_type -> openetl.api.v1.PausePipelineResponse
-	72,  // 186: openetl.api.v1.PipelineService.ResumePipeline:output_type -> openetl.api.v1.ResumePipelineResponse
-	74,  // 187: openetl.api.v1.PipelineService.RemovePipelineOverride:output_type -> openetl.api.v1.RemovePipelineOverrideResponse
-	70,  // 188: openetl.api.v1.PipelineService.RescalePipeline:output_type -> openetl.api.v1.RescalePipelineResponse
-	66,  // 189: openetl.api.v1.PipelineService.ResetPipeline:output_type -> openetl.api.v1.ResetPipelineResponse
-	68,  // 190: openetl.api.v1.PipelineService.RewindPipeline:output_type -> openetl.api.v1.RewindPipelineResponse
-	76,  // 191: openetl.api.v1.PipelineService.SyncPipeline:output_type -> openetl.api.v1.SyncPipelineResponse
-	78,  // 192: openetl.api.v1.PipelineService.ListPipelineVersions:output_type -> openetl.api.v1.ListPipelineVersionsResponse
-	80,  // 193: openetl.api.v1.PipelineService.GetPipelineVersion:output_type -> openetl.api.v1.GetPipelineVersionResponse
-	82,  // 194: openetl.api.v1.PipelineService.GetPipelinePlan:output_type -> openetl.api.v1.GetPipelinePlanResponse
-	90,  // 195: openetl.api.v1.PipelineService.PreflightPipeline:output_type -> openetl.api.v1.PreflightPipelineResponse
-	101, // 196: openetl.api.v1.PipelineService.ListStreamSchemas:output_type -> openetl.api.v1.ListStreamSchemasResponse
-	107, // 197: openetl.api.v1.PipelineService.ListCheckpoints:output_type -> openetl.api.v1.ListCheckpointsResponse
-	113, // 198: openetl.api.v1.PipelineService.ListHolds:output_type -> openetl.api.v1.ListHoldsResponse
-	115, // 199: openetl.api.v1.PipelineService.ReleaseHold:output_type -> openetl.api.v1.ReleaseHoldResponse
-	117, // 200: openetl.api.v1.PipelineService.DiscardHold:output_type -> openetl.api.v1.DiscardHoldResponse
-	121, // 201: openetl.api.v1.PipelineService.ListQuarantine:output_type -> openetl.api.v1.ListQuarantineResponse
-	123, // 202: openetl.api.v1.PipelineService.ReadQuarantineFile:output_type -> openetl.api.v1.ReadQuarantineFileResponse
-	182, // [182:203] is the sub-list for method output_type
-	161, // [161:182] is the sub-list for method input_type
-	161, // [161:161] is the sub-list for extension type_name
-	161, // [161:161] is the sub-list for extension extendee
-	0,   // [0:161] is the sub-list for field type_name
+	104, // 144: openetl.api.v1.OperatorStats.disk_reads:type_name -> openetl.api.v1.StateRequests
+	14,  // 145: openetl.api.v1.CheckpointStream.level:type_name -> openetl.api.v1.DeliveryLevel
+	14,  // 146: openetl.api.v1.CheckpointStream.planned_level:type_name -> openetl.api.v1.DeliveryLevel
+	102, // 147: openetl.api.v1.ListCheckpointsResponse.checkpoints:type_name -> openetl.api.v1.Checkpoint
+	132, // 148: openetl.api.v1.Hold.start_time:type_name -> google.protobuf.Timestamp
+	109, // 149: openetl.api.v1.Hold.cause:type_name -> openetl.api.v1.HoldCause
+	110, // 150: openetl.api.v1.Hold.refused:type_name -> openetl.api.v1.HoldRefusal
+	111, // 151: openetl.api.v1.Hold.ways_out:type_name -> openetl.api.v1.HoldWayOut
+	19,  // 152: openetl.api.v1.HoldCause.kind:type_name -> openetl.api.v1.HoldCause.Kind
+	20,  // 153: openetl.api.v1.HoldWayOut.action:type_name -> openetl.api.v1.HoldWayOut.Action
+	108, // 154: openetl.api.v1.ListHoldsResponse.holds:type_name -> openetl.api.v1.Hold
+	108, // 155: openetl.api.v1.ReleaseHoldResponse.hold:type_name -> openetl.api.v1.Hold
+	108, // 156: openetl.api.v1.DiscardHoldResponse.hold:type_name -> openetl.api.v1.Hold
+	119, // 157: openetl.api.v1.QuarantineFile.causes:type_name -> openetl.api.v1.QuarantineCause
+	132, // 158: openetl.api.v1.QuarantineFile.commit_time:type_name -> google.protobuf.Timestamp
+	132, // 159: openetl.api.v1.ListQuarantineRequest.since:type_name -> google.protobuf.Timestamp
+	118, // 160: openetl.api.v1.ListQuarantineResponse.files:type_name -> openetl.api.v1.QuarantineFile
+	53,  // 161: openetl.api.v1.PipelineStream.ColumnsEntry.value:type_name -> openetl.api.v1.PipelineColumn
+	57,  // 162: openetl.api.v1.PipelineService.GetPipeline:input_type -> openetl.api.v1.GetPipelineRequest
+	59,  // 163: openetl.api.v1.PipelineService.ListPipelines:input_type -> openetl.api.v1.ListPipelinesRequest
+	61,  // 164: openetl.api.v1.PipelineService.DeletePipeline:input_type -> openetl.api.v1.DeletePipelineRequest
+	63,  // 165: openetl.api.v1.PipelineService.PausePipeline:input_type -> openetl.api.v1.PausePipelineRequest
+	71,  // 166: openetl.api.v1.PipelineService.ResumePipeline:input_type -> openetl.api.v1.ResumePipelineRequest
+	73,  // 167: openetl.api.v1.PipelineService.RemovePipelineOverride:input_type -> openetl.api.v1.RemovePipelineOverrideRequest
+	69,  // 168: openetl.api.v1.PipelineService.RescalePipeline:input_type -> openetl.api.v1.RescalePipelineRequest
+	65,  // 169: openetl.api.v1.PipelineService.ResetPipeline:input_type -> openetl.api.v1.ResetPipelineRequest
+	67,  // 170: openetl.api.v1.PipelineService.RewindPipeline:input_type -> openetl.api.v1.RewindPipelineRequest
+	75,  // 171: openetl.api.v1.PipelineService.SyncPipeline:input_type -> openetl.api.v1.SyncPipelineRequest
+	77,  // 172: openetl.api.v1.PipelineService.ListPipelineVersions:input_type -> openetl.api.v1.ListPipelineVersionsRequest
+	79,  // 173: openetl.api.v1.PipelineService.GetPipelineVersion:input_type -> openetl.api.v1.GetPipelineVersionRequest
+	81,  // 174: openetl.api.v1.PipelineService.GetPipelinePlan:input_type -> openetl.api.v1.GetPipelinePlanRequest
+	89,  // 175: openetl.api.v1.PipelineService.PreflightPipeline:input_type -> openetl.api.v1.PreflightPipelineRequest
+	100, // 176: openetl.api.v1.PipelineService.ListStreamSchemas:input_type -> openetl.api.v1.ListStreamSchemasRequest
+	106, // 177: openetl.api.v1.PipelineService.ListCheckpoints:input_type -> openetl.api.v1.ListCheckpointsRequest
+	112, // 178: openetl.api.v1.PipelineService.ListHolds:input_type -> openetl.api.v1.ListHoldsRequest
+	114, // 179: openetl.api.v1.PipelineService.ReleaseHold:input_type -> openetl.api.v1.ReleaseHoldRequest
+	116, // 180: openetl.api.v1.PipelineService.DiscardHold:input_type -> openetl.api.v1.DiscardHoldRequest
+	120, // 181: openetl.api.v1.PipelineService.ListQuarantine:input_type -> openetl.api.v1.ListQuarantineRequest
+	122, // 182: openetl.api.v1.PipelineService.ReadQuarantineFile:input_type -> openetl.api.v1.ReadQuarantineFileRequest
+	58,  // 183: openetl.api.v1.PipelineService.GetPipeline:output_type -> openetl.api.v1.GetPipelineResponse
+	60,  // 184: openetl.api.v1.PipelineService.ListPipelines:output_type -> openetl.api.v1.ListPipelinesResponse
+	62,  // 185: openetl.api.v1.PipelineService.DeletePipeline:output_type -> openetl.api.v1.DeletePipelineResponse
+	64,  // 186: openetl.api.v1.PipelineService.PausePipeline:output_type -> openetl.api.v1.PausePipelineResponse
+	72,  // 187: openetl.api.v1.PipelineService.ResumePipeline:output_type -> openetl.api.v1.ResumePipelineResponse
+	74,  // 188: openetl.api.v1.PipelineService.RemovePipelineOverride:output_type -> openetl.api.v1.RemovePipelineOverrideResponse
+	70,  // 189: openetl.api.v1.PipelineService.RescalePipeline:output_type -> openetl.api.v1.RescalePipelineResponse
+	66,  // 190: openetl.api.v1.PipelineService.ResetPipeline:output_type -> openetl.api.v1.ResetPipelineResponse
+	68,  // 191: openetl.api.v1.PipelineService.RewindPipeline:output_type -> openetl.api.v1.RewindPipelineResponse
+	76,  // 192: openetl.api.v1.PipelineService.SyncPipeline:output_type -> openetl.api.v1.SyncPipelineResponse
+	78,  // 193: openetl.api.v1.PipelineService.ListPipelineVersions:output_type -> openetl.api.v1.ListPipelineVersionsResponse
+	80,  // 194: openetl.api.v1.PipelineService.GetPipelineVersion:output_type -> openetl.api.v1.GetPipelineVersionResponse
+	82,  // 195: openetl.api.v1.PipelineService.GetPipelinePlan:output_type -> openetl.api.v1.GetPipelinePlanResponse
+	90,  // 196: openetl.api.v1.PipelineService.PreflightPipeline:output_type -> openetl.api.v1.PreflightPipelineResponse
+	101, // 197: openetl.api.v1.PipelineService.ListStreamSchemas:output_type -> openetl.api.v1.ListStreamSchemasResponse
+	107, // 198: openetl.api.v1.PipelineService.ListCheckpoints:output_type -> openetl.api.v1.ListCheckpointsResponse
+	113, // 199: openetl.api.v1.PipelineService.ListHolds:output_type -> openetl.api.v1.ListHoldsResponse
+	115, // 200: openetl.api.v1.PipelineService.ReleaseHold:output_type -> openetl.api.v1.ReleaseHoldResponse
+	117, // 201: openetl.api.v1.PipelineService.DiscardHold:output_type -> openetl.api.v1.DiscardHoldResponse
+	121, // 202: openetl.api.v1.PipelineService.ListQuarantine:output_type -> openetl.api.v1.ListQuarantineResponse
+	123, // 203: openetl.api.v1.PipelineService.ReadQuarantineFile:output_type -> openetl.api.v1.ReadQuarantineFileResponse
+	183, // [183:204] is the sub-list for method output_type
+	162, // [162:183] is the sub-list for method input_type
+	162, // [162:162] is the sub-list for extension type_name
+	162, // [162:162] is the sub-list for extension extendee
+	0,   // [0:162] is the sub-list for field type_name
 }
 
 func init() { file_openetl_api_v1_pipeline_proto_init() }
