@@ -192,6 +192,7 @@ async fn past_its_share_a_lane_writes_one_run_and_its_pending_set_starts_empty()
                 assert_eq!(written, 1);
                 assert!(snaps[0].pending.is_empty());
                 assert_eq!(lane.memory().pending, 0);
+                assert_eq!(lane.commits(), 1);
                 assert_eq!(named_runs(&snaps), 1);
             }
         }

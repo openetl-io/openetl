@@ -313,7 +313,7 @@ struct Lane {
 #[derive(Debug, Default)]
 struct Tally {
     /// Lanes' barriers whose snapshots carried a pending set, and those
-    /// that committed it to the store instead.
+    /// that committed one, not empty, to the store instead.
     carried: usize,
     committed: usize,
     /// Restores from a record that carries pending sets, and those onto
@@ -369,8 +369,9 @@ impl World {
             None => Vec::new(),
         };
         if snapshots.iter().any(|s| !s.pending.is_empty()) {
+            // Each lane of the record's attempt gave one snapshot.
             self.tally.restored += 1;
-            self.tally.rescaled += usize::from(lanes as usize != self.lanes.len());
+            self.tally.rescaled += usize::from(lanes as usize != snapshots.len());
         }
         if self.unrecorded && from.is_some() {
             self.tally.killed += 1;
@@ -576,6 +577,7 @@ impl World {
         let ctx = self.ctx();
         let mut snapshots = Vec::new();
         for l in &mut self.lanes {
+            let commits = l.layer.commits();
             let got = l.layer.barrier(self.epoch).await;
             let got = got.unwrap_or_else(|e| panic!("{ctx}: barrier: {e}"));
             let carried: usize = got.iter().map(|s| s.pending.len()).sum();
@@ -588,12 +590,15 @@ impl World {
             let memory = l.layer.memory();
             assert_eq!(memory.changes, 0, "{ctx}");
             assert_eq!(memory.pending == 0, carried == 0, "{ctx}: {memory:?}");
-            match carried {
-                0 => self.tally.committed += 1,
-                _ => {
-                    self.tally.carried += 1;
-                    self.unrecorded = true;
-                }
+            let committed = l.layer.commits() - commits;
+            assert!(
+                committed == 0 || carried == 0,
+                "{ctx}: committed and carried"
+            );
+            self.tally.committed += committed as usize;
+            if carried > 0 {
+                self.tally.carried += 1;
+                self.unrecorded = true;
             }
             // A pending set may hold deletes of what the store holds.
             if self.exact && memory.pending == 0 {

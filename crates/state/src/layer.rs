@@ -61,6 +61,8 @@ pub struct Layer {
     /// What a record may carry of the pending set, in bytes of its
     /// encoding.
     share: usize,
+    /// Barriers that committed a pending set to the store.
+    commits: u64,
     /// Each operator's horizon in each group, as the store keeps it.
     horizons: Horizons,
     /// The set's horizons a store of layout 1 kept as values, by operator
@@ -129,6 +131,7 @@ impl Layer {
             pending,
             pending_bytes,
             share: stores.pending_share(range),
+            commits: 0,
             horizons,
             kept: HashMap::new(),
             moved: HashMap::new(),
@@ -162,6 +165,12 @@ impl Layer {
         self.share
     }
 
+    /// How many of its barriers committed a pending set, not empty, to the
+    /// store.
+    pub fn commits(&self) -> u64 {
+        self.commits
+    }
+
     /// The barrier of epoch `epoch`, the open one: adds its changes to the
     /// pending set, and returns the snapshots the record names for the
     /// lane. They carry the pending set while its encoding is within the
@@ -193,7 +202,9 @@ impl Layer {
             true => Vec::new(),
             false => std::mem::take(&mut pending).into_iter().collect(),
         };
+        let committed = !changes.is_empty();
         let mut snapshots = self.store.commit(epoch, changes, &self.horizons).await?;
+        self.commits += u64::from(committed);
         for s in &mut snapshots {
             let r = s.range;
             s.pending = match r.contains(self.range.first) && r.contains(self.range.last) {
