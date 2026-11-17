@@ -307,6 +307,17 @@ fn ranges(lanes: u32) -> Vec<KeyGroupRange> {
 struct Lane {
     range: KeyGroupRange,
     layer: Layer,
+    /// Of its layer's early flushes, those `World::flushes` counts.
+    counted: u64,
+}
+
+impl Lane {
+    /// Its early flushes since they were last counted.
+    fn new_flushes(&mut self) -> u64 {
+        let n = self.layer.flushes() - self.counted;
+        self.counted = self.layer.flushes();
+        n
+    }
 }
 
 /// How a seed over runs keeps a disk cache.
@@ -363,6 +374,7 @@ impl World {
         };
         self.generation += 1;
         self.epoch = from.map_or(1, |e| e + 1);
+        self.flushes += self.lanes.iter_mut().map(Lane::new_flushes).sum::<u64>();
         let old = std::mem::take(&mut self.lanes);
         if self.rng.chance(30) {
             self.zombies.extend(old);
@@ -381,7 +393,11 @@ impl World {
             .unwrap_or_else(|e| panic!("{}: open: {e}", self.ctx()));
             let mut layer = layer;
             layer.set_flush_at(self.flush_at);
-            self.lanes.push(Lane { range, layer });
+            self.lanes.push(Lane {
+                range,
+                layer,
+                counted: 0,
+            });
         }
         self.now = from.map_or_else(Logical::default, |e| self.records[&e].0.clone());
         self.last = self.now.clone();
@@ -629,7 +645,7 @@ impl World {
         let ctx = self.ctx();
         let mut snapshots = Vec::new();
         for l in &mut self.lanes {
-            self.flushes += l.layer.flushes();
+            self.flushes += l.new_flushes();
             let got = l.layer.barrier(self.epoch).await;
             snapshots.extend(got.unwrap_or_else(|e| panic!("{ctx}: barrier: {e}")));
             let memory = l.layer.memory();
@@ -817,7 +833,7 @@ async fn run(
     }
     w.sweep(true).await;
     Ran {
-        flushes: w.flushes + w.lanes.iter().map(|l| l.layer.flushes()).sum::<u64>(),
+        flushes: w.flushes + w.lanes.iter_mut().map(Lane::new_flushes).sum::<u64>(),
         kills_after_flush: w.kills_after_flush,
     }
 }

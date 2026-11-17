@@ -92,7 +92,7 @@ Where a runner keeps checkpoints and its cache, the programs it runs, the pool i
 |---|---|---|---|
 | `--checkpoints` | `OPENETL_CHECKPOINTS` |  | checkpoint store, which a runner needs (openetld dev: .openetl/checkpoints): a directory, which every runner and any Spark or Flink cluster must see at the same path, so a container needs it mounted, s3://bucket (with region=… to name the bucket's region rather than ask S3, endpoint=… for another S3-compatible store, and anonymous=true for unsigned requests), gs://bucket, or azblob://container?account=…&endpoint=…; a path after the bucket puts everything under it; the kubernetes launcher needs a bucket |
 | `--engine` | `OPENETL_ENGINE` |  | openetl-engine executable (default: next to openetld, then on PATH) |
-| `--scratch` | `OPENETL_SCRATCH` | `1Gi` | the local disk each job's engine may use, in the scratch folder of --cache, such as 10Gi, half of it for the disk cache of its SQL transform's state, which it removes when the job ends; 0: none, which turns the cache off; the kubernetes launcher sets it in its pods |
+| `--scratch` | `OPENETL_SCRATCH` | `1Gi` | the local disk each job's engine may use, in the scratch folder of --cache, such as 10Gi, half of it for the disk cache of its SQL transform's state, which it removes when the job ends; 0: none, which turns the cache off; the kubernetes launcher sets it in its pods, to half of --pod-scratch |
 | `--connectors` | `OPENETL_CONNECTORS` |  | directory of external connector executables, named source-NAME and destination-NAME (default: connectors/ next to openetld) |
 | `--cache` | `OPENETL_CACHE` | `.openetl/cache` | where runners cache artifacts, such as connector versions and dbt projects, and connectors' executables |
 | `--dbt` | `OPENETL_DBT` |  | dbt executable for pipelines' post-sync steps, with the destinations' adapters installed (default: dbt on PATH) |
@@ -126,7 +126,7 @@ A runner with `--launcher` set is a pod launcher: it makes a pod, or a process, 
 | `--pod-namespace` | `OPENETL_POD_NAMESPACE` |  | the namespace the kubernetes launcher makes pods in (default: the kubeconfig context's, or the launcher's own) |
 | `--kubeconfig` | `OPENETL_KUBECONFIG` |  | a kubeconfig file for the kubernetes launcher (default: its service account; it never reads one it isn't given) |
 | `--pod-stream-spot` | `OPENETL_POD_STREAM_SPOT` | `prefer` | whether the kubernetes launcher's stream pods keep off spot nodes: prefer, so they run on spot only where there's nothing else, or avoid, so they never do |
-| `--pod-scratch` | `OPENETL_POD_SCRATCH` | `10Gi` | each pod's ephemeral storage, for its runner's scratch; its engines get half of it as their --scratch; 0: none set |
+| `--pod-scratch` | `OPENETL_POD_SCRATCH` | `10Gi` | each pod's ephemeral storage, for its runner's scratch; its engines get half of it as their --scratch; 0: none set, and its engines get none |
 | `--attempt` | `OPENETL_ATTEMPT` |  | the one attempt this runner runs before it stops, as a pod launcher's pod; set by the launcher |
 | `--placement` | `OPENETL_PLACEMENT` | `0` | which placement of --attempt this pod is for; set by the launcher |
 | `--worker` | `OPENETL_WORKER` | `0` | which of --attempt's workers this pod runs, counting from 1; 0: the attempt itself, which coordinates its workers if it has any; set by the launcher |

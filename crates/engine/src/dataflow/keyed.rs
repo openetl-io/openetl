@@ -880,6 +880,13 @@ impl Keyed {
         ))
     }
 
+    /// Counts what the lane's state holds now as the job's.
+    fn held(&self, lane: &Lane, id: &str) {
+        if let Some(state) = &lane.flow.plan.state.job {
+            state.hold(id, lane.lane, self.layer.memory().total());
+        }
+    }
+
     /// Quarantines rows of a batch of the input as the output's.
     fn reject(
         &mut self,
@@ -1136,6 +1143,7 @@ impl Keyed {
             self.layer.discard();
             self.counts = Counts::default();
             (self.op.opened, self.op.dropped) = (0, 0);
+            self.held(lane, &id);
         } else {
             let memory = self.layer.memory().total();
             let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
@@ -1144,6 +1152,9 @@ impl Keyed {
                     &err,
                 )
             })?;
+            // The barrier released the epoch's changes and the sections
+            // that died.
+            self.held(lane, &id);
             let named = snapshots
                 .iter()
                 .map(|sn| crate::state::named(&id, sn))
@@ -1177,11 +1188,6 @@ impl Keyed {
                 pieces.snapshots.extend(named);
             }
             pieces.operator(op);
-        }
-        // The barrier released the epoch's changes and the sections that
-        // died, or the discard the changes.
-        if let Some(state) = &plan.state.job {
-            state.hold(&id, lane.lane, self.layer.memory().total());
         }
         let outputs_q = plan
             .transform

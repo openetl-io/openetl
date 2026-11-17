@@ -166,7 +166,7 @@ A runner gives each job's engine a folder on local disk, in the `scratch` folder
 - `--scratch 0` turns the disk cache off. The engine then reads the checkpoint store each time a block of state is not in memory.
 - A runner that runs several jobs at once needs room for each of them. Connectors' temporary files and the runner's `--cache` need room of their own.
 - If a runner stops without cleaning up, the next engine that a runner with the same `--cache` starts deletes what the stopped runner's engines left.
-- On Kubernetes, the pod launcher sets each pod's `OPENETL_SCRATCH` to half of `OPENETL_POD_SCRATCH`, the pod's ephemeral storage ([Install on Kubernetes](./kubernetes.md)).
+- On Kubernetes, the pod launcher sets each pod's `OPENETL_SCRATCH` to half of `OPENETL_POD_SCRATCH`, the pod's ephemeral storage ([Install on Kubernetes](./kubernetes.md)). If `OPENETL_POD_SCRATCH` is `0`, the pods get `OPENETL_SCRATCH=0`, and their engines have no disk cache.
 
 To size it, give the cache about as much as the state that a job's group windows read often: the open windows of a continuous pipeline, and those that a sync reads. A larger cache makes fewer requests to the checkpoint store. The console's **SQL** tab shows how many reads the disk answered at the last checkpoint ([SQL](../use/index.md#sql)).
 
