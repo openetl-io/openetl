@@ -10,6 +10,14 @@ targets = [
 
 [advisories]
 yanked = "deny"
+# Each of these says a crate is unmaintained, with no release to move to.
+# Arrow, DataFusion, Parquet and object_store need them, so they stay until
+# those crates move off them.
+ignore = [
+  { id = "RUSTSEC-2026-0542", reason = "humantime: object_store depends on it" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono: Arrow and DataFusion keep times with it" },
+  { id = "RUSTSEC-2026-0555", reason = "chrono-tz: Arrow reads time zones with it" },
+]
 
 [licenses]
 allow = [
