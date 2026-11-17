@@ -18,11 +18,17 @@ func TestOperatorsAddUpEveryEnginesPart(t *testing.T) {
 			Barrier: Requests{Count: 1, Bytes: 7}, Restore: Requests{Count: 2, Bytes: 64}, MergeWrite: Requests{Count: 1, Bytes: 5},
 			MergeRead: Requests{Count: 4, Bytes: 90}},
 	}
-	got := Operators(parts, map[string]int64{"window-a": 4, "window-c": 9})
+	// The record's snapshots: each lane's pending set counts once.
+	snapshots := []Snapshot{
+		{Operator: "window-a", KeyGroups: KeyGroupRange{First: 0, Last: 127}, Pending: make([]byte, 30)},
+		{Operator: "window-a", KeyGroups: KeyGroupRange{First: 128, Last: 255}, Pending: make([]byte, 12), Runs: []string{"window-a/g1/e2/kg128-255.run"}},
+		{Operator: "window-c", Pending: make([]byte, 5)},
+	}
+	got := Operators(parts, map[string]int64{"window-a": 4, "window-c": 9}, snapshots)
 	want := []Operator{
 		{Operator: "window-a", RowsIn: 15, Inserts: 3, Updates: 1, Deletes: 1, Late: 2, Windows: 4 + 6 - 3, Watermark: at(60), MemoryBytes: 150,
-			StoredBytes: 40 + 10 + 7, Barrier: Requests{Count: 2, Bytes: 17}, Lookup: Requests{Count: 3, Bytes: 300}, Restore: Requests{Count: 2, Bytes: 64},
-			MergeWrite: Requests{Count: 2, Bytes: 35}, MergeRead: Requests{Count: 4, Bytes: 90}},
+			StoredBytes: 40 + 10 + 7, CheckpointBytes: 30 + 12, Barrier: Requests{Count: 2, Bytes: 17}, Lookup: Requests{Count: 3, Bytes: 300},
+			Restore: Requests{Count: 2, Bytes: 64}, MergeWrite: Requests{Count: 2, Bytes: 35}, MergeRead: Requests{Count: 4, Bytes: 90}},
 		{Operator: "window-b", RowsIn: 7, Windows: 2, Watermark: at(math.MaxInt64)},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -30,11 +36,11 @@ func TestOperatorsAddUpEveryEnginesPart(t *testing.T) {
 	}
 	// A lane with no watermark yet holds the operator's back, whichever
 	// engine's it is.
-	none := Operators([]OperatorPart{{Operator: "w", Watermark: at(5)}, {Operator: "w"}, {Operator: "w", Watermark: at(3)}}, nil)
+	none := Operators([]OperatorPart{{Operator: "w", Watermark: at(5)}, {Operator: "w"}, {Operator: "w", Watermark: at(3)}}, nil, nil)
 	if none[0].Watermark != nil {
 		t.Errorf("watermark %d with a lane that has none", *none[0].Watermark)
 	}
-	if Operators(nil, nil) != nil {
+	if Operators(nil, nil, nil) != nil {
 		t.Error("operators without parts")
 	}
 }

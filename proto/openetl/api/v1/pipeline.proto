@@ -1351,6 +1351,9 @@ message OperatorStats {
   // the epoch next to it, as a read can.
   StateRequests merge_write_requests = 15;
   StateRequests merge_read_requests = 16;
+  // The bytes of its state that the checkpoint record itself carries: what
+  // its lanes changed since each last wrote its state to object storage.
+  uint64 checkpoint_bytes = 17;
 }
 
 // StateRequests are requests of one kind to object storage, and their

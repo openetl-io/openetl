@@ -418,6 +418,7 @@ mod tests {
             range: KeyGroupRange::new(0, 3),
             layout: crate::LAYOUT,
             data,
+            pending: Bytes::new(),
         };
         assert_eq!(super::named(&snap(data.clone())).ok(), Some(named.clone()));
         assert_eq!(super::runs(&snap(data.clone())).ok(), Some(named.runs));
