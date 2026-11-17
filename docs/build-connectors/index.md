@@ -162,7 +162,7 @@ Keeping a copy of each lane's part, so that Recover can commit it, is the destin
 
 That read gives each split, or the whole stream, the state it starts from. If the epoch's part ended at a resume point, the read also gives an `until`: the state of that resume point. A source can assume that `until` is the state of a resume point it sent before. It is never the state of a completion. A source that can stop at `until` sends no record past that position. It sends a resume point with the `until` state, and completes the split with it. A source that ignores `until` makes the read exact only if it sends the same resume points as the first read did. A source that batches records by what it fetched, such as one reading a log, can rarely do that.
 
-If the epoch's part ended at the split's completion, the read gives a `complete_at` instead: the state that the first read completed the split at, unless that state was empty. A completion's state is where the next sync starts. For a source that reads a log, such as offsets or a WAL position, it is also where the read ended. A source that can tell from the state where the first read ended sends no record past that position. It completes the split with the `complete_at` state, and can send a resume point with that state first. A source whose completion state is a cursor floor, rather than where the read ended, ignores `complete_at`. A source that can stop there for some reads only ignores it for the others, and its documentation says which. A source that ignores it reads to where it catches up. The read is then exact only if the source has not moved past where the first read completed. Otherwise the attempt fails with `POSITION_LOST`.
+If the epoch's part ended at the split's completion, the read gives a `complete_at` instead: the state that the first read completed the split at, unless that state was empty. A completion's state is where the next sync starts. For a source that reads a log, such as offsets or a WAL position, it is also where the read ended. A source that can tell from the state where the first read ended sends no record past that position. It completes the split with the `complete_at` state, and can send a resume point with that state first. A source whose completion state is a cursor floor, rather than where the read ended, ignores `complete_at`. A source that can stop there for some reads only ignores it for the others, and its documentation says which. A source that ignores it reads to where it catches up. The read is then exact only if the source has not moved past where the first read completed. If the read completes at another state, the attempt fails with `POSITION_LOST`. If it completes at the same state with more records, OpenETL commits them, as it does with more records before an `until`. A source whose completion state does not move with what it reads can do that.
 
 In Go, the SDK gives both as `Until` and `CompleteAt` on `source.Split`, and on `source.ConfiguredStream` for a stream read whole. A read never has both.
 
@@ -328,12 +328,12 @@ SKIP read/until
     the suite doesn't say the source stops at until
 SKIP read/incremental
     the suite reads no stream incrementally
+SKIP read/complete-at
+    the suite doesn't say the source completes at complete_at
 SKIP read/committed
     the source doesn't acknowledge, so the platform never calls Committed
 SKIP read/continuous
     the suite reads no stream with cdc or stream
-SKIP read/complete-at
-    the suite doesn't say the source completes at complete_at
 source-greetings: 13 checks, 5 passed, 0 failed, 8 skipped
 ```
 

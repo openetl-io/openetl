@@ -105,9 +105,11 @@ func (r *sourceRun) checks() []Check {
 		Check{"read/resume", r.checkResume},
 		Check{"read/until", r.checkUntil},
 		Check{"read/incremental", r.checkIncremental},
+		// Before any acknowledgement, which may let a source discard what
+		// it reads again from a resume point.
+		Check{"read/complete-at", r.checkCompleteAt},
 		Check{"read/committed", r.checkCommitted},
 		Check{"read/continuous", r.checkContinuous},
-		Check{"read/complete-at", r.checkCompleteAt},
 	)
 }
 
