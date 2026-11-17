@@ -2099,6 +2099,8 @@ struct RedoOf {
     floor: i64,
     closes_at: i64,
     steps: Vec<openetl_proto::engine::v1::WindowSteps>,
+    /// The job's memory, in bytes; 0 for no limit.
+    memory: u64,
 }
 
 /// Each lane's frames of a live run of a case, which reads it to the end.
@@ -2200,14 +2202,14 @@ fn redo_frames(
 /// and quarantine below `dir`: live, recording the steps of its window's
 /// watermark, or as `redo`, of generation 2. The lanes' frames go in an
 /// order from `seed`, and every output is read as it comes. Returns each
-/// writer lane's frames, and the EpochReadys.
+/// writer lane's frames, and the EpochReadys, or how the job failed.
 async fn run_frames(
     dir: &std::path::Path,
     case: &Case,
     frames: Vec<Vec<(FrameKind, u32, Vec<u8>)>>,
     seed: u64,
     redo: Option<&RedoOf>,
-) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
+) -> Result<(Vec<Vec<frame::Frame>>, Vec<EpochReady>), JobError> {
     let lanes = frames.len();
     let (generation, first) = redo.map_or((1, 1), |r| (2, r.epoch));
     let sql = case.window.sql(case.having);
@@ -2225,6 +2227,9 @@ async fn run_frames(
             req.state_read_only = true;
             req.restored_snapshots = r.restored.clone();
             req.window_steps = r.steps.clone();
+            req.limits = (r.memory > 0).then_some(openetl_proto::engine::v1::Limits {
+                memory_bytes: r.memory,
+            });
         }
     }
     let mut h = start_lanes(req);
@@ -2236,16 +2241,16 @@ async fn run_frames(
     let readies = tokio::spawn(async move {
         let mut out = Vec::new();
         while let Some(ev) = events.recv().await {
-            match ev {
-                Ok(EventsResponse {
-                    event: Some(events_response::Event::EpochReady(r)),
-                }) => out.push(r),
-                Ok(_) => {}
-                Err(e) => panic!("{}", e.message()),
+            if let Ok(EventsResponse {
+                event: Some(events_response::Event::EpochReady(r)),
+            }) = ev
+            {
+                out.push(r);
             }
         }
         out
     });
+    // A job that failed reads no more.
     let mut rng = Rng(seed);
     let mut at = vec![0; lanes];
     while (0..lanes).any(|l| at[l] < frames[l].len()) {
@@ -2254,19 +2259,30 @@ async fn run_frames(
             let Some((kind, stream, payload)) = frames[l].get(at[l]) else {
                 break;
             };
-            put(&mut h.ins[l], *kind, *stream, payload.clone()).await;
+            if frame::write(&mut h.ins[l], *kind, *stream, payload)
+                .await
+                .is_err()
+            {
+                at[l] = frames[l].len();
+                break;
+            }
             at[l] += 1;
         }
     }
-    h.end_all(2).await;
-    h.job.await.unwrap().unwrap();
+    for w in &mut h.ins {
+        for s in 0..2 {
+            let _ = frame::write(w, FrameKind::EndOfStream, s, &[]).await;
+        }
+        let _ = w.shutdown().await;
+    }
+    let ended = h.job.await.unwrap();
     let ready = readies.await.unwrap();
     let mut outs: Vec<Vec<frame::Frame>> = (0..lanes).map(|_| Vec::new()).collect();
     while let Some(d) = drains.join_next().await {
         let (i, fs) = d.unwrap();
         outs[i] = fs;
     }
-    (outs, ready)
+    ended.map(|()| (outs, ready))
 }
 
 /// A window's row as a writer lane gave it: its start and key, its count,
@@ -2376,7 +2392,9 @@ async fn a_redo_of_each_epoch_is_the_live_epoch() {
             let mut case = Case::generate(seed * 104_729 + 11, window, None);
             case.lateness = 0;
             let dir = tempfile::tempdir().unwrap();
-            let (outs, ready) = run_frames(dir.path(), &case, live_frames(&case), seed, None).await;
+            let (outs, ready) = run_frames(dir.path(), &case, live_frames(&case), seed, None)
+                .await
+                .unwrap();
             let mut rng = Rng(seed);
             for (i, r) in ready.iter().enumerate() {
                 let n = i as u64 + 1;
@@ -2401,12 +2419,15 @@ async fn a_redo_of_each_epoch_is_the_live_epoch() {
                         .map_or(NONE, |p| ready[p].window_watermarks["a"]),
                     closes_at: r.window_watermarks["a"],
                     steps,
+                    memory: 0,
                 };
                 let lanes = 1 + rng.below(2);
                 let frames = redo_frames(&case, n, lanes, rng.next());
                 let order = rng.next();
                 let (redo_outs, redo_ready) =
-                    run_frames(dir.path(), &case, frames.clone(), order, Some(&redo)).await;
+                    run_frames(dir.path(), &case, frames.clone(), order, Some(&redo))
+                        .await
+                        .unwrap();
                 assert_eq!(
                     given_in(&redo_outs, n, n),
                     live,
@@ -2436,7 +2457,9 @@ async fn a_redo_of_each_epoch_is_the_live_epoch() {
                 // The same redo without the steps.
                 redo.steps.clear();
                 let (bare_outs, bare_ready) =
-                    run_frames(dir.path(), &case, frames, order, Some(&redo)).await;
+                    run_frames(dir.path(), &case, frames, order, Some(&redo))
+                        .await
+                        .unwrap();
                 let differ = given_in(&bare_outs, n, n) != live
                     || quarantined_ids(&bare_ready[0]) != live_late;
                 tally.unstepped_differ += usize::from(differ);
@@ -2450,4 +2473,93 @@ async fn a_redo_of_each_epoch_is_the_live_epoch() {
     assert!(tally.rows >= 1_500, "{tally:?}");
     assert!(tally.late >= 250, "{tally:?}");
     assert!(tally.unstepped_differ >= 40, "{tally:?}");
+}
+
+/// A redo holds the rows that wait for its barrier within half the job's
+/// memory, which every keyed lane's count against. Within it, the redo
+/// gives what the live epoch gave; past it, the redo fails as
+/// RESOURCE_EXHAUSTED and says to give the job more memory, before the
+/// rows it would hold could end the engine at the job's limit.
+#[tokio::test]
+async fn a_redo_holds_the_rows_for_its_barrier_within_half_the_jobs_memory() {
+    // Rows of x at 5 s, then 12 s, which closes [0, 10), then 7 s, late;
+    // 14 s, 22 s, which closes [10, 20), then 15 s, late; and 25 s.
+    let mut evs: Vec<Ev> = [5, 12, 7, 14, 22, 15, 25]
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| {
+            Ev::Rows(
+                0,
+                vec![Row {
+                    id: i as i64 + 1,
+                    key: "x",
+                    v: 1,
+                    at: Some(t * SEC),
+                }],
+            )
+        })
+        .collect();
+    evs.push(Ev::Barrier);
+    let case = Case {
+        window: Window::Tumble,
+        having: false,
+        lateness: 0,
+        delay: 0,
+        held: false,
+        lanes: vec![evs],
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (outs, ready) = run_frames(dir.path(), &case, live_frames(&case), 1, None)
+        .await
+        .unwrap();
+    let live = given_in(&outs, 1, 1);
+    let late = quarantined_ids(&ready[0]);
+    assert_eq!((live.len(), late), (2, BTreeSet::from([3, 6])));
+    let redo = |memory| RedoOf {
+        epoch: 1,
+        restored: Vec::new(),
+        floor: NONE,
+        closes_at: ready[0].window_watermarks["a"],
+        steps: ready[0]
+            .operators
+            .iter()
+            .map(|o| openetl_proto::engine::v1::WindowSteps {
+                operator: o.operator.clone(),
+                lanes: o.steps.clone(),
+            })
+            .collect(),
+        memory,
+    };
+    let within = redo(1 << 30);
+    let (redo_outs, redo_ready) = run_frames(
+        dir.path(),
+        &case,
+        redo_frames(&case, 1, 1, 7),
+        2,
+        Some(&within),
+    )
+    .await
+    .unwrap();
+    assert_eq!(given_in(&redo_outs, 1, 1), live);
+    assert_eq!(quarantined_ids(&redo_ready[0]), BTreeSet::from([3, 6]));
+    // Half of 1 KiB doesn't hold the rows that met 10 s and 20 s.
+    let past = redo(1 << 10);
+    let Err(e) = run_frames(
+        dir.path(),
+        &case,
+        redo_frames(&case, 1, 1, 7),
+        2,
+        Some(&past),
+    )
+    .await
+    else {
+        panic!("a redo held its rows past half the job's memory");
+    };
+    assert_eq!(e.code, ErrorCode::ResourceExhausted, "{e}");
+    assert!(
+        e.message.contains("until the epoch's barrier")
+            && e.message.contains("512 bytes")
+            && e.message.contains("larger resources.size"),
+        "{e}"
+    );
 }

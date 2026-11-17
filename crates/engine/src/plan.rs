@@ -111,6 +111,9 @@ pub struct StatePlan {
     /// A redo's, by operator: the steps of a group window's watermark in the
     /// epoch it redoes.
     pub steps: HashMap<String, std::sync::Arc<crate::watermark::Met>>,
+    /// A redo's: what its keyed lanes hold of the rows that wait for its
+    /// barrier.
+    pub deferred: crate::watermark::Deferred,
 }
 
 /// A job's SQL transform: the streams it reads, which the inbound edges
@@ -722,6 +725,9 @@ impl Plan {
                 restored: restored_state,
                 record_steps: req.record_window_steps && !req.state_read_only,
                 steps: window_steps(&req.window_steps)?,
+                deferred: crate::watermark::Deferred::new(
+                    req.limits.as_ref().map_or(0, |l| l.memory_bytes),
+                ),
             },
             job: req.job.clone(),
             mesh,

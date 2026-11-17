@@ -722,6 +722,11 @@ impl Keyed {
         };
         for (w, rows) in later {
             let part = some(&rows)?;
+            let bytes = part.0.get_array_memory_size() as u64;
+            let deferred = &lane.flow.plan.state.deferred;
+            deferred
+                .hold(bytes)
+                .map_err(|limit| self.held_over(lane, limit))?;
             self.later.entry(w).or_default().push(part);
         }
         match now.len() {
@@ -732,6 +737,30 @@ impl Keyed {
                 self.rows(lane, b, h).await
             }
         }
+    }
+
+    /// A redo's error where the rows that wait for its barrier need more
+    /// than the `limit` bytes its keyed lanes may hold.
+    fn held_over(&self, lane: &Lane, limit: u64) -> JobError {
+        let plan = &lane.flow.plan;
+        let (at, output) = plan.transform.as_ref().map_or_else(
+            || (String::new(), String::new()),
+            |t| {
+                let st = &t.sql.statements[self.statement];
+                (st.at.to_string(), st.output.clone())
+            },
+        );
+        let limit = match limit >= 1 << 20 {
+            true => format!("{} MiB", limit >> 20),
+            false => format!("{limit} bytes"),
+        };
+        JobError::new(
+            ErrorCode::ResourceExhausted,
+            format!(
+                "transform.sql {at}: the redo of a writer lane's part of epoch {}, writing {output}, holds the rows that met a later watermark of the group window in the epoch until the epoch's barrier, and they need more than the {limit} it may hold, half of the job's memory. Run the pipeline with a larger resources.size, so that the next attempt can settle the epoch",
+                plan.first_epoch
+            ),
+        )
     }
 
     /// Takes rows of the window's stream, by the window's watermark now.
@@ -985,7 +1014,9 @@ impl Keyed {
                     for (w, parts) in std::mem::take(&mut self.later) {
                         self.advance(lane, w).await?;
                         for (b, h) in parts {
+                            let bytes = b.get_array_memory_size() as u64;
                             self.rows(lane, b, h).await?;
+                            lane.flow.plan.state.deferred.release(bytes);
                         }
                     }
                     if c > self.wm {

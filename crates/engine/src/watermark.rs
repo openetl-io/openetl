@@ -336,6 +336,46 @@ impl Met {
     }
 }
 
+/// What a redo's keyed lanes may hold together of the rows that wait for
+/// the barrier, as their Arrow arrays' bytes: half the job's memory.
+#[derive(Debug, Default)]
+pub struct Deferred {
+    /// 0: no limit.
+    limit: u64,
+    held: std::sync::atomic::AtomicU64,
+}
+
+/// What the job's memory is, over what it holds of rows for the barrier.
+const DEFERRED_SHARE: u64 = 2;
+
+impl Deferred {
+    /// For a job of `memory` bytes, 0 for no limit.
+    pub fn new(memory: u64) -> Self {
+        Self {
+            limit: memory / DEFERRED_SHARE,
+            held: Default::default(),
+        }
+    }
+
+    /// Holds `bytes` more if they fit; else holds nothing more, and gives
+    /// the limit.
+    pub fn hold(&self, bytes: u64) -> Result<(), u64> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let was = self.held.fetch_add(bytes, Relaxed);
+        if self.limit > 0 && was.saturating_add(bytes) > self.limit {
+            self.held.fetch_sub(bytes, Relaxed);
+            return Err(self.limit);
+        }
+        Ok(())
+    }
+
+    /// Holds `bytes` less.
+    pub fn release(&self, bytes: u64) {
+        self.held
+            .fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// A sender's watermark went back.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("sender {sender}'s watermark went back from {from} to {to}")]
