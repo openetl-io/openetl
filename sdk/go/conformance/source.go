@@ -44,6 +44,10 @@ type SourceSuite struct {
 	// The source stops a read at its until, as source.Split's Until says.
 	// False skips the until check: a source may ignore until.
 	StopsAtUntil bool
+	// The source completes a read at its complete_at, as source.Split's
+	// CompleteAt says. False skips the complete-at check: a source may
+	// ignore complete_at.
+	StopsAtCompletion bool
 	// How long one read may take: 0 means 2 minutes.
 	ReadTimeout time.Duration
 }
@@ -103,6 +107,7 @@ func (r *sourceRun) checks() []Check {
 		Check{"read/incremental", r.checkIncremental},
 		Check{"read/committed", r.checkCommitted},
 		Check{"read/continuous", r.checkContinuous},
+		Check{"read/complete-at", r.checkCompleteAt},
 	)
 }
 
@@ -495,6 +500,81 @@ func (r *sourceRun) checkUntil(t T) {
 		case again.hasNext != end.hasNext || !bytes.Equal(again.next, end.next):
 			t.Errorf("%s: read from its last resume point, the stream completed at %q, not at %q as the first read did", name, again.next, end.next)
 		}
+	}
+}
+
+// Read: complete-at: a read given the state a stream completed at as its
+// complete_at, from its last resume point before that, reads the records
+// between the two and nothing past them, and completes at that state, as a
+// redo of an epoch's part that ended at the completion does. AddRecords
+// first moves the source on past where it completed, so that a source that
+// ignores complete_at reads records it hadn't. Streams that completed with
+// no state, or an empty one, have nothing to complete at.
+func (r *sourceRun) checkCompleteAt(t T) {
+	if !r.s.StopsAtCompletion {
+		t.Skipf("the suite doesn't say the source completes at complete_at")
+	}
+	res, streams := r.fullRead(t)
+	cat := r.discover(t)
+	tried := 0
+	for _, cs := range streams {
+		name := cs.GetName()
+		events := res.of(name)
+		end, ok := completion(events)
+		if !ok || len(end.next) == 0 {
+			continue
+		}
+		tried++
+		if r.s.AddRecords != nil {
+			if _, err := r.s.AddRecords(t.Context(), name); err != nil {
+				t.Fatalf("AddRecords(%s): %v", name, err)
+			}
+		}
+		last := -1
+		for i, e := range events {
+			if e.complete {
+				break
+			}
+			if e.resume {
+				last = i
+			}
+		}
+		st := &protocolv1.ConfiguredStream{Name: name, SyncMode: cs.GetSyncMode(), Cursor: cs.GetCursor(), CompleteAt: end.next}
+		if last >= 0 {
+			st.State = events[last].state
+		}
+		again := r.read(t, st).of(name)
+		want := countRows(rowsAfter(events, last))
+		got := countRows(allRows(again))
+		if missing := want.minus(got); len(missing) > 0 {
+			t.Errorf("%s: a read to its completion from its last resume point skipped %d of the %d records between them: %s", name, len(missing), len(rowsAfter(events, last)), sample(missing))
+		}
+		if past := novel(allRows(again), countRows(allRows(events))); len(past) > 0 {
+			t.Errorf("%s: a read to its completion read %d records past it: %s", name, len(past), sample(past))
+		} else if extra := got.minus(want); len(extra) > 0 && cat[name].GetReplay() == protocolv1.Replay_REPLAY_EXACT {
+			t.Errorf("%s: the replay is exact, but a read to its completion read %d records again: %s", name, len(extra), sample(extra))
+		}
+		completesAt(t, name, again, end.next)
+	}
+	if tried == 0 {
+		t.Skipf("no stream completed at a state")
+	}
+}
+
+// completesAt: a read asked to complete at a state completes once, at it,
+// and sends nothing more.
+func completesAt(t T, name string, events []event, at []byte) {
+	t.Helper()
+	end := slices.IndexFunc(events, func(e event) bool { return e.complete })
+	switch {
+	case end < 0:
+		t.Errorf("%s: a read asked to complete at %q didn't complete", name, at)
+		return
+	case !events[end].hasNext || !bytes.Equal(events[end].next, at):
+		t.Errorf("%s: a read asked to complete at %q completed at %q", name, at, events[end].next)
+	}
+	if k := slices.IndexFunc(events[end+1:], func(e event) bool { return !e.progress }); k >= 0 {
+		t.Errorf("%s: a read asked to complete at %q sent a %s after it completed", name, at, kindOf(events[end+1+k]))
 	}
 }
 

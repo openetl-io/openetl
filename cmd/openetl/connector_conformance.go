@@ -28,10 +28,12 @@ the spec the descriptor says, field for field, before any check runs.
 --config is the config the checks use. --bad-credentials and --unreachable add
 the errors check's configs: credentials the upstream rejects, and an upstream
 that doesn't answer. A source's checks read every stream, or the --stream ones;
---add-records-command lets the incremental check add records upstream. With
---stops-at-until, the until check reads up to a resume point, as a redo does. A
-destination's checks that write need --read-command to see what it made
-visible, and skip without it.
+--add-records-command lets the incremental and complete-at checks add records
+upstream. With --stops-at-until, the until check reads up to a resume point, as
+a redo does. With --stops-at-completion, the complete-at check reads up to
+where a stream completed, after adding records, as a redo does. A destination's
+checks that write need --read-command to see what it made visible, and skip
+without it.
 
 The commands run with sh -c, with what they act on in the environment:
   --add-records-command   OPENETL_STREAM; prints how many records it added.
@@ -58,6 +60,7 @@ func runConnectorTest(ctx context.Context, args []string, out io.Writer) error {
 	f.fs.Var(&streams, "stream", "a source's stream to read, NAME[:MODE[:CURSOR]], MODE full_refresh, incremental, cdc or stream; repeatable (default: every stream, each read the way the source reads it first)")
 	resumePoints := f.fs.Int("resume-points", 0, "how many of a stream's resume points the resume check restarts from, and the until check stops at (default 5)")
 	stopsAtUntil := f.fs.Bool("stops-at-until", false, "the source stops a read at the until a redo gives it, so the until check runs")
+	stopsAtCompletion := f.fs.Bool("stops-at-completion", false, "the source completes a read at the complete_at a redo gives it, so the complete-at check runs")
 	readTimeout := f.fs.Duration("read-timeout", 0, "how long one read may take (default 2m)")
 	addRecords := f.fs.String("add-records-command", "", "a command that adds records upstream to $OPENETL_STREAM and prints how many")
 	readCmd := f.fs.String("read-command", "", "a command that prints the records a destination made visible in $OPENETL_NAMESPACE for $OPENETL_STREAM, as JSON lines")
@@ -108,7 +111,7 @@ func runConnectorTest(ctx context.Context, args []string, out io.Writer) error {
 			return errors.New("--read-command, --drop-command, --settle, --untyped and --lossy-type are for destinations")
 		}
 		suite := conformance.SourceSuite{Launch: t.launch, Config: config, BadCredentials: bad, Unreachable: down,
-			ResumePoints: *resumePoints, ReadTimeout: *readTimeout, StopsAtUntil: *stopsAtUntil}
+			ResumePoints: *resumePoints, ReadTimeout: *readTimeout, StopsAtUntil: *stopsAtUntil, StopsAtCompletion: *stopsAtCompletion}
 		suite.Streams, err = testStreams(ctx, p, streams)
 		if err != nil {
 			_ = p.Close()
@@ -129,9 +132,9 @@ func runConnectorTest(ctx context.Context, args []string, out io.Writer) error {
 		}
 		run = suite.RunMatching
 	case protocolv1.ConnectorKind_CONNECTOR_KIND_DESTINATION:
-		if len(streams) > 0 || *addRecords != "" || *stopsAtUntil {
+		if len(streams) > 0 || *addRecords != "" || *stopsAtUntil || *stopsAtCompletion {
 			_ = p.Close()
-			return errors.New("--stream, --add-records-command and --stops-at-until are for sources")
+			return errors.New("--stream, --add-records-command, --stops-at-until and --stops-at-completion are for sources")
 		}
 		suite := conformance.DestinationSuite{Launch: t.launch, Config: config, BadCredentials: bad, Unreachable: down,
 			Settle: *settle, Untyped: *untyped}

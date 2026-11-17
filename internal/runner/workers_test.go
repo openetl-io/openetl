@@ -48,12 +48,23 @@ type rangeSource struct {
 	shift bool
 	// Set: a split's read stops at its Until, and completes there.
 	until bool
+	// Rows each split has past its rows, as when its upstream moved on
+	// after a read completed it: their ids go on from its last.
+	grown int
+	// Set: a split's read stops at its CompleteAt, and completes there.
+	completeAt bool
+	// Set: a split's last page goes with its completion, with no resume
+	// point between, as a source's that flushes what it holds as it
+	// completes.
+	flushes bool
 	// What the worker acknowledged, and read, and each split's read as
-	// "split@state" where it began.
-	mu    sync.Mutex
-	acked map[string]string
-	read  []string
-	from  []string
+	// "split@state" where it began, and as "split@state" where it was asked
+	// to complete.
+	mu          sync.Mutex
+	acked       map[string]string
+	read        []string
+	from        []string
+	completions []string
 }
 
 func (s *rangeSource) Splits(_ context.Context, _ source.ConfiguredStream, _ []source.Split) ([]source.Split, error) {
@@ -73,8 +84,11 @@ func (s *rangeSource) Read(ctx context.Context, req source.ReadRequest, out sour
 		s.mu.Lock()
 		s.read = append(s.read, sp.ID)
 		s.from = append(s.from, sp.ID+"@"+string(sp.State))
+		if sp.CompleteAt != nil {
+			s.completions = append(s.completions, sp.ID+"@"+string(sp.CompleteAt))
+		}
 		s.mu.Unlock()
-		next, end := i*s.rows+1, (i+1)*s.rows
+		next, end := i*s.rows+1, (i+1)*s.rows+s.grown
 		if sp.State != nil {
 			last, err := strconv.Atoi(string(sp.State))
 			if err != nil {
@@ -89,6 +103,13 @@ func (s *rangeSource) Read(ctx context.Context, req source.ReadRequest, out sour
 			}
 			end = min(end, u)
 		}
+		if s.completeAt && sp.CompleteAt != nil {
+			c, err := strconv.Atoi(string(sp.CompleteAt))
+			if err != nil {
+				return err
+			}
+			end = min(end, c)
+		}
 		for first := true; next <= end; first = false {
 			page := s.page
 			if first && s.shift && sp.State != nil {
@@ -100,6 +121,9 @@ func (s *rangeSource) Read(ctx context.Context, req source.ReadRequest, out sour
 			}
 			if err := e.Rows(rows); err != nil {
 				return err
+			}
+			if s.flushes && next > end {
+				break
 			}
 			if err := e.ResumePoint([]byte(strconv.Itoa(next - 1))); err != nil {
 				return err
