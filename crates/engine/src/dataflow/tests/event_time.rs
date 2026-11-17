@@ -20,6 +20,13 @@
 //! record of the last barrier the one before committed, on another number
 //! of lanes. The model takes what each job commits, from where the record
 //! has the window, each job's lanes bounded as above.
+//!
+//! A job runs on one engine or on several over a mesh, as an attempt on
+//! workers does: each engine reads some of the lanes, and the window's
+//! keyed lanes, spread over the engines, take every lane's rows of their
+//! key groups and its watermarks. The bounds above hold as they do in one
+//! engine, so the model is the same. What the engines make ready at a
+//! barrier is merged, as the coordinator merges it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::AtomicUsize;
@@ -790,9 +797,20 @@ struct Got {
 /// Runs a case through the engine's dataflow, its lanes' frames written in
 /// an order from `seed`, every output read as it comes.
 async fn run_case(name: &str, case: &Case, seed: u64) -> Got {
+    run_case_on(name, case, seed, 1).await.0
+}
+
+/// As run_case, on as many engines as `workers`, short of the case's
+/// lanes; and how many it ran on.
+async fn run_case_on(name: &str, case: &Case, seed: u64, workers: usize) -> (Got, usize) {
     let dir = tempfile::tempdir().unwrap();
-    let ran = run_job(name, dir.path(), case, &Job::first(), seed).await;
-    got(name, &[ran])
+    let job = Job {
+        workers,
+        ..Job::first()
+    };
+    let ran = run_job(name, dir.path(), case, &job, seed).await;
+    let engines = ran.engines;
+    (got(name, &[ran]), engines)
 }
 
 /// A job of a case: its generation, the epoch it starts at and the record
@@ -804,6 +822,7 @@ struct Job {
     first_epoch: u64,
     restored: Vec<StateSnapshot>,
     floor: i64,
+    /// Engines over a mesh, short of the case's lanes.
     workers: usize,
     kill: Option<Kill>,
 }
@@ -826,9 +845,11 @@ impl Job {
 struct Ran {
     outs: Vec<Vec<frame::Frame>>,
     ready: Vec<EpochReady>,
-    /// It was killed after its engine had read frames past the last
+    /// It was killed after its engines had read frames past the last
     /// barrier it committed.
     read_past: bool,
+    /// How many engines it ran on.
+    engines: usize,
 }
 
 /// An edge's reader, counting the bytes the engine has taken from it.
@@ -865,11 +886,22 @@ impl AsyncBufRead for Counted {
     }
 }
 
-/// As start_lanes, with each lane's count of the bytes the engine has
-/// taken from its edge.
+/// An engine of a job: its lanes' edges, with each lane's count of the
+/// bytes the engine has taken from it, and its writer lanes' edges.
+struct CountedEngine {
+    ins: Vec<DuplexStream>,
+    taken: Vec<Arc<AtomicUsize>>,
+    outs: Vec<BufReader<DuplexStream>>,
+    events: mpsc::Receiver<Result<EventsResponse, Status>>,
+    job: tokio::task::JoinHandle<Result<(), JobError>>,
+}
+
+/// Starts an engine of `req`, with the mesh's listener if it's one of
+/// several.
 fn start_counted(
     req: openetl_proto::engine::v1::StartJobRequest,
-) -> (LaneHarness, Vec<Arc<AtomicUsize>>) {
+    listener: Option<tokio::net::TcpListener>,
+) -> CountedEngine {
     let plan = Arc::new(Plan::from_request(req).unwrap());
     let (mut ins, mut readers, mut taken, mut outs, mut writers) =
         (vec![], vec![], vec![], vec![], vec![]);
@@ -889,70 +921,129 @@ fn start_counted(
         outs.push(BufReader::new(r));
     }
     let (tx, events) = mpsc::channel(64);
-    let job = tokio::spawn(run(plan, readers, writers, tx));
-    let h = LaneHarness {
+    let job = tokio::spawn(run_with(plan, readers, writers, tx, listener));
+    CountedEngine {
         ins,
+        taken,
         outs,
         events,
         job,
-    };
-    (h, taken)
+    }
 }
 
-/// Runs a job of a case through the engine's dataflow, with its state and
+/// How many of a job's `lanes` each of its engines runs, for `workers`
+/// workers: no more engines than lanes, the first ones a lane more where
+/// they don't divide evenly.
+fn engines(lanes: usize, workers: usize) -> Vec<u32> {
+    let n = workers.clamp(1, lanes.max(1));
+    (0..n)
+        .map(|e| u32::try_from(lanes / n + usize::from(e < lanes % n)).unwrap())
+        .collect()
+}
+
+/// The EpochReady of one epoch of each of a job's engines, as the
+/// coordinator takes them: one epoch, every engine's state, quarantine and
+/// operators, and every split's watermark, each split from one engine.
+fn merged(name: &str, parts: Vec<EpochReady>) -> EpochReady {
+    let mut parts = parts.into_iter();
+    let mut out = parts.next().unwrap();
+    for r in parts {
+        assert_eq!(r.epoch, out.epoch, "{name}: engines at other epochs");
+        out.snapshots.extend(r.snapshots);
+        out.quarantine.extend(r.quarantine);
+        out.operators.extend(r.operators);
+        for (stream, m) in r.watermarks {
+            let to = out.watermarks.entry(stream).or_default();
+            for (split, w) in m.splits {
+                assert!(
+                    to.splits.insert(split.clone(), w).is_none(),
+                    "{name}: split {split} on two engines"
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Runs a job of a case through the engine's dataflow, on as many engines
+/// over a mesh as its workers, short of its lanes, with its state and
 /// quarantine below `dir`, its lanes' frames written in an order from
 /// `seed`, every output read as it comes. A killed job reads its lanes up
-/// to its kill, and is aborted once its engine has taken every frame
+/// to its kill, and is aborted once each engine has taken every frame
 /// written, made the EpochReady of each barrier it commits, and given that
 /// barrier on each writer lane.
 async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed: u64) -> Ran {
-    // A window runs in one engine: see WORKERS.
-    assert_eq!(
-        job.workers, 1,
-        "{name}: a window on {} engines",
-        job.workers
-    );
     let lanes = case.lanes.len();
-    let mut req = window_request(
-        &dir.join("state"),
-        &case.window.sql(case.having),
-        lanes as u32,
-        job.generation,
-        job.first_epoch,
-    );
-    req.pipeline = name.into();
-    req.quarantine_url = format!("file://{}", dir.display());
-    req.restored_snapshots = job.restored.clone();
-    let et = event_time(&mut req);
-    et.delay_micros = case.delay;
-    et.lateness_micros = case.lateness;
-    et.held = case.held;
-    et.floor = (job.floor != NONE).then_some(job.floor);
-    let (mut h, taken) = start_counted(req);
+    let parts = engines(lanes, job.workers);
+    let (listeners, addrs) = match parts.len() {
+        1 => (vec![None], Vec::new()),
+        n => {
+            let (ls, addrs) = crate::mesh::tests::listeners(n).await;
+            (ls.into_iter().map(Some).collect(), addrs)
+        }
+    };
+    let shape: Vec<(u32, u32)> = parts.iter().map(|&n| (n, n)).collect();
+    let (mut ins, mut taken, mut outs, mut engine_events, mut jobs) =
+        (vec![], vec![], vec![], vec![], vec![]);
+    for (me, listener) in listeners.into_iter().enumerate() {
+        let mut req = window_request(
+            &dir.join("state"),
+            &case.window.sql(case.having),
+            parts[me],
+            job.generation,
+            job.first_epoch,
+        );
+        req.pipeline = name.into();
+        req.quarantine_url = format!("file://{}", dir.display());
+        req.restored_snapshots = job.restored.clone();
+        let et = event_time(&mut req);
+        et.delay_micros = case.delay;
+        et.lateness_micros = case.lateness;
+        et.held = case.held;
+        et.floor = (job.floor != NONE).then_some(job.floor);
+        if listener.is_some() {
+            let mesh = crate::mesh::tests::request(&shape, me, &addrs);
+            req.first_lane = mesh.first_lane;
+            req.first_writer_lane = mesh.first_writer_lane;
+            req.attempt_writer_lanes = mesh.attempt_writer_lanes;
+            req.mesh = mesh.mesh;
+        }
+        let e = start_counted(req, listener);
+        ins.extend(e.ins);
+        taken.extend(e.taken);
+        outs.extend(e.outs);
+        engine_events.push(e.events);
+        jobs.push(e.job);
+    }
     let strict = job.kill.is_none();
     let mut drains = JoinSet::new();
     let mut given = Vec::new();
-    for (i, mut r) in std::mem::take(&mut h.outs).into_iter().enumerate() {
+    for (i, mut r) in outs.into_iter().enumerate() {
         let (tx, rx) = tokio::sync::watch::channel(0);
         given.push(rx);
         drains.spawn(async move { (i, drain_counting(&mut r, tx, strict).await) });
     }
-    let mut events = std::mem::replace(&mut h.events, mpsc::channel(1).1);
-    let (tx, mut readies) = mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        while let Some(ev) = events.recv().await {
-            let r = match ev {
-                Ok(EventsResponse {
-                    event: Some(events_response::Event::EpochReady(r)),
-                }) => Ok(r),
-                Ok(_) => continue,
-                Err(e) => Err(e.message().to_owned()),
-            };
-            if tx.send(r).is_err() {
-                return;
+    let writer_lanes = given.len();
+    // Each engine's EpochReadys, as they come.
+    let mut readies = Vec::new();
+    for mut events in engine_events {
+        let (tx, rx) = mpsc::unbounded_channel();
+        readies.push(rx);
+        tokio::spawn(async move {
+            while let Some(ev) = events.recv().await {
+                let r = match ev {
+                    Ok(EventsResponse {
+                        event: Some(events_response::Event::EpochReady(r)),
+                    }) => Ok(r),
+                    Ok(_) => continue,
+                    Err(e) => Err(e.message().to_owned()),
+                };
+                if tx.send(r).is_err() {
+                    return;
+                }
             }
-        }
-    });
+        });
+    }
 
     // Each lane's frames: its splits join first, a resumed one at the
     // record's watermark.
@@ -1017,32 +1108,41 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
             let Some((kind, stream, payload)) = frames[l].get(at[l]) else {
                 break;
             };
-            put(&mut h.ins[l], *kind, *stream, payload.clone()).await;
+            put(&mut ins[l], *kind, *stream, payload.clone()).await;
             at[l] += 1;
         }
     }
 
     let wait = std::time::Duration::from_secs(60);
-    let mut ready = Vec::new();
+    let mut per_engine: Vec<Vec<EpochReady>> = readies.iter().map(|_| Vec::new()).collect();
     let committed = match &job.kill {
         Some(k) => {
-            // The engine has taken every frame written, those past the
-            // barriers it commits too.
+            // The engines have taken every frame written, those past the
+            // barriers they commit too.
             tokio::time::timeout(wait, async {
                 while (0..lanes).any(|l| taken[l].load(Ordering::Relaxed) < written[l]) {
                     tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 }
             })
             .await
-            .unwrap_or_else(|_| panic!("{name}: the engine took its frames for a minute"));
-            while ready.len() < k.cut {
-                let r = tokio::time::timeout(wait, readies.recv())
-                    .await
-                    .unwrap_or_else(|_| {
-                        panic!("{name}: no EpochReady {} in a minute", ready.len() + 1)
-                    })
-                    .unwrap_or_else(|| panic!("{name}: the job ended before its kill"));
-                ready.push(r.unwrap_or_else(|e| panic!("{name}: {e}")));
+            .unwrap_or_else(|_| panic!("{name}: the engines took their frames for a minute"));
+            for (e, rx) in readies.iter_mut().enumerate() {
+                let ready = &mut per_engine[e];
+                while ready.len() < k.cut {
+                    let r = tokio::time::timeout(wait, rx.recv())
+                        .await
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "{name}: no EpochReady {} of engine {} in a minute",
+                                ready.len() + 1,
+                                e + 1
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("{name}: engine {} ended before its kill", e + 1)
+                        });
+                    ready.push(r.unwrap_or_else(|e| panic!("{name}: {e}")));
+                }
             }
             for g in &mut given {
                 tokio::time::timeout(wait, g.wait_for(|n| *n >= k.cut))
@@ -1050,23 +1150,52 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
                     .unwrap_or_else(|_| panic!("{name}: a writer lane short of barrier {}", k.cut))
                     .unwrap();
             }
-            h.job.abort();
-            assert!(
-                h.job.await.is_err_and(|e| e.is_cancelled()),
-                "{name}: the job ended"
-            );
-            std::mem::drop(h.ins);
+            // The test's runtime has one thread, and nothing here yields
+            // between the aborts: no engine sees another go.
+            for j in &jobs {
+                j.abort();
+            }
+            for (e, j) in jobs.into_iter().enumerate() {
+                assert!(
+                    j.await.is_err_and(|e| e.is_cancelled()),
+                    "{name}: engine {} ended",
+                    e + 1
+                );
+            }
+            std::mem::drop(ins);
             k.cut
         }
         None => {
-            h.end_all(2).await;
-            h.job.await.unwrap().unwrap();
-            while let Some(r) = readies.recv().await {
-                ready.push(r.unwrap_or_else(|e| panic!("{name}: {e}")));
+            for w in &mut ins {
+                for s in 0..2 {
+                    put(w, FrameKind::EndOfStream, s, vec![]).await;
+                }
+                w.shutdown().await.unwrap();
+            }
+            for j in jobs {
+                j.await.unwrap().unwrap();
+            }
+            for (e, rx) in readies.iter_mut().enumerate() {
+                while let Some(r) = rx.recv().await {
+                    per_engine[e].push(r.unwrap_or_else(|e| panic!("{name}: {e}")));
+                }
             }
             usize::MAX
         }
     };
+    let epochs = per_engine[0].len();
+    for (e, r) in per_engine.iter().enumerate() {
+        assert_eq!(r.len(), epochs, "{name}: engine {}'s epochs", e + 1);
+    }
+    let mut columns: Vec<_> = per_engine.into_iter().map(Vec::into_iter).collect();
+    let ready: Vec<EpochReady> = (0..epochs)
+        .map(|_| {
+            merged(
+                name,
+                columns.iter_mut().map(|c| c.next().unwrap()).collect(),
+            )
+        })
+        .collect();
     for (n, r) in ready.iter().enumerate() {
         assert_eq!(
             r.epoch,
@@ -1077,7 +1206,7 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
             "{name}"
         );
     }
-    let mut outs: Vec<Vec<frame::Frame>> = (0..lanes).map(|_| Vec::new()).collect();
+    let mut outs: Vec<Vec<frame::Frame>> = (0..writer_lanes).map(|_| Vec::new()).collect();
     while let Some(d) = drains.join_next().await {
         let (i, mut fs) = d.unwrap();
         let mut barriers = 0;
@@ -1098,6 +1227,7 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
         outs,
         ready,
         read_past: job.kill.is_some() && past_cut > 0,
+        engines: parts.len(),
     }
 }
 
@@ -1217,6 +1347,9 @@ fn got(name: &str, runs: &[Ran]) -> Got {
 struct Tally {
     cases: usize,
     several_lanes: usize,
+    /// Cases on several engines, and on three.
+    several_engines: usize,
+    three_engines: usize,
     rows: usize,
     windows: usize,
     late: usize,
@@ -1227,9 +1360,11 @@ struct Tally {
 }
 
 impl Tally {
-    fn add(&mut self, e: &Expected, g: &Got) {
+    fn add(&mut self, e: &Expected, g: &Got, engines: usize) {
         self.cases += 1;
         self.several_lanes += usize::from(e.case.lanes.len() > 1);
+        self.several_engines += usize::from(engines > 1);
+        self.three_engines += usize::from(engines == 3);
         self.rows += e.case.rows();
         self.windows += e.table.len();
         self.late += e.late.len();
@@ -1267,8 +1402,8 @@ fn check_against(
 }
 
 /// Generated cases of each window, with and without lateness and HAVING,
-/// on one lane and several: the engine's table, its quarantine and its
-/// splits' watermarks are the model's.
+/// on one lane and several, of one engine or several: the engines' table,
+/// their quarantine and their splits' watermarks are the model's.
 #[tokio::test]
 async fn windows_and_watermarks_are_the_models() {
     let mut tally = Tally::default();
@@ -1277,13 +1412,16 @@ async fn windows_and_watermarks_are_the_models() {
             let name = format!("{window:?}-{seed}");
             let case = Case::generate(seed * 7919 + 1, window, None);
             let e = expect(&case);
-            let g = run_case(&name, &e.case, seed).await;
+            let workers = WORKERS[seed as usize % WORKERS.len()];
+            let (g, engines) = run_case_on(&name, &e.case, seed, workers).await;
             check(&name, &e, &g);
-            tally.add(&e, &g);
+            tally.add(&e, &g, engines);
         }
     }
     assert_eq!(tally.cases, 300);
     assert!(tally.several_lanes >= 100, "{tally:?}");
+    assert!(tally.several_engines >= 70, "{tally:?}");
+    assert!(tally.three_engines >= 20, "{tally:?}");
     assert!(tally.rows >= 8_000, "{tally:?}");
     assert!(tally.windows >= 3_500, "{tally:?}");
     assert!(tally.late >= 500, "{tally:?}");
@@ -1292,9 +1430,9 @@ async fn windows_and_watermarks_are_the_models() {
     assert!(tally.idle_moves >= 150, "{tally:?}");
 }
 
-/// The numbers of engines a killed case's jobs draw from. A window runs in
-/// one engine for now.
-const WORKERS: &[usize] = &[1];
+/// The numbers of workers a case's jobs draw from, each an engine, short
+/// of the job's lanes.
+const WORKERS: &[usize] = &[1, 2, 3];
 
 /// A job is killed once it has committed `cut` barriers and read
 /// `tails[l]` more of lane l's events.
@@ -1602,6 +1740,7 @@ async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) 
             epoch += ran.ready.len() as u64;
         }
         r.read_past += usize::from(ran.read_past);
+        r.engines.push(ran.engines);
         runs.push(ran);
     }
     assert_eq!(r.windows, 0, "{name}: windows kept at the end of input");
@@ -1622,6 +1761,8 @@ struct Restores {
     /// those they opened.
     windows: i64,
     opened: usize,
+    /// Each job's engines.
+    engines: Vec<usize>,
 }
 
 /// Deletes each file below `state` that `kept` doesn't name, as retention
@@ -1663,6 +1804,13 @@ struct KillTally {
     read_past: usize,
     /// Jobs on several lanes.
     several_lanes: usize,
+    /// Jobs on several engines, and on three; cases with a job on several.
+    several_engines: usize,
+    three_engines: usize,
+    cases_on_several: usize,
+    /// Restores onto another number of engines, from several or onto
+    /// several.
+    remeshed: usize,
     /// Jobs restored from a record that names runs.
     from_runs: usize,
     pruned: usize,
@@ -1686,7 +1834,9 @@ struct KillTally {
 /// from where the record has each split. What the jobs committed, merged,
 /// is the model's table, and they quarantine the model's late rows and
 /// report its watermarks. Some jobs run with a raised or lowered lateness:
-/// a window gone under an earlier one stays gone.
+/// a window gone under an earlier one stays gone. Jobs run on one engine
+/// or several, and restore onto another number of them: the record of a
+/// mesh's barrier names each engine's keyed lanes' state.
 #[tokio::test]
 async fn killed_and_restored_windows_are_the_models() {
     let mut tally = KillTally::default();
@@ -1713,6 +1863,14 @@ async fn killed_and_restored_windows_are_the_models() {
                 tally.uncommitted += usize::from(k.cut == 0);
             }
             tally.read_past += r.read_past;
+            tally.several_engines += r.engines.iter().filter(|n| **n > 1).count();
+            tally.three_engines += r.engines.iter().filter(|n| **n == 3).count();
+            tally.cases_on_several += usize::from(r.engines.iter().any(|n| *n > 1));
+            tally.remeshed += r
+                .engines
+                .windows(2)
+                .filter(|p| p[0] != p[1] && p[0].max(p[1]) > 1)
+                .count();
             tally.from_runs += r.from_runs;
             tally.pruned += r.pruned;
             tally.opened += r.opened;
@@ -1730,6 +1888,10 @@ async fn killed_and_restored_windows_are_the_models() {
     assert!(tally.uncommitted >= 15, "{tally:?}");
     assert!(tally.read_past >= 150, "{tally:?}");
     assert!(tally.several_lanes >= 180, "{tally:?}");
+    assert!(tally.several_engines >= 140, "{tally:?}");
+    assert!(tally.three_engines >= 35, "{tally:?}");
+    assert!(tally.cases_on_several >= 100, "{tally:?}");
+    assert!(tally.remeshed >= 140, "{tally:?}");
     assert!(tally.from_runs >= 150, "{tally:?}");
     // Runs of epochs that a kill lost, which the engine may or may not have
     // written by then.

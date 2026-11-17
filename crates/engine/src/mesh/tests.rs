@@ -47,7 +47,7 @@ struct Engine {
 /// The request of engine `me` of a mesh of `parts`, each its lanes and
 /// writer lanes, for one keyed stream "a" exchanged by id, listening at
 /// `addrs[me]`.
-fn request(parts: &[(u32, u32)], me: usize, addrs: &[String]) -> StartJobRequest {
+pub(crate) fn request(parts: &[(u32, u32)], me: usize, addrs: &[String]) -> StartJobRequest {
     let (lanes, writers) = parts[me];
     let mut req = lanes_request(&["a"], lanes, writers);
     req.streams[0].primary_key = vec!["id".into()];
@@ -74,7 +74,7 @@ fn request(parts: &[(u32, u32)], me: usize, addrs: &[String]) -> StartJobRequest
     req
 }
 
-async fn listeners(n: usize) -> (Vec<TcpListener>, Vec<String>) {
+pub(crate) async fn listeners(n: usize) -> (Vec<TcpListener>, Vec<String>) {
     let mut ls = Vec::new();
     let mut addrs = Vec::new();
     for _ in 0..n {
