@@ -203,11 +203,11 @@ fn queries_over_generated_rows_give_what_duckdb_gives() {
         pairs > 0,
         "no translated pair was compared over generated rows"
     );
-    // Each of over.slt's queries that both run, over each seed's rows: five
-    // the same in both, and six of ours with DuckDB's SQL for them.
+    // Each of over.slt's queries that both run, over each seed's rows: six
+    // the same in both, and eight of ours with DuckDB's SQL for them.
     assert_eq!(
         over,
-        11 * seeds.len(),
+        14 * seeds.len(),
         "over.slt's queries compared over generated rows"
     );
     for (i, (file, part, why)) in generate::DIFFERS.iter().enumerate() {

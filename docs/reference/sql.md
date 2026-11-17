@@ -307,14 +307,14 @@ FROM orders;
 
 | Function | Value |
 |---|---|
-| `count(*)`, `count(X)` | The frame's rows, or those where `X` is not null, as `BIGINT` |
+| `count(*)`, `count(X)` | The frame's rows, or those where `X` is not null, as `BIGINT`. `X` is of any type, a list too. |
 | `sum(X)`, `avg(X)` | As the [aggregates](#aggregates) of a group window give them, over the frame's rows |
 | `min(X)`, `max(X)` | The frame's least or greatest value of a number, text, binary, a boolean, a date, a time, a timestamp or a UUID |
 | `first_value(X)` | `X` on the frame's first row. It takes the types that `min` takes. |
 | `lag(X)`, `lag(X, N)`, `lag(X, N, DEFAULT)` | `X` on the row `N` rows before the current one, 1 by default, or `DEFAULT` where there is none, null by default. `N` is a constant whole number, 1 or more, and `DEFAULT` a constant. `lag` takes no frame. |
 
 - `mean` is another name for `avg`.
-- `FILTER (WHERE …)` after an aggregate counts only the frame's rows where its condition is true. A row it leaves out still takes its place in a `ROWS` frame.
+- `FILTER (WHERE …)` after an aggregate counts only the frame's rows where its condition is true, and evaluates the aggregate's argument only on those rows. A row it leaves out still takes its place in a `ROWS` frame.
 - `DISTINCT` in `count`, `sum` or `avg`, `IGNORE NULLS`, and `FILTER` on `lag` or `first_value` are refused.
 - If a function's value does not fit its type, such as a sum past the range of `BIGINT`, the engine quarantines the row instead of writing it, with the code `aggregate`. The row still counts in its partition's frames.
 - A row that a function cannot evaluate is quarantined, with the code `statement`, and has no place in any frame.

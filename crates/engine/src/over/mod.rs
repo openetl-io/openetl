@@ -389,7 +389,7 @@ impl Operator {
                     let rows: Vec<Peer> = peers
                         .iter()
                         .map(|&r| {
-                            let v = args[f].as_ref().and_then(|a| Value::read(a.as_ref(), r));
+                            let v = args[f].as_ref().and_then(|a| func.value(a.as_ref(), r));
                             (v, frame_passes(filters[f].as_ref(), r))
                         })
                         .collect();
@@ -573,91 +573,16 @@ impl Operator {
         )
     }
 
-    /// Each function's argument and FILTER on `rows`, and the rows one
+    /// Each function's FILTER on `rows`, then its argument on the rows its
+    /// FILTER admits, as a group window's aggregates do, and the rows one
     /// fails on, with why.
-    #[allow(clippy::type_complexity)]
-    fn arguments(
-        &self,
-        rows: &RecordBatch,
-    ) -> Result<
-        (
-            Vec<Option<ArrayRef>>,
-            Vec<Option<BooleanArray>>,
-            BTreeMap<usize, String>,
-        ),
-        JobError,
-    > {
-        let mut bad = BTreeMap::new();
-        let mut args = Vec::with_capacity(self.plan.functions.len());
-        let mut filters = Vec::with_capacity(self.plan.functions.len());
-        for f in &self.plan.functions {
-            filters.push(match &f.filter {
-                None => None,
-                Some(e) => {
-                    let got = self.each(
-                        rows,
-                        |b| e.eval_predicate(b).map(|p| Arc::new(p) as ArrayRef),
-                        &mut bad,
-                    )?;
-                    // Where it fails on every row, no row gave its type.
-                    let got = match got.data_type() {
-                        DataType::Boolean => got,
-                        _ => arrow_array::new_null_array(&DataType::Boolean, got.len()),
-                    };
-                    Some(got.as_boolean().clone())
-                }
-            });
-            args.push(match &f.arg {
-                None => None,
-                Some(e) => Some(self.each(rows, |b| e.eval(b), &mut bad)?),
-            });
-        }
-        Ok((args, filters, bad))
-    }
-
-    /// `f` on `rows`; where it fails on them, on each row, null at a row
-    /// it fails on, which `bad` gets with why.
-    fn each(
-        &self,
-        rows: &RecordBatch,
-        f: impl Fn(&RecordBatch) -> Result<ArrayRef, openetl_sql::Error>,
-        bad: &mut BTreeMap<usize, String>,
-    ) -> Result<ArrayRef, JobError> {
-        if let Ok(a) = f(rows) {
-            return Ok(a);
-        }
-        let mut parts = Vec::with_capacity(rows.num_rows());
-        for r in 0..rows.num_rows() {
-            let one = rows.slice(r, 1);
-            match f(&one) {
-                Ok(a) => parts.push(a),
-                Err(e) => {
-                    bad.entry(r).or_insert_with(|| self.reason(&e.message));
-                    let t = match parts.first() {
-                        Some(a) => a.data_type().clone(),
-                        None => DataType::Null,
-                    };
-                    parts.push(arrow_array::new_null_array(&t, 1));
-                }
-            }
-        }
-        // A row that failed before the first that didn't has a null of no
-        // type: give it the others'.
-        let t = parts
+    fn arguments(&self, rows: &RecordBatch) -> Result<steps::Arguments, JobError> {
+        let functions = self
+            .plan
+            .functions
             .iter()
-            .map(|a| a.data_type())
-            .find(|t| **t != DataType::Null)
-            .cloned()
-            .unwrap_or(DataType::Null);
-        let parts: Vec<ArrayRef> = parts
-            .into_iter()
-            .map(|a| match a.data_type() == &t {
-                true => a,
-                false => arrow_array::new_null_array(&t, a.len()),
-            })
-            .collect();
-        let refs: Vec<&dyn Array> = parts.iter().map(|a| a.as_ref()).collect();
-        arrow_select::concat::concat(&refs).map_err(|e| JobError::internal(e.to_string()))
+            .map(|f| (f.arg.as_ref(), f.filter.as_ref()));
+        steps::arguments(rows, functions, &|why| self.reason(why))
     }
 
     /// `lag`'s defaults, constants of the value's type, as `rows` give them.

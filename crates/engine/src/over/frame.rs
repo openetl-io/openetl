@@ -104,6 +104,18 @@ impl Func {
         }
     }
 
+    /// Row `r`'s value of its argument, `a`, as the function takes it:
+    /// `count`'s is whether the row has one, of whatever type, and the
+    /// others' the value, of the types they take.
+    pub fn value(&self, a: &dyn arrow_array::Array, r: usize) -> Option<Value> {
+        match &self.kind {
+            Kind::Agg(spec) if spec.kind == AggregateKind::Count => {
+                a.is_valid(r).then_some(Value::Bool(true))
+            }
+            _ => Value::read(a, r),
+        }
+    }
+
     fn arg(&self, v: &Option<Value>) -> Option<Option<Value>> {
         match self.star {
             true => None,
@@ -361,6 +373,38 @@ mod tests {
         assert_eq!(run(&rows, groups, None), [1, 1, 2, 4, 8].map(Some));
         let range = func(Kind::First, Some(Frame::Range { preceding: Some(3) }));
         assert_eq!(run(&range, groups, None), [1, 1, 1, 4, 4].map(Some));
+    }
+
+    /// count of an argument counts a row where it isn't null, of any type,
+    /// as a list; the others take its value.
+    #[test]
+    fn count_takes_whether_a_row_has_its_argument() {
+        let mut b =
+            arrow_array::builder::ListBuilder::new(arrow_array::builder::Int64Builder::new());
+        b.append(true);
+        b.append_null();
+        let lists = b.finish();
+        let count = Func {
+            kind: Kind::Agg(Spec {
+                kind: AggregateKind::Count,
+                arg: Some(arrow_array::Array::data_type(&lists).clone()),
+                out: DataType::Int64,
+            }),
+            frame: Some(Frame::Range { preceding: None }),
+            star: false,
+        };
+        assert_eq!(count.value(&lists, 0), Some(Value::Bool(true)));
+        assert_eq!(count.value(&lists, 1), None);
+        let mut kept = count.start();
+        let rows: Vec<Peer> = (0..2).map(|r| (count.value(&lists, r), true)).collect();
+        assert_eq!(
+            got(count.peers(&mut kept, 1, &rows, None)),
+            [Some(1), Some(1)]
+        );
+        let ints = arrow_array::Int64Array::from(vec![Some(7), None]);
+        let sum = func(sum(), Some(Frame::Rows { preceding: None }));
+        assert_eq!(sum.value(&ints, 0), Some(Value::Int(7)));
+        assert_eq!(sum.value(&ints, 1), None);
     }
 
     /// A row its FILTER leaves out takes a ROWS frame's place, and adds

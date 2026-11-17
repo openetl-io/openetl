@@ -382,6 +382,24 @@ async fn a_peer_group_of_several_takes_leaves_together() {
     assert!(last.contains(&format!(" total={} ", n + 1)), "{last}");
 }
 
+/// An aggregate's argument runs only on the rows its FILTER takes: a row
+/// it leaves out, whose argument would fail, keeps its place and leaves,
+/// as it does in a group window.
+#[tokio::test]
+async fn an_argument_runs_only_where_its_filter_takes_the_row() {
+    let sql = "INSERT INTO o SELECT region, amount, \
+               sum(10 / amount) FILTER (WHERE amount <> 0) OVER (PARTITION BY region ORDER BY at) AS tenths FROM orders";
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(sql, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[(1, "eu", 0, SEC), (2, "eu", 5, 2 * SEC)]).await;
+    run.advance(i64::MAX).await;
+    assert_eq!(run.rejected, 0);
+    let first = &run.given[&id(1)];
+    let second = &run.given[&id(2)];
+    assert!(first.contains(" tenths= "), "{first}");
+    assert!(second.contains(" tenths=2 "), "{second}");
+}
+
 /// A FILTER that fails on every row that leaves quarantines each of them,
 /// with why, and gives no row.
 #[tokio::test]
