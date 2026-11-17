@@ -1015,7 +1015,7 @@ mod windows {
     /// watermarks, barriers and end as they are.
     #[test]
     fn a_keyed_lanes_frames_cross_as_they_are() {
-        use crate::dataflow::keyed::{In, unwire, wire};
+        use crate::dataflow::keyed::{In, Origin, unwire, wire};
         use arrow_array::{Int64Array, RecordBatch, StringArray};
         use arrow_schema::{DataType, Field, Schema};
         let md: std::collections::HashMap<String, String> =
@@ -1044,12 +1044,25 @@ mod windows {
                 3,
             )
         };
-        let Ok(In::Rows(2, got, got_held)) = cross(In::Rows(2, batch.clone(), held.clone())) else {
+        let Ok(In::Rows(2, got, got_held, None)) =
+            cross(In::Rows(2, batch.clone(), held.clone(), None))
+        else {
             panic!("rows didn't cross as rows");
         };
         assert_eq!(got, batch);
         assert_eq!(got.schema().field(0).metadata(), &md);
         assert_eq!(got_held, held);
+        // With the split and place they were read at, where the epoch's
+        // steps are recorded; a redo's never cross.
+        let at = Some(Origin::At("orders-3".into(), 42));
+        let Ok(In::Rows(2, got, _, got_at)) =
+            cross(In::Rows(2, batch.clone(), held.clone(), at.clone()))
+        else {
+            panic!("rows didn't cross as rows");
+        };
+        assert_eq!((got, got_at), (batch.clone(), at));
+        let met = Some(Origin::Met(vec![None, Some(5)]));
+        assert!(wire(In::Rows(2, batch.clone(), held.clone(), met)).is_err());
         assert!(matches!(
             cross(In::Watermark(1, 77)),
             Ok(In::Watermark(1, 77))
@@ -1179,84 +1192,175 @@ mod windows {
         per_lane
     }
 
+    /// What one epoch of a window gave: its window rows, the rows it
+    /// quarantined, its window watermark at the barrier, and the steps of
+    /// that watermark its rows met.
+    #[derive(Debug)]
+    struct OneEpoch {
+        rows: Vec<WindowRow>,
+        late: u64,
+        closed: i64,
+        steps: Vec<openetl_proto::engine::v1::LaneSteps>,
+    }
+
     /// One epoch of `sql` over stream a on one lane: the rows of key x at
-    /// `seconds`, in that order, then the barrier. Live where `closes_at` is
-    /// None; else a redo that closes the windows there. Returns the window
-    /// rows it gave, the rows it quarantined, and its window watermark at
-    /// the barrier.
-    async fn one_epoch(
-        sql: &str,
-        seconds: &[i64],
-        closes_at: Option<i64>,
-    ) -> (Vec<WindowRow>, u64, i64) {
+    /// `seconds`, in that order, each a batch of its own, then the barrier.
+    /// Live where `redo` is None, recording the steps of the window's
+    /// watermark; else a redo of `redo`'s epoch, which replays its steps
+    /// and closes the windows where it did.
+    async fn one_epoch(sql: &str, seconds: &[i64], redo: Option<&OneEpoch>) -> OneEpoch {
         let dir = tempfile::tempdir().unwrap();
         let mut req = window_request(&dir.path().join("state"), sql, 1, 1, 1);
         req.quarantine_url = format!("file://{}", dir.path().display());
-        if let Some(c) = closes_at {
+        req.record_window_steps = true;
+        if let Some(live) = redo {
             req.state_read_only = true;
-            req.streams[0].event_time.as_mut().unwrap().closes_at = Some(c);
+            req.streams[0].event_time.as_mut().unwrap().closes_at = Some(live.closed);
+            req.window_steps = vec![openetl_proto::engine::v1::WindowSteps {
+                operator: req.transform.as_ref().unwrap().operators[0].clone(),
+                lanes: live.steps.clone(),
+            }];
         }
         let mut h = crate::dataflow::tests::start_lanes(req);
-        put_on(&mut h.ins[0], FrameKind::Split, 0, split("s", None)).await;
-        for (i, s) in seconds.iter().enumerate() {
-            let row = minute_row(i as i64, "x", *s);
-            put_on(&mut h.ins[0], FrameKind::Rows, 0, json_rows(&[&row])).await;
-        }
-        barriers(&mut h.ins[0], 1, 1).await;
-        h.end_all(2).await;
+        // Written while the writer lanes are read.
+        let mut w = h.ins.remove(0);
+        let seconds = seconds.to_vec();
+        let writes = tokio::spawn(async move {
+            put_on(&mut w, FrameKind::Split, 0, split("s", None)).await;
+            for (i, s) in seconds.iter().enumerate() {
+                let row = minute_row(i as i64, "x", *s);
+                put_on(&mut w, FrameKind::Rows, 0, json_rows(&[&row])).await;
+            }
+            barriers(&mut w, 1, 1).await;
+            for s in 0..2 {
+                put_on(&mut w, FrameKind::EndOfStream, s, vec![]).await;
+            }
+            w.shutdown().await.unwrap();
+        });
         let (outs, ready) = h.finish().await;
+        writes.await.unwrap();
         let late = ready
             .iter()
             .flat_map(|r| &r.quarantine)
             .filter(|q| q.stream == "minutes")
             .map(|q| q.rows)
             .sum();
-        let rows = window_rows(&outs, 1).into_iter().flatten().collect();
-        (rows, late, ready[0].window_watermarks["a"])
+        let mut rows: Vec<WindowRow> = window_rows(&outs, 1).into_iter().flatten().collect();
+        rows.sort();
+        OneEpoch {
+            rows,
+            late,
+            closed: ready[0].window_watermarks["a"],
+            steps: ready[0]
+                .operators
+                .iter()
+                .flat_map(|o| o.steps.clone())
+                .collect(),
+        }
     }
 
-    /// What a redo can't give back: a row that came behind its window's
-    /// close inside the epoch, which the live epoch quarantined as late.
-    /// The redo holds its windows at the floor while it reads, so the row
-    /// is on time there, and the window's row counts it; the redo
-    /// quarantines nothing. The live epoch's quarantine keeps the row.
+    /// The live epoch of `seconds`, and a redo of it, which gives the same
+    /// window rows and quarantines the same rows: the live epoch's.
+    async fn redone(sql: &str, seconds: &[i64]) -> OneEpoch {
+        let live = one_epoch(sql, seconds, None).await;
+        let redo = one_epoch(sql, seconds, Some(&live)).await;
+        assert_eq!(
+            (&redo.rows, redo.late),
+            (&live.rows, live.late),
+            "{seconds:?}: the redo, of {:?}",
+            live.steps
+        );
+        assert!(redo.steps.is_empty(), "a redo records no steps");
+        live
+    }
+
+    /// A redo replays the steps of the window's watermark that the epoch's
+    /// rows met, so a row that came behind its window's close inside the
+    /// epoch is late there too, and the window's row is the epoch's.
     #[tokio::test]
-    async fn a_redo_counts_a_row_late_inside_its_epoch() {
+    async fn a_redo_takes_a_row_late_inside_its_epoch_as_late() {
         // 10 s, then 70 s, which closes the first minute, then 20 s.
-        let (live, late, closed) = one_epoch(MINUTES, &[10, 70, 20], None).await;
-        assert_eq!((live, late, closed), (vec![row(0, "x", 1, 1)], 1, 70 * SEC));
-        let (redo, late, _) = one_epoch(MINUTES, &[10, 70, 20], Some(closed)).await;
-        assert_eq!((redo, late), (vec![row(0, "x", 2, 1)], 0));
-        // Without the late row, the redo gives what the epoch gave.
-        let (live, _, closed) = one_epoch(MINUTES, &[10, 20, 70], None).await;
-        let (redo, _, _) = one_epoch(MINUTES, &[10, 20, 70], Some(closed)).await;
-        assert_eq!((live.clone(), redo), (vec![row(0, "x", 2, 1)], live));
+        let live = redone(MINUTES, &[10, 70, 20]).await;
+        assert_eq!(
+            (live.rows, live.late, live.closed),
+            (vec![row(0, "x", 1, 1)], 1, 70 * SEC)
+        );
+        // The minute's end, which the 20 s row met, is a step; the
+        // watermark's moves inside a minute are none.
+        let steps: Vec<_> = live
+            .steps
+            .iter()
+            .flat_map(|l| &l.splits)
+            .map(|s| (s.split.as_str(), s.places.clone(), s.watermarks.clone()))
+            .collect();
+        assert_eq!(steps, [("s", vec![1, 2], vec![0, 60 * SEC])]);
+        // Without the late row, the same.
+        let live = redone(MINUTES, &[10, 20, 70]).await;
+        assert_eq!((live.rows, live.late), (vec![row(0, "x", 2, 1)], 0));
+    }
+
+    /// A hopping window: a row behind the watermark goes to the windows it
+    /// falls in that are still open, and the redo's does too.
+    #[tokio::test]
+    async fn a_redo_takes_a_row_into_the_hops_still_open() {
+        const HOPS: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
+                            FROM a GROUP BY hop(at, INTERVAL '30 seconds', INTERVAL '1 minute'), email";
+        // 10 s, then 70 s, which closes [-30, 30) and [0, 60), then 40 s,
+        // which [30, 90) takes.
+        let live = redone(HOPS, &[10, 70, 40]).await;
+        assert_eq!(
+            (live.rows, live.late),
+            (vec![row(-30, "x", 1, 1), row(0, "x", 1, 1)], 0)
+        );
     }
 
     /// Sessions, and rows behind the watermark inside the epoch. A row
-    /// late there that meets two closed sessions: the live epoch gives both
-    /// sessions' rows and quarantines it; the redo takes it on time and
-    /// gives one session of the three rows. A row behind the watermark that
-    /// isn't late, as it meets an open session: the live epoch gave the
-    /// closed session's row before the row merged it away; the redo merges
-    /// them before either closes, and gives no row.
+    /// late there that meets two closed sessions: the epoch gives both
+    /// sessions' rows and quarantines it, and so does the redo. A row
+    /// behind the watermark that isn't late, as it meets an open session:
+    /// the epoch gave the closed session's row before the row came, and
+    /// the redo closes it before the row too, and gives its row.
     #[tokio::test]
-    async fn a_redo_merges_the_sessions_a_row_behind_the_watermark_meets() {
+    async fn a_redo_closes_the_sessions_a_row_behind_the_watermark_meets() {
         const SESSIONS: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
                                 FROM a GROUP BY session(at, INTERVAL '10 seconds'), email";
         // 0 s and 20 s, closed by 45 s, then 10 s, which meets both.
-        let (live, late, closed) = one_epoch(SESSIONS, &[0, 20, 45, 10], None).await;
+        let live = redone(SESSIONS, &[0, 20, 45, 10]).await;
         assert_eq!(
-            (live, late),
+            (live.rows, live.late),
             (vec![row(0, "x", 1, 1), row(20, "x", 1, 1)], 1)
         );
-        let (redo, late, _) = one_epoch(SESSIONS, &[0, 20, 45, 10], Some(closed)).await;
-        assert_eq!((redo, late), (vec![row(0, "x", 3, 1)], 0));
-        // 0 s, closed by 19 s, then 9 s, which meets it and the open one.
-        let (live, late, closed) = one_epoch(SESSIONS, &[0, 19, 9], None).await;
-        assert_eq!((live, late), (vec![row(0, "x", 1, 1)], 0));
-        let (redo, late, _) = one_epoch(SESSIONS, &[0, 19, 9], Some(closed)).await;
-        assert_eq!((redo, late), (vec![], 0));
+        // 0 s, closed by 19 s, then 9 s, which meets the open one.
+        let live = redone(SESSIONS, &[0, 19, 9]).await;
+        assert_eq!((live.rows, live.late), (vec![row(0, "x", 1, 1)], 0));
+    }
+
+    /// A keyed lane takes 1,024 steps of the window's watermark an epoch at
+    /// most, and past them holds the watermark where it is until the
+    /// barrier: a row behind the senders' watermark then, but not behind
+    /// the held one, is on time, and the redo takes it so too.
+    #[tokio::test]
+    async fn past_its_steps_a_keyed_lane_holds_the_watermark_until_the_barrier() {
+        const SESSIONS: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
+                                FROM a GROUP BY session(at, INTERVAL '10 seconds'), email";
+        // A session every 20 s, each row a step, then a row 55 s behind
+        // the last, which meets the session at 21,920 s.
+        let mut seconds: Vec<i64> = (0..1100).map(|k| k * 20).collect();
+        seconds.push(21_925);
+        let live = redone(SESSIONS, &seconds).await;
+        let steps: usize = live
+            .steps
+            .iter()
+            .flat_map(|l| &l.splits)
+            .map(|s| s.places.len())
+            .sum();
+        assert_eq!((steps, live.late), (crate::watermark::STEPS, 0));
+        assert!(
+            live.rows.contains(&row(21_920, "x", 2, 1)),
+            "{:?}",
+            live.rows.last()
+        );
+        assert_eq!(live.closed, 21_980 * SEC, "it caught up at the barrier");
     }
 
     /// Two engines of three lanes each send a window's rows to each other's

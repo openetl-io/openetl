@@ -105,6 +105,12 @@ pub struct Plan {
 pub struct StatePlan {
     pub job: Option<std::sync::Arc<crate::state::JobState>>,
     pub restored: Vec<(String, openetl_state::Snapshot)>,
+    /// Each group window's keyed lanes report the steps of its watermark
+    /// that their rows met in each epoch.
+    pub record_steps: bool,
+    /// A redo's, by operator: the steps of a group window's watermark in the
+    /// epoch it redoes.
+    pub steps: HashMap<String, std::sync::Arc<crate::watermark::Met>>,
 }
 
 /// A job's SQL transform: the streams it reads, which the inbound edges
@@ -714,6 +720,8 @@ impl Plan {
             state: StatePlan {
                 job: state_job,
                 restored: restored_state,
+                record_steps: req.record_window_steps && !req.state_read_only,
+                steps: window_steps(&req.window_steps)?,
             },
             job: req.job.clone(),
             mesh,
@@ -823,6 +831,38 @@ impl Plan {
 
 /// Below the quarantine URL, where a transform's outputs' records go.
 const OUTPUTS_DIR: &str = "_outputs";
+
+/// A redo's steps of each group window's watermark, by operator.
+fn window_steps(
+    ws: &[openetl_proto::engine::v1::WindowSteps],
+) -> Result<HashMap<String, std::sync::Arc<crate::watermark::Met>>, JobError> {
+    let mut out = HashMap::new();
+    for w in ws {
+        let mut lanes = Vec::with_capacity(w.lanes.len());
+        for l in &w.lanes {
+            let kg = l.key_groups.unwrap_or_default();
+            let mut splits = HashMap::new();
+            for s in &l.splits {
+                if s.places.len() != s.watermarks.len() {
+                    return Err(JobError::internal(format!(
+                        "operator {}'s steps of split {:?} have {} places and {} watermarks",
+                        w.operator,
+                        s.split,
+                        s.places.len(),
+                        s.watermarks.len()
+                    )));
+                }
+                let steps = s.places.iter().copied().zip(s.watermarks.iter().copied());
+                splits.insert(s.split.clone(), steps.collect());
+            }
+            lanes.push((kg.first, kg.last, splits));
+        }
+        let met = crate::watermark::Met::new(lanes)
+            .map_err(|e| JobError::internal(format!("operator {}'s steps: {e}", w.operator)))?;
+        out.insert(w.operator.clone(), std::sync::Arc::new(met));
+    }
+    Ok(out)
+}
 
 /// Each of `outputs` outputs' floor: the least of the floors of the inputs
 /// that feed it; None where one of them has no event time, or none does.
@@ -1076,6 +1116,8 @@ pub(crate) mod tests {
             mesh: None,
             state_url: String::new(),
             state_read_only: false,
+            record_window_steps: false,
+            window_steps: Vec::new(),
         }
     }
 

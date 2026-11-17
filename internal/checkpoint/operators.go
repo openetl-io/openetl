@@ -33,6 +33,9 @@ type OperatorPart struct {
 	// The runs its lanes' snapshots name, with their bytes.
 	Runs                     map[string]uint64
 	Barrier, Lookup, Restore Requests
+	// A group window's, where its steps are recorded: those of its
+	// watermark that each of its keyed lanes' rows met.
+	Steps []LaneSteps
 }
 
 // Operator is what a stateful operator did in a record's epoch, on every

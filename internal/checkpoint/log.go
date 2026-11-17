@@ -108,6 +108,12 @@ type StreamState struct {
 	// not known.
 	Floor  *int64 `json:"floor,omitempty"`
 	Closed *int64 `json:"closed,omitempty"`
+	// By group window's operator over the stream, where its destination's
+	// writer lanes commit on their own: the steps of its watermark that
+	// each keyed lane's rows met in the epoch, as EncodeSteps keeps them
+	// against Splits and Floor, which a redo of the epoch replays. Missing:
+	// none past Floor, or none recorded.
+	Steps map[string][]byte `json:"steps,omitempty"`
 }
 
 // WholeStream is the ID of the split that is the whole stream. A stream

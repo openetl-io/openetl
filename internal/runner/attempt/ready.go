@@ -77,7 +77,46 @@ func OperatorOf(p *enginev1.OperatorEpoch) checkpoint.OperatorPart {
 		Operator: p.GetOperator(), RowsIn: p.GetRowsIn(), Inserts: p.GetInserts(), Updates: p.GetUpdates(), Deletes: p.GetDeletes(),
 		Late: p.GetLate(), Opened: p.GetWindowsOpened(), Dropped: p.GetWindowsDropped(), Watermark: p.Watermark,
 		MemoryBytes: p.GetMemoryBytes(), Runs: p.GetRuns(), Barrier: req(p.GetBarrier()), Lookup: req(p.GetLookup()), Restore: req(p.GetRestore()),
+		Steps: StepsOf(p.GetSteps()),
 	}
+}
+
+// StepsOf are keyed lanes' steps of a window's watermark as the engine
+// reports them; nil for none.
+func StepsOf(ps []*enginev1.LaneSteps) []checkpoint.LaneSteps {
+	var out []checkpoint.LaneSteps
+	for _, p := range ps {
+		kg := p.GetKeyGroups()
+		l := checkpoint.LaneSteps{KeyGroups: checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())}}
+		for _, s := range p.GetSplits() {
+			steps := make([]checkpoint.Step, 0, len(s.GetPlaces()))
+			for i, place := range s.GetPlaces() {
+				if i < len(s.GetWatermarks()) {
+					steps = append(steps, checkpoint.Step{Place: place, Watermark: s.GetWatermarks()[i]})
+				}
+			}
+			l.Splits = append(l.Splits, checkpoint.SplitSteps{Split: s.GetSplit(), Steps: steps})
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// StepsProto are keyed lanes' steps as the engine reports them.
+func StepsProto(ls []checkpoint.LaneSteps) []*enginev1.LaneSteps {
+	var out []*enginev1.LaneSteps
+	for _, l := range ls {
+		p := &enginev1.LaneSteps{KeyGroups: KeyGroups(l.KeyGroups.First, l.KeyGroups.Last)}
+		for _, s := range l.Splits {
+			sp := &enginev1.SplitSteps{Split: s.Split}
+			for _, st := range s.Steps {
+				sp.Places, sp.Watermarks = append(sp.Places, st.Place), append(sp.Watermarks, st.Watermark)
+			}
+			p.Splits = append(p.Splits, sp)
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // OperatorProto is o as the engine reports it.
@@ -89,6 +128,7 @@ func OperatorProto(o checkpoint.OperatorPart) *enginev1.OperatorEpoch {
 		Operator: o.Operator, RowsIn: o.RowsIn, Inserts: o.Inserts, Updates: o.Updates, Deletes: o.Deletes,
 		Late: o.Late, WindowsOpened: o.Opened, WindowsDropped: o.Dropped, Watermark: o.Watermark,
 		MemoryBytes: o.MemoryBytes, Runs: o.Runs, Barrier: req(o.Barrier), Lookup: req(o.Lookup), Restore: req(o.Restore),
+		Steps: StepsProto(o.Steps),
 	}
 }
 
