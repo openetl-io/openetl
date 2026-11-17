@@ -20,6 +20,7 @@ var (
 	operatorWatermarkLag, _ = meter.Float64Gauge("openetl.operator.watermark.lag", metric.WithUnit("s"), metric.WithDescription("How far a stateful operator's watermark was behind its last commit"))
 	operatorStateMemory, _  = meter.Int64Gauge("openetl.operator.state.memory", metric.WithUnit("By"), metric.WithDescription("What a stateful operator's state held in memory at its last commit"))
 	operatorStateStored, _  = meter.Int64Gauge("openetl.operator.state.stored", metric.WithUnit("By"), metric.WithDescription("The bytes on object storage of the state that a stateful operator's last checkpoint names"))
+	operatorStateCarried, _ = meter.Int64Gauge("openetl.operator.state.checkpoint", metric.WithUnit("By"), metric.WithDescription("The bytes of a stateful operator's state that its last checkpoint record carries itself"))
 	operatorRequests, _     = meter.Int64Counter("openetl.operator.state.requests", metric.WithUnit("{request}"), metric.WithDescription("A stateful operator's requests to object storage in committed epochs, by kind"))
 	operatorRequestBytes, _ = meter.Int64Counter("openetl.operator.state.request.bytes", metric.WithUnit("By"), metric.WithDescription("The bytes of a stateful operator's requests to object storage in committed epochs, by kind"))
 )
@@ -49,6 +50,7 @@ func measureOperator(ctx context.Context, org, pipeline string, o checkpoint.Ope
 	operatorWindows.Record(ctx, o.Windows, attrs)
 	operatorStateMemory.Record(ctx, ints.Int64Clamped(o.MemoryBytes), attrs)
 	operatorStateStored.Record(ctx, ints.Int64Clamped(o.StoredBytes), attrs)
+	operatorStateCarried.Record(ctx, ints.Int64Clamped(o.CheckpointBytes), attrs)
 	// The end of input has no time.
 	if o.Watermark != nil && *o.Watermark != EndOfInput {
 		operatorWatermark.Record(ctx, float64(*o.Watermark)/1e6, attrs)

@@ -186,6 +186,7 @@ function windowStats(i: number, commit?: { seconds: bigint; nanos: number }) {
       watermark: ts(ms(commit) - 3 * 60_000),
       memoryBytes: 6_815_744n,
       storedBytes: 48_234_496n,
+      checkpointBytes: 18_432n,
       barrierRequests: { count: 4n, bytes: 1_310_720n },
       readRequests: { count: 37n, bytes: 151_552n },
       restoreRequests: { count: i === 0 ? 28n : 0n, bytes: i === 0 ? 57_344n : 0n },

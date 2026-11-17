@@ -145,6 +145,8 @@ var variantShapes = map[string]wShape{
 	"restore-keeps-passed":   {exchange: "on", state: "drop"},
 	"pending-epoch-only":     {exchange: "on", state: "pending"},
 	"pending-to-memory-only": {exchange: "on", state: "pending,-lazy"},
+	"pending-drops-deletes":  {exchange: "on", state: "pending"},
+	"pending-whole":          {exchange: "on", state: "pending"},
 	"lazy-stale-handles":     {exchange: "on", state: "lazy,merge,drop,dedupe"},
 	"late-before-dedupe":     {exchange: "on", state: "dedupe"},
 }

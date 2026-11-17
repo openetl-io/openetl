@@ -825,6 +825,11 @@ struct Job {
     /// Engines over a mesh, short of the case's lanes.
     workers: usize,
     kill: Option<Kill>,
+    /// Each engine's memory limit, which bounds what records carry of
+    /// pending sets; 0 for none.
+    memory: u64,
+    /// What records carry at most of pending sets; `None` for the default.
+    pending: Option<u64>,
 }
 
 impl Job {
@@ -836,6 +841,8 @@ impl Job {
             floor: NONE,
             workers: 1,
             kill: None,
+            memory: 0,
+            pending: None,
         }
     }
 }
@@ -996,6 +1003,12 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
         req.pipeline = name.into();
         req.quarantine_url = format!("file://{}", dir.display());
         req.restored_snapshots = job.restored.clone();
+        if job.memory > 0 {
+            req.limits = Some(openetl_proto::engine::v1::Limits {
+                memory_bytes: job.memory,
+            });
+        }
+        req.state_pending_bytes = job.pending;
         let et = event_time(&mut req);
         et.delay_micros = case.delay;
         et.lateness_micros = case.lateness;
@@ -1707,9 +1720,21 @@ fn expect_killed(phases: &[Phase]) -> KilledExpected {
 }
 
 /// Runs a killed case's jobs one after another, each restored from the
-/// record the one before left, below one directory. What they committed,
-/// and what they ran.
-async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) {
+/// record the one before left, below one directory, each engine with
+/// `memory` bytes and records that carry at most `pending` of pending sets.
+/// What they committed, and what they ran. No record carries more of
+/// pending sets than the engines' share.
+async fn run_killed(
+    name: &str,
+    phases: &[Phase],
+    seed: u64,
+    (memory, pending): (u64, Option<u64>),
+) -> (Got, Restores) {
+    let bound = match (pending, memory) {
+        (Some(p), _) => p as usize,
+        (None, 0) => crate::state::PENDING_BYTES,
+        (None, m) => crate::state::PENDING_BYTES.min((m / crate::state::PENDING_SHARE) as usize),
+    };
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let mut runs = Vec::new();
@@ -1719,6 +1744,7 @@ async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) 
             r.pruned += prune(&state, &restored);
         }
         r.from_runs += usize::from(restored.iter().any(|s: &StateSnapshot| !s.runs.is_empty()));
+        r.from_pending += usize::from(restored.iter().any(|s| !s.pending.is_empty()));
         let job = Job {
             generation: p as u64 + 1,
             first_epoch: epoch + 1,
@@ -1726,8 +1752,23 @@ async fn run_killed(name: &str, phases: &[Phase], seed: u64) -> (Got, Restores) 
             floor: floor(&ph.case),
             workers: ph.workers,
             kill: ph.kill.clone(),
+            memory,
+            pending,
         };
         let ran = run_job(name, dir.path(), &ph.case, &job, seed + p as u64).await;
+        for e in &ran.ready {
+            let carried: usize = e.snapshots.iter().map(|s| s.pending.len()).sum();
+            assert!(
+                carried <= bound,
+                "{name}: {carried} bytes pending, of {bound}"
+            );
+            r.carried = r.carried.max(carried);
+            r.barriers += e
+                .operators
+                .iter()
+                .map(|o| o.barrier.as_ref().map_or(0, |b| b.count))
+                .sum::<u64>();
+        }
         // The windows kept, as the records count them across kills and
         // restores: never below 0, and none once the input ends.
         for op in ran.ready.iter().flat_map(|e| &e.operators) {
@@ -1753,8 +1794,14 @@ struct Restores {
     /// Jobs killed after their engine had read frames past the last
     /// barrier they committed.
     read_past: usize,
-    /// Jobs restored from a record that names runs.
+    /// Jobs restored from a record that names runs, and from one that
+    /// carries pending sets.
     from_runs: usize,
+    from_pending: usize,
+    /// The most bytes of pending sets an epoch's snapshots carried, and the
+    /// runs barriers wrote.
+    carried: usize,
+    barriers: u64,
     /// Runs that pruning deleted.
     pruned: usize,
     /// The windows the committed epochs kept, opened less dropped, and
@@ -1811,8 +1858,10 @@ struct KillTally {
     /// Restores onto another number of engines, from several or onto
     /// several.
     remeshed: usize,
-    /// Jobs restored from a record that names runs.
+    /// Jobs restored from a record that names runs, and from one that
+    /// carries pending sets.
     from_runs: usize,
+    from_pending: usize,
     pruned: usize,
     opened: usize,
     windows: usize,
@@ -1831,7 +1880,10 @@ struct KillTally {
 /// is in is lost and the runs it wrote are orphans. The next job restores
 /// the record of the last barrier committed onto another number of lanes,
 /// some after the runs that record doesn't name are deleted, and reads on
-/// from where the record has each split. What the jobs committed, merged,
+/// from where the record has each split. By seed, the records carry the
+/// lanes' changes as pending sets within the default 1 MiB, or within a
+/// 64th of a small memory limit, about 1 KiB, or within 64 bytes, so the
+/// lanes write runs once their changes pass a few bytes. What the jobs committed, merged,
 /// is the model's table, and they quarantine the model's late rows and
 /// report its watermarks. Some jobs run with a raised or lowered lateness:
 /// a window gone under an earlier one stays gone. Jobs run on one engine
@@ -1844,7 +1896,8 @@ async fn killed_and_restored_windows_are_the_models() {
         for seed in 0..50 {
             let name = format!("killed-{window:?}-{seed}");
             let e = expect_killed(&killed(seed * 104_723 + 5, window));
-            let (g, r) = run_killed(&name, &e.phases, seed).await;
+            let limit = [(0, None), (64 << 10, None), (0, Some(64))][seed as usize % 3];
+            let (g, r) = run_killed(&name, &e.phases, seed, limit).await;
             check_against(&name, &e.table, &e.late, &e.marks, &g);
             tally.cases += 1;
             tally.restores += e.phases.len() - 1;
@@ -1872,6 +1925,10 @@ async fn killed_and_restored_windows_are_the_models() {
                 .filter(|p| p[0] != p[1] && p[0].max(p[1]) > 1)
                 .count();
             tally.from_runs += r.from_runs;
+            tally.from_pending += r.from_pending;
+            if limit == (0, None) {
+                assert_eq!(r.barriers, 0, "{name}: runs written within 1 MiB");
+            }
             tally.pruned += r.pruned;
             tally.opened += r.opened;
             tally.windows += e.table.len();
@@ -1892,7 +1949,8 @@ async fn killed_and_restored_windows_are_the_models() {
     assert!(tally.three_engines >= 35, "{tally:?}");
     assert!(tally.cases_on_several >= 100, "{tally:?}");
     assert!(tally.remeshed >= 140, "{tally:?}");
-    assert!(tally.from_runs >= 150, "{tally:?}");
+    assert!(tally.from_runs >= 80, "{tally:?}");
+    assert!(tally.from_pending >= 80, "{tally:?}");
     // Runs of epochs that a kill lost, which the engine may or may not have
     // written by then.
     assert!(tally.pruned >= 10, "{tally:?}");
@@ -2009,7 +2067,7 @@ async fn a_bounded_read_and_a_continuous_one_leave_the_same_table() {
 }
 
 /// A session the output has a row of when the record is taken, restored
-/// from its runs by another attempt, then grown by a late row past HAVING,
+/// from its record by another attempt, then grown by a late row past HAVING,
 /// is deleted with the end and the values of the row the output has.
 #[tokio::test]
 async fn a_restored_session_deletes_the_row_the_output_has() {
@@ -2065,7 +2123,7 @@ async fn a_restored_session_deletes_the_row_the_output_has() {
     assert_eq!(given(&outs), [("insert".to_owned(), 30, Some(5))]);
     let snapshots = first[0].snapshots.clone();
     assert!(
-        snapshots.iter().any(|s| !s.runs.is_empty()),
+        snapshots.iter().any(|s| !s.pending.is_empty()),
         "{snapshots:?}"
     );
 

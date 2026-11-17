@@ -352,28 +352,47 @@ func TestARetryKeepsACompletedStreamsWindowsOpen(t *testing.T) {
 
 // A group window's state outlives the engine that kept it. An attempt
 // whose engine ends while the minute is open leaves its state in the
-// state's storage, named by its records; the next attempt, in an engine
-// of its own, opens it from the record it restores, reads on from the
-// record's position, and closes the minute with every row of it, each
-// once. Then the minute's state is dead, and the record names none of the
-// first attempt's runs.
+// state's storage, named by its records, or in the records themselves
+// while it's small; the next attempt, in an engine of its own, opens it
+// from the record it restores, reads on from the record's position, and
+// closes the minute with every row of it, each once. Then the minute's
+// state is dead, and the record names none of the first attempt's runs.
 func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
+	for _, runs := range []bool{true, false} {
+		t.Run(map[bool]string{true: "runs", false: "in the record"}[runs], func(t *testing.T) {
+			stateOutlivesItsEngine(t, runs)
+		})
+	}
+}
+
+func stateOutlivesItsEngine(t *testing.T, runs bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	minute := minutes + 60_000_000
-	job := spanJob(ctx, t, source.Stream, 0)
+	span := spanJob(ctx, t, source.Stream, 0)
+	job := func(owner, sync string, src source.Reader, stateURL string, dest destination.Destination) runner.Job {
+		j := span(owner, sync, src, stateURL, dest)
+		if runs {
+			j = withRuns(j)
+		}
+		return j
+	}
 	state, dest := "file://"+t.TempDir(), newKeyDest(2)
 
-	// The first attempt's engine ends once a record names state, with the
+	// The first attempt's engine ends once a record holds state, with the
 	// minute open.
 	first, stop := context.WithCancel(ctx)
 	var once sync.Once
 	var named []string
+	var held bool
+	var wrote bool
 	j := job("a1", "s1", &spanSource{minute: minute, pause: 12}, state, dest)
 	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
-		if r := stateRuns(rec); len(r) > 0 {
+		r := stateRuns(rec)
+		wrote = wrote || len(r) > 0
+		if len(r) > 0 || !runs && carried(rec) > 0 {
 			once.Do(func() {
-				named = r
+				named, held = r, true
 				stop()
 			})
 		}
@@ -381,8 +400,11 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	if _, err := runner.RunAttempt(first, j); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the first attempt ended with %v", err)
 	}
-	if len(named) == 0 {
-		t.Fatal("no record of the first attempt named state")
+	if !held {
+		t.Fatal("no record of the first attempt held state")
+	}
+	if wrote != runs {
+		t.Fatalf("the first attempt's records named runs: %t", wrote)
 	}
 	if got := minuteRows(dest); len(got) != 0 {
 		t.Fatalf("the minute closed in the first attempt: %v", got)
@@ -398,6 +420,9 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		mu.Lock()
 		last = stateRuns(rec)
+		if !runs && carried(rec) > 0 {
+			last = append(last, "the record's own")
+		}
 		mu.Unlock()
 		if len(minuteRows(dest)) > 0 {
 			done.Do(func() { close(drain) })
@@ -415,8 +440,31 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 		t.Error("the second attempt's last record names no state, though the closing row's minute is open")
 	}
 	for _, r := range last {
-		if slices.Contains(named, r) || !strings.Contains(r, "/g2/") {
+		if !runs && r == "the record's own" {
+			continue
+		}
+		if !runs || slices.Contains(named, r) || !strings.Contains(r, "/g2/") {
 			t.Errorf("the second attempt's last record names %s of the closed minute", r)
 		}
 	}
+}
+
+// carried is the bytes of their state rec's snapshots carry.
+func carried(rec *checkpoint.Record) int {
+	n := 0
+	for _, sn := range rec.Snapshots {
+		n += len(sn.Pending)
+	}
+	return n
+}
+
+// withRuns is j with engines whose lanes write a run at every barrier that
+// changed something, as records carry none of their changes.
+func withRuns(j runner.Job) runner.Job {
+	if df, ok := j.Dataflow.(*Dataflow); ok {
+		cp, none := *df, uint64(0)
+		cp.Options.StatePendingBytes = &none
+		j.Dataflow = &cp
+	}
+	return j
 }

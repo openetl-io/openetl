@@ -127,6 +127,12 @@ message StartJobRequest {
   // it met there, and the windows close in the order they did. Missing:
   // its rows meet the floor, and the windows close at closes_at.
   repeated WindowSteps window_steps = 29;
+  // What an epoch's snapshots on every engine of the attempt carry at most
+  // of their lanes' changes (StateSnapshot.pending), in bytes. Unset: 1
+  // MiB, or a 64th of limits.memory_bytes where that's less. 0: every
+  // barrier that changed something writes a run. For tests of runs; the
+  // runner leaves it unset.
+  optional uint64 state_pending_bytes = 30;
 }
 
 // WindowSteps are a group window's watermark steps in an epoch, on each of
@@ -721,6 +727,14 @@ message StateSnapshot {
   bytes data = 4;
   // The runs it names, below state_url: what retention keeps.
   repeated string runs = 5;
+  // The lane's changes since it last wrote a run, newer than all the runs
+  // hold, which only the engine reads: the record carries them in place of
+  // a run while they're small. An epoch's snapshots on every engine of an
+  // attempt carry at most StartJobRequest.state_pending_bytes of them,
+  // shared evenly by the stateful operators, and by each operator's lanes
+  // as their key groups are of the pipeline's. At a barrier where a lane's
+  // would pass its share, it writes them as a run. Empty: none.
+  bytes pending = 6;
 }
 
 // KeyGroupRange is key groups first to last, inclusive.

@@ -121,10 +121,15 @@ So a sync of a stream read in event-time order leaves its newest windows open un
 
 ## Where the state is kept
 
-A group window keeps state for each window that is open, or closed and within its lateness: the window's aggregates, and the values of the row it wrote. OpenETL keeps it in the runners' checkpoint store (`--checkpoints`), in a `_state/` folder next to the pipeline's checkpoints. At each checkpoint, the engine writes what the state changed since the last one, and the checkpoint names the files that hold the state.
+A group window keeps state for each window that is open, or closed and within its lateness: the window's aggregates, and the values of the row it wrote. OpenETL keeps it in the runners' checkpoint store (`--checkpoints`). Each lane of the engine keeps the changes to its state since it last wrote them to a file. At each checkpoint, the lane keeps those changes in one of two places:
+
+- If the changes are small, the checkpoint record holds them, and the lane writes no file. The windows of a pipeline share up to 1 MiB of each record, or a 64th of the engine's memory if that is less. Each window gets an equal part, and each of its lanes gets the fraction that the lane's key groups are of the pipeline's.
+- If the changes are larger than the lane's share, the lane writes them as a file in a `_state/` folder next to the pipeline's checkpoints. The checkpoint names the file, and the lane starts again with no changes.
+
+Each record holds a lane's changes again until the lane writes them to a file. So a pipeline that keeps little state, or whose windows open and close between files, writes few files of state, or none.
 
 - A file counts only once a checkpoint that names it commits. A file of an epoch that failed is never read.
-- After a failure, or between syncs, the next run opens the state that its checkpoint names, and reads each file when it first needs it.
+- After a failure, or between syncs, the next run opens the state that its checkpoint names. It takes the changes that the record holds at the start, and reads each file when it first needs it.
 - The engine stops keeping a window's state when the watermark passes the window's end plus the lateness.
 - Each lane merges some of its files in the background, once it holds more than 8 files of windows' values. A checkpoint names the merged file in place of the files it replaces.
 - A checkpoint names only the files that hold state still in use. When every window that a file holds has closed and its lateness has passed, or newer files hold all of it, the next checkpoints stop naming it. When every window has closed and its lateness has passed, a checkpoint names no file of the window's state.
@@ -181,3 +186,4 @@ The same numbers are metrics, with the operator's ID as `openetl.operator` ([Mon
 - `openetl.operator.watermark.lag` grows when a split is behind the others. A window's row waits until the watermark reaches the window's end, so a growing lag delays the rows.
 - `openetl.operator.rows.late` counts late rows that came after their window's lateness, which OpenETL quarantined. If it grows, raise `watermark.delay` or `watermark.lateness`. A raised lateness applies to the windows that are still kept and to new windows. The late rows of windows that were gone before the change still go to quarantine, as [Change the lateness](#change-the-lateness) describes.
 - `openetl.operator.windows` and `openetl.operator.state.memory` grow with the keys and the lateness.
+- `openetl.operator.state.checkpoint` is the part of the state that the checkpoint record holds, and `openetl.operator.state.stored` the files that it names.

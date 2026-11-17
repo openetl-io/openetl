@@ -57,6 +57,8 @@ var brokenVariants = []struct{ name, invariant, what string }{
 	{"restore-keeps-passed", "restore", "a restore takes the set's IDs and the timers at or below the record's horizon, which the sections it names may hold though they're gone"},
 	{"pending-epoch-only", "restore", "the record carries the lane's changes of the epoch, not all of them since its last run"},
 	{"pending-to-memory-only", "restore", "a restore reads the record's pending set into memory, and not into its lane's pending set"},
+	{"pending-drops-deletes", "restore", "a lane's pending set leaves out every window's deletion, though an older section the lane names holds the window"},
+	{"pending-whole", "restore", "a restore takes every entry of the record's pending sets, not only those of its lane's key groups"},
 	{"lazy-stale-handles", "restore", "a lazy lane reads key groups from the sections it restored, not those it names now"},
 	{"late-before-dedupe", "exactly-once", "a keyed lane sends a row whose window closed to late before it looks for its dedupe ID"},
 }
