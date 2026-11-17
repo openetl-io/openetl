@@ -1346,6 +1346,11 @@ message OperatorStats {
   StateRequests barrier_requests = 12;
   StateRequests read_requests = 13;
   StateRequests restore_requests = 14;
+  // Its merges' requests in the epoch: writing their outputs at the
+  // barrier, and reading the state they merge. A merge's read can count in
+  // the epoch next to it, as a read can.
+  StateRequests merge_write_requests = 15;
+  StateRequests merge_read_requests = 16;
 }
 
 // StateRequests are requests of one kind to object storage, and their

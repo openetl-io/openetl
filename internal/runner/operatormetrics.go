@@ -41,7 +41,8 @@ func measureOperator(ctx context.Context, org, pipeline string, o checkpoint.Ope
 	add(operatorRowsWritten, o.Updates, with("openetl.op", "update"))
 	add(operatorRowsWritten, o.Deletes, with("openetl.op", "delete"))
 	add(operatorRowsLate, o.Late, attrs)
-	for kind, r := range map[string]checkpoint.Requests{"barrier": o.Barrier, "lookup": o.Lookup, "restore": o.Restore} {
+	kinds := map[string]checkpoint.Requests{"barrier": o.Barrier, "lookup": o.Lookup, "restore": o.Restore, "merge_write": o.MergeWrite, "merge_read": o.MergeRead}
+	for kind, r := range kinds {
 		add(operatorRequests, r.Count, with("openetl.request.kind", kind))
 		add(operatorRequestBytes, r.Bytes, with("openetl.request.kind", kind))
 	}

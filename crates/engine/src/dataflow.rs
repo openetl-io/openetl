@@ -2471,6 +2471,7 @@ impl Flow {
                     .unwrap_or_default();
                 op.lookup = requests(now.lookup, was.lookup);
                 op.restore = requests(now.restore, was.restore);
+                op.merge_read = requests(now.merge_read, was.merge_read);
                 op.memory_bytes += stores.cache_bytes() as u64;
             }
         }

@@ -3,9 +3,11 @@
 //! job's state URL of the operator's own, a run per lane at each barrier
 //! that changed something. A lane's snapshot names the runs that hold what
 //! it reads, less what's dead: windows deleted and timers fired, which
-//! the operator's horizon, its watermark, has passed. It counts once the
-//! epoch's record does: a run no committed record names is never read,
-//! and retention deletes it. A restore opens what the record names, by
+//! the operator's horizon, its watermark, has passed. A lane merges some
+//! of its sections in the background, by kind, and a barrier writes the
+//! merge's run and names it in their place. A run counts once the epoch's
+//! record does: a run no committed record names is never read, and
+//! retention deletes it. A restore opens what the record names, by
 //! each lane's own range of key groups, so state moves to any number of
 //! lanes, and reads nothing until a lane needs it.
 
@@ -15,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use bytes::Bytes;
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_proto::engine::v1::{KeyGroupRange as ProtoRange, StateSnapshot};
-use openetl_state::runs::{ObjectStorage, RunConfig, RunStores, runs};
+use openetl_state::runs::{MergeConfig, ObjectStorage, RunConfig, RunStores, runs};
 use openetl_state::{Error as StateError, KeyGroupRange, Snapshot};
 
 use crate::error::JobError;
@@ -23,6 +25,9 @@ use crate::store::Location;
 
 /// What the block caches of a job's operators may hold together: a
 /// sixteenth of the job's memory, and between these for each operator.
+/// Each operator's lanes merge within as much again: the merges in flight
+/// of all its lanes take no more, their inputs uncompressed, and hold
+/// about as much, each its output until the barrier that writes it.
 const CACHE_SHARE: u64 = 16;
 const MIN_CACHE: usize = 1 << 20;
 const MAX_CACHE: usize = 64 << 20;
@@ -67,6 +72,10 @@ impl JobState {
             read_only,
             config: RunConfig {
                 cache_bytes: cache,
+                merge: Some(MergeConfig {
+                    max_bytes: cache as u64,
+                    ..MergeConfig::default()
+                }),
                 ..RunConfig::default()
             },
             stores: Mutex::new(HashMap::new()),
@@ -202,6 +211,57 @@ mod tests {
             snapshot(&bad).unwrap_err().code,
             ErrorCode::CheckpointCorrupt
         );
+    }
+
+    /// A job's state merges its lanes' sections in the background, and a
+    /// barrier names the merge's run, which a restore reads.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_jobs_lanes_merge_and_restore_what_they_merged() {
+        use openetl_state::{KeyRef, Layer, OperatorId, StateBackend};
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let op = OperatorId(1);
+        let range = KeyGroupRange::new(0, 15);
+        let state = JobState::open(&url, false, 1, 0).unwrap();
+        let stores = state.stores("window-1");
+        let mut lane = Layer::open(&stores, 1, 1, range, &[]).await.unwrap();
+        let key = |i: u32| format!("key-{i}").into_bytes();
+        let mut snapshots = Vec::new();
+        let mut epoch = 1;
+        // Values that never die: past 8 sections, the lane merges some.
+        while stores.counts().merge_write.count == 0 {
+            assert!(epoch < 200, "no merge written by epoch {epoch}");
+            for i in 0..50 {
+                let k = key(epoch as u32 * 50 + i);
+                lane.put(op, KeyRef::new(i % 16, &k), Bytes::from(k.clone()));
+            }
+            snapshots = lane.barrier(epoch).await.unwrap();
+            epoch += 1;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let names: Vec<String> = snapshots
+            .iter()
+            .flat_map(|s| named("window-1", s).unwrap().runs)
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with(".merge.run")), "{names:?}");
+        let again = JobState::open(&url, false, 1, 0).unwrap();
+        let back = again.stores("window-1");
+        let mut lane = Layer::open(&back, 2, epoch, range, &snapshots)
+            .await
+            .unwrap();
+        let mut read = 0;
+        for e in 1..epoch {
+            let keys: Vec<Vec<u8>> = (0..50).map(|i| key(e as u32 * 50 + i)).collect();
+            let refs: Vec<KeyRef> = (0..50)
+                .map(|i| KeyRef::new(i % 16, &keys[i as usize]))
+                .collect();
+            let got = lane.get(op, &refs).await.unwrap();
+            for (k, v) in keys.iter().zip(got) {
+                assert_eq!(v.as_deref(), Some(&k[..]));
+                read += 1;
+            }
+        }
+        assert_eq!(read, (epoch - 1) * 50);
     }
 
     #[test]
