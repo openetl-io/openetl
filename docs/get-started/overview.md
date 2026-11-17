@@ -10,7 +10,7 @@ Pipelines read from databases and event streams. They write into warehouses, dat
 OpenETL is open source under Apache 2.0. You run it on your own machines or in your own cloud account.
 
 > [!NOTE]
-> OpenETL is in alpha. The current release is {{version}}. The pipeline format and the API can change between releases.
+> OpenETL {{version}} is in alpha. The pipeline format and API can change between releases.
 
 ## Connect your systems
 

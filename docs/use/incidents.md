@@ -37,6 +37,10 @@ An incident page has four sections:
 - **Heal** records automatic actions or proposed actions.
 - **Details** provides additional diagnostic information.
 
+![Example incident showing What happened, Next steps and a proposed Heal action.](../images/console-incident.png)
+
+This example requires a database permission change. If you cannot make the change, contact the person responsible for that database. Give them the pipeline name and **What happened** details.
+
 Some incidents pause the pipeline because another sync would repeat the failure. Others change how it runs:
 
 For **Quarantine**, automatic recovery can pause the affected stream while other streams continue. If it is the only stream, automatic recovery pauses the pipeline. Some streams, such as CDC streams, cannot pause independently. **Next steps** explains this limit.

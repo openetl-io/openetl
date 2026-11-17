@@ -141,8 +141,10 @@ Each record holds a lane's changes again until the lane writes them to a file. S
 
 To build a window's state again from the stream, reset the stream that the window reads. The reset drops the stream's position, its watermark and the state of every statement that reads it. The next run reads the stream again from where the source starts a new read, and builds the state from those rows. The files of the dropped state are deleted once no kept checkpoint names them.
 
-> [!WARNING]
-> A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again. If the new read starts partway through a window, that window's row is written again from only part of its rows, and under `merge` it replaces the row that had all of them. [Read streams again from the start](./positions.md#read-streams-again-from-the-start) has what the destination gets.
+> [!CAUTION]
+> A reset rereads data for every statement that uses the stream. With `merge`, a partial window can replace a complete destination row.
+
+If a new read starts partway through a window, OpenETL rebuilds that window from only the rows it reads. With `merge`, this partial result replaces the earlier row. [Read streams again from the start](./positions.md#read-streams-again-from-the-start) explains the destination effects.
 
 ```sh
 openetl reset --stream page_views PIPELINE

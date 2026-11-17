@@ -41,4 +41,4 @@ Follow the [quickstart](./get-started/quickstart.md) to run a pipeline on your c
 Official connector pages appear under Connectors on the docs site. Their source files are in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). For other packages, use the **Docs** link in the console.
 
 > [!NOTE]
-> OpenETL is in alpha. The current release is {{version}}. The pipeline format and the API can change between releases.
+> OpenETL {{version}} is in alpha. The pipeline format and API can change between releases.

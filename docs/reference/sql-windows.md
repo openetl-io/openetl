@@ -166,8 +166,10 @@ A new or changed operator starts from now: its windows hold only the rows that t
 
 To build the state from the stream's start, read the stream again after you apply the change (a backfill).
 
-> [!WARNING]
-> A reset reads the stream again for every statement that reads it, not only for the changed window. It drops the state of each of those statements, and each of their outputs gets the stream's rows again. [Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start) has what the destination gets.
+> [!CAUTION]
+> A reset clears state for every statement that reads the stream. Each output receives the stream’s rows again.
+
+[Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start) explains the destination effects.
 
 ```sh
 openetl reset --stream orders NAME

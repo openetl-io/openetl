@@ -77,6 +77,9 @@ In `JSON`, a body that is not JSON fails as `config_invalid`. JSON that does not
 
 `github.com/openetl-io/openetl/sdk/go/check/sqlcheck` checks a database through `database/sql`. `sqlcheck.New(open)` makes a `Kit`, whose checks share one `*sql.DB`. The first check that runs opens it with `open`, and it closes once every run that used it has ended.
 
+> [!CAUTION]
+> `Readable` inserts `relation` into SQL as written. Use a trusted relation name and quote it for your database.
+
 | Method | Name | Kind | Params | Passes when |
 |---|---|---|---|---|
 | `Connect()` | `db.connect` | Connection | None | The database answers a ping. |
@@ -91,9 +94,6 @@ Every check but `Connect` needs `db.connect`, so put `Connect` first in the list
 In `True`, another value fails with `denied`, and no row or NULL fails with `missing`. A nil `denied` is `check.PermissionDenied`'s failure. A nil `missing` is `check.NotFound`'s, with the message "The query found no row.".
 
 In `Value`, `verify` returns the check's error. Return `check.UnsupportedVersion` or `check.SettingMismatch` failures there: the kit sets their `{found}` to the value. No row fails as `not_found`.
-
-> [!WARNING]
-> `Readable` uses `relation` in its query as written. Quote it for the database's dialect, and never take it from input that the config's owner does not control.
 
 The kit classifies a driver's error with `Kit.Failure`, as [Classify driver errors](./write-checks.md#classify-driver-errors) explains.
 

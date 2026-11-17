@@ -36,6 +36,10 @@ The panel lists the stream's files, newest first. Each file shows:
 - its rows by cause, such as 312 rows: `type` on `amount`;
 - its path below the pipeline's `_quarantine/` folder in the data plane's storage.
 
+![Example quarantine panel with row counts, causes, file paths and Show records buttons for an editor.](../images/console-quarantine.png)
+
+In this example, the first two files belong to the selected sync. **This sync** identifies them.
+
 A file of the sync or checkpoint that you selected is marked **This sync** or **This checkpoint**. Select **Load older files** to see more. A cause names a code, and the column if one column caused it. [Quarantine files](../reference/quarantine-files.md#codes) explains each code.
 
 If the stream holds values that do not fit (`unfitValues: hold`), a cause can also show **not held**. These rows had values that OpenETL could not hold, so it quarantined the rows. Point to the word after **not held** to see why.

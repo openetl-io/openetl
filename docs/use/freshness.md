@@ -14,6 +14,10 @@ Open **Pipelines** to check whether your data is current. Select a pipeline to s
 
 For a continuous pipeline, check **Last commit** and **Behind source**. **Behind source** shows the reported lag at the latest commit.
 
+![Example pipeline list with Status, Schedule, Freshness and Last sync columns.](../images/console-pipelines.png)
+
+In this example, the first pipeline failed and last delivered data 5 hours ago. The list places pipelines that need attention first.
+
 If the result needs attention, [review incidents](./incidents.md). Give the pipeline name and incident details to the person responsible for the connection.
 
 ## Pipelines

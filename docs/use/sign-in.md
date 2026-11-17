@@ -31,7 +31,7 @@ Your name is at the bottom of the sidebar. Its menu shows your roles, and has:
 - **Sign out**.
 
 > [!NOTE]
-> With **Sign-in is off**, anyone who can reach the console has owner access. This is the default for local development with `openetld dev`.
+> With **Sign-in is off**, anyone who can reach the console has owner access. `openetld dev` uses this mode.
 
 ## Find your way around
 
