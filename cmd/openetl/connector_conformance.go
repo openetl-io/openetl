@@ -30,10 +30,10 @@ the errors check's configs: credentials the upstream rejects, and an upstream
 that doesn't answer. A source's checks read every stream, or the --stream ones;
 --add-records-command lets the incremental and complete-at checks add records
 upstream. With --stops-at-until, the until check reads up to a resume point, as
-a redo does. With --stops-at-completion, the complete-at check reads up to
-where a stream completed, after adding records, as a redo does. A destination's
-checks that write need --read-command to see what it made visible, and skip
-without it.
+a redo does. With --stops-at-completion and --add-records-command, the
+complete-at check adds records, then reads each stream, whole, up to where it
+completed. A destination's checks that write need --read-command to see what it
+made visible, and skip without it.
 
 The commands run with sh -c, with what they act on in the environment:
   --add-records-command   OPENETL_STREAM; prints how many records it added.

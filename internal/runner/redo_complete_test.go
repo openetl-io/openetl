@@ -108,8 +108,9 @@ func completing(p *pool, lanes []int, first func()) func(uint64, laneMark) error
 }
 
 // completedIn are the splits that lanes of head hold rows of, and that
-// completed in its epoch, as "split@state" at their completion.
-func completedIn(t *testing.T, head *checkpoint.Record, lanes []int) []string {
+// completed in its epoch, as "split@state" at their completion. With some
+// set, it fails the test if there are none.
+func completedIn(t *testing.T, head *checkpoint.Record, lanes []int, some bool) []string {
 	t.Helper()
 	splits := head.Splits("s")
 	var out []string
@@ -121,7 +122,7 @@ func completedIn(t *testing.T, head *checkpoint.Record, lanes []int) []string {
 			}
 		}
 	}
-	if len(out) == 0 {
+	if some && len(out) == 0 {
 		t.Fatalf("lanes %v of epoch %d hold no split that completed in it", lanes, head.Epoch)
 	}
 	return out
@@ -152,7 +153,7 @@ func TestARedoOfASplitThatCompleted(t *testing.T) {
 			p := txnPool(t, s, flushing(6, 20, 5, 0, false))
 			lanes := []int{0, 1}
 			head := p.loseEpoch(t, s, 1, completing(p, lanes, func() { p.kill("a1", 0) }))
-			want := completedIn(t, head, lanes)
+			want := completedIn(t, head, lanes, true)
 			p.source = flushing(6, 20, 5, c.grown, c.completeAt)
 			if !c.lost {
 				p.settle(t, s, "a2", 2, head)
@@ -177,15 +178,25 @@ func TestARedoOfASplitThatCompleted(t *testing.T) {
 			defer cancel()
 			_, err := runner.RunAttempt(ctx, p.workers("a2", 2))
 			p.wait("a2")
-			if errs.CodeOf(err) != errs.PositionLost || !strings.Contains(fmt.Sprint(err), "use a version of the source connector that completes a split where OpenETL asks") {
+			if errs.CodeOf(err) != errs.PositionLost || !strings.Contains(fmt.Sprint(err), "use a version of the connector that completes this split where OpenETL asks") {
 				t.Fatalf("the attempt ended with %v (%s)", err, errs.CodeOf(err))
 			}
+			// A lost lane that holds no split that completed is redone, and
+			// may commit before the attempt fails.
 			s.mu.Lock()
 			defer s.mu.Unlock()
+			checked := 0
 			for _, l := range lanes {
+				if len(completedIn(t, head, []int{l}, false)) == 0 {
+					continue
+				}
+				checked++
 				if s.marked[laneMark{head.Generation, head.Epoch, l}] {
 					t.Errorf("lane %d was committed", l)
 				}
+			}
+			if checked == 0 {
+				t.Error("no lane held a split that completed")
 			}
 		})
 	}
@@ -235,7 +246,7 @@ func TestARedoAsksAnExternalSourceToCompleteWhereItDid(t *testing.T) {
 	p.reader = external(0)
 	lanes := []int{0, 1}
 	head := p.loseEpoch(t, s, 1, completing(p, lanes, func() { p.kill("a1", 0) }))
-	completedIn(t, head, lanes)
+	completedIn(t, head, lanes, true)
 	p.reader = external(7)
 	p.settle(t, s, "a2", 2, head)
 	s.check(t, 120)

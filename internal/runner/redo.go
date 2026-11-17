@@ -642,10 +642,12 @@ func (e *redoEmitter) at(mine, complete bool, state []byte) {
 	case !mine || e.done:
 		return
 	case to.Complete && complete && !bytes.Equal(state, to.State) && len(to.State) > 0:
-		// replaySplit asked for this state. A source that ignores that
-		// completes where it caught up, past it once its upstream moved on.
-		e.err = errs.New(errs.PositionLost, "runner: %s completed again at another state than the epoch's, though the redo asked the source to complete it where it completed in the epoch: "+
-			"to finish the epoch, use a version of the source connector that completes a split where OpenETL asks, then resume the pipeline; otherwise delete the pipeline and apply it again, which starts it over", name)
+		// replaySplit asked for this state. A source that ignores that,
+		// always or for this read, completes where it caught up, past it
+		// once its upstream moved on.
+		e.err = errs.New(errs.PositionLost, "runner: %s completed again at another state than the epoch's, though the redo asked the source to complete it where the epoch did: "+
+			"this version of the source connector doesn't complete a split where OpenETL asks, or can't for this read, which its documentation says; "+
+			"to finish the epoch, use a version of the connector that completes this split where OpenETL asks, then resume the pipeline; if there is none, delete the pipeline and apply it again, which starts it over", name)
 	case to.Complete && complete && !bytes.Equal(state, to.State):
 		e.err = errs.New(errs.PositionLost, "runner: %s completed again at another state than the epoch's: %s", name, need)
 	case complete && !to.Complete:

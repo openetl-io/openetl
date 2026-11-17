@@ -324,7 +324,7 @@ func ReadSplits(ctx context.Context, req ReadRequest, out Emitter, read ReadSpli
 	for _, cs := range req.Streams {
 		splits := cs.Splits
 		if len(splits) == 0 {
-			splits = []Split{{ID: WholeStream, State: cs.State}}
+			splits = []Split{{ID: WholeStream, State: cs.State, Until: cs.Until, CompleteAt: cs.CompleteAt}}
 		}
 		for _, sp := range splits {
 			q.waiting = append(q.waiting, queuedSplit{stream: cs, split: sp})

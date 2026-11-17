@@ -187,7 +187,7 @@ The window rows that the next attempt writes are the ones that the lane wrote in
 > - The read returns fewer records up to the saved position than the epoch had, unless the epoch's checkpoint was placed on that part without a resume point. The restore reads the records after the last resume point again in that case.
 > - A part that ended its read in the epoch ends at another position.
 >
-> In the last case, the error says that the source did not complete the part where OpenETL asked. Use a version of the source connector that stops where OpenETL asks, then resume the pipeline. If no such version exists, delete the pipeline and apply it again. This creates a new pipeline, which reads from the source's start position.
+> In the last case, the error says that the source did not complete the part where OpenETL asked. Either this version of the source connector does not do that, or it cannot for this read. The connector's documentation says which reads it completes where OpenETL asks. Use a version of the source connector that completes this part where OpenETL asks, then resume the pipeline. If no such version exists, delete the pipeline and apply it again. This creates a new pipeline, which reads from the source's start position.
 >
 > If the source returns other records in the same number, or more records, OpenETL commits them. For a keyed stream that the source does not split by key, or that is read with `cdc`, OpenETL commits only the records whose keys belong to the lane. If the source keeps the read open, the attempt waits until it is stopped.
 

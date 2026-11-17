@@ -499,7 +499,7 @@ func TestSourceBugsFail(t *testing.T) {
 		"until-no-end":          {"read/until"},
 		"until-completes-first": {"read/until"},
 		"until-after-complete":  {"read/until"},
-		"completion-moves":      {"read/until", "read/complete-at"},
+		"completion-moves":      {"read/until"},
 		"complete-at-ignored":   {"read/complete-at"},
 		"complete-at-short":     {"read/complete-at"},
 	}

@@ -111,6 +111,32 @@ func TestReadSplitsReadsThemConcurrentlyWithWhatTheyAdd(t *testing.T) {
 	}
 }
 
+// A stream read whole is one split with the stream's state, and its stop:
+// its until, or its complete_at.
+func TestReadSplitsGivesAWholeStreamItsStop(t *testing.T) {
+	req := source.ReadRequest{Streams: []source.ConfiguredStream{
+		{Name: "until", State: []byte("1"), Until: []byte("5")},
+		{Name: "complete", State: []byte("2"), CompleteAt: []byte("7")},
+	}}
+	var mu sync.Mutex
+	got := map[string]source.Split{}
+	err := source.ReadSplits(t.Context(), req, &splitLog{state: map[string][]byte{}}, func(_ context.Context, cs source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		mu.Lock()
+		got[cs.Name] = sp
+		mu.Unlock()
+		return e.Complete(nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp := got["until"]; sp.ID != source.WholeStream || string(sp.State) != "1" || string(sp.Until) != "5" || sp.CompleteAt != nil {
+		t.Errorf("the stream with an until was read as %+v", sp)
+	}
+	if sp := got["complete"]; sp.ID != source.WholeStream || string(sp.State) != "2" || sp.Until != nil || string(sp.CompleteAt) != "7" {
+		t.Errorf("the stream with a complete_at was read as %+v", sp)
+	}
+}
+
 func TestReadSplitsStopsAtTheFirstError(t *testing.T) {
 	boom := errors.New("boom")
 	req := source.ReadRequest{Lanes: 2, Streams: []source.ConfiguredStream{{Name: "s", Splits: []source.Split{{ID: "a"}, {ID: "b"}, {ID: "c"}}}}}

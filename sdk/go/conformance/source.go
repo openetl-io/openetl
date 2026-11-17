@@ -46,7 +46,7 @@ type SourceSuite struct {
 	StopsAtUntil bool
 	// The source completes a read at its complete_at, as source.Split's
 	// CompleteAt says. False skips the complete-at check: a source may
-	// ignore complete_at.
+	// ignore complete_at. The check needs AddRecords too.
 	StopsAtCompletion bool
 	// How long one read may take: 0 means 2 minutes.
 	ReadTimeout time.Duration
@@ -508,11 +508,15 @@ func (r *sourceRun) checkUntil(t T) {
 // between the two and nothing past them, and completes at that state, as a
 // redo of an epoch's part that ended at the completion does. AddRecords
 // first moves the source on past where it completed, so that a source that
-// ignores complete_at reads records it hadn't. Streams that completed with
-// no state, or an empty one, have nothing to complete at.
+// ignores complete_at reads records it hadn't; a stream it adds none to
+// can't tell, and is left out. Streams that completed with no state, or an
+// empty one, have nothing to complete at. Streams are read whole.
 func (r *sourceRun) checkCompleteAt(t T) {
 	if !r.s.StopsAtCompletion {
 		t.Skipf("the suite doesn't say the source completes at complete_at")
+	}
+	if r.s.AddRecords == nil {
+		t.Skipf("the suite has no AddRecords, so a source that ignores complete_at would pass")
 	}
 	res, streams := r.fullRead(t)
 	cat := r.discover(t)
@@ -524,12 +528,14 @@ func (r *sourceRun) checkCompleteAt(t T) {
 		if !ok || len(end.next) == 0 {
 			continue
 		}
-		tried++
-		if r.s.AddRecords != nil {
-			if _, err := r.s.AddRecords(t.Context(), name); err != nil {
-				t.Fatalf("AddRecords(%s): %v", name, err)
-			}
+		added, err := r.s.AddRecords(t.Context(), name)
+		if err != nil {
+			t.Fatalf("AddRecords(%s): %v", name, err)
 		}
+		if added == 0 {
+			continue
+		}
+		tried++
 		last := -1
 		for i, e := range events {
 			if e.complete {
@@ -557,7 +563,7 @@ func (r *sourceRun) checkCompleteAt(t T) {
 		completesAt(t, name, again, end.next)
 	}
 	if tried == 0 {
-		t.Skipf("no stream completed at a state")
+		t.Skipf("no stream completed at a state that AddRecords then added records past")
 	}
 }
 
