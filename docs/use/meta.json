@@ -2,5 +2,17 @@
   "title": "Use the console",
   "description": "For everyone who depends on the data: freshness, syncs, incidents and schema changes",
   "icon": "LayoutDashboard",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "sign-in",
+    "freshness",
+    "syncs",
+    "incidents",
+    "held-data",
+    "connections",
+    "checks",
+    "access",
+    "sql",
+    "cli"
+  ]
 }

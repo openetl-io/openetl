@@ -127,7 +127,7 @@ Read the `transform.sql` section:
 
 The `streams` section lists what the destination gets: the outputs, and `orders`.
 
-The `partitioning` section shows that no rows move between lanes. The source splits both tables by `id`, and each statement passes `id` through, so each output's rows stay split by its key. `order_tags` has no key, so its writer needs nothing. [Partitioning in the plan](./index.md#partitioning-in-the-plan) explains the section.
+The `partitioning` section shows that no rows move between lanes. The source splits both tables by `id`, and each statement passes `id` through, so each output's rows stay split by its key. `order_tags` has no key, so its writer needs nothing. [Partitioning in the plan](./plan-and-apply.md#partitioning-in-the-plan) explains the section.
 
 ### Apply and sync
 
@@ -244,7 +244,7 @@ FROM accounts
 WHERE details ? 'plan';
 ```
 
-`->>` gives text. `->` gives a JSON value: written to an output column, it is JSON, as the document writes it. Invalid JSON gives null. [JSON](../reference/sql.md#json) in the reference has the exact rules.
+`->>` gives text. `->` gives a JSON value: written to an output column, it is JSON, as the document writes it. Invalid JSON gives null. [JSON](../reference/sql-functions.md#json) in the reference has the exact rules.
 
 ### Aggregate rows by windows of time
 
@@ -268,7 +268,7 @@ GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
 
 The output's primary key is `window_start` and `region`. With `full_refresh`, each window's row is written when the sync's read ends. With `incremental`, a window that is open at the end of a sync goes on in the next sync, from the state that the checkpoint keeps. In a continuous pipeline, which reads the stream with `stream`, each window's row is written once the stream's watermark passes the window's end. `hop` and `session` group rows by overlapping windows and by sessions. On [workers](./workers.md#group-windows-on-workers), each worker keeps the windows of the keys that it owns.
 
-[Aggregate by windows of time](./windows.md) explains event time and watermarks, when each window's row is written, late rows, the state that windows keep, and how to change a window's statement. [Group windows](../reference/sql.md#group-windows) in the reference lists the windows, the aggregates and the rules.
+[Aggregate by windows of time](./windows.md) explains event time and watermarks, when each window's row is written, late rows, the state that windows keep, and how to change a window's statement. [Group windows](../reference/sql-windows.md#group-windows) in the reference lists the windows, the aggregates and the rules.
 
 ## Changelog streams
 
@@ -394,7 +394,7 @@ workspaces/default/pipelines/shop-to-lake (version known after apply)
 openetl: the plan has problems, so apply would refuse it
 ```
 
-Statements that the engine does not run, such as `GROUP BY` without a window, joins and window functions, are problems too. [What's refused](../reference/sql.md#whats-refused) lists them with their messages.
+Statements that the engine does not run, such as `GROUP BY` without a window, joins and window functions, are problems too. [What is refused](../reference/sql-errors.md#whats-refused) lists them with their messages.
 
 If no runner takes the statements within 30 seconds, or a stream's columns are not known yet, the plan has a note that starts with `transform.sql wasn't planned`. The sync plans the statements when it starts, and fails with `CONFIG_INVALID` if they have errors.
 
@@ -402,4 +402,4 @@ If a runner takes the statements and fails to plan them, the fault is in OpenETL
 
 ## In the console
 
-A pipeline with a SQL transform has a **SQL** tab on its page. It shows the statements, each output's columns and key, and the plan's notes and errors at their place in the SQL. [Use the console](../use/index.md#sql) describes it.
+A pipeline with a SQL transform has a **SQL** tab on its page. It shows the statements, each output's columns and key, and the plan's notes and errors at their place in the SQL. [Use the console](../use/sql.md#sql) describes it.

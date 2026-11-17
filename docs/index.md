@@ -5,7 +5,21 @@ description: Guides and reference for using, running, integrating and extending 
 
 OpenETL copies data from databases and event streams into warehouses, data lakes and other streams. Pipelines run on a schedule or continuously. OpenETL checks each stream's delivery guarantee before it runs.
 
-Start with [What is OpenETL?](./get-started/overview.md). Then follow the [quickstart](./get-started/quickstart.md) to run a pipeline on your computer.
+Choose the path that matches your work. Start with [What is OpenETL?](./get-started/overview.md) if you are new to OpenETL.
+
+## Check your team's data
+
+Use the console to check data that your team uses for reports, analysis or applications.
+
+1. [Sign in](./use/sign-in.md) with the address and password link from your administrator.
+2. [Check data freshness](./use/freshness.md) to see when a pipeline last delivered data.
+3. If data needs attention, [review incidents](./use/incidents.md) and follow their recovery steps.
+
+[Use the console](./use/index.md) lists the other console tasks. [Concepts](./get-started/concepts.md) defines terms such as pipeline, stream and sync.
+
+## Build or run OpenETL
+
+Follow the [quickstart](./get-started/quickstart.md) to run a pipeline on your computer. It requires a terminal and Docker.
 
 ## Find your way
 

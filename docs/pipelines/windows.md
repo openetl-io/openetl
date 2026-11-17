@@ -3,7 +3,7 @@ title: Aggregate by windows of time
 description: Add up a stream's rows by minutes, hours or sessions of their own time with a SQL group window, and know when each window's row is written, what happens to late rows, and where the state is kept.
 ---
 
-A group window is a SQL statement that adds up a stream's rows by windows of time, such as the revenue of each region in each minute. It writes one row for each window and key. This page explains the time that windows use, when each window's row is written, what happens to rows that come late, and how to change a window's statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [Group windows](../reference/sql.md#group-windows) in the SQL reference lists every window, aggregate and rule.
+A group window is a SQL statement that adds up a stream's rows by windows of time, such as the revenue of each region in each minute. It writes one row for each window and key. This page explains the time that windows use, when each window's row is written, what happens to rows that come late, and how to change a window's statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [Group windows](../reference/sql-windows.md#group-windows) in the SQL reference lists every window, aggregate and rule.
 
 ## Before you start
 
@@ -79,7 +79,7 @@ FROM page_views
 GROUP BY tumble(viewed_at, INTERVAL '1 minute'), page;
 ```
 
-- `tumble` makes windows of one size, one after another. `hop` makes windows that overlap, and `session` groups a key's rows with gaps no longer than a size. [Windows](../reference/sql.md#windows) in the reference lists them.
+- `tumble` makes windows of one size, one after another. `hop` makes windows that overlap, and `session` groups a key's rows with gaps no longer than a size. [Windows](../reference/sql-windows.md#windows) in the reference lists them.
 - The output's primary key is `window_start` and the group keys, here `page`.
 - `HAVING` keeps only the windows where its condition is true.
 
@@ -108,7 +108,7 @@ A late row that comes after its window's lateness is quarantined as a row of the
 openetl quarantine --stream views_by_minute PIPELINE
 ```
 
-The list adds up rows by cause, so late rows show as the code `late`. In the console, the output's **Quarantined** number opens the same files ([Quarantined rows](../use/index.md#quarantined-rows)). The **SQL** tab's **At the last checkpoint** table shows how many the last epoch quarantined, and the `openetl.operator.rows.late` metric counts them ([Watch a window](#watch-a-window)).
+The list adds up rows by cause, so late rows show as the code `late`. In the console, the output's **Quarantined** number opens the same files ([Quarantined rows](../use/held-data.md#quarantined-rows)). The **SQL** tab's **At the last checkpoint** table shows how many the last epoch quarantined, and the `openetl.operator.rows.late` metric counts them ([Watch a window](#watch-a-window)).
 
 ## Windows across syncs
 
@@ -135,7 +135,7 @@ Each record holds a lane's changes again until the lane writes them to a file. S
 - A checkpoint names only the files that hold state still in use. When every window that a file holds has closed and its lateness has passed, or newer files hold all of it, the next checkpoints stop naming it. When every window has closed and its lateness has passed, a checkpoint names no file of the window's state.
 - A run keeps the last 10 checkpoints. When it starts, and every 10 checkpoints after, it deletes each file of state that none of those checkpoints names. So the files of state follow how long windows stay open, and do not grow with the number of checkpoints.
 
-[State](../reference/sql.md#state) in the reference has the rest.
+[State](../reference/sql-windows.md#state) in the reference has the rest.
 
 ### Build the state again
 
@@ -150,7 +150,7 @@ openetl reset --stream page_views PIPELINE
 
 ## Change a window's statement
 
-A group window keeps its state under an ID that the plan shows. Some edits keep the ID, and with it the state: other names for columns, a new column through a view, and a `HAVING` over the aggregates that the statement computes. Another output name, window size, key or aggregate gives the window a new ID, and its state starts empty. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
+A group window keeps its state under an ID that the plan shows. Some edits keep the ID, and with it the state: other names for columns, a new column through a view, and a `HAVING` over the aggregates that the statement computes. Another output name, window size, key or aggregate gives the window a new ID, and its state starts empty. [Changing a query](../reference/sql-windows.md#changing-a-query) lists the edits that keep the ID.
 
 1. Edit the statement.
 2. Run `openetl plan -f FILE`, and read the `state` section of `transform.sql`. Each window shows `kept`, `new`, `changed` or `dropped`. The plan has a warning for each changed window, and for each new one over a stream that the pipeline has read, unless each sync reads the stream whole.
@@ -179,7 +179,7 @@ A change of the lateness never deletes or rewrites a row that a window wrote. To
 
 ## Watch a window
 
-The console's **SQL** tab shows, under **At the last checkpoint**, what each window's statement did in the last epoch, on every worker: its watermark, how far it was behind the commit, the windows it keeps, the rows it took in and wrote, its late rows, its state's size and its requests to object storage. [SQL](../use/index.md#sql) describes the table.
+The console's **SQL** tab shows, under **At the last checkpoint**, what each window's statement did in the last epoch, on every worker: its watermark, how far it was behind the commit, the windows it keeps, the rows it took in and wrote, its late rows, its state's size and its requests to object storage. [SQL](../use/sql.md#sql) describes the table.
 
 The same numbers are metrics, with the operator's ID as `openetl.operator` ([Monitoring](../self-host/monitoring.md#stateful-operators)). Watch these:
 

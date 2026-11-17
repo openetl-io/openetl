@@ -3,7 +3,7 @@ title: Monitor an installation
 description: Export metrics and traces, interpret pipeline and placement signals, and choose alerts for stalled data delivery.
 ---
 
-Use pipeline freshness to track delivery, source lag to track backlog, and placement metrics to track jobs waiting for room. Logs and traces explain individual failures. The console's [Incidents](../use/index.md#incidents) records conditions that need attention; [Troubleshoot a pipeline](../pipelines/troubleshooting.md) connects symptoms to recovery steps.
+Use pipeline freshness to track delivery, source lag to track backlog, and placement metrics to track jobs waiting for room. Logs and traces explain individual failures. The console's [Incidents](../use/incidents.md#incidents) records conditions that need attention; [Troubleshoot a pipeline](../pipelines/troubleshooting.md) connects symptoms to recovery steps.
 
 ## Export telemetry
 
@@ -63,7 +63,7 @@ A SQL transform's group window is a stateful operator: it keeps state between ro
 | `openetl.operator.state.requests` | requests, counter | The operator's requests to object storage, by `openetl.request.kind`. `barrier` writes its state at a checkpoint. It counts each epoch's own writes. It counts none in an epoch whose changes the checkpoint record holds, or whose changes left nothing in use. `lookup` reads blocks of the state. `restore` opens the files that a checkpoint names. After a restart, it also reads their windows' values whole at the first checkpoint that writes state. `merge_write` writes, at a checkpoint, the files that merge other files. `merge_read` reads the files that a merge merges. A `lookup`, `restore` or `merge_read` made near a checkpoint can count with the epoch next to it. Each request counts once. |
 | `openetl.operator.state.request.bytes` | bytes, counter | Those requests' bytes, by `openetl.request.kind`. |
 
-The console's **SQL** tab shows the same numbers for the last checkpoint ([SQL](../use/index.md#sql)).
+The console's **SQL** tab shows the same numbers for the last checkpoint ([SQL](../use/sql.md#sql)).
 
 ## Placement signals
 
@@ -91,7 +91,7 @@ Choose thresholds from each pipeline's schedule, commit interval and delivery de
 | Quarantine rate rises or hold age grows | Invalid values, schema policy and a pending schema repair. |
 | Metrics disappear | Scrape/exporter health and component availability, then whether the pipeline is running. |
 
-Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/index.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
+Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/webhooks.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
 
 If the quarantine rate rises, run `openetl quarantine --since 1h PIPELINE`. It lists the files of quarantined rows, and adds up their rows by stream, column and code. It lists the newest 100 files, and its sums count only those files. If it says that there are more, add `--limit` with a larger number.
 

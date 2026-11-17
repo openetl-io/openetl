@@ -5,7 +5,57 @@ description: Verify event signatures, prevent duplicate processing, inspect deli
 
 Use a webhook to send selected platform events to your HTTP receiver. The server sends a signed JSON `POST`. Your receiver verifies the request, saves the event and returns a success status.
 
-Create the resource with [Events and webhooks](./index.md#events-and-webhooks). Use the [Webhook reference](../reference/specs/webhook.md) for filters and required fields. The steps below use the `default` workspace and the example webhook name `ops-alerts`.
+Start with [Events and webhooks](#events-and-webhooks) to create the resource. Use the [Webhook reference](../reference/specs/webhook.md) for filters and required fields. The steps below use the `default` workspace and the example webhook name `ops-alerts`.
+
+## Events and webhooks
+
+OpenETL records an event when something happens to a pipeline, and sends the events you choose to an HTTP endpoint of yours. [`examples/webhook.yaml`](../../examples/webhook.yaml):
+
+```yaml
+apiVersion: openetl.io/v1alpha1
+kind: Webhook
+metadata:
+  name: ops-alerts
+spec:
+  url: https://hooks.example.com/openetl
+  events: ["sync.failed", "schema.*", "pipeline.lagging", "pipeline.recovered"]
+  pipelines: [faker-to-postgres]
+  secrets: [ops-alerts-key]
+```
+
+Each secret the webhook names holds a signing key. Make one before applying the webhook, then send a test event:
+
+```sh
+echo "whsec_$(openssl rand -base64 32)" | openetl secret set ops-alerts-key
+openetl apply -f examples/webhook.yaml
+openetl webhook test ops-alerts
+```
+
+- **Which events.** `events` takes event types, or globs of them such as `sync.*` or `*`. `pipelines` limits them to those pipelines; left out, the webhook gets every pipeline's events and the workspace's own.
+
+  | Events | When |
+  |---|---|
+  | `sync.started`, `sync.succeeded`, `sync.failed`, `sync.stopped` | A sync, or a continuous pipeline's run, starts or ends |
+  | `pipeline.created`, `pipeline.updated`, `pipeline.deleted` | A pipeline is applied or deleted |
+  | `pipeline.paused`, `pipeline.resumed`, `pipeline.rescaled` | Someone pauses, resumes or rescales a pipeline |
+  | `stream.paused`, `stream.resumed` | Someone, or heal, pauses or resumes one of a pipeline's streams |
+  | `stream.quarantined` | A commit quarantines some of a stream's rows instead of writing them. `data.files` names each [quarantine file](../reference/quarantine-files.md) once, with its rows by cause. It never holds the values of the rows |
+  | `pipeline.overridden` | Heal changes how a pipeline runs, such as syncing less often, or someone undoes it |
+  | `pipeline.reset` | Someone asks for a pipeline's streams to be read again from the start; `data.streams` names them, and is left out for every stream |
+  | `pipeline.lagging`, `pipeline.recovered` | A continuous pipeline falls behind its source, and catches up |
+  | `pipeline.teardown_failed` | What a deleted pipeline's connector keeps for it, such as a replication slot, could not be removed after 7 days of trying, and is left for someone to remove |
+  | `schema.changed`, `schema.blocked` | A stream's schema changes, or a change cannot be taken |
+  | `incident.opened`, `incident.escalated`, `incident.resolved` | An incident opens, gets worse, or is resolved |
+  | `webhook.test` | `openetl webhook test` sends one |
+
+- **Payload.** OpenETL sends a `POST` with a JSON body containing `type`, `timestamp` and `data`, following [Standard Webhooks](https://www.standardwebhooks.com). Resource names use the API format, such as `workspaces/default/pipelines/faker-to-postgres`. [Platform events](../reference/events.md) lists the fields in each event's `data`.
+- **Signatures.** Deliveries include `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. `webhook-id` identifies the event. `webhook-signature` contains an HMAC-SHA256 signature for each configured key. Verify deliveries with a Standard Webhooks library. To rotate a key, configure both secrets before removing the old one.
+- **Retries.** A `2xx` response within 15 seconds completes delivery. Missing responses, `408`, `429` and `5xx` responses trigger retries for about a day, honoring `Retry-After`. Other statuses fail delivery. Redirects are not followed. Use `webhook-id` to remove duplicate deliveries.
+- **Automatic disabling.** A `410 Gone` response disables the webhook. Repeated failures for 3 days also disable it. A successful delivery or a gap of at least 24 hours between failures resets this period. After correcting the receiver, use `openetl webhook enable` to enable it again.
+- **Deliveries.** `openetl webhook deliveries ops-alerts` lists the last 7 days' deliveries, with each one's state, status and error.
+- **Which addresses.** The server sends webhooks to public addresses only, unless its `--egress-allow` setting names the private networks it may reach as well.
+
+The [Webhook reference](../reference/specs/webhook.md) lists required fields and filter defaults.
 
 ## Prepare the receiver
 

@@ -12,7 +12,7 @@ import (
 // the reference page that lists them.
 const (
 	functionsFile = "../../crates/sql/functions.txt"
-	sqlPage       = "reference/sql.md"
+	sqlPage       = "reference/sql-functions.md"
 )
 
 type sqlFunction struct {

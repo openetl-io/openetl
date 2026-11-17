@@ -3,9 +3,19 @@ title: SQL transforms
 description: The statements, names, types, operators and functions a pipeline's transform.sql can use, and what the engine refuses.
 ---
 
+| Look up | Reference |
+|---|---|
+| Statement syntax and names | [Statements](#statements) |
+| Time windows and aggregates | [SQL group windows](./sql-windows.md) |
+| Operators, data types and casts | [SQL expressions and types](./sql-expressions.md) |
+| Built-in functions | [SQL functions](./sql-functions.md) |
+| Unsupported operations and error messages | [SQL restrictions and errors](./sql-errors.md) |
+
 A SQL transform is the `transform.sql` field of a [Pipeline](./specs/pipeline.md#a-sql-transform). Its statements read the source's streams and write outputs, which the destination gets as streams. The engine runs them on every lane of a sync or a continuous pipeline's job, between typing a stream's rows and writing them. [Write a SQL transform](../pipelines/sql-transforms.md) shows how to write one and check it.
 
-The engine runs row-wise statements, where each output row comes from one input row, or from one element of a list with `UNNEST`. It also runs [group windows](#group-windows), which aggregate a stream's rows by windows of their event time. Everything else is refused, with the position in the SQL text where it is written. [What's refused](#whats-refused) lists the refusals and their messages.
+The engine runs row-wise statements. Each output row comes from one input row or one list element expanded with `UNNEST`.
+
+The engine also runs [group windows](./sql-windows.md#group-windows). These aggregate a stream's rows by windows of event time. Unsupported statements fail with their position in the SQL text. [SQL restrictions and errors](./sql-errors.md#whats-refused) lists the messages.
 
 ## Statements
 
@@ -74,7 +84,7 @@ A view's name is one identifier, never qualified. Quote a name that has dots. An
 |---|---|---|
 | Choose and rename columns | `SELECT id AS order_id, status` | |
 | Every column | `SELECT *`, or `SELECT o.*` | A column that the stream gains later reaches the output only through `*`. |
-| Compute a column | `SELECT amount * 100 AS cents` | Expressions, operators and [functions](#functions) |
+| Compute a column | `SELECT amount * 100 AS cents` | Expressions, operators and [functions](./sql-functions.md#functions) |
 | Literals | `'eu' AS region`, `1 AS version` | A `NULL` literal needs a cast: `CAST(NULL AS VARCHAR) AS note` |
 | Filter rows | `WHERE status = 'paid'` | |
 | One row for each element of a list | `SELECT id, unnest(tags) AS tag` | See [UNNEST](#unnest) |
@@ -112,625 +122,122 @@ A changelog stream is one whose rows are inserts, updates and deletes of their k
 
 The [Pipeline reference](./specs/pipeline.md#statements-that-run) says how the destination applies these deletes, and what happens to an update that does not send every column.
 
+### Changelog streams
+
+See [Changelog streams](./sql-errors.md#changelog-streams).
+
 ## Group windows
 
-A group window aggregates a stream's rows by windows of their event time, and by the columns its `GROUP BY` names. [Aggregate by windows of time](../pipelines/windows.md) is the guide to them. It writes one row for each window and key:
-
-```sql
-INSERT INTO revenue_by_minute
-SELECT window_start, region, sum(amount) AS revenue, count(*) AS orders
-FROM orders
-GROUP BY tumble(created_at, INTERVAL '1 minute'), region;
-```
-
-- The stream has an event time: its `eventTime` in the [Pipeline](./specs/pipeline.md#source-and-streams). The window's first argument is that column, as the statement reads it.
-- `GROUP BY` has one window, and any number of the stream's columns, renamed or not. A computed key, such as `lower(region)`, is refused.
-- The stream is read whole, with `full_refresh`, or in the order of its event time: with `incremental` and its `eventTime` as the cursor, or with `stream`. A group window over a stream read another way is a problem in the plan: [Reads](#reads) says why.
-- A group window is in the statement's own `SELECT`. It reads the stream or a view of it, and the view is row-wise.
+See [Group windows](./sql-windows.md#group-windows).
 
 ### Windows
 
-| Window | Rows it groups |
-|---|---|
-| `tumble(TIME, SIZE)` | Windows of `SIZE`, one after another from the Unix epoch, 1970-01-01 00:00 UTC. Each row is in one window. |
-| `hop(TIME, SLIDE, SIZE)` | Windows of `SIZE` that start every `SLIDE`, from the Unix epoch. Each row is in each window that holds its time: at most `SIZE / SLIDE` of them, rounded up. |
-| `session(TIME, GAP)` | A key's rows with no more than `GAP` between one and the next. A session starts at its first row's time and ends `GAP` after its last row's time. |
-
-- A window holds the times from its start up to, but not including, its end. A session holds its end too.
-- Sizes are constant intervals of days, hours, minutes, seconds or smaller, in whole microseconds, such as `INTERVAL '5 minutes'`. Months are refused, as their length varies.
-- A hop's slide is at most its size, and a row is in at most 1,000 of its windows.
-- A row whose event time is null is in no window. The engine quarantines it, with the code `event_time`.
+See [Windows](./sql-windows.md#windows).
 
 ### Bounds and keys
 
-- `window_start` and `window_end` in the `SELECT` list and in `HAVING` are the window's bounds, of the event time's type. Write the names unquoted. A quoted `"window_start"` is a stream's column of that name.
-- `WHERE` runs before rows are grouped, so it cannot read `window_start` or `window_end`. Compare them in `HAVING`.
-- The output's primary key is `window_start` and the group keys, as the output names them. The `SELECT` list has both: a statement that leaves either out is refused.
-- An output can be merged on that key. The rows a window writes are inserts, and updates when its row is written again.
+See [Bounds and keys](./sql-windows.md#bounds-and-keys).
 
 ### Aggregates
 
-| Aggregate | Argument | Value |
-|---|---|---|
-| `count(*)` | None | The window's rows, as `BIGINT` |
-| `count(X)` | Any | The rows where `X` is not null, as `BIGINT` |
-| `sum(X)` | A number | The sum. Integers give `BIGINT`. `DECIMAL(P, S)` gives `DECIMAL(P + 10, S)`, at most 38 digits. Floats give `DOUBLE`, rounded once from the exact sum. |
-| `avg(X)` | A number | The mean. Integers and floats give `DOUBLE`. `DECIMAL(P, S)` gives `DECIMAL(P + 4, S + 4)`, rounded half away from zero. |
-| `min(X)`, `max(X)` | A number, text, binary, a boolean, a date, a time, a timestamp or a UUID | The least or the greatest value. NaN is greater than every other float, and -0 equals 0. |
-| `approx_distinct(X)` | As `min` | How many distinct values `X` has, as `BIGINT`: exact up to 256, then an estimate within about 2% |
-| `median(X)` | A number | The middle value, or the two middle values' mean. Integers give `DOUBLE`. A `DECIMAL` keeps its type, rounded down. |
-| `percentile_cont(F) WITHIN GROUP (ORDER BY X)` | A number, and `F` from 0 to 1 | The value at fraction `F` of the sorted values, interpolated between the nearest two, as `DOUBLE`. `ORDER BY X DESC` reads `1 - F`. `quantile_cont` is another name. |
-
-- `mean` is another name for `avg`.
-- Each aggregate ignores nulls, except `count(*)`. An aggregate of no values is null, except `count` and `approx_distinct`, which give 0.
-- `FILTER (WHERE …)` after an aggregate counts only the rows where its condition is true: `count(*) FILTER (WHERE qty > 1)`.
-- `HAVING` keeps the windows where its condition is true. It can read the aggregates, the bounds and the group keys.
-- An aggregate gives the same value whatever order rows come in.
-- If an aggregate's value does not fit its type, the engine quarantines the window's row instead of writing it, with the code `aggregate`. An example is a sum past the range of `BIGINT`.
+See [Aggregates](./sql-windows.md#aggregates).
 
 ### When a window's row is written
 
-A window closes when the stream's watermark reaches the window's end: the engine expects no more rows before that time, except late ones. A session closes when the watermark passes its end. The engine then writes the window's row, in the epoch of the next checkpoint. A window that fails `HAVING` writes no row. [Event time and watermarks](./specs/pipeline.md#event-time-and-watermarks) says how the watermark moves.
-
-- The watermark of a group window is the least watermark of the lanes that read the stream. Each lane's watermark is the least of its splits' watermarks.
-- A split that reads no rows holds windows open. In a continuous pipeline, a split that reads no rows for 1 minute is idle, and its watermark moves on with the clock.
-- A row is late if it comes after the watermark has passed its time. A late row of a window that has not closed yet goes into the window.
-- `watermark.lateness` on the stream keeps a closed window's state that long. Within the lateness, a late row writes the window's row again, as an update. A window that no longer passes `HAVING` writes a delete of its row.
-- A delete has the output's key, and the values of the row it deletes. The engine does not evaluate a column that can change between runs, such as one that reads `now()` or `random()`, again for a delete. That column is null in the delete, or its type's zero if the column cannot be null.
-- A late row moves a session's start when it comes before the session's first row. The session's old row is then deleted, and the session's row is written under its new start. A row that would move a session's start is late when its own time plus the gap is past the lateness, as a row that joins no session is: a session that had gone could have had that start.
-- The engine quarantines a row that comes later than its window's end and the lateness, with the code `late`. On a hop, a row is quarantined only when every window that holds it is past its lateness. A window that is past its lateness stays past it when `watermark.lateness` changes ([Changing a query](#changing-a-query)).
-- `watermark.lateness` needs `destination.write: merge` for the output.
-- After a restore, the watermark starts where the checkpoint's watermarks are. A window that closed before the checkpoint stays closed, and a row of it is late.
+See [When a window's row is written](./sql-windows.md#when-a-windows-row-is-written).
 
 ### Reads
 
-How the stream is read decides when windows close:
-
-| Read | Pipeline | When windows close |
-|---|---|---|
-| `full_refresh` | Scheduled | The watermark holds until the sync's read ends. Every window closes at the end of the read. The next sync starts its windows again, from the whole stream. |
-| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. It does not move to the end of input. A window that is still open goes on in the next sync, which restores its state. Without a later sync, it stays open. |
-| `stream` | Continuous | The watermark follows the rows as they come. Each window closes while the pipeline runs. |
-
-A group window over a stream read another way is a problem in the plan:
-
-- With `cdc`, the stream is a changelog, and a group window groups appended rows.
-- With `incremental` and a cursor other than the stream's `eventTime`, each sync's windows would hold only the rows that the sync reads.
+See [Reads](./sql-windows.md#reads).
 
 ### State
 
-A group window keeps each window's aggregates as state, by key group, until its row is written and its lateness has passed. `openetl plan` shows the statement's operator, which keeps the state:
-
-```text
-    1:1  INSERT INTO revenue_by_minute  group_window  key window_start, region  exchange by region  reads orders; keeps state as operator window-29faae33810aefa5
-```
-
-- The engine exchanges the stream's rows by the key groups of the group keys, so each key's rows reach one lane. The output reaches its writer with no second exchange.
-- A window over no group keys runs on one lane.
-- Each lane keeps what its state changed since it last wrote a file of state. At each checkpoint, while those changes fit in the lane's share, the checkpoint record holds them, and the lane writes no file. Each record holds them again until the lane writes them to a file.
-- The shares add up to 1 MiB of each record, or to a 64th of the engine's memory if that is less. Each statement that keeps state gets an equal part. Each of its lanes, on every worker, gets the fraction that the lane's key groups are of the pipeline's.
-- At the checkpoint where a lane's changes become larger than its share, the lane writes them as a file under `_state/`, next to the pipeline's checkpoints, and starts again with no changes. The checkpoint record names the files that hold the state. A file that no checkpoint names, such as one from an epoch that did not commit, is never read.
-- The record holds each window's newest change only. When the engine stops keeping a window's state, the record stops holding it. If a file of state may hold the window, the record holds a delete of it instead, until the lane writes a file again.
-- A checkpoint names only the parts of files that the state still uses. When every window that a part holds has closed and its lateness has passed, or newer files hold all of it, the next checkpoints stop naming that part. When every window has closed and its lateness has passed, a checkpoint names no file of the statement's state.
-- Each lane merges some of its files of state in the background, so that it reads fewer of them. It merges a window's values only when it holds more than 8 files of them. A checkpoint names the merged file in place of the files it replaces, which retention then deletes.
-- The next attempt restores the state that its checkpoint names, on any number of lanes and workers. Each lane takes the changes that the record holds for its own key groups. A continuous pipeline's attempt that restarts, or a sync's attempt that fails, goes on with its open windows. Each window's row has every row of the window, each one time.
-- The engine reads a file of state when a lane first needs it, not at the start of the attempt. At its first checkpoint that writes state, a lane reads whole the windows' values in the files it restored, to find which parts the state still uses.
-- A run keeps the last 10 checkpoint records, and deletes each file of state that none of them names. It does so when it starts, and after every 10 checkpoints. So the number of files of state follows how long windows stay open, and does not grow with the number of checkpoints.
-- Each checkpoint records what the operator did in its epoch, on every worker: its rows, its late rows, its watermark, the windows it keeps, its state's size and its requests to object storage. The console's **SQL** tab shows the last checkpoint's, and the `openetl.operator.*` metrics give them ([Monitoring](../self-host/monitoring.md#stateful-operators)).
-- To build a window's state again from the stream, reset the streams that the group window reads: `openetl reset --stream STREAM NAME`. The reset drops the window's state, and the next run builds the state again from a new read of the stream ([Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start)). A run deletes the files of the dropped state once none of the records it keeps names them.
-- After a reset, each window's row comes only from the rows that the new read returns. If the read starts partway through a window, `merge` replaces that window's row with a row of part of its rows. A window that the new read does not reach keeps its row in the destination. Start the read where it includes every row of the windows it changes, or correct those rows in the destination.
-- With `resources.workers` above 1, the exchange sends each row to the worker whose lane owns the row's key group, and that worker keeps the key group's state and writes its windows' rows ([Group windows on workers](../pipelines/workers.md#group-windows-on-workers)).
+See [State](./sql-windows.md#state).
 
 ### Changing a query
 
-The operator's ID is a hash of what the operator computes and keeps. The engine writes it over the stream's own columns, so the names of columns, aliases and views, and the shape of the SQL, do not change it. The output's name is part of the ID: an output of another name is another operator, which does not keep the state. Each checkpoint names the state by the ID.
-
-These edits keep the ID, and with it the state:
-
-- Formatting, comments and the case of keywords, and an equal interval, such as `INTERVAL '60 seconds'` for `INTERVAL '1 minute'`.
-- The `FROM` alias, other names for the output's columns, and views that rename columns or pass more columns.
-- The order of the `GROUP BY` keys, of the `SELECT` list and of the aggregates. The output's primary key follows the order of `GROUP BY`. Aggregates that call a function that gives another value each time, such as `random()`, keep the ID only in the same order.
-- `HAVING`, `window_end`, and expressions over the aggregates, when they use only aggregates that the statement already computes. An aggregate that only `HAVING` or an expression uses is still an aggregate that the operator keeps: adding one gives a new ID.
-- The same filters written in a view or in the statement, and `count(1)` for `count(*)`.
-- Other statements, and the order of the statements.
-
-These edits give the operator a new ID:
-
-- The output's name, or the stream that the statement reads.
-- The window's kind, size, or a hop's slide.
-- A key, an aggregate or an aggregate's argument, added, removed or changed, and an aggregate's `FILTER`.
-- A filter or an `UNNEST` before the window.
-- A change of type of the event-time column, a key or an aggregate's argument, also when the source changes the column's type.
-
-`watermark.lateness` is not part of the ID. A changed lateness keeps the state, and applies from the next run:
-
-- A window that is open at the change, or closed and within its lateness, takes the new lateness. Its state expires when the watermark passes its end plus the lateness in force when it closed, or later if the lateness rises before then.
-- A window whose lateness had passed before the change stays gone. A row of it is late, also within a higher lateness, and the window's row stays as it is.
-- The state keeps, in each key group, the latest point that the group's watermark less the lateness has reached. A tumbling or hopping window that ends at or before that point is gone. A session ends at its last row's time plus the gap. A session's row is late when the session that it joins or starts ends before that point. It is also late when it would move a session's start and its own time plus the gap is before that point.
-- A lower lateness can leave the state of a window that closed before the change until the old lateness passes. Once the new lateness has passed the window, it takes no more rows.
-
-[Change the lateness](../pipelines/windows.md#change-the-lateness) has what each window does.
-
-`openetl plan` and `openetl apply` show each operator in a `state` section of `transform.sql`. Each line has the statement's place, the output, the ID, what the operator is against the pipeline's current version, and what it keeps. Where the pipeline's last checkpoint says which operators' state it names, the line ends with whether it holds the operator's state. In this example, the current version has the statement of [Group windows](#group-windows) and a second statement, `orders_by_hour`, with `tumble(created_at, INTERVAL '1 hour')`. The new version gives the first statement a `FROM` alias and other column names, and changes the second one's window to 30 minutes. The stream has `watermark.lateness: 1m`:
-
-```text
-  state:
-    1:1  revenue_by_minute  window-29faae33810aefa5  kept     tumble 1m0s by created_at on region: count(*), sum(amount); keeps a window's state 2m0s of event time (lateness 1m0s)
-    6:1  orders_by_hour     window-d110a4b5535848da  changed  tumble 30m0s by created_at: count(*); keeps a window's state 31m0s of event time (lateness 1m0s); starts empty, in place of window-c627132d9872ae49; a backfill reads again orders
-```
-
-The plan's warnings say the same for `orders_by_hour`, with the command for the backfill.
-
-| What | Means | Its state |
-|---|---|---|
-| `kept` | The current version has the operator. | The next sync restores it. |
-| `new` | The current version has no operator that writes the output. | Starts empty. If an earlier version had the operator, the current version dropped it, and the last checkpoint still holds its state, as when no sync has run since, the line says so, and the next sync restores that state. |
-| `changed` | The current version's operator for the output computes or keeps something else. | Starts empty, or, if an earlier version had the operator, as for `new`. The next sync drops the old operator's state. |
-| `dropped` | No statement keeps the current version's operator. | The next sync drops it. |
-| `unknown` | The current version's statements were not planned when it was applied. | As for `kept` if the ID is the same, otherwise the next sync fails as below. |
-
-A new or changed operator starts from now: its windows hold only the rows that the pipeline reads after the change. A window that is open at the change, or that a late row opens again, loses the rows read before. The plan has a warning for each changed operator, and for each new one over a stream that the pipeline has read, unless each sync reads the stream whole.
-
-To build the state from the stream's start, read the stream again after you apply the change (a backfill).
-
-> [!WARNING]
-> A reset reads the stream again for every statement that reads it, not only for the changed window. It drops the state of each of those statements, and each of their outputs gets the stream's rows again. [Read streams again from the start](../pipelines/positions.md#read-streams-again-from-the-start) has what the destination gets.
-
-```sh
-openetl reset --stream orders NAME
-```
-
-A version without `transform.sql` drops every operator of the version before it. The next attempt drops the state of each operator that the version dropped or replaced, so the records after it stop naming that state, and retention deletes its files once no record it keeps names them. If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the version did not drop the old operator. The next attempt then fails with `CONFIG_INVALID`, and its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
-
-An operator has no name of its own in the SQL. Its ID is the only name.
+See [Changing a query](./sql-windows.md#changing-a-query).
 
 ## Expressions and operators
 
-| Operator or syntax | Meaning |
-|---|---|
-| `+`, `-`, `*`, `/`, `%` | Arithmetic. A timestamp plus or minus an `INTERVAL` is a timestamp. |
-| `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=` | Comparison |
-| `AND`, `OR`, `NOT` | Logic |
-| `IS NULL`, `IS NOT NULL`, `IS TRUE`, `IS NOT TRUE` and the like | Tests that are never null |
-| `IS DISTINCT FROM`, `IS NOT DISTINCT FROM` | Comparison that treats two nulls as equal |
-| `IN (…)`, `NOT IN (…)` | Membership in a list of values. A list of values only: a subquery is refused. |
-| `BETWEEN … AND …` | A range, both ends included |
-| `LIKE`, `ILIKE`, `SIMILAR TO` | Pattern matching. `ILIKE` ignores case. |
-| `~`, `~*`, `!~`, `!~*` | Regular expression matching. `*` ignores case, and `!` negates. |
-| `\|\|` | String concatenation |
-| `CASE WHEN … THEN … ELSE … END`, `CASE x WHEN … END` | Conditional value |
-| `CAST(x AS TYPE)`, `x::TYPE` | Conversion. A value that cannot be converted fails its row. See [Types](#types). |
-| `TRY_CAST(x AS TYPE)` | Conversion that gives null for a value that cannot be converted |
-| `list[i]` | A list's element, counting from 1 |
-| `s['field']` | A struct's field |
-| `EXTRACT(PART FROM ts)` | `date_part('PART', ts)` |
-| `POSITION(sub IN s)` | `strpos(s, sub)` |
-| `SUBSTRING(s FROM start FOR length)` | `substr(s, start, length)` |
-| `TRIM([BOTH \| LEADING \| TRAILING] chars FROM s)` | `btrim`, `ltrim` or `rtrim` |
-| `OVERLAY(s PLACING r FROM start [FOR length])` | `overlay` |
-| `DATE '2026-01-01'`, `TIMESTAMP '2026-01-01 00:00:00'`, `INTERVAL '1 day'` | Literals of those types |
-| `ts AT TIME ZONE zone` | A timestamp in a time zone: see [Time zones](#time-zones) |
-| `->`, `->>`, `#>`, `#>>`, `?` | JSON paths: see [JSON](#json) |
+See [Expressions and operators](./sql-expressions.md#expressions-and-operators).
 
 ### Time zones
 
-`ts AT TIME ZONE zone`, and the function `timezone(zone, ts)`, convert between a timestamp with a time zone and the wall-clock time in a zone:
-
-| `ts` is | The result is |
-|---|---|
-| A timestamp without a time zone | The instant at which a clock in `zone` shows `ts`, as a timestamp with a time zone |
-| A timestamp with a time zone | The time that a clock in `zone` shows at the instant `ts`, as a timestamp without a time zone |
-
-A timestamp with a time zone and a timestamp without one are different types of output column. A destination writes each as its own column type, as it does for `CAST(ts AS TIMESTAMP)`.
-
-```sql
-INSERT INTO orders_local
-SELECT id,
-       created_at AT TIME ZONE 'America/New_York' AS created_local,
-       CAST(created_at AT TIME ZONE 'Asia/Kolkata' AS DATE) AS india_day,
-       local_time AT TIME ZONE store_zone AS happened_at
-FROM orders
-```
-
-- `zone` is the IANA name of a time zone, such as `'Europe/Berlin'`, in any case, or `'UTC'`. It can come from a column, so it can differ by row.
-- An offset such as `'+05:30'` or `'UTC-3'` is not a zone. Write a zone's name, such as `'Asia/Kolkata'`.
-- An abbreviation such as `'CET'` or `'PST'` is not a zone. Write a zone's name, such as `'Europe/Berlin'`.
-- A zone written as a literal, or as an expression of literals such as `'Europe/' || 'Berlin'`, is checked at plan time. If it is not a zone, the statement is refused.
-- A zone from a column is checked for each row. If it is not a zone, the row fails.
-- Daylight saving can skip a wall-clock time or repeat it. A skipped time is read with the offset before the change, and a repeated time with the offset after it. Each gives the later of the two instants. In Berlin, `TIMESTAMP '2024-03-31 02:30:00'` is `2024-03-31 01:30:00+00`, and `TIMESTAMP '2024-10-27 02:30:00'` is `2024-10-27 01:30:00+00`.
-- A null `ts` or `zone` gives null.
-- `AT TIME ZONE` binds more tightly than arithmetic: `ts AT TIME ZONE 'UTC' + INTERVAL '1 hour'` adds the hour to the result.
-
-These forms are refused at plan time. A zone from a column that is an offset, an abbreviation or an unknown name is not refused: each row with such a zone fails instead.
-
-| What | Message |
-|---|---|
-| A literal offset as the zone | `'+05:30' is an offset, not a time zone's name: write an IANA name, such as 'Asia/Kolkata'` |
-| A literal abbreviation as the zone | `'CET' is an abbreviation, not a time zone's name: write an IANA name, such as 'Europe/Berlin', or 'UTC'` |
-| A literal name that is not a time zone | `'Nowhere/Land' isn't a time zone transforms know: write an IANA name such as 'Europe/Berlin', or 'UTC'` |
-| A date | `AT TIME ZONE takes a timestamp, not a date: CAST the date to TIMESTAMP for midnight in the zone, or to TIMESTAMPTZ for midnight UTC` |
-| A string, or a text column | `AT TIME ZONE takes a timestamp, not text: write TIMESTAMP '…' for a wall-clock time or TIMESTAMPTZ '…' for an instant, or CAST the text to one` |
-| An untyped `NULL` | `AT TIME ZONE takes a timestamp, and NULL has no type: write CAST(NULL AS TIMESTAMP) or CAST(NULL AS TIMESTAMPTZ)` |
-| A time of day | `AT TIME ZONE takes a timestamp, and a time of day has no date to place it in a zone: add it to a date first` |
-| A zone that is not text, such as an `INTERVAL` | `a time zone is text, such as 'Europe/Berlin', not Interval(MonthDayNano)` |
+See [Time zones](./sql-expressions.md#time-zones).
 
 ## Types
 
-A statement reads each column with the logical type that the stream's schema gives it, such as `int64`, `utf8`, `decimal(12, 2)` or `timestamp[us, tz=UTC]`. Statements see every column as nullable.
-
-An output's columns have the engine's logical types. A value of another type is converted to one that holds it:
-
-| A statement gives | The output column has |
-|---|---|
-| `bool`, `int16`, `int32`, `int64`, `float32`, `float64`, `utf8`, `binary`, `date32`, `time64[us]`, `month_day_nano_interval`, `decimal(P, S)` with P from 1 to 38 and S from 0 to P | The same type |
-| `int8`, `uint8` | `int16` |
-| `uint16` | `int32` |
-| `uint32`, `uint64` | `int64` |
-| `float16` | `float32` |
-| A large or view string or binary type | `utf8` or `binary` |
-| A timestamp in seconds, milliseconds or microseconds | `timestamp[us]` |
-| A timestamp in nanoseconds | `timestamp[ns]` |
-| A timestamp with a time zone | The same instant, with time zone `UTC` |
-| A list | A list of the converted element type |
-| A JSON column, or a value from `->`, `#>` or `json_get` | JSON, written as the document's own text |
-| A UUID column, passed through | A UUID |
-
-Any other type is refused: a struct, a map, a duration, a time in a unit other than microseconds, and an untyped `NULL`. The message names the type and asks for a cast:
-
-```text
-column s is Struct("a": Int64), which an output can't hold: CAST it to a type it can
-```
+See [Types](./sql-expressions.md#types).
 
 ### Casts
 
-`CAST` and `::` take SQL type names:
-
-| SQL type | Type |
-|---|---|
-| `BOOLEAN` | `bool` |
-| `TINYINT` | `int8`, written as `int16` |
-| `SMALLINT` | `int16` |
-| `INT`, `INTEGER` | `int32` |
-| `BIGINT` | `int64` |
-| `INT UNSIGNED` and the other unsigned types | Unsigned integers, written as wider signed ones |
-| `REAL` | `float32` |
-| `DOUBLE` | `float64` |
-| `DECIMAL(P, S)` | `decimal(P, S)` |
-| `VARCHAR`, `TEXT` | `utf8` |
-| `BYTEA` | `binary` |
-| `DATE` | `date32` |
-| `TIMESTAMP`, `TIMESTAMPTZ` | `timestamp[ns]` |
-| `INTERVAL` | `month_day_nano_interval` |
-
-`JSON` and `UUID` are not SQL types that casts take, and a UUID cannot be cast to a string. A cast of a JSON value reads it as the type it names: see [JSON](#json).
+See [Casts](./sql-expressions.md#casts).
 
 ## Functions
 
-These are the functions a statement can call, with their other names. Functions that are not deterministic give a new value each time they run, so a row read again gets another value. A function not listed here is refused:
-
-```text
-my_udf isn't a function transforms can call
-```
-
-[`crates/sql/functions.txt`](../../crates/sql/functions.txt) is the list the engine has, and `go test ./test/docs` fails when this page differs from it.
+See [Functions](./sql-functions.md#functions).
 
 ### Conditionals
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `coalesce` | | Its first argument that is not null |
-| `greatest` | | The largest of its arguments, ignoring nulls |
-| `least` | | The smallest of its arguments, ignoring nulls |
-| `nullif` | | `nullif(a, b)`: null if `a` equals `b`, else `a` |
-| `nvl` | `ifnull` | `nvl(a, b)`: `b` if `a` is null, else `a` |
-| `nvl2` | | `nvl2(a, b, c)`: `b` if `a` is not null, else `c` |
+See [Conditionals](./sql-functions.md#conditionals).
 
 ### Strings
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `ascii` | | The code of the string's first character |
-| `bit_length` | | The string's length in bits |
-| `btrim` | `trim` | The string without the given characters, spaces by default, at both ends |
-| `character_length` | `char_length`, `length` | The string's length in characters |
-| `chr` | | The character with the given code |
-| `concat` | | Its arguments joined, ignoring nulls |
-| `concat_ws` | | `concat_ws(separator, …)`: its other arguments joined by the separator, ignoring nulls |
-| `contains` | | Whether the string contains another |
-| `ends_with` | | Whether the string ends with another |
-| `find_in_set` | | `find_in_set(s, list)`: the position of `s` in a comma-separated list, from 1, or 0 |
-| `initcap` | | The string with the first letter of each word in upper case |
-| `left` | | The first `n` characters |
-| `levenshtein` | | The edit distance between two strings |
-| `lower` | | The string in lower case |
-| `lpad` | | The string padded on the left to `n` characters, with spaces or the given string |
-| `ltrim` | | The string without the given characters, spaces by default, at its start |
-| `octet_length` | | The string's length in bytes |
-| `overlay` | | `overlay(s PLACING r FROM start FOR n)`: `s` with `n` characters from `start` replaced by `r` |
-| `repeat` | | The string repeated `n` times |
-| `replace` | | `replace(s, from, to)`: `s` with every `from` replaced by `to` |
-| `reverse` | | The string's characters in reverse order |
-| `right` | | The last `n` characters |
-| `rpad` | | The string padded on the right to `n` characters, with spaces or the given string |
-| `rtrim` | | The string without the given characters, spaces by default, at its end |
-| `split_part` | | `split_part(s, delimiter, n)`: the `n`th part of `s`, from 1 |
-| `starts_with` | | Whether the string starts with another |
-| `strpos` | `instr`, `position` | `strpos(s, sub)`: the position of `sub` in `s`, from 1, or 0 |
-| `substr` | `substring` | `substr(s, start, length)`: part of `s`, from `start`, counting from 1 |
-| `substr_index` | `substring_index` | `substr_index(s, delimiter, n)`: `s` before the `n`th delimiter, or with a negative `n`, after it, counting from the end |
-| `to_hex` | | An integer in hexadecimal |
-| `translate` | | `translate(s, from, to)`: `s` with each character of `from` replaced by the one at the same place in `to` |
-| `upper` | | The string in upper case |
-| `uuid` | | Not deterministic. A new random UUID, as a string. |
+See [Strings](./sql-functions.md#strings).
 
 ### Regular expressions
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `regexp_count` | | The number of matches in the string |
-| `regexp_instr` | | The position of a match in the string, from 1, or 0 |
-| `regexp_like` | | Whether the string matches |
-| `regexp_match` | | The capture groups of the first match, as a list |
-| `regexp_replace` | | The string with matches replaced; the flag `g` replaces every match |
+See [Regular expressions](./sql-functions.md#regular-expressions).
 
 ### Numbers
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `abs` | | The absolute value |
-| `acos` | | The arc cosine |
-| `acosh` | | The inverse hyperbolic cosine |
-| `asin` | | The arc sine |
-| `asinh` | | The inverse hyperbolic sine |
-| `atan` | | The arc tangent |
-| `atan2` | | `atan2(y, x)`: the arc tangent of `y / x` |
-| `atanh` | | The inverse hyperbolic tangent |
-| `cbrt` | | The cube root |
-| `ceil` | | The smallest integer not less than the number |
-| `cos` | | The cosine |
-| `cosh` | | The hyperbolic cosine |
-| `cot` | | The cotangent |
-| `degrees` | | Radians as degrees |
-| `exp` | | `e` to the power of the number |
-| `factorial` | | The factorial |
-| `floor` | | The largest integer not greater than the number |
-| `gcd` | | The greatest common divisor of two integers |
-| `isnan` | | Whether the number is NaN |
-| `iszero` | | Whether the number is zero |
-| `lcm` | | The least common multiple of two integers |
-| `ln` | | The natural logarithm |
-| `log` | | `log(base, x)`, or `log(x)` in base 10 |
-| `log10` | | The base-10 logarithm |
-| `log2` | | The base-2 logarithm |
-| `nanvl` | | `nanvl(x, y)`: `y` if `x` is NaN, else `x` |
-| `pi` | | π |
-| `power` | `pow` | `power(x, y)`: `x` to the power of `y` |
-| `radians` | | Degrees as radians |
-| `random` | `rand` | Not deterministic. A random number from 0, inclusive, to 1. |
-| `round` | | The number rounded to the given number of decimal places, 0 by default |
-| `signum` | | -1, 0 or 1, by the number's sign |
-| `sin` | | The sine |
-| `sinh` | | The hyperbolic sine |
-| `sqrt` | | The square root |
-| `tan` | | The tangent |
-| `tanh` | | The hyperbolic tangent |
-| `trunc` | | The number truncated to the given number of decimal places, 0 by default |
+See [Numbers](./sql-functions.md#numbers).
 
 ### Dates and times
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `current_date` | | Not deterministic. The date in UTC when the engine evaluates the batch. |
-| `date_bin` | | `date_bin(interval, ts)`: the start of the interval-long bin that holds `ts` |
-| `date_part` | `datepart` | `date_part(part, ts)`: a part of the time, such as `'year'`, `'hour'` or `'dow'` |
-| `date_trunc` | `datetrunc` | `date_trunc(part, ts)`: the time truncated to the part, such as `'day'` |
-| `from_unixtime` | | Seconds since 1970-01-01 as a timestamp |
-| `make_date` | | `make_date(year, month, day)`: a date |
-| `now` | `current_timestamp` | Not deterministic. The time in UTC when the engine evaluates the batch. |
-| `timezone` | | `timezone(zone, ts)`: `ts AT TIME ZONE zone`. See [Time zones](#time-zones). |
-| `to_char` | `date_format` | `to_char(value, format)`: a date or time as a string, in a `strftime`-style format such as `'%Y-%m-%d'` |
-| `to_date` | | A string or number of days as a date, in the given formats or ISO 8601 |
-| `to_timestamp` | | A string or number of seconds as a timestamp in nanoseconds, in the given formats or RFC 3339 |
-| `to_timestamp_micros` | | As `to_timestamp`, in microseconds, and a number counts microseconds |
-| `to_timestamp_millis` | | As `to_timestamp`, in milliseconds, written as microseconds, and a number counts milliseconds |
-| `to_timestamp_nanos` | | As `to_timestamp`, and a number counts nanoseconds |
-| `to_timestamp_seconds` | | As `to_timestamp`, in seconds, written as microseconds |
-| `to_unixtime` | | A timestamp, or a string in the given formats, as seconds since 1970-01-01 |
+See [Dates and times](./sql-functions.md#dates-and-times).
 
 ### Hashes and encodings
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `decode` | | `decode(s, format)`: `base64` or `hex` text as binary |
-| `digest` | | `digest(value, algorithm)`: a hash as binary, by an algorithm such as `'sha256'` |
-| `encode` | | `encode(value, format)`: binary as `base64` or `hex` text |
-| `md5` | | The MD5 hash, in hexadecimal |
-| `sha224` | | The SHA-224 hash, as binary |
-| `sha256` | | The SHA-256 hash, as binary |
-| `sha384` | | The SHA-384 hash, as binary |
-| `sha512` | | The SHA-512 hash, as binary |
+See [Hashes and encodings](./sql-functions.md#hashes-and-encodings).
 
 ### Lists
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `array_append` | `array_push_back`, `list_append`, `list_push_back` | The list with a value added at its end |
-| `array_concat` | `array_cat`, `list_cat`, `list_concat` | The lists joined end to end |
-| `array_distinct` | `list_distinct` | The list without repeated values |
-| `array_element` | `array_extract`, `list_element`, `list_extract` | `array_element(list, i)`: the `i`th element, from 1, as `list[i]` |
-| `array_has` | `array_contains`, `list_contains`, `list_has` | Whether the list has the value |
-| `array_has_all` | `list_has_all` | Whether the list has every value of another list |
-| `array_has_any` | `arrays_overlap`, `list_has_any` | Whether the list has any value of another list |
-| `array_length` | `list_length` | The list's length |
-| `array_position` | `array_indexof`, `list_indexof`, `list_position` | The position of the value in the list, from 1, or null |
-| `array_prepend` | `array_push_front`, `list_prepend`, `list_push_front` | `array_prepend(value, list)`: the list with the value added at its start |
-| `array_remove` | `list_remove` | The list without the first element equal to the value |
-| `array_reverse` | `list_reverse` | The list in reverse order |
-| `array_slice` | `list_slice` | `array_slice(list, from, to)`: the elements from `from` to `to`, both included, from 1 |
-| `array_sort` | `list_sort` | The list sorted, ascending by default |
-| `array_to_string` | `array_join`, `list_join`, `list_to_string` | `array_to_string(list, separator)`: the elements as one string |
-| `cardinality` | | The number of elements in the list |
-| `flatten` | | A list of lists as one list |
-| `make_array` | `make_list` | Its arguments as a list |
-| `string_to_array` | `string_to_list` | `string_to_array(s, delimiter)`: the string's parts as a list |
+See [Lists](./sql-functions.md#lists).
 
 ### Structs
 
-| Function | Other names | Meaning |
-|---|---|---|
-| `get_field` | | `get_field(struct, 'name')`: a field's value, as `s['name']` |
-| `named_struct` | | `named_struct('a', x, 'b', y)`: a struct with those fields |
-| `struct` | `row` | A struct of its arguments, with fields `c0`, `c1` and so on |
-
-An output cannot hold a struct, so a struct is useful only inside an expression, such as `named_struct('a', id)['a']`.
+See [Structs](./sql-functions.md#structs).
 
 ### JSON
 
-The JSON functions read a document from a JSON column or from any string.
-
-| Function | Other names | Meaning |
-|---|---|---|
-| `json_as_text` | | The value as text: a string's own value, another value's JSON text, and null for a JSON null. As `->>` and `#>>`. |
-| `json_contains` | | Whether the path reaches a value, a JSON null included. As `?`. Never null: false for a null document. |
-| `json_from_scalar` | `scalar_to_json` | A boolean, number or string as a JSON value |
-| `json_get` | | The value, of any JSON type. As `->` and `#>`. |
-| `json_get_array` | | An array's elements as a list, each as its JSON text: a string element keeps its quotes |
-| `json_get_bool` | | A boolean, or a string that spells one |
-| `json_get_float` | | A number, or a string that spells one, as `float64` |
-| `json_get_int` | | An integer, a number with no fraction that `int64` holds, or a string that spells an integer |
-| `json_get_json` | | The value's JSON text, as the document writes it; a JSON null is the text `null` |
-| `json_get_str` | | A string's value |
-| `json_length` | `json_len` | The number of an array's elements or an object's keys |
-| `json_object_keys` | `json_keys` | An object's keys, as a list |
-| `json_union_to_text` | | A value of `json_get` as JSON text, and null for a JSON null |
-
-Each function but `json_from_scalar` takes the document, then a path: keys and array indexes, as further arguments or as one list. `json_from_scalar` takes one boolean, number or string, and no path. A value of another type than the function gives is null: `json_get_str` of a number is null.
-
-- A key is a string, and matches exactly. An index is an integer, from 0. A negative index counts from the end: `-1` is the last element.
-- A key that reaches an array is an index if it spells one: `'1'` is the second element.
-- A path can come from columns, so it can differ by row: `json_get_str(doc, field_name)`.
-- A path that the document does not have gives null. So does a null step and a null document.
-- Text that is not valid JSON throughout gives null, and `json_contains` gives false. A truncated document is not valid.
-- If an object has a key twice, the last value counts.
-
-The operators are the functions:
-
-| Operator | Function | Example |
-|---|---|---|
-| `doc -> 'a'` | `json_get(doc, 'a')` | `doc->'user'->'emails'->0`, a chain, is one call with the whole path |
-| `doc ->> 'a'` | `json_as_text(doc, 'a')` | `doc->'user'->>'email'` |
-| `doc #> ARRAY['a', 'b']` | `json_get(doc, ARRAY['a', 'b'])` | The path as one list |
-| `doc #>> ARRAY['a', 'b']` | `json_as_text(doc, ARRAY['a', 'b'])` | |
-| `doc ? 'a'` | `json_contains(doc, 'a')` | Whether the path exists. It takes a path, not only a top-level key: `'[1, 2]' ? 1` is true. |
-
-A value that `->`, `#>` or `json_get` gives can be of any JSON type:
-
-- Selected into an output column, it is JSON, written as the document writes it: `{"a": 1}`, `"text"`, `3.50`.
-- Compared with a value, it is read as that value's type: `doc->'status' = 'active'` compares the string, and `doc->'n' > 3` the number. A JSON null and a missing path are null.
-- Cast, it is read with the function of that type: `CAST(doc->'n' AS BIGINT)` is `json_get_int(doc, 'n')`, and a cast to `VARCHAR` or `TEXT` is `->>`'s text.
+See [JSON](./sql-functions.md#json).
 
 ## What's refused
 
-The engine plans the statements when `openetl plan` or `openetl apply` checks a pipeline, and again when each sync or continuous job starts. A statement it refuses is a problem in the plan, written as `transform.sql:LINE:COLUMN: MESSAGE`, and `openetl apply` refuses the pipeline:
-
-```text
-  problems:
-    transform.sql:16:18: there's no column mail; there are id, email, name, country, updated_at
-```
-
-If a sync or a continuous pipeline's job starts with statements that the engine refuses, it fails with `CONFIG_INVALID`, and its error has the same messages.
+See [What is refused](./sql-errors.md#whats-refused).
 
 ### Statements of other kinds
 
-These are refused, each at the place it is written. The message says what was found.
-
-| What | Message |
-|---|---|
-| `OVER`, in the `SELECT` list or in `QUALIFY`, with window functions such as `sum()`, `lag()` or `row_number()` | `OVER: transforms don't run window functions yet (tier 3)`. That is the message for a statement tier 3 takes. One it does not take gives a message that says why, at the place it is written: a window function, frame or `OVER` clause outside tier 3, a stream with no event time, or `row_number()` that is not compared with `= 1`. For example, `rank(): transforms don't run updating statements yet (tier 5)` |
-| A window function without `OVER` | `rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)` |
-| `JOIN` | `a join: transforms don't run joins yet (tier 4)` |
-| Two relations in `FROM` | `reading two relations: transforms don't run joins yet (tier 4)` |
-| A subquery in an expression, such as `IN (SELECT …)` or `EXISTS (…)` | `a subquery: transforms don't run joins yet (tier 4)` |
-| `GROUP BY` without a window | `GROUP BY without a window: transforms don't run updating statements yet (tier 5)` |
-| An aggregate, such as `count(*)` or `sum(x)`, without a window | `an aggregate without a window: transforms don't run updating statements yet (tier 5)` |
-| `HAVING` without a window | `HAVING without a window: transforms don't run updating statements yet (tier 5)` |
-| `DISTINCT`, `DISTINCT ON` | `DISTINCT: transforms don't run updating statements yet (tier 5)` |
-| A function that is not in [the list](#functions), such as a user-defined function | `my_udf isn't a function transforms can call` |
-
-A view of one of these kinds is refused too, where the view is defined.
+See [Statements of other kinds](./sql-errors.md#statements-of-other-kinds).
 
 ### Clauses and statements
 
-| What | Message |
-|---|---|
-| `ORDER BY` | `a stream has no order, so ORDER BY is refused` |
-| `LIMIT`, `OFFSET` | `a stream has no end, so LIMIT and OFFSET are refused` |
-| `FETCH` | `a stream has no end, so FETCH is refused` |
-| `UNION`, `INTERSECT`, `EXCEPT` | `UNION, INTERSECT and EXCEPT aren't supported` |
-| `WITH` | `WITH isn't supported: name the query with CREATE VIEW, before the statements that read it` |
-| `SELECT` without `FROM` | `a SELECT reads a stream or a view: it needs a FROM` |
-| `VALUES` | `a statement reads a stream or a view, not VALUES` |
-| `UNNEST` in `FROM` | `UNNEST goes in the SELECT list: SELECT unnest(list) AS item FROM …` |
-| `INSERT INTO x (a, b) …` | `INSERT INTO takes an output's name and a SELECT, without a list of columns: the SELECT names the output's columns` |
-| A computed column without `AS` | `name this column: lower(region) AS name` |
-| A `SELECT` on its own | `a SELECT on its own writes nothing: write INSERT INTO output SELECT …, or name it with CREATE VIEW` |
-| Other statements, such as `UPDATE`, `DELETE` or `CREATE TABLE` | `a transform's statements are INSERT INTO … SELECT and CREATE VIEW … AS SELECT, not DELETE FROM` |
-| No `INSERT INTO` | `a transform writes at least one output, with INSERT INTO … SELECT` |
-| A view more than 32 views deep | `view v32 is 33 views deep, counting each view it reads through: views go at most 32 deep; read a view nearer the stream, or merge views into one` |
+See [Clauses and statements](./sql-errors.md#clauses-and-statements).
 
 ### Names and columns
 
-| What | Message |
-|---|---|
-| A stream or view that is not there | `there's no stream or view nope` |
-| `FROM` an output | `cleaned is an output, and FROM reads a source's stream or a view: name the SELECT that writes it with CREATE VIEW, and read that` |
-| Two statements that write one output | `x is written by an earlier statement: one statement writes each output` |
-| A view read before it is defined | `view later is defined after this statement: define a view before the statements that read it` |
-| A column that is not there | `there's no column nope; there are id, region, amount, created_at` |
-| A quoted column in another case | `there's no column "employee_id": a quoted name matches exactly, so write "EMPLOYEE_ID", or the name unquoted` |
-| A name that fits two columns or streams | `id fits the columns "id" and "ID", which differ only by case: quote the name to pick one` |
-| A column name used twice | `there's already a column id: give this one another name with AS` |
-| Types that do not combine | `expressions have incompatible types (has type Utf8; has type Int64)` |
-| A type an output cannot hold | `column nothing is Null, which an output can't hold: CAST it to a type it can` |
+See [Names and columns](./sql-errors.md#names-and-columns).
 
 ### Group windows
 
-| What | Message |
-|---|---|
-| A stream without an event time | `orders has no event time, which a group window goes by: set eventTime on the stream in source.streams` |
-| A window over another column | `tumble goes by the event time of logins, at: write tumble("at", …)` |
-| A window outside `GROUP BY` | `tumble is a group window, which goes in GROUP BY: select window_start and window_end for its bounds` |
-| `window_start` or `window_end` in `WHERE` | `window_start is a window's bound, and WHERE runs before rows are grouped: compare it in HAVING` |
-| Two windows | `a group window groups by one window: tumble, hop or session` |
-| `ROLLUP`, `CUBE`, `GROUPING SETS` | `a group window groups by its window and columns, without ROLLUP, CUBE or GROUPING SETS` |
-| A computed group key | `a group window groups by columns of orders, renamed or not, beside its window: lower(orders.region) is computed` |
-| A group key of a list or a struct | `a group window can't group by tags, of type List(Utf8)` |
-| A size in months | `tumble's sizes are in days, hours, minutes or seconds, as a month's length varies` |
-| A size of zero or less | `tumble's sizes are more than zero, and under 290,000 years` |
-| A hop's slide larger than its size | `hop's slide is at most its size, so every row is in a window: hop(time, slide, size)` |
-| A hop with more than 1,000 windows a row | `hop puts each row in at most 1000 windows: its size over its slide is more` |
-| An aggregate it does not run, such as `stddev` | `stddev isn't an aggregate transforms run: a group window takes count, sum, min, max, avg, approx_distinct, median and percentile_cont` |
-| `DISTINCT` in an aggregate | `count(DISTINCT …) isn't supported: approx_distinct(x) estimates how many distinct values x has` |
-| An output without `window_start` | `a group window's output keeps window_start, which with its group keys is its primary key: select window_start` |
-| An output without a group key | `a group window's output keeps its group keys, which with window_start are its primary key: select region` |
-| The window itself in the `SELECT` list | `select a window's bounds as window_start and window_end, not the window` |
-| A group window in a view | `a view is row-wise, so it can't group by a window: group in the INSERT INTO … SELECT that reads the view` |
-| A group window in a subquery | `a group window is in the statement's own SELECT, not in a subquery's` |
-| A group window over a changelog stream | `changes is a changelog, and a group window groups appended rows: transforms don't run updating statements yet (tier 5)` |
-
-The plan also has a problem where a group window's stream is read in a way that the window cannot take ([Reads](#reads)), and where a stream sets `watermark.lateness` and the window's output is not merged.
+See [Group windows](./sql-errors.md#group-windows).
 
 ### Changelog streams
 
-| What | Message |
-|---|---|
-| A statement that drops a key column | `cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it` |
-| A statement that changes a key column, such as `id + 1` or a cast | `… keeps its key (id) unchanged, renamed or not; this changes it` |
-| `unnest` | `… keeps its key (id) unchanged, renamed or not; this multiplies the rows of it` |
-| `WHERE` on a changelog stream without a primary key | `log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline` |
+See [Changelog streams](./sql-errors.md#changelog-streams).
 
 ### When rows run
 
-A statement that plans can still fail on a row. Examples are a cast of a value that does not convert, and an integer divided by zero. The engine quarantines such a row, and writes the rest of the batch. The [Pipeline reference](./specs/pipeline.md#statements-that-run) says where quarantined rows go, and what a change to a stream's schema does to the statements that read it. [Quarantine files](./quarantine-files.md) gives the format of their lines, and the code of each failure.
-
-The settings that streams can and cannot have beside `transform.sql` are in the [Pipeline reference](./specs/pipeline.md#transforms).
+See [When rows run](./sql-errors.md#when-rows-run).

@@ -2,5 +2,18 @@
   "title": "Build a connector",
   "description": "Write, test, package and publish connectors",
   "icon": "Blocks",
-  "pages": ["index", "checks"]
+  "pages": [
+    "index",
+    "protocol",
+    "write-source",
+    "checks",
+    "declare-checks",
+    "check-toolkits",
+    "write-checks",
+    "check-example",
+    "check-results",
+    "test-checks",
+    "test",
+    "publish"
+  ]
 }

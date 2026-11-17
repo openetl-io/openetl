@@ -5,7 +5,7 @@ description: Configure intervals, cron times and jitter, and understand delayed,
 
 A scheduled pipeline copies data in syncs. Its `schedule` uses either an `every` interval or a `cron` expression. Optional `jitter` spreads start times across an interval. This guide explains those settings and the behavior of manual, paused, overlapping and missed syncs.
 
-A continuous pipeline has no schedule, since it runs all the time: see [continuous pipelines](./index.md#continuous-pipelines). [The reference](../reference/specs/pipeline.md) has every field of a pipeline.
+A continuous pipeline has no schedule, since it runs all the time: see [continuous pipelines](./continuous.md#continuous-pipelines). [The reference](../reference/specs/pipeline.md) has every field of a pipeline.
 
 ## Every interval
 
@@ -40,7 +40,7 @@ spec:
   schedule: { cron: "CRON_TZ=Europe/Berlin 0 6 * * *" }
 ```
 
-`openetl plan` and `openetl apply` refuse a cron expression that isn't valid, before anything is stored:
+`openetl plan` and `openetl apply` refuse a cron expression that is not valid, before anything is stored:
 
 ```text
 openetl: invalid_argument: shop-orders.yaml#1: spec: schedule.cron: "0 25 * * *" isn't a cron expression of five fields: end of range (25) above maximum (23): 25
@@ -66,7 +66,7 @@ An apply that changes a pipeline starts no sync:
 - A change to `every` or `cron` moves the next sync to the new schedule's next time after the apply. With `every: 10m` applied at 09:56, the next sync starts at 10:00.
 - Any other change, `jitter` included, leaves the time of the next sync as it was.
 
-The next sync runs the new version. A sync that's running when you apply carries on with the version it started with.
+The next sync runs the new version. A sync that is running when you apply carries on with the version it started with.
 
 Each orchestrator rebuilds schedules from pipeline definitions at startup and every 10 minutes. This also applies stored changes that failed to reach the scheduler during an apply, pause or resume.
 
@@ -74,7 +74,7 @@ Each orchestrator rebuilds schedules from pipeline definitions at startup and ev
 
 A pipeline runs one sync at a time. If a sync is still running at the next scheduled time, that start is skipped. The skipped sync does not start when the active sync ends. With `every: 1m`, a sync lasting 1 minute 18 seconds skips one scheduled start.
 
-If starts are skipped often, sync less often, or give each sync more room with `resources`, which the [pipeline spec at a glance](./index.md#running) covers.
+If starts are skipped often, sync less often, or give each sync more room with `resources`, which the [pipeline spec at a glance](./settings.md#running) covers.
 
 ## Start a sync now
 
@@ -98,7 +98,7 @@ A continuous pipeline has no syncs, so `openetl sync` fails for one.
 
 ## Pause and resume
 
-`openetl pause`, or **Pause** in the console, stops a pipeline's scheduled syncs. A sync that's running carries on to its end.
+`openetl pause`, or **Pause** in the console, stops a pipeline's scheduled syncs. A sync that is running carries on to its end.
 
 ```sh
 openetl pause shop-orders
@@ -130,13 +130,13 @@ paused stream public.customers of workspaces/default/pipelines/shop-orders
 resumed stream public.customers of workspaces/default/pipelines/shop-orders
 ```
 
-A sync that's running carries on with the stream; a continuous pipeline's job restarts at a checkpoint without it. Some streams can't stop on their own, and pausing one fails with `failed_precondition`:
+A sync that is running carries on with the stream; a continuous pipeline's job restarts at a checkpoint without it. Some streams cannot stop on their own, and pausing one fails with `failed_precondition`:
 
 - a `cdc` stream, because skipping it while other streams advance the shared log would lose its changes;
 - a stream a transform reads;
-- the last stream that isn't paused: pause the pipeline instead.
+- the last stream that is not paused: pause the pipeline instead.
 
-Heal pauses a stream by itself when it quarantines too many of its rows ([Incidents](../use/index.md#incidents)). `openetl overrides NAME` lists a pipeline's paused streams, and why each was paused. Resuming the whole pipeline leaves its paused streams paused, and an apply that no longer reads a stream drops its pause.
+Heal pauses a stream by itself when it quarantines too many of its rows ([Incidents](../use/incidents.md#incidents)). `openetl overrides NAME` lists a pipeline's paused streams, and why each was paused. Resuming the whole pipeline leaves its paused streams paused, and an apply that no longer reads a stream drops its pause.
 
 ## When heal slows syncs down
 
