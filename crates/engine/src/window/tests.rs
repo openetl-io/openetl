@@ -1028,11 +1028,13 @@ async fn a_delete_without_aggregates_gives_the_end_the_output_has() {
 /// fail after it gives a delete, with its key and its other values.
 #[tokio::test]
 async fn a_delete_doesnt_evaluate_the_clock_again() {
+    // At least 2 seconds away: the moment is in whole seconds, and the
+    // window's row must be given before it, however slow the machine.
     let soon = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        + 1;
+        + 3;
     let sql = format!(
         "INSERT INTO o SELECT window_start, region, count(*) AS n, \
          CAST(CASE WHEN now() < to_timestamp({soon}) THEN '1' ELSE 'bad' END AS BIGINT) AS r \
