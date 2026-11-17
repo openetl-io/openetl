@@ -50,9 +50,11 @@ import (
 //
 // Each seed switches on, or not, what the later steps add:
 //   - merge: a lane that names more than wMergeBound values sections merges
-//     the newest of them, or all, into one; the merge counts only when the
-//     lane's next record names its output in their place, and drops
-//     deletions only when it took the oldest;
+//     the newest of them, or all, into one, and one that names two or more
+//     set's sections merges the newest of those, leaving out the IDs the
+//     horizon passed; the merge counts only when the lane's next record
+//     names its output in their place, and drops deletions only when it
+//     took the oldest;
 //   - pending: while a lane's pending set is within its share of the job's
 //     threshold, the record carries it and no run is written; a restore
 //     takes the record's pending set as its lane's;
@@ -1031,40 +1033,58 @@ func (l *wLane) liveValues(sections []wSection, pend map[string]wStEntry, known 
 }
 
 // mergeable says the lane would merge: it names more values sections than
-// the bound, and no merge of its waits for its record.
+// the bound, or two set's sections or more, and no merge of its waits for
+// its record.
 func (l *wLane) mergeable() bool {
-	if !l.w.m.cfg.merge || l.merged != nil || !l.restored {
-		return false
-	}
-	n := 0
-	for _, s := range l.handles {
-		if s.Kind == kValues {
-			n++
-		}
-	}
-	return n > wMergeBound
+	return len(l.mergeKinds()) > 0
 }
 
-// merge merges the newest of the lane's values sections, or all of them,
-// into one, which counts once the lane's next record names it in their
-// place. Only a merge of all of them drops deletions.
+// mergeKinds are the kinds of state the lane would merge.
+func (l *wLane) mergeKinds() []string {
+	if !l.w.m.cfg.merge || l.merged != nil || !l.restored {
+		return nil
+	}
+	n := map[string]int{}
+	for _, s := range l.handles {
+		n[s.Kind]++
+	}
+	var out []string
+	if n[kValues] > wMergeBound {
+		out = append(out, kValues)
+	}
+	if n[kSet] >= 2 && !strings.HasPrefix(l.w.m.cfg.broken, "merge-") {
+		out = append(out, kSet)
+	}
+	return out
+}
+
+// merge merges the newest of the lane's sections of a kind, or all of
+// them, into one, which counts once the lane's next record names it in
+// their place. Only a merge of all of them drops deletions, and a set's
+// merge leaves out the IDs the lane's horizon passed.
 func (l *wLane) merge(d decision) {
 	w, m := l.w, l.w.m
-	var vals []wSection
+	kinds := l.mergeKinds()
+	if len(kinds) == 0 {
+		return
+	}
+	kind := kinds[m.rng.IntN(len(kinds))]
+	var secs []wSection
 	for _, s := range l.handles {
-		if s.Kind == kValues {
-			vals = append(vals, s)
+		if s.Kind == kind {
+			secs = append(secs, s)
 		}
 	}
-	slices.SortFunc(vals, cmpSection)
-	n, k := len(vals), len(vals)
+	slices.SortFunc(secs, cmpSection)
+	n, k := len(secs), len(secs)
 	if m.rng.IntN(2) == 0 {
 		k = 2 + m.rng.IntN(n-1)
 	}
 	if m.cfg.broken == "merge-drops-tombstones" {
 		k = 2
 	}
-	in, bottom := vals[n-k:], k == n
+	in, bottom := secs[n-k:], k == n
+	h := l.opWM
 	url := m.stateURL(w.gen, l.kcur, l.kg) + ".merge"
 	out := wRun{Generation: w.gen, Epoch: l.kcur, Lane: l.idx, KG: l.kg, Merge: true, Sections: map[string][]wStEntry{}}
 	var gone string
@@ -1078,18 +1098,20 @@ func (l *wLane) merge(d decision) {
 			if err != nil {
 				return err
 			}
-			for _, x := range r.Sections[kValues] {
+			for _, x := range r.Sections[kind] {
 				if inRange(s.KG, x.G) && inRange(l.kg, x.G) {
 					latest[x.slot()] = x
 				}
 			}
 		}
 		for _, x := range sortedEntries(latest) {
-			if !x.Del || !bottom && m.cfg.broken != "merge-drops-tombstones" {
-				out.Sections[kValues] = append(out.Sections[kValues], x)
+			switch {
+			case kind == kSet && m.cfg.drop && x.At <= h:
+			case !x.Del || !bottom && m.cfg.broken != "merge-drops-tombstones":
+				out.Sections[kind] = append(out.Sections[kind], x)
 			}
 		}
-		if len(out.Sections[kValues]) > 0 {
+		if len(out.Sections[kind]) > 0 {
 			if err := m.putRun(url, out); err != nil {
 				return err
 			}
@@ -1117,14 +1139,16 @@ func (l *wLane) merge(d decision) {
 		return
 	}
 	mg := &wMerged{in: in}
-	if len(out.Sections[kValues]) > 0 {
+	if len(out.Sections[kind]) > 0 {
 		l.known[url] = out
-		mg.out = &wSection{URL: url, Kind: kValues, KG: l.kg, Upto: in[len(in)-1].Upto}
+		sec := sectionsOf(url, out, l.kg, in[len(in)-1].Upto)[0]
+		mg.out = &sec
 	}
 	l.merged = mg
 	m.stats["merges"]++
+	m.stats["merges of "+kind]++
 	if bottom {
-		m.stats["merges of every values section"]++
+		m.stats["merges of every "+kind+" section"]++
 	}
 }
 

@@ -106,7 +106,7 @@ func (s *sourceServer) Read(req *protocolv1.ReadRequest, stream grpc.ServerStrea
 }
 
 func configuredStream(cs *protocolv1.ConfiguredStream) source.ConfiguredStream {
-	return source.ConfiguredStream{Name: cs.GetName(), SyncMode: source.SyncMode(cs.GetSyncMode()), Cursor: cs.GetCursor(), State: cs.State, Splits: splitsOf(cs.GetSplits()), Columns: cs.GetColumns(), Until: cs.Until}
+	return source.ConfiguredStream{Name: cs.GetName(), SyncMode: source.SyncMode(cs.GetSyncMode()), Cursor: cs.GetCursor(), State: cs.State, Splits: splitsOf(cs.GetSplits()), Columns: cs.GetColumns(), Until: cs.Until, CompleteAt: cs.CompleteAt}
 }
 
 func splitsOf(ps []*protocolv1.Split) []source.Split {
@@ -115,7 +115,7 @@ func splitsOf(ps []*protocolv1.Split) []source.Split {
 	}
 	out := make([]source.Split, len(ps))
 	for i, p := range ps {
-		out[i] = source.Split{ID: p.GetId(), State: p.State, Until: p.Until}
+		out[i] = source.Split{ID: p.GetId(), State: p.State, Until: p.Until, CompleteAt: p.CompleteAt}
 	}
 	return out
 }

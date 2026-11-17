@@ -163,7 +163,7 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 		case "users":
 			err = s.readUsers(users, seq, st.State, st.Until, out)
 		case "events":
-			err = s.readEvents(events, st.State, st.Until, out)
+			err = s.readEvents(events, st.State, s.endOf(st), out)
 		case "changes":
 			err = s.readChanges(ctx, req.Continuous, st.State, st.Until, out)
 		default:
@@ -174,6 +174,25 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 		}
 	}
 	return nil
+}
+
+// endOf is where a read of the events ends: its until, else its
+// complete_at, which is the last ts the read that completed there read.
+func (s *memSource) endOf(st source.ConfiguredStream) []byte {
+	switch {
+	case st.Until != nil:
+		return st.Until
+	case st.CompleteAt == nil || s.bug == "complete-at-ignored":
+		return nil
+	case s.bug == "complete-at-short":
+		var at int64
+		if json.Unmarshal(st.CompleteAt, &at) != nil {
+			return st.CompleteAt
+		}
+		b, _ := json.Marshal(at - 10)
+		return b
+	}
+	return st.CompleteAt
 }
 
 // untilOf is where a read ends: an until's position, else end.
@@ -426,9 +445,10 @@ func memSuite(up *upstream, bug string) conformance.SourceSuite {
 			},
 		})),
 		Config: good, BadCredentials: badCredentials, Unreachable: unreachable,
-		Streams:      []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}, {Name: "changes", Mode: source.Stream}},
-		ReadTimeout:  5 * time.Second,
-		StopsAtUntil: true,
+		Streams:           []conformance.Stream{{Name: "users", Mode: source.FullRefresh}, {Name: "events", Mode: source.Incremental}, {Name: "changes", Mode: source.Stream}},
+		ReadTimeout:       5 * time.Second,
+		StopsAtUntil:      true,
+		StopsAtCompletion: true,
 		AddRecords: func(_ context.Context, stream string) (int, error) {
 			up.mu.Lock()
 			defer up.mu.Unlock()
@@ -469,7 +489,7 @@ func TestSourceBugsFail(t *testing.T) {
 		"dup-key":               {"read/full"},
 		"batch-after-complete":  {"read/full", "read/until"},
 		"incremental-no-next":   {"read/incremental"},
-		"incremental-skips":     {"read/incremental"},
+		"incremental-skips":     {"read/incremental", "read/complete-at"},
 		"check-internal":        {"errors"},
 		"committed-fails":       {"read/committed"},
 		"ack-trims-too-far":     {"read/committed"},
@@ -480,6 +500,8 @@ func TestSourceBugsFail(t *testing.T) {
 		"until-completes-first": {"read/until"},
 		"until-after-complete":  {"read/until"},
 		"completion-moves":      {"read/until"},
+		"complete-at-ignored":   {"read/complete-at"},
+		"complete-at-short":     {"read/complete-at"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {

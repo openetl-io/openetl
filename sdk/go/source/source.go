@@ -75,6 +75,9 @@ type ConfiguredStream struct {
 	// Where the whole stream's read ends, where Splits is nil, as a Split's
 	// Until says.
 	Until []byte
+	// Where the whole stream's read completes, where Splits is nil, as a
+	// Split's CompleteAt says.
+	CompleteAt []byte
 }
 
 // WholeStream is the ID of the split that is the whole stream.
@@ -97,6 +100,19 @@ type Split struct {
 	// source that ignores it must emit the same resume points as before for
 	// that read to be exact. Nil: where the read would end.
 	Until []byte
+	// In a read that isn't continuous, the state of a completion the
+	// source emitted for the split before, which the read is to complete
+	// at again, having emitted what the read that completed there emitted:
+	// a log's offset or position, say. A source that can tell from this
+	// state where that read ended emits nothing past that position and
+	// completes the split with this state; it may emit a resume point with
+	// it first. One that can't, as where the state is a cursor floor rather
+	// than where the read ended, ignores it. The platform sets it to read
+	// part of an epoch again where the split completed in the epoch. A
+	// source that ignores it makes that read exact only if its upstream
+	// hasn't moved past where the first read completed. Never set with
+	// Until. Nil: where the read would end.
+	CompleteAt []byte
 }
 
 type ReadRequest struct {
@@ -308,7 +324,7 @@ func ReadSplits(ctx context.Context, req ReadRequest, out Emitter, read ReadSpli
 	for _, cs := range req.Streams {
 		splits := cs.Splits
 		if len(splits) == 0 {
-			splits = []Split{{ID: WholeStream, State: cs.State}}
+			splits = []Split{{ID: WholeStream, State: cs.State, Until: cs.Until, CompleteAt: cs.CompleteAt}}
 		}
 		for _, sp := range splits {
 			q.waiting = append(q.waiting, queuedSplit{stream: cs, split: sp})

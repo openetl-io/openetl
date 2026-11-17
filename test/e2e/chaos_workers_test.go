@@ -19,7 +19,9 @@ import (
 // worker's kill and the coordinator's; one worker reads the changes, and
 // the exchange between the workers' engines sends each row to the writer
 // lane owning its key group, so on three workers too, through a worker's
-// kill and one at its record. Every row lands once.
+// kill and one at its record. Then keyed CDC streams into Kafka, whose
+// writer lanes commit on their own, through a SQL transform on two workers
+// and as they are on three. Every row lands once.
 func TestChaosWorkers(t *testing.T) {
 	s := newChaosSuite(t, 1, 1)
 	faults := []string{
@@ -44,10 +46,17 @@ func TestChaosWorkers(t *testing.T) {
 		{"postgres", "merge", "sql", false, faultWorker, 2},
 		{"postgres", "merge", "", false, faultWorker, 3},
 		{"iceberg", "merge", "", false, "crash " + crashWorkerHead, 3},
+		{"kafka", "append", "sql", false, faultWorker, 2},
+		{"kafka", "append", "", false, "crash " + crashWorkerCommit, 3},
 	} {
+		// Kafka commits a pipeline's streams together.
+		scope := "stream"
+		if k.dest == "kafka" {
+			scope = "pipeline"
+		}
 		configs = append(configs, chaosConfig{
 			i: len(configs), seed: 1, source: "cdc", continuous: true, write: k.write, dest: k.dest, transform: k.transform, holds: k.holds,
-			scope: "stream", interval: "1s", size: "m", pods: true, workers: k.workers, faults: []string{k.fault}, writeFor: 30 * time.Second, strict: true,
+			scope: scope, interval: "1s", size: "m", pods: true, workers: k.workers, faults: []string{k.fault}, writeFor: 30 * time.Second, strict: true,
 		})
 	}
 	sem := make(chan struct{}, *chaosParallel)

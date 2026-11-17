@@ -2776,8 +2776,13 @@ type OperatorEpoch struct {
 	// Its reads of blocks and of runs' indexes and filters since the
 	// engine's last ready epoch: one made near a barrier can count in the
 	// epoch next to it, and every one counts once.
-	Lookup        *StateRequests `protobuf:"bytes,13,opt,name=lookup,proto3" json:"lookup,omitempty"`
-	Restore       *StateRequests `protobuf:"bytes,14,opt,name=restore,proto3" json:"restore,omitempty"`
+	Lookup  *StateRequests `protobuf:"bytes,13,opt,name=lookup,proto3" json:"lookup,omitempty"`
+	Restore *StateRequests `protobuf:"bytes,14,opt,name=restore,proto3" json:"restore,omitempty"`
+	// The outputs of its lanes' merges that their barriers of the epoch
+	// wrote, and their bytes.
+	MergeWrite *StateRequests `protobuf:"bytes,15,opt,name=merge_write,json=mergeWrite,proto3" json:"merge_write,omitempty"`
+	// Its merges' reads of the runs they merge, counted as lookups are.
+	MergeRead     *StateRequests `protobuf:"bytes,16,opt,name=merge_read,json=mergeRead,proto3" json:"merge_read,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2906,6 +2911,20 @@ func (x *OperatorEpoch) GetLookup() *StateRequests {
 func (x *OperatorEpoch) GetRestore() *StateRequests {
 	if x != nil {
 		return x.Restore
+	}
+	return nil
+}
+
+func (x *OperatorEpoch) GetMergeWrite() *StateRequests {
+	if x != nil {
+		return x.MergeWrite
+	}
+	return nil
+}
+
+func (x *OperatorEpoch) GetMergeRead() *StateRequests {
+	if x != nil {
+		return x.MergeRead
 	}
 	return nil
 }
@@ -4295,7 +4314,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\".openetl.engine.v1.SplitWatermarksR\x05value:\x028\x01\x1aC\n" +
 	"\x15WindowWatermarksEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xf5\x04\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xf9\x05\n" +
 	"\rOperatorEpoch\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x12\x17\n" +
 	"\arows_in\x18\x02 \x01(\x04R\x06rowsIn\x12\x18\n" +
@@ -4311,7 +4330,11 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x04runs\x18\v \x03(\v2*.openetl.engine.v1.OperatorEpoch.RunsEntryR\x04runs\x12:\n" +
 	"\abarrier\x18\f \x01(\v2 .openetl.engine.v1.StateRequestsR\abarrier\x128\n" +
 	"\x06lookup\x18\r \x01(\v2 .openetl.engine.v1.StateRequestsR\x06lookup\x12:\n" +
-	"\arestore\x18\x0e \x01(\v2 .openetl.engine.v1.StateRequestsR\arestore\x1a7\n" +
+	"\arestore\x18\x0e \x01(\v2 .openetl.engine.v1.StateRequestsR\arestore\x12A\n" +
+	"\vmerge_write\x18\x0f \x01(\v2 .openetl.engine.v1.StateRequestsR\n" +
+	"mergeWrite\x12?\n" +
+	"\n" +
+	"merge_read\x18\x10 \x01(\v2 .openetl.engine.v1.StateRequestsR\tmergeRead\x1a7\n" +
 	"\tRunsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01B\f\n" +
@@ -4573,40 +4596,42 @@ var file_openetl_engine_v1_engine_proto_depIdxs = []int32{
 	36, // 51: openetl.engine.v1.OperatorEpoch.barrier:type_name -> openetl.engine.v1.StateRequests
 	36, // 52: openetl.engine.v1.OperatorEpoch.lookup:type_name -> openetl.engine.v1.StateRequests
 	36, // 53: openetl.engine.v1.OperatorEpoch.restore:type_name -> openetl.engine.v1.StateRequests
-	64, // 54: openetl.engine.v1.SplitWatermarks.splits:type_name -> openetl.engine.v1.SplitWatermarks.SplitsEntry
-	18, // 55: openetl.engine.v1.StreamHolds.holding:type_name -> openetl.engine.v1.ColumnHold
-	65, // 56: openetl.engine.v1.StreamHolds.cells:type_name -> openetl.engine.v1.StreamHolds.CellsEntry
-	69, // 57: openetl.engine.v1.StreamHolds.files:type_name -> openetl.connector.v1.StagedFile
-	21, // 58: openetl.engine.v1.StreamHolds.replayed:type_name -> openetl.engine.v1.ReplayProgress
-	69, // 59: openetl.engine.v1.StagedStream.files:type_name -> openetl.connector.v1.StagedFile
-	42, // 60: openetl.engine.v1.QuarantineFile.causes:type_name -> openetl.engine.v1.QuarantineCause
-	44, // 61: openetl.engine.v1.StateSnapshot.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
-	47, // 62: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
-	46, // 63: openetl.engine.v1.Metrics.lanes:type_name -> openetl.engine.v1.LaneMetrics
-	67, // 64: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
-	18, // 65: openetl.engine.v1.SchemasRequest.holding:type_name -> openetl.engine.v1.ColumnHold
-	18, // 66: openetl.engine.v1.SchemasResponse.holding:type_name -> openetl.engine.v1.ColumnHold
-	16, // 67: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
-	38, // 68: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
-	37, // 69: openetl.engine.v1.EpochReady.WatermarksEntry.value:type_name -> openetl.engine.v1.SplitWatermarks
-	39, // 70: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
-	5,  // 71: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
-	30, // 72: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
-	32, // 73: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
-	48, // 74: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
-	50, // 75: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
-	52, // 76: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
-	29, // 77: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
-	31, // 78: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
-	33, // 79: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
-	49, // 80: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
-	51, // 81: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
-	53, // 82: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
-	77, // [77:83] is the sub-list for method output_type
-	71, // [71:77] is the sub-list for method input_type
-	71, // [71:71] is the sub-list for extension type_name
-	71, // [71:71] is the sub-list for extension extendee
-	0,  // [0:71] is the sub-list for field type_name
+	36, // 54: openetl.engine.v1.OperatorEpoch.merge_write:type_name -> openetl.engine.v1.StateRequests
+	36, // 55: openetl.engine.v1.OperatorEpoch.merge_read:type_name -> openetl.engine.v1.StateRequests
+	64, // 56: openetl.engine.v1.SplitWatermarks.splits:type_name -> openetl.engine.v1.SplitWatermarks.SplitsEntry
+	18, // 57: openetl.engine.v1.StreamHolds.holding:type_name -> openetl.engine.v1.ColumnHold
+	65, // 58: openetl.engine.v1.StreamHolds.cells:type_name -> openetl.engine.v1.StreamHolds.CellsEntry
+	69, // 59: openetl.engine.v1.StreamHolds.files:type_name -> openetl.connector.v1.StagedFile
+	21, // 60: openetl.engine.v1.StreamHolds.replayed:type_name -> openetl.engine.v1.ReplayProgress
+	69, // 61: openetl.engine.v1.StagedStream.files:type_name -> openetl.connector.v1.StagedFile
+	42, // 62: openetl.engine.v1.QuarantineFile.causes:type_name -> openetl.engine.v1.QuarantineCause
+	44, // 63: openetl.engine.v1.StateSnapshot.key_groups:type_name -> openetl.engine.v1.KeyGroupRange
+	47, // 64: openetl.engine.v1.Metrics.streams:type_name -> openetl.engine.v1.StreamMetrics
+	46, // 65: openetl.engine.v1.Metrics.lanes:type_name -> openetl.engine.v1.LaneMetrics
+	67, // 66: openetl.engine.v1.CommitRequest.epoch:type_name -> openetl.connector.v1.Epoch
+	18, // 67: openetl.engine.v1.SchemasRequest.holding:type_name -> openetl.engine.v1.ColumnHold
+	18, // 68: openetl.engine.v1.SchemasResponse.holding:type_name -> openetl.engine.v1.ColumnHold
+	16, // 69: openetl.engine.v1.HoldPlan.ColumnsEntry.value:type_name -> openetl.engine.v1.Held
+	38, // 70: openetl.engine.v1.EpochReady.HoldsEntry.value:type_name -> openetl.engine.v1.StreamHolds
+	37, // 71: openetl.engine.v1.EpochReady.WatermarksEntry.value:type_name -> openetl.engine.v1.SplitWatermarks
+	39, // 72: openetl.engine.v1.StreamHolds.CellsEntry.value:type_name -> openetl.engine.v1.CellHolds
+	5,  // 73: openetl.engine.v1.EngineService.StartJob:input_type -> openetl.engine.v1.StartJobRequest
+	30, // 74: openetl.engine.v1.EngineService.Recover:input_type -> openetl.engine.v1.RecoverRequest
+	32, // 75: openetl.engine.v1.EngineService.Events:input_type -> openetl.engine.v1.EventsRequest
+	48, // 76: openetl.engine.v1.EngineService.Commit:input_type -> openetl.engine.v1.CommitRequest
+	50, // 77: openetl.engine.v1.EngineService.Stop:input_type -> openetl.engine.v1.StopRequest
+	52, // 78: openetl.engine.v1.EngineService.Schemas:input_type -> openetl.engine.v1.SchemasRequest
+	29, // 79: openetl.engine.v1.EngineService.StartJob:output_type -> openetl.engine.v1.StartJobResponse
+	31, // 80: openetl.engine.v1.EngineService.Recover:output_type -> openetl.engine.v1.RecoverResponse
+	33, // 81: openetl.engine.v1.EngineService.Events:output_type -> openetl.engine.v1.EventsResponse
+	49, // 82: openetl.engine.v1.EngineService.Commit:output_type -> openetl.engine.v1.CommitResponse
+	51, // 83: openetl.engine.v1.EngineService.Stop:output_type -> openetl.engine.v1.StopResponse
+	53, // 84: openetl.engine.v1.EngineService.Schemas:output_type -> openetl.engine.v1.SchemasResponse
+	79, // [79:85] is the sub-list for method output_type
+	73, // [73:79] is the sub-list for method input_type
+	73, // [73:73] is the sub-list for extension type_name
+	73, // [73:73] is the sub-list for extension extendee
+	0,  // [0:73] is the sub-list for field type_name
 }
 
 func init() { file_openetl_engine_v1_engine_proto_init() }

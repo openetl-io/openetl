@@ -166,6 +166,9 @@ message ConfiguredStream {
   // Where the whole stream's read ends, without splits, as a split's
   // until says.
   optional bytes until = 7;
+  // Where the whole stream's read completes, without splits, as a split's
+  // complete_at says.
+  optional bytes complete_at = 8;
 }
 
 // Split is one of a stream's splits. The whole stream has the empty ID. IDs
@@ -183,6 +186,18 @@ message Split {
   // that ignores it must send the same resume points as before for that
   // read to be exact. Unset: where the read would end.
   optional bytes until = 3;
+  // In a read that isn't continuous, the state of a completion the source
+  // sent for the split before, which the read is to complete at again,
+  // having sent what the read that completed there sent: a log's offset or
+  // position, say. A source that can tell from this state where that read
+  // ended sends nothing past that position and completes the split with
+  // this state; it may send a resume point with it first. One that can't,
+  // as where the state is a cursor floor rather than where the read ended,
+  // ignores it. The platform sets it to read part of an epoch again where
+  // the split completed in the epoch. A source that ignores it makes that
+  // read exact only if its upstream hasn't moved past where the first read
+  // completed. Never set with until. Unset: where the read would end.
+  optional bytes complete_at = 4;
 }
 
 message ReadResponse {

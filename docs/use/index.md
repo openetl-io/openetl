@@ -209,7 +209,13 @@ If a statement keeps state, **At the last checkpoint** shows what it did in the 
 - **Written**: the rows it wrote to its output in the epoch, as new rows, updates and deletes.
 - **Late**: the late rows that came after their window had closed and its allowed lateness had passed, which OpenETL quarantined with the code `late`. Late rows that still went into their window are not in this count. [Quarantined rows](#quarantined-rows) shows them under the output.
 - **State**: how much state the statement held in memory, and how much the checkpoint keeps in the data plane's storage: the files that hold state still in use, which is none once every window has closed and its lateness has passed.
-- **Requests**: its requests to the data plane's storage in the epoch, with their bytes: **Writes** of its state at the checkpoint, **Reads** of state it needed, and **Restores**, which open the state that a checkpoint names after a restart, and read it once whole to find what is still in use. A read or restore made near the checkpoint can count in the next epoch instead.
+- **Requests**: its requests to the data plane's storage in the epoch, with their bytes.
+  - **Writes** write its state at the checkpoint.
+  - **Reads** read the state that it needed.
+  - **Restores** open the state that a checkpoint names after a restart. They also read that state once, whole, to find what is still in use.
+  - **Merges** count the files of state that the checkpoint wrote to merge other files, and the reads of the files that they merge.
+
+  A read, a restore or a merge's read made near the checkpoint can count in the next epoch instead.
 
 [Aggregate by windows of time](../pipelines/windows.md) explains watermarks, windows and late rows.
 

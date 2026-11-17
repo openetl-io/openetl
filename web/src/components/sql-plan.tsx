@@ -275,6 +275,9 @@ export function SqlOperatorStats({ checkpoint, operators }: { checkpoint: Checkp
                   <div>Writes {requests(s.barrierRequests)}</div>
                   <div>Reads {requests(s.readRequests)}</div>
                   <div>Restores {requests(s.restoreRequests)}</div>
+                  <div>
+                    Merges {requests(s.mergeWriteRequests)} written, {requests(s.mergeReadRequests)} read
+                  </div>
                 </TableCell>
               </TableRow>
             );
