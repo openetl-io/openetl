@@ -199,7 +199,7 @@ These jobs run on one pod:
 - a job whose destination loads staged epochs or is written by the engine;
 - a job whose destination is transactional and does not have lane commits;
 - a job whose destination takes fewer writer lanes than there are workers;
-- a job with a SQL statement that keeps state, as a group window: its keyed lanes take the stream from every lane of the attempt in one engine. The engine refuses such a statement in a part of an attempt, but in a redo's.
+- a job with a SQL statement that keeps state, as a group window, when the engines of its dataflow do not exchange rows between workers: its keyed lanes then take the stream from every lane of the attempt in one engine. Without the exchange, the engine refuses such a statement in a part of an attempt, but in a redo's.
 
 `plan.OnePod` ([`internal/plan`](../../internal/plan)) is the one check behind these cases, for the plan, for `EnqueueWork` and for `Job.OnWorkers`. `EnqueueWork` works out an attempt's workers when it sizes the attempt, so the workflows and their histories do not change. The placer sends an attempt on workers only to a pod launcher of its pool, all of its pods or none, and the launcher's `--max-pods` and `--max-pod-cpu` count every pod. The launcher ([`internal/runner/pods`](../../internal/runner/pods)) makes the workers' pods, then the coordinator's.
 
