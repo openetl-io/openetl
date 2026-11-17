@@ -469,6 +469,19 @@ async fn run_keyed(
                     break;
                 }
             }
+            // A row OVER can't give, once it leaves, has no place among the
+            // table's rows here to quarantine: the record fails, with why.
+            if !closed.failed.is_empty() {
+                let why: Vec<&str> = closed
+                    .failed
+                    .iter()
+                    .map(|(_, why, _)| why.as_str())
+                    .collect();
+                return Err(Failure(format!(
+                    "OVER couldn't give rows: {}",
+                    why.join("; ")
+                )));
+            }
             (out, closed)
         }
     };

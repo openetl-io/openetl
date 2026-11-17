@@ -1212,25 +1212,36 @@ mod windows {
         per_lane
     }
 
-    /// What one epoch of a window gave: its window rows, the rows it
-    /// quarantined, its window watermark at the barrier, and the steps of
-    /// that watermark its rows met.
+    /// What one epoch of a stateful statement gave: its rows, the rows it
+    /// quarantined, its operator's watermark at the barrier, and the steps
+    /// of that watermark its rows met.
     #[derive(Debug)]
-    struct OneEpoch {
-        rows: Vec<WindowRow>,
+    struct OneEpoch<R = WindowRow> {
+        rows: Vec<R>,
         late: u64,
         closed: i64,
         steps: Vec<openetl_proto::engine::v1::LaneSteps>,
     }
 
-    /// One epoch of `sql` over stream a on one lane: the rows of key x at
-    /// `seconds`, in that order, each a batch of its own, then the barrier.
-    /// Live where `redo` is None, recording the steps of the window's
-    /// watermark; else a redo of `redo`'s epoch, which replays its steps
-    /// and closes the windows where it did.
-    async fn one_epoch(sql: &str, seconds: &[i64], redo: Option<&OneEpoch>) -> OneEpoch {
+    /// What reads each writer lane's rows of the frames it gave, from an
+    /// epoch on.
+    type Rows<R> = fn(&[Vec<Frame>], u64) -> Vec<Vec<R>>;
+
+    /// One epoch on one lane of the job `req` gives, of a statement over
+    /// stream a that writes minutes, its state and quarantine below the
+    /// folder it's given: the rows of key x at `seconds`, in that order, each
+    /// a batch of its own, then the barrier. Live where `redo` is None,
+    /// recording the steps of the operator's watermark; else a redo of
+    /// `redo`'s epoch, which replays its steps and closes at its watermark.
+    /// `rows` reads the writer lanes' rows.
+    async fn epoch_of<R: Ord, Q>(
+        req: impl FnOnce(&std::path::Path) -> StartJobRequest,
+        seconds: &[i64],
+        redo: Option<&OneEpoch<Q>>,
+        rows: Rows<R>,
+    ) -> OneEpoch<R> {
         let dir = tempfile::tempdir().unwrap();
-        let mut req = window_request(&dir.path().join("state"), sql, 1, 1, 1);
+        let mut req = req(&dir.path().join("state"));
         req.quarantine_url = format!("file://{}", dir.path().display());
         req.record_window_steps = true;
         if let Some(live) = redo {
@@ -1265,10 +1276,10 @@ mod windows {
             .filter(|q| q.stream == "minutes")
             .map(|q| q.rows)
             .sum();
-        let mut rows: Vec<WindowRow> = window_rows(&outs, 1).into_iter().flatten().collect();
-        rows.sort();
+        let mut got: Vec<R> = rows(&outs, 1).into_iter().flatten().collect();
+        got.sort();
         OneEpoch {
-            rows,
+            rows: got,
             late,
             closed: ready[0].window_watermarks["a"],
             steps: ready[0]
@@ -1277,6 +1288,17 @@ mod windows {
                 .flat_map(|o| o.steps.clone())
                 .collect(),
         }
+    }
+
+    /// One epoch of the window `sql`, as epoch_of says.
+    async fn one_epoch(sql: &str, seconds: &[i64], redo: Option<&OneEpoch>) -> OneEpoch {
+        epoch_of(
+            |state| window_request(state, sql, 1, 1, 1),
+            seconds,
+            redo,
+            window_rows,
+        )
+        .await
     }
 
     /// The live epoch of `seconds`, and a redo of it, which gives the same
@@ -1368,69 +1390,15 @@ mod windows {
         assert_eq!(ops.iter().map(|o| o.inserts).sum::<u64>(), 24);
     }
 
-    /// What one epoch of OVER gave: its rows, the rows it quarantined, its
-    /// watermark at the barrier, and the steps of it its rows met.
-    #[derive(Debug)]
-    struct OverEpoch {
-        rows: Vec<OverRow>,
-        late: u64,
-        closed: i64,
-        steps: Vec<openetl_proto::engine::v1::LaneSteps>,
-    }
-
-    /// One epoch of RUNNING on one lane: rows of email x at `seconds`, in
-    /// that order, each a batch of its own, then the barrier. Live where
-    /// `redo` is None, recording the steps of OVER's watermark; else a redo
-    /// of `redo`'s epoch, which replays its steps and gives the rows the
-    /// watermark passed at its barrier.
-    async fn over_epoch(seconds: &[i64], redo: Option<&OverEpoch>) -> OverEpoch {
-        let dir = tempfile::tempdir().unwrap();
-        let mut req = over_request(&dir.path().join("state"), RUNNING, 1, 1, 1);
-        req.quarantine_url = format!("file://{}", dir.path().display());
-        req.record_window_steps = true;
-        if let Some(live) = redo {
-            req.state_read_only = true;
-            req.streams[0].event_time.as_mut().unwrap().closes_at = Some(live.closed);
-            req.window_steps = vec![openetl_proto::engine::v1::WindowSteps {
-                operator: req.transform.as_ref().unwrap().operators[0].clone(),
-                lanes: live.steps.clone(),
-            }];
-        }
-        let mut h = crate::dataflow::tests::start_lanes(req);
-        let mut w = h.ins.remove(0);
-        let seconds = seconds.to_vec();
-        let writes = tokio::spawn(async move {
-            put_on(&mut w, FrameKind::Split, 0, split("s", None)).await;
-            for (i, s) in seconds.iter().enumerate() {
-                let row = minute_row(i as i64, "x", *s);
-                put_on(&mut w, FrameKind::Rows, 0, json_rows(&[&row])).await;
-            }
-            barriers(&mut w, 1, 1).await;
-            for s in 0..2 {
-                put_on(&mut w, FrameKind::EndOfStream, s, vec![]).await;
-            }
-            w.shutdown().await.unwrap();
-        });
-        let (outs, ready) = h.finish().await;
-        writes.await.unwrap();
-        let late = ready
-            .iter()
-            .flat_map(|r| &r.quarantine)
-            .filter(|q| q.stream == "minutes")
-            .map(|q| q.rows)
-            .sum();
-        let mut rows: Vec<OverRow> = over_rows(&outs, 1).into_iter().flatten().collect();
-        rows.sort();
-        OverEpoch {
-            rows,
-            late,
-            closed: ready[0].window_watermarks["a"],
-            steps: ready[0]
-                .operators
-                .iter()
-                .flat_map(|o| o.steps.clone())
-                .collect(),
-        }
+    /// One epoch of RUNNING, as epoch_of says.
+    async fn over_epoch(seconds: &[i64], redo: Option<&OneEpoch<OverRow>>) -> OneEpoch<OverRow> {
+        epoch_of(
+            |state| over_request(state, RUNNING, 1, 1, 1),
+            seconds,
+            redo,
+            over_rows,
+        )
+        .await
     }
 
     /// A redo of OVER's epoch replays the steps of its watermark that the

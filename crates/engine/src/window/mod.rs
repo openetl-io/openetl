@@ -49,7 +49,7 @@ pub(crate) mod codec;
 pub(crate) mod steps;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -370,14 +370,8 @@ impl Operator {
         state: &mut S,
         input: &RecordBatch,
     ) -> Result<Out, JobError> {
-        let mut out = Out::default();
         let plan = self.plan.clone();
-        let (ran, failed) = steps::run_rows(&plan.input.steps, input.clone(), true)
-            .map_err(|e| JobError::internal(self.reason(&e.message)))?;
-        for (r, why) in failed {
-            out.rejected
-                .push((r, self.reason(&why), Cause::new(Code::Statement)));
-        }
+        let (ran, mut out) = steps::before(&plan.input.steps, input, |why| self.reason(why))?;
         let rows = ran.batch;
         if rows.num_rows() == 0 {
             return Ok(out);

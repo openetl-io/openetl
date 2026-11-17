@@ -297,14 +297,14 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 	}
 }
 
-// A group window's job runs on the workers it was placed on, through the
-// activities a runner runs: the coordinator's job has the engine's dataflow
-// when it decides, so it isn't placed again on one pod. The workers'
-// engines send each row to the keyed lane that owns its region, on either
-// worker, and each window lands once, from both workers' writer lanes,
-// with every row.
-func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
-	sql := "INSERT INTO tens SELECT window_start, region, count(*) AS n FROM events GROUP BY tumble(at, INTERVAL '10 seconds'), region"
+// timedSQLOnWorkers runs sql over timedEvents' stream, events, on two
+// worker processes, as onWorkerProcesses does, and checks it ran there: the
+// coordinator's job has the engine's dataflow when it decides, so it isn't
+// placed again on one pod; both workers join; the attempt commits several
+// epochs; and output, which sql writes, is staged from both workers'
+// destination processes. It gives output's JSON lines.
+func timedSQLOnWorkers(t *testing.T, sql, output string) string {
+	t.Helper()
 	res, api, _, out, err := onWorkerProcesses(t, &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}}, &apiv1.PipelineSpec{
 		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at"}}},
 		Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
@@ -325,13 +325,32 @@ func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
 	if joined != 2 {
 		t.Errorf("%d workers joined, want 2", joined)
 	}
-	b, err := os.ReadFile(filepath.Join(out, "tens.jsonl"))
+	// Each worker writes with a destination process of its own.
+	procs := writerProcesses(t, filepath.Join(out, ".epochs"))
+	wrote := map[string]bool{}
+	for l := range stagedLanes(t, filepath.Join(out, ".epochs"))[output] {
+		wrote[procs[l]] = true
+	}
+	if len(wrote) != 2 {
+		t.Errorf("%s was staged from %d of the workers' processes %v, want both", output, len(wrote), procs)
+	}
+	b, err := os.ReadFile(filepath.Join(out, output+".jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return string(b)
+}
+
+// A group window's job runs on the workers it was placed on, through the
+// activities a runner runs. The workers' engines send each row to the
+// keyed lane that owns its region, on either worker, and each window lands
+// once, from both workers' writer lanes, with every row.
+func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
+	sql := "INSERT INTO tens SELECT window_start, region, count(*) AS n FROM events GROUP BY tumble(at, INTERVAL '10 seconds'), region"
+	lines := timedSQLOnWorkers(t, sql, "tens")
 	starts := map[string][]string{}
 	got := map[string]int{}
-	for line := range strings.Lines(string(b)) {
+	for line := range strings.Lines(lines) {
 		var r struct {
 			Start  string `json:"window_start"`
 			Region string
@@ -363,15 +382,6 @@ func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
 	if len(starts) != len(want) {
 		t.Errorf("%d regions' windows landed, want %d", len(starts), len(want))
 	}
-	// Each worker writes with a destination process of its own.
-	procs := writerProcesses(t, filepath.Join(out, ".epochs"))
-	wrote := map[string]bool{}
-	for l := range stagedLanes(t, filepath.Join(out, ".epochs"))["tens"] {
-		wrote[procs[l]] = true
-	}
-	if len(wrote) != 2 {
-		t.Errorf("the windows were staged from %d of the workers' processes %v, want both", len(wrote), procs)
-	}
 }
 
 // OVER's job runs on the workers it was placed on, through the activities a
@@ -381,33 +391,10 @@ func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
 // rows up to its time, every worker's rows among them.
 func TestAnOverOnWorkerProcesses(t *testing.T) {
 	sql := "INSERT INTO counted SELECT id, region, count(*) OVER (PARTITION BY region ORDER BY at) AS n FROM events"
-	res, api, _, out, err := onWorkerProcesses(t, &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}}, &apiv1.PipelineSpec{
-		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at"}}},
-		Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
-		Delivery:  &apiv1.Delivery{Commit: &apiv1.Commit{MaxBytes: 16 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE}},
-	})
-	if onePod := (*worker.OnePod)(nil); errors.As(err, &onePod) {
-		t.Fatalf("the job was placed again on one pod: %s", onePod.Why)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Committed < 2 {
-		t.Errorf("committed %d epochs, want several", res.Committed)
-	}
-	api.mu.Lock()
-	joined := len(api.joined)
-	api.mu.Unlock()
-	if joined != 2 {
-		t.Errorf("%d workers joined, want 2", joined)
-	}
+	lines := timedSQLOnWorkers(t, sql, "counted")
 	want := timedCounts()
 	got := map[int64]int{}
-	b, err := os.ReadFile(filepath.Join(out, "counted.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for line := range strings.Lines(string(b)) {
+	for line := range strings.Lines(lines) {
 		var r struct {
 			ID     int64
 			Region string
@@ -430,14 +417,6 @@ func TestAnOverOnWorkerProcesses(t *testing.T) {
 	}
 	if len(got) != len(want) || compared != timedSplits*timedChunks*timedRows {
 		t.Errorf("%d rows landed and %d compared, want %d", len(got), compared, timedSplits*timedChunks*timedRows)
-	}
-	procs := writerProcesses(t, filepath.Join(out, ".epochs"))
-	wrote := map[string]bool{}
-	for l := range stagedLanes(t, filepath.Join(out, ".epochs"))["counted"] {
-		wrote[procs[l]] = true
-	}
-	if len(wrote) != 2 {
-		t.Errorf("the rows were staged from %d of the workers' processes %v, want both", len(wrote), procs)
 	}
 }
 

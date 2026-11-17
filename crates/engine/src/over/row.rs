@@ -25,6 +25,12 @@ const BYTES: u8 = 6;
 /// A value of a type the others don't keep, as an Arrow IPC stream.
 const OTHER: u8 = 7;
 
+/// Casts that fail where a value doesn't fit, rather than give null.
+const STRICT: arrow_cast::CastOptions<'static> = arrow_cast::CastOptions {
+    safe: false,
+    format_options: arrow_cast::display::FormatOptions::new(),
+};
+
 /// A schema's hash, as rows name it, and the schema as state keeps it.
 pub fn fingerprint(schema: &Schema) -> Result<(u64, Vec<u8>), String> {
     let ipc = crate::ipc::encode_schema(schema).map_err(|e| e.to_string())?;
@@ -211,7 +217,8 @@ pub fn decode(rows: &[&[u8]], schema: &SchemaRef) -> Result<(RecordBatch, Vec<[u
 
 /// `batch` as a batch of `to`: its columns by name, cast where their type
 /// changed, and null where it lacks one. Gives the column that can't be
-/// read as `to` has it, and why, where one can't.
+/// read as `to` has it, and why, where one can't, as where a value doesn't
+/// fit the new type: no value becomes null in a cast.
 pub fn conform(batch: &RecordBatch, to: &SchemaRef) -> Result<RecordBatch, (String, String)> {
     let n = batch.num_rows();
     let mut columns = Vec::with_capacity(to.fields().len());
@@ -219,7 +226,7 @@ pub fn conform(batch: &RecordBatch, to: &SchemaRef) -> Result<RecordBatch, (Stri
         columns.push(match batch.column_by_name(f.name()) {
             None => arrow_array::new_null_array(f.data_type(), n),
             Some(c) if c.data_type() == f.data_type() => c.clone(),
-            Some(c) => arrow_cast::cast(c, f.data_type()).map_err(|e| {
+            Some(c) => arrow_cast::cast_with_options(c, f.data_type(), &STRICT).map_err(|e| {
                 (
                     f.name().clone(),
                     format!("from {} to {}: {e}", c.data_type(), f.data_type()),
@@ -351,5 +358,21 @@ mod tests {
         )]));
         let (column, _) = conform(&batch, &binary).unwrap_err();
         assert_eq!(column, "n");
+    }
+
+    /// A value that doesn't fit a narrower type fails the cast, rather than
+    /// reading as null.
+    #[test]
+    fn a_value_that_doesnt_fit_its_new_type_fails() {
+        let wide = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)]));
+        let batch = RecordBatch::try_new(
+            wide,
+            vec![Arc::new(arrow_array::Int64Array::from(vec![2_147_483_648]))],
+        )
+        .unwrap();
+        let narrow = Arc::new(Schema::new(vec![Field::new("n", DataType::Int32, true)]));
+        let (column, why) = conform(&batch, &narrow).unwrap_err();
+        assert_eq!(column, "n");
+        assert!(why.starts_with("from Int64 to Int32"), "{why}");
     }
 }

@@ -3,7 +3,11 @@
 //! projection to the output.
 
 use arrow_array::{RecordBatch, UInt64Array};
+use openetl_normalize::{Cause, Code};
 use openetl_sql::{Error, Step};
+
+use super::Out;
+use crate::error::JobError;
 
 /// What the steps gave: the batch, and each of its rows' row of the input.
 pub struct Ran {
@@ -75,6 +79,24 @@ fn eval(e: arrow_schema::ArrowError) -> Error {
         at: None,
         message: e.to_string(),
     }
+}
+
+/// Runs a statement's steps before its stateful operator on `input`: what
+/// they gave, and what to give for the rows they fail on, rejected with
+/// `reason` of why.
+pub fn before(
+    steps: &[Step],
+    input: &RecordBatch,
+    reason: impl Fn(&str) -> String,
+) -> Result<(Ran, Out), JobError> {
+    let (ran, failed) =
+        run_rows(steps, input.clone(), true).map_err(|e| JobError::internal(reason(&e.message)))?;
+    let mut out = Out::default();
+    for (r, why) in failed {
+        out.rejected
+            .push((r, reason(&why), Cause::new(Code::Statement)));
+    }
+    Ok((ran, out))
 }
 
 /// The rows of `batch` at `rows`, in that order.

@@ -165,14 +165,8 @@ impl Operator {
         input: &RecordBatch,
         ids: &FixedSizeBinaryArray,
     ) -> Result<Out, JobError> {
-        let mut out = Out::default();
         let plan = self.plan.clone();
-        let (ran, failed) = steps::run_rows(&plan.input.steps, input.clone(), true)
-            .map_err(|e| JobError::internal(self.reason(&e.message)))?;
-        for (r, why) in failed {
-            out.rejected
-                .push((r, self.reason(&why), Cause::new(Code::Statement)));
-        }
+        let (ran, mut out) = steps::before(&plan.input.steps, input, |why| self.reason(why))?;
         let rows = ran.batch;
         let n = rows.num_rows();
         if n == 0 {
@@ -300,16 +294,20 @@ impl Operator {
                 .await
                 .map_err(|e| state_error(&e))?;
             let full = taken.len() == TAKE;
+            let prior = self.held.len();
             let mut rows = std::mem::take(&mut self.held);
             rows.extend(taken);
             // The next take may hold more of the last key's rows at its
-            // time, its peers, which leave together.
+            // time, its peers, which leave together. The rows held are one
+            // key's peers already, so only the rows just taken can end them.
             if full && let Some(last) = rows.last() {
                 let (g, t, k) = (last.group, last.time, last.key.clone());
-                let at = rows
-                    .iter()
-                    .rposition(|r| r.group != g || r.time != t || r.key != k)
-                    .map_or(0, |i| i + 1);
+                let differs = |r: &DueRow| r.group != g || r.time != t || r.key != k;
+                let at = match rows[prior..].iter().rposition(differs) {
+                    Some(i) => prior + i + 1,
+                    None if prior > 0 && differs(&rows[prior - 1]) => prior,
+                    None => 0,
+                };
                 self.held = rows.split_off(at);
             }
             given += rows.len();
@@ -601,6 +599,11 @@ impl Operator {
                         |b| e.eval_predicate(b).map(|p| Arc::new(p) as ArrayRef),
                         &mut bad,
                     )?;
+                    // Where it fails on every row, no row gave its type.
+                    let got = match got.data_type() {
+                        DataType::Boolean => got,
+                        _ => arrow_array::new_null_array(&DataType::Boolean, got.len()),
+                    };
                     Some(got.as_boolean().clone())
                 }
             });

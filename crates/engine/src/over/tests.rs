@@ -6,15 +6,14 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use arrow_array::{
-    ArrayRef, FixedSizeBinaryArray, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
-};
+use arrow_array::{FixedSizeBinaryArray, RecordBatch, TimestampMicrosecondArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use openetl_normalize::{Code, key_groups};
+use openetl_normalize::Code;
 use openetl_sql::{Catalog, Operator as Planned, Stream};
 use openetl_state::{KeyGroupRange, Layer, MemoryBucket, Snapshot, Stores};
 
-use super::{Operator, RELEASE};
+use super::{Operator, RELEASE, TAKE};
+use crate::window::tests::{REGIONS, next, orders, ranges, routed};
 
 const GROUPS: u32 = 256;
 const SEC: i64 = 1_000_000;
@@ -65,18 +64,7 @@ type Row = (u64, &'static str, i64, i64);
 /// A batch of the statement's input, what it reads of `orders`' rows, and
 /// their record IDs.
 fn batch(op: &Operator, rows: &[Row]) -> (RecordBatch, FixedSizeBinaryArray) {
-    let full = RecordBatch::try_new(
-        stream(false),
-        vec![
-            Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.1))) as ArrayRef,
-            Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.2))),
-            Arc::new(
-                TimestampMicrosecondArray::from_iter_values(rows.iter().map(|r| r.3))
-                    .with_timezone("UTC"),
-            ),
-        ],
-    )
-    .unwrap();
+    let full = orders(rows.iter().map(|r| (r.1, r.2, r.3)));
     (op.plan.input.input(&full).unwrap(), ids(rows))
 }
 
@@ -89,12 +77,6 @@ fn id(n: u64) -> [u8; 16] {
 
 fn ids(rows: &[Row]) -> FixedSizeBinaryArray {
     FixedSizeBinaryArray::try_from_iter(rows.iter().map(|r| id(r.0))).unwrap()
-}
-
-fn ranges(lanes: u32) -> Vec<KeyGroupRange> {
-    (0..lanes)
-        .map(|i| KeyGroupRange::new(GROUPS * i / lanes, GROUPS * (i + 1) / lanes - 1))
-        .collect()
 }
 
 /// Each row the output was given, by its record ID: its columns, as text.
@@ -175,20 +157,12 @@ impl Run {
 
     async fn rows(&mut self, rows: &[Row]) {
         let (all, all_ids) = batch(&self.ops[0], rows);
-        let need = self.ops[0].plan.need.clone();
-        let groups = key_groups(&all, &need, GROUPS).unwrap();
-        for i in 0..self.layers.len() {
-            let range = self.layers[i].range();
-            let mine: Vec<u32> = groups
-                .iter()
-                .enumerate()
-                .filter(|(_, g)| range.contains(**g))
-                .map(|(r, _)| r as u32)
-                .collect();
-            if mine.is_empty() {
-                continue;
-            }
-            let at = arrow_array::UInt32Array::from(mine);
+        let ranges: Vec<KeyGroupRange> = self.layers.iter().map(Layer::range).collect();
+        for (i, at) in routed(&all, &self.ops[0].plan.need, &ranges)
+            .into_iter()
+            .enumerate()
+        {
+            let Some(at) = at else { continue };
             let part = arrow_select::take::take_record_batch(&all, &at).unwrap();
             let part_ids = arrow_select::take::take(&all_ids, &at, None).unwrap();
             let part_ids = arrow_array::cast::AsArray::as_fixed_size_binary(&part_ids).clone();
@@ -226,16 +200,6 @@ impl Run {
         out
     }
 }
-
-fn next(seed: &mut u64) -> u64 {
-    *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    let mut z = *seed;
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    z ^ (z >> 31)
-}
-
-const REGIONS: [&str; 5] = ["eu", "us", "apac", "latam", "mena"];
 
 /// Rows over five minutes, in whole seconds, so many share a time.
 fn rows(seed: u64, n: usize) -> Vec<Row> {
@@ -392,6 +356,48 @@ async fn many_rows_leave_over_several_calls() {
     assert_eq!(run.given.len(), n);
     let last = run.given[&id(u64::try_from(n - 1).unwrap())].clone();
     assert!(last.contains(&format!("total={n} ")), "{last}");
+}
+
+/// A key's peers, rows of one time, leave together however many takes
+/// from state they span: a RANGE frame gives each the same value, and a
+/// ROWS frame takes them one at a time.
+#[tokio::test]
+async fn a_peer_group_of_several_takes_leaves_together() {
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(RUNNING, &bucket, 1, 1, 1, &[]).await;
+    let n = TAKE * 2 + 500;
+    let input: Vec<Row> = (0..n)
+        .map(|i| (u64::try_from(i).unwrap(), "eu", 1, SEC))
+        .chain([(u64::try_from(n).unwrap(), "eu", 1, 2 * SEC)])
+        .collect();
+    run.rows(&input).await;
+    run.advance(i64::MAX).await;
+    assert_eq!(run.given.len(), n + 1);
+    for (i, row) in input.iter().enumerate().take(n) {
+        let got = &run.given[&id(row.0)];
+        let n3 = (i + 1).min(3);
+        assert!(got.contains(&format!(" total={n} n3={n3} ")), "{got}");
+    }
+    let last = &run.given[&id(u64::try_from(n).unwrap())];
+    assert!(last.contains(&format!(" total={} ", n + 1)), "{last}");
+}
+
+/// A FILTER that fails on every row that leaves quarantines each of them,
+/// with why, and gives no row.
+#[tokio::test]
+async fn a_filter_that_fails_on_every_row_quarantines_them() {
+    let sql = "INSERT INTO o SELECT region, amount, \
+               count(*) FILTER (WHERE 10 / amount > 1) OVER (PARTITION BY region ORDER BY at) AS n FROM orders";
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(sql, &bucket, 1, 1, 1, &[]).await;
+    run.rows(&[(1, "eu", 0, SEC), (2, "eu", 0, 2 * SEC)]).await;
+    let (out, more) = run.ops[0]
+        .advance(&mut run.layers[0], i64::MAX)
+        .await
+        .unwrap();
+    assert!(!more && out.rows.is_none());
+    assert_eq!(out.failed.len(), 2, "{:?}", out.failed);
+    assert!(out.failed.iter().all(|(_, _, c)| c.code == Code::Statement));
 }
 
 /// Rows that waited through a change of the stream's columns, as when the
