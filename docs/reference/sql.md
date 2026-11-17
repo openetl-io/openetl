@@ -5,7 +5,7 @@ description: The statements, names, types, operators and functions a pipeline's 
 
 A SQL transform is the `transform.sql` field of a [Pipeline](./specs/pipeline.md#a-sql-transform). Its statements read the source's streams and write outputs, which the destination gets as streams. The engine runs them on every lane of a sync or a continuous pipeline's job, between typing a stream's rows and writing them. [Write a SQL transform](../pipelines/sql-transforms.md) shows how to write one and check it.
 
-The engine runs row-wise statements, where each output row comes from one input row, or from one element of a list with `UNNEST`. It also runs [group windows](#group-windows), which aggregate a stream's rows by windows of their event time. Everything else is refused, with the position in the SQL text where it is written. [What's refused](#whats-refused) lists the refusals and their messages.
+The engine runs row-wise statements, where each output row comes from one input row, or from one element of a list with `UNNEST`. It also runs [group windows](#group-windows), which aggregate a stream's rows by windows of their event time, and [`OVER`](#over), which gives each row values over the rows before it, such as a running total. Everything else is refused, with the position in the SQL text where it is written. [What's refused](#whats-refused) lists the refusals and their messages.
 
 ## Statements
 
@@ -78,6 +78,7 @@ A view's name is one identifier, never qualified. Quote a name that has dots. An
 | Literals | `'eu' AS region`, `1 AS version` | A `NULL` literal needs a cast: `CAST(NULL AS VARCHAR) AS note` |
 | Filter rows | `WHERE status = 'paid'` | |
 | One row for each element of a list | `SELECT id, unnest(tags) AS tag` | See [UNNEST](#unnest) |
+| Values over the rows before each row | `sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total` | See [OVER](#over) |
 | Read a view or a subquery | `FROM paid_orders`, `FROM (SELECT …) AS t` | |
 
 ### UNNEST
@@ -280,6 +281,122 @@ openetl reset --stream orders NAME
 A version without `transform.sql` drops every operator of the version before it. The next attempt drops the state of each operator that the version dropped or replaced, so the records after it stop naming that state, and retention deletes its files once no record it keeps names them. If an operator's ID changes without a new version, because the source changed the type of a column that it keeps, the version did not drop the old operator. The next attempt then fails with `CONFIG_INVALID`, and its message names the operator and the command to run. Reset the streams that the window reads to build the state again.
 
 An operator has no name of its own in the SQL. Its ID is the only name.
+
+## OVER
+
+`OVER` gives each row of a stream the values of functions over the rows before it in its partition, in event-time order. [Compute running totals with OVER](../pipelines/over.md) is the guide to it. Each input row gives one output row, with its own columns and the functions' values:
+
+```sql
+INSERT INTO running_revenue
+SELECT id, region, amount, created_at,
+  sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS revenue_so_far,
+  lag(amount) OVER (PARTITION BY region ORDER BY created_at) AS previous_amount
+FROM orders;
+```
+
+- The stream has an event time: its `eventTime` in the [Pipeline](./specs/pipeline.md#source-and-streams).
+- `ORDER BY` is the event-time column alone, as the statement reads it, in ascending order.
+- `PARTITION BY` names columns of the stream, renamed or not. A computed column, such as `lower(region)`, and a list or a struct are refused. Without `PARTITION BY`, every row is in one partition.
+- Every `OVER` of a statement has the same `PARTITION BY` and `ORDER BY`, in any order of the columns. One operator keeps their state.
+- `OVER` is in the `SELECT` list or in `QUALIFY` of the statement's own `SELECT`, or of a subquery in its `FROM`. It reads the stream or a view of it, and the view is row-wise. `OVER` in a view, `WINDOW` and `OVER` over another `OVER`'s values are refused.
+- `WHERE` runs before `OVER`, so it cannot read `OVER`'s values. Compare them in `QUALIFY`, or in the `WHERE` of a `SELECT` that reads the statement's.
+- The stream is read whole, with `full_refresh`, or in the order of its event time: with `incremental` and its `eventTime` as the cursor, or with `stream`. [Reads](#over-reads) says why.
+- A changelog stream, such as one read with `cdc`, is refused: `OVER` reads appended rows.
+
+### Functions
+
+| Function | Value |
+|---|---|
+| `count(*)`, `count(X)` | The frame's rows, or those where `X` is not null, as `BIGINT` |
+| `sum(X)`, `avg(X)` | As the [aggregates](#aggregates) of a group window give them, over the frame's rows |
+| `min(X)`, `max(X)` | The frame's least or greatest value of a number, text, binary, a boolean, a date, a time, a timestamp or a UUID |
+| `first_value(X)` | `X` on the frame's first row. It takes the types that `min` takes. |
+| `lag(X)`, `lag(X, N)`, `lag(X, N, DEFAULT)` | `X` on the row `N` rows before the current one, 1 by default, or `DEFAULT` where there is none, null by default. `N` is a constant whole number, 1 or more, and `DEFAULT` a constant. `lag` takes no frame. |
+
+- `mean` is another name for `avg`.
+- `FILTER (WHERE …)` after an aggregate counts only the frame's rows where its condition is true. A row it leaves out still takes its place in a `ROWS` frame.
+- `DISTINCT` in `count`, `sum` or `avg`, `IGNORE NULLS`, and `FILTER` on `lag` or `first_value` are refused.
+- If a function's value does not fit its type, such as a sum past the range of `BIGINT`, the engine quarantines the row instead of writing it, with the code `aggregate`. The row still counts in its partition's frames.
+- A row that a function cannot evaluate is quarantined, with the code `statement`, and has no place in any frame.
+
+### Frames
+
+A frame ends at the current row:
+
+| Frame | Rows |
+|---|---|
+| `ORDER BY` alone, or `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | Every row of the partition up to the current row's time, its peers included |
+| `ROWS UNBOUNDED PRECEDING` | Every row of the partition up to the current row |
+| `ROWS BETWEEN N PRECEDING AND CURRENT ROW`, or `ROWS N PRECEDING` | The `N` rows before the current row, and the current row. `ROWS BETWEEN CURRENT ROW AND CURRENT ROW` is the current row. |
+| `RANGE BETWEEN INTERVAL PRECEDING AND CURRENT ROW` | The rows whose time is at most `INTERVAL` before the current row's, up to the current row's time, its peers included. `INTERVAL` is a constant of days, hours, minutes, seconds or smaller, in whole microseconds, such as `INTERVAL '1 hour'`. Months are refused. |
+
+`GROUPS` frames, frames that end before or after the current row, and frames that start after it are refused.
+
+### Order and peers
+
+A partition's rows are in the order of their event time. Rows of one partition with the same event time are peers:
+
+- A `RANGE` frame holds every peer of the current row, so peers get the same values.
+- A `ROWS` frame, `lag` and `first_value` take peers in the order of their record IDs (`_openetl_id`), then of their values. The order depends only on the rows, so a retry or a redo gives each row the values it had.
+- A row whose event time is null is quarantined, with the code `event_time`.
+
+### When a row is written
+
+A row waits until the stream's watermark passes its event time, so every row of its time has come. The engine then writes the row, in the epoch of the next checkpoint. [Event time and watermarks](./specs/pipeline.md#event-time-and-watermarks) says how the watermark moves.
+
+- The watermark of `OVER` is the least watermark of the lanes that read the stream, as a group window's is.
+- A row is late if it comes after the watermark has passed its event time. The engine quarantines it, with the code `late`.
+- `OVER` takes no `watermark.lateness`. Lateness on a stream that `OVER` reads is a problem in the plan, unless a group window reads the stream too.
+- At the end of input, every row that waits is written.
+- After a restore, the watermark starts where the checkpoint's watermarks are. A row behind it is late.
+
+### OVER reads
+
+| Read | Pipeline | When rows are written |
+|---|---|---|
+| `full_refresh` | Scheduled | The watermark holds until the sync's read ends, and every row is written then. The next sync starts each partition's frames again, from the whole stream. |
+| `incremental` by its `eventTime`, or `stream` | Scheduled | The watermark follows the rows as they come. At the end of the sync's read, it moves to the current time, less `watermark.delay`. Frames and waiting rows go on in the next sync, which restores them. |
+| `stream` | Continuous | The watermark follows the rows as they come. Each row is written while the pipeline runs. |
+
+`OVER` over a stream read with `incremental` and a cursor other than its `eventTime` is a problem in the plan: each sync's rows would come in their own order, after rows of an earlier sync that come later in time.
+
+### The output
+
+- The output keeps the stream's primary key, by the rule of [Primary keys](#primary-keys).
+- Each row is an insert, written once. Its `_openetl_id` is its input row's, and its `_openetl_seq` is its event time.
+- Without `destination.write`, the output is appended to, or overwritten when its stream is read with `full_refresh`.
+- The engine writes each row with the writer lane that owns the key group of its `PARTITION BY` columns. With `destination.write: merge`, the output's primary key holds the `PARTITION BY` columns, or the destination writes on one writer lane. Otherwise the plan has a problem.
+
+### OVER state
+
+`OVER` keeps state by key group: the rows that wait for the watermark, and each partition's frame. `openetl plan` shows the statement's operator, which keeps the state:
+
+```text
+    1:1  INSERT INTO running_revenue  over  key id  exchange by region  reads orders; keeps state as operator over-81fa38d0e7ba7bb2
+```
+
+- The engine exchanges the stream's rows by the key groups of the `PARTITION BY` columns, so each partition's rows reach one lane. `OVER` without `PARTITION BY` runs on one lane.
+- An unbounded frame keeps an accumulator, and `first_value` the first row's value. A `ROWS N PRECEDING` frame keeps `N` rows' values, a `RANGE` frame the values within its interval of the latest time, and `lag(X, N)` `N` rows' values.
+- A row waits in state until it is written, with all of its columns.
+- The state is kept as a group window's is, in the same files, checkpoints and retention ([State](#state)). The next attempt restores it on any number of lanes and workers.
+- With `resources.workers` above 1, the exchange sends each row to the worker whose lane owns its key group, and that worker writes the row ([Group windows on workers](../pipelines/workers.md#group-windows-on-workers)).
+- To build the state again from the stream, reset the streams that the statement reads: `openetl reset --stream STREAM NAME`.
+
+### Changing an OVER statement
+
+The operator's ID is a hash of what it computes and keeps: the output's name, the stream, the event-time column and its type, the `PARTITION BY` columns and their types, each function with its argument, `FILTER`, frame and types, the filters and `UNNEST` before it, and its state's layout. These edits keep the ID:
+
+- Formatting, comments, other names for columns, aliases and views that rename columns.
+- The order of the `PARTITION BY` columns and of the functions.
+- Columns that pass through, added or removed, also when the source adds a column that `SELECT *` takes. A row that waited in state before then is written with a null in the new column.
+- `QUALIFY`, and filters and projections after `OVER`.
+- Other statements, and the order of the statements.
+
+Another output name, `PARTITION BY`, function, argument, `FILTER` or frame, a filter or `UNNEST` before `OVER`, and a change of type of the event-time column, a `PARTITION BY` column or a function's argument give a new ID. The new operator's state starts empty, and the plan shows it as [Changing a query](#changing-a-query) describes:
+
+```text
+    1:1  running_revenue  over-81fa38d0e7ba7bb2  new  over by created_at on region: lag(amount, 1), sum(amount) range unbounded; keeps each key's frame, and its rows until the watermark passes them; starts empty
+```
 
 ## Expressions and operators
 
@@ -643,7 +760,7 @@ These are refused, each at the place it is written. The message says what was fo
 
 | What | Message |
 |---|---|
-| `OVER`, in the `SELECT` list or in `QUALIFY`, with window functions such as `sum()`, `lag()` or `row_number()` | `OVER: transforms don't run window functions yet (tier 3)`. That is the message for a statement tier 3 takes. One it does not take gives a message that says why, at the place it is written: a window function, frame or `OVER` clause outside tier 3, a stream with no event time, or `row_number()` that is not compared with `= 1`. For example, `rank(): transforms don't run updating statements yet (tier 5)` |
+| `ROW_NUMBER() OVER (…) = 1`, in `QUALIFY` or in the `WHERE` of a `SELECT` that reads it, which deduplicates | `OVER: transforms don't run window functions yet (tier 3)`. [Window functions](#window-functions) lists what else `OVER` refuses. |
 | A window function without `OVER` | `rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)` |
 | `JOIN` | `a join: transforms don't run joins yet (tier 4)` |
 | Two relations in `FROM` | `reading two relations: transforms don't run joins yet (tier 4)` |
@@ -716,6 +833,38 @@ A view of one of these kinds is refused too, where the view is defined.
 | A group window over a changelog stream | `changes is a changelog, and a group window groups appended rows: transforms don't run updating statements yet (tier 5)` |
 
 The plan also has a problem where a group window's stream is read in a way that the window cannot take ([Reads](#reads)), and where a stream sets `watermark.lateness` and the window's output is not merged.
+
+### Window functions
+
+| What | Message |
+|---|---|
+| A stream without an event time | `orders has no event time, which OVER goes by: set eventTime on the stream in source.streams` |
+| `ORDER BY` another column, or no `ORDER BY` | `OVER goes by the event time of orders, created_at: write ORDER BY created_at` |
+| `ORDER BY` the event time and other columns | `OVER orders by the event time alone, which ties don't change: write ORDER BY created_at` |
+| `ORDER BY … DESC` | `OVER's frames end at the current row in event-time order: write ORDER BY created_at without DESC` |
+| A frame that does not end at the current row | `OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW` |
+| A frame that starts after the current row | `a frame starts before the current row, or at it` |
+| `GROUPS` | `GROUPS frames aren't supported: write ROWS or RANGE` |
+| A `RANGE` offset in months | `a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies` |
+| `lead` | `lead reads rows after the current one, and OVER's frames end at the current row: lag reads the rows before it` |
+| Another function, such as `last_value` | `last_value isn't a function OVER takes: OVER takes sum, count, min, max, avg, lag and first_value, and ROW_NUMBER() … = 1 to deduplicate` |
+| `rank`, `dense_rank`, and `ROW_NUMBER()` compared otherwise than `= 1` | `rank(): transforms don't run updating statements yet (tier 5)` |
+| Two `PARTITION BY` or `ORDER BY` in a statement | `a statement's OVER clauses have one PARTITION BY and ORDER BY, by which one operator keeps their state: compute the others in a statement of their own` |
+| A computed `PARTITION BY` column | `OVER partitions by columns of orders, renamed or not: lower(orders.region) is computed` |
+| `PARTITION BY` a list or a struct | `OVER can't partition by tags, of type List(Utf8)` |
+| `DISTINCT` in `count`, `sum` or `avg` | `count(DISTINCT …) isn't supported over a frame` |
+| `IGNORE NULLS` | `first_value(…) IGNORE NULLS isn't supported` |
+| `FILTER` on `lag` or `first_value` | `lag takes no FILTER, which is for aggregates` |
+| `lag`'s offset other than a constant of 1 or more | `lag's offset is a constant whole number, 1 or more` |
+| `OVER` over a changelog stream | `cdc is a changelog, and OVER reads appended rows: transforms don't run updating statements yet (tier 5)` |
+| `OVER` and a group window in one statement | `a statement groups by a window or computes OVER, not both: compute OVER in a statement of its own` |
+| `OVER` in a view | `a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view` |
+| `OVER` in `WHERE` | `WHERE runs before OVER, so it can't read OVER's values: compare them in QUALIFY, or in the WHERE of a SELECT that reads this one` |
+| `WINDOW` | `WINDOW isn't supported: write each OVER (…) in full` |
+| `OVER` over another `OVER`'s values | `OVER over the values of another OVER isn't supported: compute a statement's OVER over the stream's rows` |
+| `unnest` of `OVER`'s rows | `UNNEST of OVER's rows isn't supported: unnest the stream's rows before OVER, in a view` |
+
+The plan also has a problem where the stream of `OVER` is read in a way that it cannot take ([OVER reads](#over-reads)), where the stream sets `watermark.lateness` and no group window reads it, and where the output is merged and its primary key does not hold the `PARTITION BY` columns, on a destination with several writer lanes ([The output](#the-output)).
 
 ### Changelog streams
 

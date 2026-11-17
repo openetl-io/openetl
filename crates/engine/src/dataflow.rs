@@ -9,8 +9,8 @@
 //! owning each row's key group. Each writer lane aligns the lanes
 //! feeding it, and writes to a runner sink, with barriers in band, or to a
 //! Parquet or staged sink, which stages each epoch and reports it in
-//! EpochReady. A group window's statement runs on keyed lanes, past an
-//! exchange of its own (see [`keyed`]).
+//! EpochReady. A stateful statement, a group window or `OVER`, runs on
+//! keyed lanes, past an exchange of its own (see [`keyed`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::future::Future;
@@ -807,7 +807,7 @@ where
     let windowed = plan
         .transform
         .as_ref()
-        .is_some_and(|t| t.sql.statements.iter().any(|s| s.window.is_some()));
+        .is_some_and(|t| t.sql.statements.iter().any(|s| s.keyed.is_some()));
     // Keyed lanes have clocks of their own, after the lanes'.
     let clocks = match windowed {
         true => 2 * inbound.len(),
@@ -1097,7 +1097,7 @@ struct Transformed {
     seen: Option<SchemaRef>,
     /// The outputs it feeds.
     outputs: Vec<(Stage, LaneStream)>,
-    /// The group windows' statements that read it, which keyed lanes run.
+    /// The stateful statements that read it, which keyed lanes run.
     windows: Vec<usize>,
     /// Its splits on the lane, where it has event time.
     marks: Option<Splits>,
@@ -1306,7 +1306,7 @@ where
                         let stage = match route {
                             Route::Pass => Stage::Identity,
                             Route::Statement(i) => Stage::statement(&t.sql, i),
-                            Route::Window(_) => return None,
+                            Route::Keyed(_) => return None,
                         };
                         #[cfg(test)]
                         let stage = match (&plan.probe, stage) {
@@ -1319,7 +1319,7 @@ where
                 windows: t.routes[s]
                     .iter()
                     .filter_map(|&(_, route)| match route {
-                        Route::Window(i) => Some(i),
+                        Route::Keyed(i) => Some(i),
                         _ => None,
                     })
                     .collect(),
@@ -5954,6 +5954,176 @@ pub(crate) mod tests {
             assert_eq!(barrier.count, written, "epoch {}", n + 1);
             assert_eq!(barrier.bytes > 0, written > 0, "epoch {}", n + 1);
         }
+    }
+
+    /// A job whose statement computes OVER over stream a, by `sql`, which
+    /// writes minutes, keyed as a is, by id.
+    pub(crate) fn over_request(
+        state: &std::path::Path,
+        sql: &str,
+        lanes: u32,
+        generation: u64,
+        first_epoch: u64,
+    ) -> openetl_proto::engine::v1::StartJobRequest {
+        let mut req = window_request(state, sql, lanes, generation, first_epoch);
+        req.outputs[0].primary_key = vec!["id".into()];
+        req
+    }
+
+    /// A running total of v by email, and the id of the email's row before.
+    pub(crate) const RUNNING: &str = "INSERT INTO minutes SELECT id, email, v, at, \
+         sum(v) OVER (PARTITION BY email ORDER BY at) AS total, \
+         lag(id) OVER (PARTITION BY email ORDER BY at) AS before FROM a";
+
+    /// A row RUNNING gave, as a writer lane gave it, and the epoch it came
+    /// in.
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub(crate) struct OverRow {
+        pub id: i64,
+        pub email: String,
+        pub total: i64,
+        pub before: Option<i64>,
+        pub epoch: u64,
+    }
+
+    /// Each writer lane's RUNNING rows, in order. `first` is the epoch the
+    /// job starts at.
+    pub(crate) fn over_rows(outs: &[Vec<frame::Frame>], first: u64) -> Vec<Vec<OverRow>> {
+        outs.iter()
+            .map(|frames| {
+                let mut epoch = first;
+                let mut got = Vec::new();
+                for f in frames {
+                    if f.kind == FrameKind::Barrier && f.stream == 0 {
+                        epoch += 1;
+                    }
+                    if f.kind != FrameKind::Batch || f.stream != 0 {
+                        continue;
+                    }
+                    let b = ipc::decode_batch(f.payload.clone()).unwrap();
+                    for (((id, e), t), before) in column_ints(&b, "id")
+                        .into_iter()
+                        .zip(column_strings(&b, "email"))
+                        .zip(column_ints(&b, "total"))
+                        .zip(column_ints(&b, "before"))
+                    {
+                        got.push(OverRow {
+                            id: id.unwrap(),
+                            email: e.unwrap(),
+                            total: t.unwrap(),
+                            before,
+                            epoch,
+                        });
+                    }
+                }
+                got
+            })
+            .collect()
+    }
+
+    /// Lane l's rows of a, as RUNNING reads them: ids l*100 on, emails x,
+    /// y, z and w in turn, 13 seconds apart from l seconds, so no two of
+    /// one email share a time.
+    pub(crate) fn over_input(lane: i64) -> Vec<(i64, &'static str, i64)> {
+        (0..8)
+            .map(|i| {
+                (
+                    lane * 100 + i,
+                    ["x", "y", "z", "w"][(i % 4) as usize],
+                    i * 13 + lane,
+                )
+            })
+            .collect()
+    }
+
+    /// What RUNNING gives each of `rows`, by id, worked out apart: the sum
+    /// of v, which is the id, of the email's rows up to its time, and the
+    /// id of the email's row before it.
+    pub(crate) fn running(rows: &[(i64, &str, i64)]) -> BTreeMap<i64, (String, i64, Option<i64>)> {
+        let mut out = BTreeMap::new();
+        for &(id, email, at) in rows {
+            let mine: Vec<&(i64, &str, i64)> = rows.iter().filter(|r| r.1 == email).collect();
+            let total = mine.iter().filter(|r| r.2 <= at).map(|r| r.0).sum();
+            let before = mine
+                .iter()
+                .filter(|r| r.2 < at)
+                .max_by_key(|r| r.2)
+                .map(|r| r.0);
+            out.insert(id, (email.to_owned(), total, before));
+        }
+        out
+    }
+
+    /// OVER runs past an exchange on its PARTITION BY inside the engine:
+    /// each of its rows leaves once, on the writer lane its email's keyed
+    /// lane feeds, with its running total, once every lane's watermark has
+    /// passed its time, and the rest at the end of input. Each keyed lane's
+    /// state is in the epoch's snapshots while rows wait or frames are
+    /// kept, and none at the end of input.
+    #[tokio::test]
+    async fn over_gives_each_row_once_the_watermark_passes_it() {
+        let state = tempfile::tempdir().unwrap();
+        let mut h = start_lanes(over_request(state.path(), RUNNING, 2, 1, 1));
+        let mut all = Vec::new();
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            let l = i64::try_from(l).unwrap();
+            let input = over_input(l);
+            all.extend(input.clone());
+            put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+            let rs: Vec<String> = input
+                .iter()
+                .map(|(id, e, s)| minute_row(*id, e, *s))
+                .collect();
+            let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+            put(w, FrameKind::Rows, 0, rows(&refs)).await;
+            barriers(w, 1, 1).await;
+            put(
+                w,
+                FrameKind::Split,
+                0,
+                split(&format!("s{l}"), Some(watermark::END)),
+            )
+            .await;
+            barriers(w, 1, 2).await;
+        }
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        let per_lane = over_rows(&outs, 1);
+        let want = running(&all);
+        let mut seen = BTreeSet::new();
+        for r in per_lane.iter().flatten() {
+            assert!(seen.insert(r.id), "row {} twice", r.id);
+            let (email, total, before) = &want[&r.id];
+            assert_eq!(
+                (&r.email, r.total, r.before),
+                (email, *total, *before),
+                "{r:?}"
+            );
+            // Lane 0's last row is at 91 seconds, which the first barrier's
+            // watermark, the least of the lanes', hasn't passed.
+            let at = all.iter().find(|a| a.0 == r.id).unwrap().2;
+            assert_eq!(r.epoch, if at < 91 { 1 } else { 2 }, "{r:?}");
+        }
+        assert_eq!(seen.len(), all.len());
+        for e in ["x", "y", "z", "w"] {
+            let lanes = per_lane
+                .iter()
+                .filter(|r| r.iter().any(|o| o.email == e))
+                .count();
+            assert_eq!(lanes, 1, "{e} on {lanes} writer lanes");
+        }
+        assert_eq!(ready.len(), 2);
+        assert!(!ready[0].snapshots.is_empty());
+        assert!(ready[1].snapshots.is_empty(), "{:?}", ready[1].snapshots);
+        let ops: Vec<&OperatorEpoch> = ready.iter().flat_map(|r| &r.operators).collect();
+        let got: Vec<_> = ops
+            .iter()
+            .map(|o| (o.rows_in, o.inserts, o.late, o.watermark))
+            .collect();
+        assert_eq!(
+            got,
+            [(16, 14, 0, Some(91 * SEC)), (0, 2, 0, Some(watermark::END))]
+        );
     }
 
     /// A lane holds a window open until each of its splits' watermarks

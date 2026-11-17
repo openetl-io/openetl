@@ -96,7 +96,11 @@ impl Acc {
 
     /// Takes row `i`: of `arg`, the argument's values, unless `count(*)`.
     pub fn update(&mut self, arg: Option<&dyn Array>, i: usize) {
-        let v = arg.map(|a| Value::read(a, i));
+        self.take(arg.map(|a| Value::read(a, i)));
+    }
+
+    /// Takes a row's argument: `None` for `count(*)`'s, which has none.
+    pub fn take(&mut self, v: Option<Option<Value>>) {
         match (self, v) {
             (Acc::Count(n), None) => *n += 1,
             (_, None | Some(None)) => {}

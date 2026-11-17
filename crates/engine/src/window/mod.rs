@@ -44,9 +44,9 @@
 //! the first time, then updates; each has an ID and a seq from its key and
 //! how many times it has been given, so a replay gives the same rows.
 
-mod accumulate;
-mod codec;
-mod steps;
+pub(crate) mod accumulate;
+pub(crate) mod codec;
+pub(crate) mod steps;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests;
@@ -189,7 +189,7 @@ pub struct Out {
 }
 
 impl Out {
-    fn add(&mut self, other: Out) -> Result<(), JobError> {
+    pub(crate) fn add(&mut self, other: Out) -> Result<(), JobError> {
         self.rejected.extend(other.rejected);
         self.failed.extend(other.failed);
         self.rows = match (self.rows.take(), other.rows) {
@@ -1425,7 +1425,7 @@ fn parse_timer(k: &[u8]) -> Result<(u8, Vec<u8>, i64), JobError> {
     Ok((kind, key.to_vec(), start))
 }
 
-fn is_json(f: &Field) -> bool {
+pub(crate) fn is_json(f: &Field) -> bool {
     f.metadata()
         .get(openetl_normalize::EXTENSION_NAME_KEY)
         .map(String::as_str)
@@ -1433,7 +1433,7 @@ fn is_json(f: &Field) -> bool {
 }
 
 /// A JSON column's values as keys take them: one text for equal JSON.
-fn canonical_json(a: &ArrayRef) -> ArrayRef {
+pub(crate) fn canonical_json(a: &ArrayRef) -> ArrayRef {
     let Some(s) = arrow_array::cast::AsArray::as_string_opt::<i32>(a.as_ref()) else {
         return a.clone();
     };

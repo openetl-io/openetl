@@ -2,6 +2,7 @@ package activities
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -371,6 +372,96 @@ func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
 	if len(wrote) != 2 {
 		t.Errorf("the windows were staged from %d of the workers' processes %v, want both", len(wrote), procs)
 	}
+}
+
+// OVER's job runs on the workers it was placed on, through the activities a
+// runner runs. The workers' engines send each row to the keyed lane that
+// owns its region, on either worker, and each row lands once, from the
+// writer lane of its region's keyed lane, with the count of its region's
+// rows up to its time, every worker's rows among them.
+func TestAnOverOnWorkerProcesses(t *testing.T) {
+	sql := "INSERT INTO counted SELECT id, region, count(*) OVER (PARTITION BY region ORDER BY at) AS n FROM events"
+	res, api, _, out, err := onWorkerProcesses(t, &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}}, &apiv1.PipelineSpec{
+		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at"}}},
+		Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
+		Delivery:  &apiv1.Delivery{Commit: &apiv1.Commit{MaxBytes: 16 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE}},
+	})
+	if onePod := (*worker.OnePod)(nil); errors.As(err, &onePod) {
+		t.Fatalf("the job was placed again on one pod: %s", onePod.Why)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Committed < 2 {
+		t.Errorf("committed %d epochs, want several", res.Committed)
+	}
+	api.mu.Lock()
+	joined := len(api.joined)
+	api.mu.Unlock()
+	if joined != 2 {
+		t.Errorf("%d workers joined, want 2", joined)
+	}
+	want := timedCounts()
+	got := map[int64]int{}
+	b, err := os.ReadFile(filepath.Join(out, "counted.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(b)) {
+		var r struct {
+			ID     int64
+			Region string
+			N      int
+		}
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := got[r.ID]; ok {
+			t.Fatalf("row %d landed twice", r.ID)
+		}
+		got[r.ID] = r.N
+	}
+	compared := 0
+	for id, n := range want {
+		if got[id] != n {
+			t.Errorf("row %d counted %d, want %d", id, got[id], n)
+		}
+		compared++
+	}
+	if len(got) != len(want) || compared != timedSplits*timedChunks*timedRows {
+		t.Errorf("%d rows landed and %d compared, want %d", len(got), compared, timedSplits*timedChunks*timedRows)
+	}
+	procs := writerProcesses(t, filepath.Join(out, ".epochs"))
+	wrote := map[string]bool{}
+	for l := range stagedLanes(t, filepath.Join(out, ".epochs"))["counted"] {
+		wrote[procs[l]] = true
+	}
+	if len(wrote) != 2 {
+		t.Errorf("the rows were staged from %d of the workers' processes %v, want both", len(wrote), procs)
+	}
+}
+
+// timedCounts is each of timedEvents' rows' count of its region's rows up
+// to its time, by its id: no two of a region's rows share a time.
+func timedCounts() map[int64]int {
+	type row struct{ ms, id int64 }
+	by := map[string][]row{}
+	for k := range timedSplits {
+		for c := range timedChunks {
+			for r := range timedRows {
+				region := timedRegions[(k+r)%len(timedRegions)]
+				by[region] = append(by[region], row{int64(c*1000 + r), int64((k*timedChunks+c)*timedRows + r)})
+			}
+		}
+	}
+	out := map[int64]int{}
+	for _, rows := range by {
+		slices.SortFunc(rows, func(a, b row) int { return cmp.Compare(a.ms, b.ms) })
+		for i, r := range rows {
+			out[r.id] = i + 1
+		}
+	}
+	return out
 }
 
 // A Spark or Flink transform's attempt placed on workers goes back to one

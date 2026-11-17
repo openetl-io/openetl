@@ -3,7 +3,7 @@ title: Aggregate by windows of time
 description: Add up a stream's rows by minutes, hours or sessions of their own time with a SQL group window, and know when each window's row is written, what happens to late rows, and where the state is kept.
 ---
 
-A group window is a SQL statement that adds up a stream's rows by windows of time, such as the revenue of each region in each minute. It writes one row for each window and key. This page explains the time that windows use, when each window's row is written, what happens to rows that come late, and how to change a window's statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [Group windows](../reference/sql.md#group-windows) in the SQL reference lists every window, aggregate and rule.
+A group window is a SQL statement that adds up a stream's rows by windows of time, such as the revenue of each region in each minute. It writes one row for each window and key. To give each row a running total, or the value of the row before it, use `OVER` instead ([Compute running totals with OVER](./over.md)). This page explains the time that windows use, when each window's row is written, what happens to rows that come late, and how to change a window's statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [Group windows](../reference/sql.md#group-windows) in the SQL reference lists every window, aggregate and rule.
 
 ## Before you start
 

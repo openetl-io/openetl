@@ -186,10 +186,14 @@ fn queries_over_generated_rows_give_what_duckdb_gives() {
     let mut mismatches = Vec::new();
     let mut used = vec![false; generate::DIFFERS.len()];
     let mut pairs = 0;
-    for r in results {
+    let mut over = 0;
+    for (r, p) in results.into_iter().zip(&files) {
         let c = r.unwrap_or_else(|e| panic!("{e}"));
         mismatches.extend(c.mismatches);
         pairs += c.pairs;
+        if file_name(p) == "over.slt" {
+            over = c.compared;
+        }
         for i in c.used {
             used[i] = true;
         }
@@ -198,6 +202,13 @@ fn queries_over_generated_rows_give_what_duckdb_gives() {
     assert!(
         pairs > 0,
         "no translated pair was compared over generated rows"
+    );
+    // Each of over.slt's queries that both run, over each seed's rows: five
+    // the same in both, and six of ours with DuckDB's SQL for them.
+    assert_eq!(
+        over,
+        11 * seeds.len(),
+        "over.slt's queries compared over generated rows"
     );
     for (i, (file, part, why)) in generate::DIFFERS.iter().enumerate() {
         if !used[i] && n >= 3 {

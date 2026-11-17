@@ -1,7 +1,8 @@
 //! Our engine as sqllogictest's database. A table is a stream and its rows
 //! one batch of it. A query is the statement `INSERT INTO slt_result` with
-//! it, planned with the views defined before it, and run by the row-wise
-//! operator a lane runs. Errors are `kind line:column message`, with the
+//! it, planned with the views defined before it, and run by the operator a
+//! lane or a keyed lane runs: a group window or `OVER` to the end of
+//! input. Errors are `kind line:column message`, with the
 //! position in the record's own SQL.
 //!
 //! A changelog table's `INSERT` may set `_op` (insert, update or delete;
@@ -355,8 +356,8 @@ impl Ours {
             let data = &self.tables[st.input];
             let typed = data.typed()?;
             let pushed: Vec<usize> = (0..typed.batch.num_rows()).collect();
-            let applied = match &st.window {
-                Some(_) => window(st, &typed)?,
+            let applied = match &st.keyed {
+                Some(_) => keyed(st, &typed)?,
                 None => Stage::statement(&t, i)
                     .apply(&typed, &pushed, None)
                     .map_err(|e| Failure(format!("{:?} {}", e.code, e.message)))?,
@@ -407,12 +408,12 @@ impl Ours {
     }
 }
 
-/// A group window's statement run on a table's rows, as one lane with
+/// A stateful statement run on a table's rows, as one keyed lane with
 /// every key group runs it, to the end of input: what it gives, and the
 /// rows it can't take.
-fn window(st: &crate::transform::Statement, typed: &Typed) -> Result<Applied, Failure> {
-    let Some((plan, id)) = &st.window else {
-        return Err(Failure("not a group window".into()));
+fn keyed(st: &crate::transform::Statement, typed: &Typed) -> Result<Applied, Failure> {
+    let Some((plan, id)) = &st.keyed else {
+        return Err(Failure("not a stateful statement".into()));
     };
     let input = st.op.input(&typed.batch).map_err(|e| Failure(e.message))?;
     // A thread of its own, as the suites may run inside a runtime.
@@ -420,17 +421,18 @@ fn window(st: &crate::transform::Statement, typed: &Typed) -> Result<Applied, Fa
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .map_err(|e| Failure(e.to_string()))?;
-        rt.block_on(windowed(st, plan, id, &input))
+        rt.block_on(run_keyed(st, plan, id, &input, &typed.ids))
     };
     std::thread::scope(|s| s.spawn(run).join())
-        .map_err(|_| Failure("a group window's thread panicked".into()))?
+        .map_err(|_| Failure("a keyed lane's thread panicked".into()))?
 }
 
-async fn windowed(
+async fn run_keyed(
     st: &crate::transform::Statement,
-    plan: &Arc<openetl_sql::GroupWindow>,
+    plan: &crate::transform::Keyed,
     id: &str,
     input: &RecordBatch,
+    ids: &FixedSizeBinaryArray,
 ) -> Result<Applied, Failure> {
     let fail = |e: crate::error::JobError| Failure(format!("{:?} {}", e.code, e.message));
     let groups = 256;
@@ -439,18 +441,37 @@ async fn windowed(
     let mut layer = openetl_state::Layer::open(&bucket, 1, 1, range, &[])
         .await
         .map_err(|e| Failure(e.to_string()))?;
-    let mut op = crate::window::Operator::new(
-        id,
-        st.at,
-        plan.clone(),
-        &st.output,
-        st.schema.clone(),
-        0,
-        groups,
-    )
-    .map_err(fail)?;
-    let mut out = op.rows(&mut layer, input).await.map_err(fail)?;
-    let closed = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
+    let (mut out, closed) = match plan {
+        crate::transform::Keyed::Window(w) => {
+            let mut op = crate::window::Operator::new(
+                id,
+                st.at,
+                w.clone(),
+                &st.output,
+                st.schema.clone(),
+                0,
+                groups,
+            )
+            .map_err(fail)?;
+            let out = op.rows(&mut layer, input).await.map_err(fail)?;
+            let closed = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
+            (out, closed)
+        }
+        crate::transform::Keyed::Over(o) => {
+            let mut op = crate::over::Operator::new(id, st.at, o.clone(), &st.output, groups)
+                .map_err(fail)?;
+            let out = op.rows(&mut layer, input, ids).await.map_err(fail)?;
+            let mut closed = crate::window::Out::default();
+            loop {
+                let (got, more) = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
+                closed.add(got).map_err(fail)?;
+                if !more {
+                    break;
+                }
+            }
+            (out, closed)
+        }
+    };
     out.rejected.extend(closed.rejected);
     let typed = match closed.rows {
         Some(t) => t,
@@ -480,7 +501,9 @@ async fn windowed(
 
 impl Data {
     /// The table's rows as one batch of its stream, with an ID each and,
-    /// for a changelog, their ops in order.
+    /// for a changelog, their ops in order. IDs order as the rows were
+    /// inserted, as DuckDB's `rowid` does, so `OVER` takes peers, rows of
+    /// one event time, in that order.
     fn typed(&self) -> Result<Typed, Failure> {
         let batch = arrow_select::concat::concat_batches(&self.table.schema, &self.batches)
             .map_err(|e| Failure(e.to_string()))?;
@@ -488,7 +511,7 @@ impl Data {
         let ids = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
             (0..n as u64).map(|i| {
                 let mut id = [0u8; 16];
-                id[..8].copy_from_slice(&i.to_le_bytes());
+                id[..8].copy_from_slice(&i.to_be_bytes());
                 Some(id)
             }),
             16,
