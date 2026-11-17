@@ -197,19 +197,28 @@ fn pick(
 }
 
 /// The longest part of `r` that splits no epoch and is within the bytes a
-/// merge takes, the newest of those as long.
+/// merge takes, the newest of those as long. Its ends are cuts, so it
+/// moves two pointers over them: linear in `r`'s length.
 fn fit(c: &[Candidate], r: Range<usize>, config: &MergeConfig) -> Option<Range<usize>> {
+    let cuts: Vec<usize> = (r.start..=r.end).filter(|&i| cut(c, i)).collect();
+    // Bytes before each position of `r`, from its start.
+    let mut before = Vec::with_capacity(r.len() + 1);
+    before.push(0u64);
+    for x in &c[r.clone()] {
+        let last = before.last().copied().unwrap_or(0);
+        before.push(last.saturating_add(x.raw));
+    }
+    let at = |i: usize| before[i - r.start];
     let mut best: Option<Range<usize>> = None;
-    for start in (r.start..r.end).filter(|&i| cut(c, i)) {
-        let mut bytes = 0u64;
-        for i in start..r.end {
-            bytes = bytes.saturating_add(c[i].raw);
-            if bytes > config.max_bytes {
-                break;
-            }
-            if cut(c, i + 1) && best.as_ref().is_none_or(|b| i + 1 - start > b.len()) {
-                best = Some(start..i + 1);
-            }
+    let mut end = 0;
+    for start in 0..cuts.len() {
+        end = end.max(start);
+        while end + 1 < cuts.len() && at(cuts[end + 1]) - at(cuts[start]) <= config.max_bytes {
+            end += 1;
+        }
+        let (a, b) = (cuts[start], cuts[end]);
+        if b > a && best.as_ref().is_none_or(|x| b - a > x.len()) {
+            best = Some(a..b);
         }
     }
     best
@@ -472,6 +481,68 @@ mod tests {
         );
         let split = vec![c(9, 1000, None), c(7, 1000, None), c(7, 2000, None)];
         assert_eq!(plan(&of(SectionKind::Values, split), &config), None);
+    }
+
+    /// What `fit` gives, by trying every start and scanning forward.
+    fn fit_by_scanning(
+        c: &[Candidate],
+        r: Range<usize>,
+        config: &MergeConfig,
+    ) -> Option<Range<usize>> {
+        let mut best: Option<Range<usize>> = None;
+        for start in (r.start..r.end).filter(|&i| cut(c, i)) {
+            let mut bytes = 0u64;
+            for i in start..r.end {
+                bytes = bytes.saturating_add(c[i].raw);
+                if bytes > config.max_bytes {
+                    break;
+                }
+                if cut(c, i + 1) && best.as_ref().is_none_or(|b| i + 1 - start > b.len()) {
+                    best = Some(start..i + 1);
+                }
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn fit_is_the_longest_newest_part_within_the_bytes() {
+        let mut x = 7u64;
+        let mut next = |n: u64| {
+            x = x
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (x >> 33) % n
+        };
+        let mut compared = 0;
+        for _ in 0..3000 {
+            let n = 1 + next(30) as usize;
+            let mut epoch = 1000;
+            let c: Vec<Candidate> = (0..n)
+                .map(|_| {
+                    epoch -= next(2);
+                    Candidate {
+                        epoch,
+                        stored: 1,
+                        raw: next(50),
+                        times: None,
+                    }
+                })
+                .collect();
+            let config = MergeConfig {
+                max_bytes: next(200),
+                ..MergeConfig::default()
+            };
+            let a = next(n as u64 + 1) as usize;
+            let b = a + next((n - a) as u64 + 1) as usize;
+            assert_eq!(
+                fit(&c, a..b, &config),
+                fit_by_scanning(&c, a..b, &config),
+                "{c:?} {a}..{b}"
+            );
+            compared += 1;
+        }
+        assert_eq!(compared, 3000);
     }
 
     #[test]

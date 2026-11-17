@@ -529,10 +529,14 @@ async fn measure(workload: Workload) {
         lanes = ls;
         total = total + c;
     }
+    // The barrier the record holds, which writes the merge the last
+    // epoch's started, counts too.
+    let before = stores.counts();
     let mut record = Vec::new();
     for l in &mut lanes {
         record.extend(l.barrier(args.epochs + 1).await.unwrap());
     }
+    total = total + (stores.counts() - before);
     println!(
         "totals: {} PUTs at barriers, {} by {} merges, {:.0} KiB written of {:.0} KiB changed (WA {:.2}); {} lookup GETs, {} opening, {} merging; {} hits, {} false positives",
         total.barrier.count,
