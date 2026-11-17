@@ -166,6 +166,8 @@ If the epoch's part ended at the split's completion, the read gives a `complete_
 
 In Go, the SDK gives both as `Until` and `CompleteAt` on `source.Split`, and on `source.ConfiguredStream` for a stream read whole. A read never has both.
 
+OpenETL reads the lane's part again on one read for each split, or for each stream read whole. It runs several of these reads at once. It reads the streams read with `cdc` one after another instead, on one worker, because only one reader can hold their log. OpenETL ends each read when it reaches its position, and does not wait for the source to close it. So the next read can start while the source still closes the read before it. A source that holds its log in a session, such as a replication slot's connection, waits a bounded time for the log to be free.
+
 ## Write a source in Go
 
 The SDK's `sdk.Source` declares a source from streams and the functions that read them. Here is a source with one stream, `greetings`, that makes up as many rows as its config asks for.
