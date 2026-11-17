@@ -147,60 +147,120 @@ pub fn build(changes: &[Change], config: &RunConfig) -> Result<Built> {
             .ok_or_else(|| Error::Invalid("a change whose key isn't of the layout".into()))?;
         by_kind[kind.index()].push(c);
     }
-    let mut out = BytesMut::with_capacity(HEADER + changes.len() * 32);
-    out.put_slice(MAGIC);
-    out.put_u32(FORMAT);
-    out.put_u32(0);
-    let mut writers = Vec::new();
+    let mut w = RunWriter::new(config, true, changes.len() * 32);
     for kind in SectionKind::ALL {
         let part = &by_kind[kind.index()];
         if part.is_empty() {
             continue;
         }
-        let mut w = SectionWriter::new(kind, config);
+        w.section(kind)?;
         for (k, v) in part.iter().map(|c| (&c.0, &c.1)) {
-            w.add(&mut out, k, v.as_deref())?;
+            w.add(k, v.as_deref())?;
         }
-        w.end_block(&mut out)?;
-        writers.push(w);
     }
-    let mut sections = Vec::with_capacity(writers.len());
-    for w in writers {
-        let at = out.len();
-        let section = w.finish(&mut out);
-        let meta = (at as u64, (out.len() - at) as u64);
-        sections.push(BuiltSection {
-            info: SectionInfo {
-                meta,
-                ..section.info
-            },
-            ..section
-        });
+    w.finish()
+}
+
+/// A run written a section at a time, each section's entries in key order
+/// and each key once. A section without an entry is left out.
+pub struct RunWriter<'c> {
+    config: &'c RunConfig,
+    /// Keeps each block's entries, uncompressed, for the cache.
+    keep_raw: bool,
+    out: BytesMut,
+    done: Vec<SectionWriter>,
+    open: Option<SectionWriter>,
+}
+
+impl<'c> RunWriter<'c> {
+    pub fn new(config: &'c RunConfig, keep_raw: bool, capacity: usize) -> Self {
+        let mut out = BytesMut::with_capacity(HEADER + capacity);
+        out.put_slice(MAGIC);
+        out.put_u32(FORMAT);
+        out.put_u32(0);
+        Self {
+            config,
+            keep_raw,
+            out,
+            done: Vec::new(),
+            open: None,
+        }
     }
-    let footer = out.len();
-    out.put_u32(FORMAT);
-    out.put_u8(sections.len() as u8);
-    for s in &sections {
-        out.put_u8(s.info.kind.code());
-        put_varint(&mut out, s.info.meta.0);
-        put_varint(&mut out, s.info.meta.1);
+
+    /// Starts the section of `kind`, after the last one's.
+    pub fn section(&mut self, kind: SectionKind) -> Result<()> {
+        self.close()?;
+        let mut w = SectionWriter::new(kind, self.config);
+        w.keep_raw = self.keep_raw;
+        self.open = Some(w);
+        Ok(())
     }
-    let len = u32::try_from(out.len() - footer)
-        .map_err(|_| Error::Invalid("a footer over 4 GiB".into()))?;
-    let sum = checksum(&out[footer..]);
-    out.put_u32(len);
-    out.put_u64(sum);
-    out.put_slice(MAGIC);
-    Ok(Built {
-        bytes: out.freeze(),
-        sections,
-    })
+
+    /// Adds an entry to the open section; `None` is a delete.
+    pub fn add(&mut self, k: &[u8], v: Option<&[u8]>) -> Result<()> {
+        match &mut self.open {
+            Some(w) => w.add(&mut self.out, k, v),
+            None => Err(Error::Invalid("an entry before its section".into())),
+        }
+    }
+
+    /// The bytes it holds so far, about.
+    pub fn bytes(&self) -> usize {
+        self.out.len() + self.open.as_ref().map_or(0, SectionWriter::held)
+    }
+
+    fn close(&mut self) -> Result<()> {
+        if let Some(mut w) = self.open.take() {
+            w.end_block(&mut self.out)?;
+            if w.entries > 0 {
+                self.done.push(w);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<Built> {
+        self.close()?;
+        let out = &mut self.out;
+        let mut sections = Vec::with_capacity(self.done.len());
+        for w in self.done {
+            let at = out.len();
+            let section = w.finish(out);
+            let meta = (at as u64, (out.len() - at) as u64);
+            sections.push(BuiltSection {
+                info: SectionInfo {
+                    meta,
+                    ..section.info
+                },
+                ..section
+            });
+        }
+        let footer = out.len();
+        out.put_u32(FORMAT);
+        out.put_u8(sections.len() as u8);
+        for s in &sections {
+            out.put_u8(s.info.kind.code());
+            put_varint(out, s.info.meta.0);
+            put_varint(out, s.info.meta.1);
+        }
+        let len = u32::try_from(out.len() - footer)
+            .map_err(|_| Error::Invalid("a footer over 4 GiB".into()))?;
+        let sum = checksum(&out[footer..]);
+        out.put_u32(len);
+        out.put_u64(sum);
+        out.put_slice(MAGIC);
+        Ok(Built {
+            bytes: self.out.freeze(),
+            sections,
+        })
+    }
 }
 
 struct SectionWriter {
     kind: SectionKind,
     block_bytes: usize,
     compress: bool,
+    keep_raw: bool,
     bits: u8,
     block: BytesMut,
     block_entries: u32,
@@ -223,6 +283,7 @@ impl SectionWriter {
             kind,
             block_bytes: config.block_bytes.max(1),
             compress: config.compress,
+            keep_raw: true,
             bits: config.bits(kind),
             block: BytesMut::with_capacity(config.block_bytes + 256),
             block_entries: 0,
@@ -322,9 +383,23 @@ impl SectionWriter {
             first: Bytes::copy_from_slice(&self.first),
             last: Bytes::copy_from_slice(&self.last),
         });
-        self.raw_blocks.push((offset as u64, raw));
+        if self.keep_raw {
+            self.raw_blocks.push((offset as u64, raw));
+        }
         self.block_entries = 0;
         Ok(())
+    }
+
+    /// What it holds besides the run's bytes, about: its open block, its
+    /// index and its filters' hashes.
+    fn held(&self) -> usize {
+        let index: usize = self
+            .blocks
+            .iter()
+            .map(|b| b.first.len() + b.last.len() + std::mem::size_of::<BlockMeta>())
+            .sum();
+        let raw: usize = self.raw_blocks.iter().map(|(_, b)| b.len()).sum();
+        self.block.len() + index + raw + self.entries as usize * 8
     }
 
     /// Writes its meta to `out`.

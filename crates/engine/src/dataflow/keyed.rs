@@ -927,7 +927,8 @@ impl Keyed {
     /// `e` of generation `generation`, whose snapshots are `snapshots`;
     /// `memory` is what its state held before the barrier wrote the epoch's
     /// changes. The barrier's request is the run of `e` the lane wrote, if
-    /// any, which its snapshots name.
+    /// any, which its snapshots name, and a merge's the output of one that
+    /// they name first.
     fn epoch(
         &mut self,
         id: &str,
@@ -939,16 +940,24 @@ impl Keyed {
         let dir = crate::state::dir(id);
         let mut runs = HashMap::new();
         let mut barrier = StateRequests::default();
+        let mut merge_write = StateRequests::default();
         for sn in snapshots {
             let named = openetl_state::runs::runs(sn)
                 .map_err(|e| crate::state::state_error(&format!("operator {id}'s state"), &e))?;
             for r in named {
                 let name = format!("{dir}/{}", r.name);
-                let written = RunName::parse(&r.name)
-                    .is_some_and(|n| n.generation == generation && n.epoch == e);
-                if written && !runs.contains_key(&name) {
-                    barrier.count += 1;
-                    barrier.bytes += r.size;
+                let written =
+                    RunName::parse(&r.name).filter(|n| n.generation == generation && n.epoch == e);
+                if let Some(n) = written
+                    && !runs.contains_key(&name)
+                {
+                    let req = if n.merged {
+                        &mut merge_write
+                    } else {
+                        &mut barrier
+                    };
+                    req.count += 1;
+                    req.bytes += r.size;
                 }
                 runs.insert(name, r.size);
             }
@@ -966,6 +975,7 @@ impl Keyed {
             memory_bytes: memory as u64,
             runs,
             barrier: Some(barrier),
+            merge_write: Some(merge_write),
             ..Default::default()
         })
     }

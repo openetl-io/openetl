@@ -632,10 +632,15 @@ message OperatorEpoch {
   // epoch next to it, and every one counts once.
   StateRequests lookup = 13;
   StateRequests restore = 14;
+  // The outputs of its lanes' merges that their barriers of the epoch
+  // wrote, and their bytes.
+  StateRequests merge_write = 15;
+  // Its merges' reads of the runs they merge, counted as lookups are.
+  StateRequests merge_read = 16;
   // With record_window_steps, a group window's: the steps of its
   // watermark that each of its keyed lanes' rows met in the epoch, for
   // lanes whose rows met one past the watermark at the epoch's start.
-  repeated LaneSteps steps = 15;
+  repeated LaneSteps steps = 17;
 }
 
 // StateRequests are requests of one kind to object storage, and their

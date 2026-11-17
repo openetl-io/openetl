@@ -33,6 +33,8 @@ type OperatorPart struct {
 	// The runs its lanes' snapshots name, with their bytes.
 	Runs                     map[string]uint64
 	Barrier, Lookup, Restore Requests
+	// Merges' outputs written at the barriers, and merges' reads.
+	MergeWrite, MergeRead Requests
 	// A group window's, where its steps are recorded: those of its
 	// watermark that each of its keyed lanes' rows met.
 	Steps []LaneSteps
@@ -67,6 +69,10 @@ type Operator struct {
 	Barrier Requests `json:"barrier"`
 	Lookup  Requests `json:"lookup"`
 	Restore Requests `json:"restore"`
+	// Its merges': outputs written at barriers, and reads of what they
+	// merge.
+	MergeWrite Requests `json:"merge_write"`
+	MergeRead  Requests `json:"merge_read"`
 }
 
 // Operators adds up an epoch's parts by operator, sorted. Each counts its
@@ -100,6 +106,7 @@ func Operators(parts []OperatorPart, kept map[string]int64) []Operator {
 		o.MemoryBytes += p.MemoryBytes
 		maps.Copy(runs[p.Operator], p.Runs)
 		o.Barrier, o.Lookup, o.Restore = o.Barrier.add(p.Barrier), o.Lookup.add(p.Lookup), o.Restore.add(p.Restore)
+		o.MergeWrite, o.MergeRead = o.MergeWrite.add(p.MergeWrite), o.MergeRead.add(p.MergeRead)
 	}
 	out := make([]Operator, 0, len(by))
 	for _, name := range slices.Sorted(maps.Keys(by)) {
