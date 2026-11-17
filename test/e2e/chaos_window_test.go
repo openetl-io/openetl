@@ -386,8 +386,10 @@ func (w *windowWork) drop(*testing.T) {
 // under the store's noise; the engine killed while the pipeline is
 // rescaled onto other numbers of lanes; and in a pod, the pod killed.
 // Each window's row lands once, with every record of it. With
-// -chaos.window-workers, the runs in pods are on workers too, and a worker
-// is killed.
+// -chaos.window-workers, the default, runs on workers in pods come beside
+// those on one pod: a worker killed mid-epoch, on two workers; the worker
+// that commits killed once HEAD points to the record, on three; and the
+// coordinator killed there, on two.
 func TestChaosWindows(t *testing.T) {
 	s := newChaosSuite(t, 1, 1)
 	type variant struct {
@@ -405,7 +407,8 @@ func TestChaosWindows(t *testing.T) {
 		{fault: faultKill, pods: true},
 	}
 	if *chaosWindowWorkers {
-		variants = append(variants, variant{fault: faultWorker, pods: true, workers: 2}, variant{fault: "crash " + crashWorkerHead, pods: true, workers: 3})
+		variants = append(variants, variant{fault: faultWorker, pods: true, workers: 2}, variant{fault: "crash " + crashWorkerHead, pods: true, workers: 3},
+			variant{fault: "crash " + crashHead, pods: true, workers: 2})
 	}
 	sem := make(chan struct{}, *chaosParallel)
 	for i, v := range variants {

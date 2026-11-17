@@ -350,9 +350,21 @@ func failing(s *txnStore, by, n uint64, lanes []int, first func()) func(uint64, 
 }
 
 // lose runs attempt a1, of generation 1, on n1 workers until an epoch's
-// commit fails as hook has it, and returns the record it leaves HEAD at. A
-// hook that fails with errCoordinatorLost loses the coordinator too.
+// commit fails as hook has it, and returns the record it leaves HEAD at,
+// which has no split complete. A hook that fails with errCoordinatorLost
+// loses the coordinator too.
 func (p *pool) lose(t *testing.T, s *txnStore, n1 int, hook func(uint64, laneMark) error) *checkpoint.Record {
+	t.Helper()
+	head := p.loseEpoch(t, s, n1, hook)
+	// A redo stops where the epoch did, short of the read's end.
+	if slices.ContainsFunc(head.Splits("s"), func(sp checkpoint.SplitState) bool { return sp.Complete }) {
+		t.Fatalf("epoch %d completed a split: %+v", head.Epoch, head.Splits("s"))
+	}
+	return head
+}
+
+// loseEpoch is lose, whatever the epoch's splits did.
+func (p *pool) loseEpoch(t *testing.T, s *txnStore, n1 int, hook func(uint64, laneMark) error) *checkpoint.Record {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
@@ -386,10 +398,6 @@ func (p *pool) lose(t *testing.T, s *txnStore, n1 int, hook func(uint64, laneMar
 	head := p.head()
 	if head.Generation != 1 || len(head.Coverage) != len(head.Committables) {
 		t.Fatalf("HEAD is epoch %d of generation %d, with %d coverages of %d committables", head.Epoch, head.Generation, len(head.Coverage), len(head.Committables))
-	}
-	// A redo stops where the epoch did, short of the read's end.
-	if slices.ContainsFunc(head.Splits("s"), func(sp checkpoint.SplitState) bool { return sp.Complete }) {
-		t.Fatalf("epoch %d completed a split: %+v", head.Epoch, head.Splits("s"))
 	}
 	return head
 }

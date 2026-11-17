@@ -1066,4 +1066,4 @@ async fn receive(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests;
+pub(crate) mod tests;
