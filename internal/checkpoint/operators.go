@@ -35,6 +35,9 @@ type OperatorPart struct {
 	Barrier, Lookup, Restore Requests
 	// Merges' outputs written at the barriers, and merges' reads.
 	MergeWrite, MergeRead Requests
+	// A group window's, where its steps are recorded: those of its
+	// watermark that each of its keyed lanes' rows met.
+	Steps []LaneSteps
 }
 
 // Operator is what a stateful operator did in a record's epoch, on every

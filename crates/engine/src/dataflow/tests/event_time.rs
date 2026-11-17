@@ -2089,3 +2089,476 @@ async fn a_restored_session_deletes_the_row_the_output_has() {
     let (outs, _) = h.finish().await;
     assert_eq!(given(&outs), [("delete".to_owned(), 30, Some(5))]);
 }
+
+/// A redo of an epoch of a live run, as the runner gives it: the state the
+/// record before names, the window's watermark there and at the epoch's
+/// barrier, and the steps of that watermark the epoch's rows met.
+struct RedoOf {
+    epoch: u64,
+    restored: Vec<StateSnapshot>,
+    floor: i64,
+    closes_at: i64,
+    steps: Vec<openetl_proto::engine::v1::WindowSteps>,
+    /// The job's memory, in bytes; 0 for no limit.
+    memory: u64,
+}
+
+/// Each lane's frames of a live run of a case, which reads it to the end.
+fn live_frames(case: &Case) -> Vec<Vec<(FrameKind, u32, Vec<u8>)>> {
+    let mut out = Vec::new();
+    for evs in &case.lanes {
+        let mut fs = Vec::new();
+        let mut joined = BTreeSet::new();
+        for e in evs {
+            if let Ev::Rows(s, _) | Ev::Raise(s, _) | Ev::End(s) | Ev::Resume(s, _) = e
+                && joined.insert(*s)
+            {
+                fs.push((FrameKind::Split, 0, split(&s.to_string(), None)));
+            }
+        }
+        let mut n = 0;
+        for e in evs {
+            match e {
+                Ev::Resume(..) => {}
+                Ev::Rows(_, rs) if rs.is_empty() => {}
+                Ev::Rows(s, rs) => {
+                    fs.push((FrameKind::Split, 0, split(&s.to_string(), None)));
+                    let js: Vec<String> = rs.iter().map(Row::json).collect();
+                    let refs: Vec<&str> = js.iter().map(String::as_str).collect();
+                    fs.push((FrameKind::Rows, 0, rows(&refs)));
+                }
+                Ev::Raise(s, x) => fs.push((FrameKind::Split, 0, split(&s.to_string(), Some(*x)))),
+                Ev::End(s) => fs.push((FrameKind::Split, 0, split(&s.to_string(), Some(END)))),
+                Ev::Barrier => {
+                    n += 1;
+                    fs.push((FrameKind::Barrier, 0, barrier_of(1, n)));
+                    fs.push((FrameKind::Barrier, 1, barrier_of(1, n)));
+                }
+            }
+        }
+        out.push(fs);
+    }
+    out
+}
+
+/// Each lane's frames of a redo of epoch `n` of a case on `lanes` lanes,
+/// from `seed`: each split's rows of the epoch read again, in batches of
+/// their own, on a lane of the redo's, its splits' batches in an order of
+/// their own; then the epoch's barrier. A read again names its split, and
+/// moves no watermark but by its rows.
+fn redo_frames(
+    case: &Case,
+    n: u64,
+    lanes: usize,
+    seed: u64,
+) -> Vec<Vec<(FrameKind, u32, Vec<u8>)>> {
+    let mut rng = Rng(seed);
+    let mut read: BTreeMap<usize, Vec<Row>> = BTreeMap::new();
+    for evs in &case.lanes {
+        let mut k = 1;
+        for e in evs {
+            match e {
+                Ev::Barrier => k += 1,
+                Ev::Rows(s, rs) if k == n => read.entry(*s).or_default().extend(rs.iter().cloned()),
+                _ => {}
+            }
+        }
+    }
+    let mut queues: Vec<Vec<(usize, Vec<Vec<Row>>)>> = (0..lanes).map(|_| Vec::new()).collect();
+    for (s, rows) in read {
+        let mut batches = Vec::new();
+        let mut at = 0;
+        while at < rows.len() {
+            let to = (at + 1 + rng.below(4)).min(rows.len());
+            batches.push(rows[at..to].to_vec());
+            at = to;
+        }
+        batches.reverse();
+        queues[s % lanes].push((s, batches));
+    }
+    let mut out = Vec::new();
+    for mut q in queues {
+        let mut fs = Vec::new();
+        while !q.is_empty() {
+            let i = rng.below(q.len());
+            let (s, batches) = &mut q[i];
+            let b = batches.pop().unwrap();
+            fs.push((FrameKind::Split, 0, split(&s.to_string(), None)));
+            let js: Vec<String> = b.iter().map(Row::json).collect();
+            let refs: Vec<&str> = js.iter().map(String::as_str).collect();
+            fs.push((FrameKind::Rows, 0, rows(&refs)));
+            if batches.is_empty() {
+                q.swap_remove(i);
+            }
+        }
+        fs.push((FrameKind::Barrier, 0, barrier_of(2, n)));
+        fs.push((FrameKind::Barrier, 1, barrier_of(2, n)));
+        out.push(fs);
+    }
+    out
+}
+
+/// Runs each lane's `frames` through a job of `case`'s window, its state
+/// and quarantine below `dir`: live, recording the steps of its window's
+/// watermark, or as `redo`, of generation 2. The lanes' frames go in an
+/// order from `seed`, and every output is read as it comes. Returns each
+/// writer lane's frames, and the EpochReadys, or how the job failed.
+async fn run_frames(
+    dir: &std::path::Path,
+    case: &Case,
+    frames: Vec<Vec<(FrameKind, u32, Vec<u8>)>>,
+    seed: u64,
+    redo: Option<&RedoOf>,
+) -> Result<(Vec<Vec<frame::Frame>>, Vec<EpochReady>), JobError> {
+    let lanes = frames.len();
+    let (generation, first) = redo.map_or((1, 1), |r| (2, r.epoch));
+    let sql = case.window.sql(case.having);
+    let mut req = window_request(&dir.join("state"), &sql, lanes as u32, generation, first);
+    req.quarantine_url = format!("file://{}", dir.display());
+    let et = event_time(&mut req);
+    et.delay_micros = case.delay;
+    et.lateness_micros = case.lateness;
+    et.held = case.held;
+    match redo {
+        None => req.record_window_steps = true,
+        Some(r) => {
+            et.floor = (r.floor != NONE).then_some(r.floor);
+            et.closes_at = Some(r.closes_at);
+            req.state_read_only = true;
+            req.restored_snapshots = r.restored.clone();
+            req.window_steps = r.steps.clone();
+            req.limits = (r.memory > 0).then_some(openetl_proto::engine::v1::Limits {
+                memory_bytes: r.memory,
+            });
+        }
+    }
+    let mut h = start_lanes(req);
+    let mut drains = JoinSet::new();
+    for (i, mut r) in std::mem::take(&mut h.outs).into_iter().enumerate() {
+        drains.spawn(async move { (i, drain(&mut r).await) });
+    }
+    let mut events = std::mem::replace(&mut h.events, mpsc::channel(1).1);
+    let readies = tokio::spawn(async move {
+        let mut out = Vec::new();
+        while let Some(ev) = events.recv().await {
+            if let Ok(EventsResponse {
+                event: Some(events_response::Event::EpochReady(r)),
+            }) = ev
+            {
+                out.push(r);
+            }
+        }
+        out
+    });
+    // A job that failed reads no more.
+    let mut rng = Rng(seed);
+    let mut at = vec![0; lanes];
+    while (0..lanes).any(|l| at[l] < frames[l].len()) {
+        let l = rng.below(lanes);
+        for _ in 0..1 + rng.below(4) {
+            let Some((kind, stream, payload)) = frames[l].get(at[l]) else {
+                break;
+            };
+            if frame::write(&mut h.ins[l], *kind, *stream, payload)
+                .await
+                .is_err()
+            {
+                at[l] = frames[l].len();
+                break;
+            }
+            at[l] += 1;
+        }
+    }
+    for w in &mut h.ins {
+        for s in 0..2 {
+            let _ = frame::write(w, FrameKind::EndOfStream, s, &[]).await;
+        }
+        let _ = w.shutdown().await;
+    }
+    let ended = h.job.await.unwrap();
+    let ready = readies.await.unwrap();
+    let mut outs: Vec<Vec<frame::Frame>> = (0..lanes).map(|_| Vec::new()).collect();
+    while let Some(d) = drains.join_next().await {
+        let (i, fs) = d.unwrap();
+        outs[i] = fs;
+    }
+    ended.map(|()| (outs, ready))
+}
+
+/// A window's row as a writer lane gave it: its start and key, its count,
+/// sum and top, its op and seq.
+type Given = (
+    i64,
+    String,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    String,
+    i64,
+);
+
+/// The window's rows the writer lanes gave in epoch `n` of a job whose first
+/// is `first`, in order.
+fn given_in(outs: &[Vec<frame::Frame>], first: u64, n: u64) -> Vec<Given> {
+    let mut out = Vec::new();
+    for frames in outs {
+        let mut epoch = first;
+        for f in frames {
+            if f.kind == FrameKind::Barrier && f.stream == 0 {
+                epoch += 1;
+            }
+            if epoch != n || f.kind != FrameKind::Batch || f.stream != 0 {
+                continue;
+            }
+            let b = ipc::decode_batch(f.payload.clone()).unwrap();
+            let starts: Vec<i64> = b
+                .column_by_name("window_start")
+                .unwrap()
+                .as_primitive::<arrow_array::types::TimestampMicrosecondType>()
+                .iter()
+                .map(Option::unwrap)
+                .collect();
+            let keys = column_strings(&b, "email");
+            let (ns, totals, tops) = (
+                column_ints(&b, "n"),
+                column_ints(&b, "total"),
+                column_ints(&b, "top"),
+            );
+            let (ops, seqs) = (
+                column_strings(&b, "_openetl_op"),
+                column_ints(&b, "_openetl_seq"),
+            );
+            for i in 0..b.num_rows() {
+                out.push((
+                    starts[i],
+                    keys[i].clone().unwrap(),
+                    ns[i],
+                    totals[i],
+                    tops[i],
+                    ops[i].clone().unwrap(),
+                    seqs[i].unwrap(),
+                ));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The ids of the rows of a that an epoch's window quarantined.
+fn quarantined_ids(r: &EpochReady) -> BTreeSet<i64> {
+    let mut out = BTreeSet::new();
+    for q in r.quarantine.iter().filter(|q| q.stream == "minutes") {
+        let text = std::fs::read_to_string(q.url.strip_prefix("file://").unwrap()).unwrap();
+        for line in text.lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            let record: serde_json::Value =
+                serde_json::from_str(v["record"].as_str().unwrap()).unwrap();
+            assert!(out.insert(record["id"].as_i64().unwrap()));
+        }
+    }
+    out
+}
+
+/// What the redos compared.
+#[derive(Debug, Default)]
+struct RedoTally {
+    epochs: usize,
+    with_steps: usize,
+    steps: usize,
+    other_lanes: usize,
+    rows: usize,
+    late: usize,
+    /// Epochs whose redo without the steps gives other rows, or
+    /// quarantines others.
+    unstepped_differ: usize,
+}
+
+/// Generated cases of each window without lateness, as a destination whose
+/// writer lanes commit on their own has them, run live on one lane or
+/// several, which record the steps of the window's watermark. Each epoch is
+/// then redone as a lost one is: from the state and window watermark of the
+/// record before, on another number of lanes, each split's rows of the
+/// epoch read again in other batches and another order, replaying the
+/// epoch's steps and closing the windows where it did. Every redo gives the
+/// window rows the live epoch gave, and quarantines the rows it did; a redo
+/// without the steps, as before them, often doesn't.
+#[tokio::test]
+async fn a_redo_of_each_epoch_is_the_live_epoch() {
+    let mut tally = RedoTally::default();
+    for window in [Window::Tumble, Window::Hop, Window::Session] {
+        for seed in 0..40 {
+            let name = format!("{window:?}-{seed}");
+            let mut case = Case::generate(seed * 104_729 + 11, window, None);
+            case.lateness = 0;
+            let dir = tempfile::tempdir().unwrap();
+            let (outs, ready) = run_frames(dir.path(), &case, live_frames(&case), seed, None)
+                .await
+                .unwrap();
+            let mut rng = Rng(seed);
+            for (i, r) in ready.iter().enumerate() {
+                let n = i as u64 + 1;
+                let live = given_in(&outs, 1, n);
+                let live_late = quarantined_ids(r);
+                let steps: Vec<_> = r
+                    .operators
+                    .iter()
+                    .filter(|o| !o.steps.is_empty())
+                    .map(|o| openetl_proto::engine::v1::WindowSteps {
+                        operator: o.operator.clone(),
+                        lanes: o.steps.clone(),
+                    })
+                    .collect();
+                let mut redo = RedoOf {
+                    epoch: n,
+                    restored: i
+                        .checked_sub(1)
+                        .map_or_else(Vec::new, |p| ready[p].snapshots.clone()),
+                    floor: i
+                        .checked_sub(1)
+                        .map_or(NONE, |p| ready[p].window_watermarks["a"]),
+                    closes_at: r.window_watermarks["a"],
+                    steps,
+                    memory: 0,
+                };
+                let lanes = 1 + rng.below(2);
+                let frames = redo_frames(&case, n, lanes, rng.next());
+                let order = rng.next();
+                let (redo_outs, redo_ready) =
+                    run_frames(dir.path(), &case, frames.clone(), order, Some(&redo))
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    given_in(&redo_outs, n, n),
+                    live,
+                    "{name}: epoch {n}'s window rows"
+                );
+                assert_eq!(
+                    quarantined_ids(&redo_ready[0]),
+                    live_late,
+                    "{name}: epoch {n}'s late rows"
+                );
+                assert!(
+                    redo_ready[0].operators.is_empty(),
+                    "{name}: a redo reports no numbers"
+                );
+                tally.epochs += 1;
+                tally.with_steps += usize::from(!redo.steps.is_empty());
+                tally.steps += redo
+                    .steps
+                    .iter()
+                    .flat_map(|w| &w.lanes)
+                    .flat_map(|l| &l.splits)
+                    .map(|s| s.places.len())
+                    .sum::<usize>();
+                tally.other_lanes += usize::from(lanes != case.lanes.len());
+                tally.rows += live.len();
+                tally.late += live_late.len();
+                // The same redo without the steps.
+                redo.steps.clear();
+                let (bare_outs, bare_ready) =
+                    run_frames(dir.path(), &case, frames, order, Some(&redo))
+                        .await
+                        .unwrap();
+                let differ = given_in(&bare_outs, n, n) != live
+                    || quarantined_ids(&bare_ready[0]) != live_late;
+                tally.unstepped_differ += usize::from(differ);
+            }
+        }
+    }
+    assert!(tally.epochs >= 300, "{tally:?}");
+    assert!(tally.with_steps >= 120, "{tally:?}");
+    assert!(tally.steps >= 400, "{tally:?}");
+    assert!(tally.other_lanes >= 150, "{tally:?}");
+    assert!(tally.rows >= 1_500, "{tally:?}");
+    assert!(tally.late >= 250, "{tally:?}");
+    assert!(tally.unstepped_differ >= 40, "{tally:?}");
+}
+
+/// A redo holds the rows that wait for its barrier within half the job's
+/// memory, which every keyed lane's count against. Within it, the redo
+/// gives what the live epoch gave; past it, the redo fails as
+/// RESOURCE_EXHAUSTED and says to give the job more memory.
+#[tokio::test]
+async fn a_redo_holds_the_rows_for_its_barrier_within_half_the_jobs_memory() {
+    // Rows of x at 5 s, then 12 s, which closes [0, 10), then 7 s, late;
+    // 14 s, 22 s, which closes [10, 20), then 15 s, late; and 25 s.
+    let mut evs: Vec<Ev> = [5, 12, 7, 14, 22, 15, 25]
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| {
+            Ev::Rows(
+                0,
+                vec![Row {
+                    id: i as i64 + 1,
+                    key: "x",
+                    v: 1,
+                    at: Some(t * SEC),
+                }],
+            )
+        })
+        .collect();
+    evs.push(Ev::Barrier);
+    let case = Case {
+        window: Window::Tumble,
+        having: false,
+        lateness: 0,
+        delay: 0,
+        held: false,
+        lanes: vec![evs],
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (outs, ready) = run_frames(dir.path(), &case, live_frames(&case), 1, None)
+        .await
+        .unwrap();
+    let live = given_in(&outs, 1, 1);
+    let late = quarantined_ids(&ready[0]);
+    assert_eq!((live.len(), late), (2, BTreeSet::from([3, 6])));
+    let redo = |memory| RedoOf {
+        epoch: 1,
+        restored: Vec::new(),
+        floor: NONE,
+        closes_at: ready[0].window_watermarks["a"],
+        steps: ready[0]
+            .operators
+            .iter()
+            .map(|o| openetl_proto::engine::v1::WindowSteps {
+                operator: o.operator.clone(),
+                lanes: o.steps.clone(),
+            })
+            .collect(),
+        memory,
+    };
+    let within = redo(1 << 30);
+    let (redo_outs, redo_ready) = run_frames(
+        dir.path(),
+        &case,
+        redo_frames(&case, 1, 1, 7),
+        2,
+        Some(&within),
+    )
+    .await
+    .unwrap();
+    assert_eq!(given_in(&redo_outs, 1, 1), live);
+    assert_eq!(quarantined_ids(&redo_ready[0]), BTreeSet::from([3, 6]));
+    // Half of 1 KiB doesn't hold the rows that met 10 s and 20 s.
+    let past = redo(1 << 10);
+    let Err(e) = run_frames(
+        dir.path(),
+        &case,
+        redo_frames(&case, 1, 1, 7),
+        2,
+        Some(&past),
+    )
+    .await
+    else {
+        panic!("a redo held its rows past half the job's memory");
+    };
+    assert_eq!(e.code, ErrorCode::ResourceExhausted, "{e}");
+    assert!(
+        e.message.contains("until the epoch's barrier")
+            && e.message.contains("512 bytes")
+            && e.message.contains("larger resources.size"),
+        "{e}"
+    );
+}

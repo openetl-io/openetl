@@ -1508,6 +1508,7 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 	}
 	plan.Lanes, plan.WriterLanes, plan.KeyGroups = j.lanes(), j.writerLanes(), j.keyGroups()
 	plan.Exchanges = j.exchanges(plan.WriterLanes)
+	plan.RecordSteps = j.recordsSteps()
 	if restored != nil {
 		plan.Snapshots = restored.Snapshots
 	}
@@ -1985,6 +1986,9 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		}
 		rec.Streams[name] = s
 		rec.SetSplits(name, st.splits[name])
+		if s.Floor != nil {
+			c.recordSteps(rec, name, *s.Floor, st.flow.Operators)
+		}
 	}
 	for name, cs := range c.carried {
 		rec.Streams[name] = cs.state

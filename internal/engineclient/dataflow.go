@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -399,6 +401,10 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 	req.StateUrl, req.StateReadOnly = plan.StateURL, plan.StateReadOnly
 	for _, s := range plan.Snapshots {
 		req.RestoredSnapshots = append(req.RestoredSnapshots, attempt.SnapshotProto(s))
+	}
+	req.RecordWindowSteps = plan.RecordSteps
+	for _, op := range slices.Sorted(maps.Keys(plan.Steps)) {
+		req.WindowSteps = append(req.WindowSteps, &enginev1.WindowSteps{Operator: op, Lanes: attempt.StepsProto(plan.Steps[op])})
 	}
 	for l := range max(plan.Lanes, 1) {
 		req.Edges = append(req.Edges, &enginev1.Edge{Id: inEdge(l), Direction: enginev1.EdgeDirection_EDGE_DIRECTION_TO_ENGINE, Streams: names, Lane: uint32(l)})

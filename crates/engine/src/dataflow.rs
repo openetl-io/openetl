@@ -1393,7 +1393,7 @@ where
                         if let Some(wm) = t.marks.as_mut().and_then(Splits::settle) {
                             advance(&lane, t, wm, &mut outs).await?;
                         }
-                        transform(&lane, t, typed, &record, c).await?;
+                        transform(&lane, t, typed, rows.rows.len() as u64, &record, c).await?;
                         timed(&lane, t, latest, &mut outs).await?;
                     }
                 }
@@ -1435,7 +1435,7 @@ where
                         if let Some(wm) = t.marks.as_mut().and_then(Splits::settle) {
                             advance(&lane, t, wm, &mut outs).await?;
                         }
-                        transform(&lane, t, typed, &record, c).await?;
+                        transform(&lane, t, typed, batch.num_rows() as u64, &record, c).await?;
                         timed(&lane, t, latest, &mut outs).await?;
                     }
                 }
@@ -1652,11 +1652,13 @@ async fn quarantine_file(
 
 /// Runs a batch of a stream a transform reads through each of the outputs
 /// it feeds. What the stream, a statement or an output's second half can't
-/// take is quarantined, the stream's apart from each output's.
+/// take is quarantined, the stream's apart from each output's. `read` is the
+/// rows of the frame the batch was typed from.
 async fn transform(
     lane: &Lane,
     t: &mut Transformed,
     typed: Typed,
+    read: u64,
     record: &(dyn Fn(usize) -> String + Sync),
     c: &Counters,
 ) -> Result<(), JobError> {
@@ -1691,7 +1693,12 @@ async fn transform(
         let applied = stage.apply(&typed, &pushed, cursor)?;
         output(lane, stage, ls, applied, record).await?;
     }
-    keyed::rows(lane, &t.windows, &typed).await
+    let at = t.marks.as_ref().and_then(Splits::at);
+    keyed::rows(lane, &t.windows, &typed, at).await?;
+    if let Some(m) = t.marks.as_mut() {
+        m.count(read);
+    }
+    Ok(())
 }
 
 /// Takes what a stage gave its output: what it couldn't evaluate is
@@ -2325,6 +2332,7 @@ impl Pieces {
         to.watermark = to.watermark.zip(op.watermark).map(|(a, b)| a.min(b));
         to.memory_bytes += op.memory_bytes;
         to.runs.extend(op.runs);
+        to.steps.extend(op.steps);
         if let (Some(a), Some(b)) = (to.barrier.as_mut(), op.barrier) {
             a.count += b.count;
             a.bytes += b.bytes;

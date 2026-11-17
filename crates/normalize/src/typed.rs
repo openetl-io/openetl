@@ -35,6 +35,13 @@ pub struct Typed {
     pub rows: Option<Vec<usize>>,
 }
 
+impl Typed {
+    /// Each batch row's index in the input.
+    pub fn input_rows(&self) -> Vec<usize> {
+        input_rows(self.rows.clone(), &self.rejected, self.batch.num_rows())
+    }
+}
+
 /// The index in the input of each of a batch's `n` rows, from [`Typed::rows`]
 /// and [`Typed::rejected`].
 pub(crate) fn input_rows(rows: Option<Vec<usize>>, rejected: &[Rejected], n: usize) -> Vec<usize> {

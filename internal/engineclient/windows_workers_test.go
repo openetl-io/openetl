@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,10 +42,12 @@ var regions = func() []string {
 // apart, of region regions[(k+r)%24], so no row is behind its split's
 // watermark. With upTo, a split has only that many chunks so far, and keeps
 // its read open after them until it's cancelled; it waits pause between
-// chunks.
+// chunks. With behind, the first row of every third chunk is 15 seconds
+// behind its split's watermark, and late where its window has closed.
 type timedChunks struct {
 	splits, chunks, rows, upTo int
 	pause                      time.Duration
+	behind                     bool
 }
 
 func (s *timedChunks) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
@@ -75,6 +78,9 @@ func (s *timedChunks) Read(ctx context.Context, req source.ReadRequest, out sour
 			rows := make([]json.RawMessage, s.rows)
 			for r := range rows {
 				us := minutes + int64(c)*1_000_000 + int64(r)*1000
+				if s.behind && r == 0 && c%3 == 2 {
+					us -= 15_000_000
+				}
 				rows[r] = fmt.Appendf(nil, `{"id": %d, "region": %q, "at": %q}`, (k*s.chunks+c)*s.rows+r, regions[(k+r)%len(regions)], at(us))
 			}
 			if err := e.Rows(rows); err != nil {
@@ -475,18 +481,63 @@ func windowRows(b arrow.RecordBatch) []string {
 // windows where the epoch did: what it writes is what was lost, and each
 // window lands once, with every row of it.
 func TestAGroupWindowRedoThroughTheEngine(t *testing.T) {
+	dest, _ := windowRedo(t, false, func(*checkpoint.Record) bool { return true })
+	landedOnce(t, dest.rows, (&timedChunks{splits: 3, chunks: 120, rows: 24}).windows())
+}
+
+// As TestAGroupWindowRedoThroughTheEngine, with rows behind their splits'
+// watermark, which a window that closed in the epoch takes as late: the
+// record keeps the steps of the window's watermark in the epoch, and the
+// redo replays them, so what it writes is still what was lost, and no
+// window lands twice. The epoch lost is one whose record has steps, and
+// late rows.
+func TestAGroupWindowRedoOfLateRowsThroughTheEngine(t *testing.T) {
+	late := func(rec *checkpoint.Record) uint64 {
+		var n uint64
+		for _, q := range rec.Quarantine {
+			for _, c := range q.Causes {
+				if q.Output && c.Code == "late" {
+					n += c.Rows
+				}
+			}
+		}
+		return n
+	}
+	dest, head := windowRedo(t, true, func(rec *checkpoint.Record) bool {
+		return len(rec.Streams["s"].Steps) > 0 && late(rec) > 0
+	})
+	for op, b := range head.Streams["s"].Steps {
+		t.Logf("the lost epoch's record keeps %d bytes of steps of %s, and %d late rows", len(b), op, late(head))
+	}
+	seen := map[string]bool{}
+	for _, r := range dest.rows {
+		w := r[:strings.LastIndex(r, "/")]
+		if seen[w] {
+			t.Fatalf("window %s landed twice", w)
+		}
+		seen[w] = true
+	}
+}
+
+// windowRedo runs TestAGroupWindowRedoThroughTheEngine's attempts, with
+// rows behind their splits' watermark where behind says, losing writer
+// lane 0's part of an epoch whose record lose takes, and gives the
+// destination and the record of the epoch that was lost in part.
+func windowRedo(t *testing.T, behind bool, lose func(*checkpoint.Record) bool) (*txnRows, *checkpoint.Record) {
 	opts := options(t, nil)
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
 	dest := newTxnRows(t, windowRows)
 	base := tensJob(ctx, t, destination.Append, "file://"+t.TempDir())
-	all := &timedChunks{splits: 3, chunks: 120, rows: 24, pause: 4 * time.Millisecond}
+	all := &timedChunks{splits: 3, chunks: 120, rows: 24, pause: 4 * time.Millisecond, behind: behind}
+	quarantine := "file://" + t.TempDir()
 	job := func(owner string) func() runner.Job {
 		return func() runner.Job {
 			j := base
 			j.Owner, j.Log, j.Destination, j.Dataflow, j.Logger = owner, log, dest, &Dataflow{Options: opts}, opts.Logger.With("job", owner)
-			j.Source = &timedChunks{splits: all.splits, chunks: all.chunks, rows: all.rows, pause: all.pause}
+			j.Source = &timedChunks{splits: all.splits, chunks: all.chunks, rows: all.rows, pause: all.pause, behind: all.behind}
+			j.QuarantineURL = quarantine
 			j.Settings = delivery.Settings{Require: delivery.AtLeastOnce, CommitMaxBytes: 8 << 10, Scope: destination.ScopePipeline}
 			return j
 		}
@@ -494,7 +545,7 @@ func TestAGroupWindowRedoThroughTheEngine(t *testing.T) {
 	srv := listen(t)
 
 	// Writer lane 0's commit fails, and its worker is lost, in its second
-	// epoch with windows or later.
+	// epoch with windows or later whose record lose takes.
 	p := &inProcess{ctx: ctx, mk: job("a1")}
 	j := p.mk()
 	p.on(&j, srv, 3)
@@ -509,7 +560,9 @@ func TestAGroupWindowRedoThroughTheEngine(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		if held++; failing == nil && held >= 2 {
-			failing = &m
+			if rec, err := log.Latest(ctx); err == nil && rec != nil && rec.Epoch == m.N && lose(rec) {
+				failing = &m
+			}
 		}
 		if failing == nil || *failing != m {
 			return nil
@@ -526,7 +579,10 @@ func TestAGroupWindowRedoThroughTheEngine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failing == nil || head.Epoch != failing.N || len(head.Coverage) != len(head.Committables) {
+	if failing == nil || head == nil {
+		t.Fatalf("HEAD is %v, failing %v", head, failing)
+	}
+	if head.Epoch != failing.N || len(head.Coverage) != len(head.Committables) {
 		t.Fatalf("HEAD is epoch %d, failing %v, with %d coverages of %d committables", head.Epoch, failing, len(head.Coverage), len(head.Committables))
 	}
 	// Writer lane 0 holds the windows of its key groups, of every worker's
@@ -560,5 +616,5 @@ func TestAGroupWindowRedoThroughTheEngine(t *testing.T) {
 	if dest.redone == 0 {
 		t.Error("no lane was written again")
 	}
-	landedOnce(t, dest.rows, all.windows())
+	return dest, head
 }

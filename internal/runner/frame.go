@@ -204,6 +204,16 @@ type Plan struct {
 	// the barrier of the epoch it redoes, as the record has it; they stay at
 	// the floor before. Missing: they go by the watermarks of what's read.
 	Closes map[string]int64
+	// Each group window's keyed lanes record the steps of its watermark
+	// that their rows meet in each epoch, which Ready's Operators carry:
+	// a worker's, whose writer lanes commit on their own, where a redo of
+	// its epoch may replay them.
+	RecordSteps bool
+	// A redo's, by group window's operator: the steps of its watermark in
+	// the epoch it redoes, of the keyed lanes whose key groups the
+	// committable holds. Each row meets what it met there. Missing: the
+	// rows meet the floor.
+	Steps map[string][]checkpoint.LaneSteps
 	// A worker's, where the workers' engines exchange rows between them:
 	// then its lanes and writer lanes are its part of the attempt's layout
 	// (plan.NewWorkerLayout), and Exchanges send rows to the attempt's

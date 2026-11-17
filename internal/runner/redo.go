@@ -376,6 +376,9 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	plan.KeyGroupRanges, plan.FirstLane, plan.Exchanges = part.ranges, i, nil
 	plan.StateReadOnly = true
 	plan.Floors, plan.Closes = j.redoMarks(rec, before)
+	if plan.Steps, err = j.redoSteps(rec, i); err != nil {
+		return err
+	}
 	if plan.Sink != (SinkPlan{}) {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
 	}
