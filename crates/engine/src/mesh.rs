@@ -19,6 +19,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
+use arrow_buffer::Buffer;
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_proto::engine::v1::{Barrier, FrameKind, MeshHello, Route, StartJobRequest, Watermark};
 use prost::Message;
@@ -26,7 +28,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, ServerConfig, SignatureScheme};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError, mpsc};
@@ -253,6 +255,51 @@ pub fn wire(out: Out) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
     })
 }
 
+/// A frame's payload on a link: bytes, or a batch's stream in parts, which
+/// the link writes from the batch's own buffers.
+pub enum Payload {
+    Bytes(Vec<u8>),
+    Parts(Vec<Buffer>),
+}
+
+impl Payload {
+    pub fn len(&self) -> usize {
+        match self {
+            Payload::Bytes(b) => b.len(),
+            Payload::Parts(p) => p.iter().map(Buffer::len).sum(),
+        }
+    }
+
+    fn slices(&self) -> Vec<&[u8]> {
+        match self {
+            Payload::Bytes(b) => vec![b],
+            Payload::Parts(p) => p.iter().map(Buffer::as_slice).collect(),
+        }
+    }
+}
+
+impl From<Vec<u8>> for Payload {
+    fn from(b: Vec<u8>) -> Self {
+        Payload::Bytes(b)
+    }
+}
+
+/// The frame `wire` makes of a batch, its payload in parts. The parts hold
+/// the batch's buffers, which a link's room counts by the bytes it sends,
+/// so `batch` holds no more than it sends, as a take's output does.
+pub fn wire_batch(
+    stream: usize,
+    batch: &RecordBatch,
+) -> Result<(FrameKind, u32, Payload), JobError> {
+    Ok((
+        FrameKind::Batch,
+        u32::try_from(stream).map_err(|_| JobError::internal("a stream past u32"))?,
+        Payload::Parts(
+            ipc::encode_batch_parts(batch).map_err(|e| JobError::internal(e.to_string()))?,
+        ),
+    ))
+}
+
 /// What `wire` made of a frame, from an engine of generation `generation`.
 pub fn unwire(f: frame::Frame, generation: u64) -> Result<Out, String> {
     let s = f.stream as usize;
@@ -320,7 +367,7 @@ struct Item {
     to: Target,
     kind: FrameKind,
     stream: u32,
-    payload: Vec<u8>,
+    payload: Payload,
     _room: OwnedSemaphorePermit,
 }
 
@@ -428,9 +475,10 @@ impl Links {
         &self,
         lane: usize,
         to: Target,
-        (kind, stream, payload): (FrameKind, u32, Vec<u8>),
+        (kind, stream, payload): (FrameKind, u32, impl Into<Payload>),
         room: Reserved,
     ) -> Result<(), JobError> {
+        let payload = payload.into();
         let link = self.link(to)?;
         let index = |i: usize| u32::try_from(i).map_err(|_| JobError::internal("a lane past u32"));
         let (Target::Writer(i) | Target::Keyed(i)) = to;
@@ -795,6 +843,8 @@ async fn send<W: AsyncWrite + Unpin>(
             }
             Err(TryRecvError::Disconnected) => break,
         };
+        // A route goes out with the frame after it, in the same writes.
+        let mut before = Vec::new();
         if route != Some((item.lane, item.to)) {
             // push checked both fit.
             let r = match item.to {
@@ -809,10 +859,17 @@ async fn send<W: AsyncWrite + Unpin>(
                     keyed_lane: Some(k as u32),
                 },
             };
-            frame::write(&mut w, FrameKind::Route, 0, &r.encode_to_vec()).await?;
+            frame::write(&mut before, FrameKind::Route, 0, &r.encode_to_vec()).await?;
             route = Some((item.lane, item.to));
         }
-        frame::write(&mut w, item.kind, item.stream, &item.payload).await?;
+        frame::write_parts(
+            &mut w,
+            &before,
+            item.kind,
+            item.stream,
+            &item.payload.slices(),
+        )
+        .await?;
         queued.fetch_sub(item.payload.len() as u64, Ordering::Relaxed);
     }
     w.flush().await?;
@@ -988,10 +1045,9 @@ async fn receive(
     let want = peer.lanes * me.writers * exchanged.iter().filter(|e| **e).count()
         + peer.lanes * keyed.len() * windows.len();
     let mut ended = HashSet::new();
-    let mut r = BufReader::with_capacity(1 << 16, c);
     let mut route: Option<(usize, Target)> = None;
     loop {
-        let f = match frame::read(&mut r).await {
+        let f = match frame::read(&mut c).await {
             Ok(Some(f)) => f,
             Ok(None) if ended.len() == want => return Ok(()),
             Ok(None) => {

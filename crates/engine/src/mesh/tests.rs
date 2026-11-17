@@ -483,8 +483,9 @@ async fn an_engine_lost_mid_epoch_fails_the_job_as_transient() {
 
 /// Rows a second through two lanes and two writer lanes of a keyed
 /// stream's exchange: in one engine, and in two over loopback TLS, a lane
-/// and a writer lane each, on as many threads. `cargo test --release --
-/// --ignored --nocapture exchange_throughput`.
+/// and a writer lane each, on as many threads. Prints the best and the
+/// median of five repeats of each. `cargo test --release -- --ignored
+/// --nocapture exchange_throughput`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "a benchmark"]
 async fn exchange_throughput() {
@@ -565,18 +566,36 @@ async fn exchange_throughput() {
         start.elapsed()
     }
 
-    let total = (2 * ROWS * BATCHES) as f64;
-    let (mut one, mut two) = (Duration::MAX, Duration::MAX);
-    for _ in 0..3 {
-        one = one.min(run(&[(2, 2)], &payload).await);
-        two = two.min(run(&[(1, 1), (1, 1)], &payload).await);
+    const REPEATS: usize = 5;
+    let (mut one, mut two) = (Vec::new(), Vec::new());
+    // Alternates which goes first, so neither always runs on a warmer or
+    // cooler machine.
+    for i in 0..REPEATS {
+        if i % 2 == 1 {
+            two.push(run(&[(1, 1), (1, 1)], &payload).await);
+        }
+        one.push(run(&[(2, 2)], &payload).await);
+        if i % 2 == 0 {
+            two.push(run(&[(1, 1), (1, 1)], &payload).await);
+        }
     }
+    let total = (2 * ROWS * BATCHES) as f64;
     let rate = |d: Duration| total / d.as_secs_f64();
+    // The best and the median of the repeats' times.
+    let stats = |ds: &mut Vec<Duration>| {
+        ds.sort();
+        (ds[0], ds[ds.len() / 2])
+    };
+    let ((one_best, one_median), (two_best, two_median)) = (stats(&mut one), stats(&mut two));
     println!(
-        "one engine: {:.0} rows/s; two engines: {:.0} rows/s; {:.0}% of one engine's, on 2 threads, {} bytes a batch of {ROWS} rows",
-        rate(one),
-        rate(two),
-        100.0 * one.as_secs_f64() / two.as_secs_f64(),
+        "one engine: {:.0} rows/s best, {:.0} median; two engines: {:.0} rows/s best, {:.0} median; \
+         {:.0}% of one engine's best, {:.0}% of its median; on 2 threads, {REPEATS} repeats, {} bytes a batch of {ROWS} rows",
+        rate(one_best),
+        rate(one_median),
+        rate(two_best),
+        rate(two_median),
+        100.0 * one_best.as_secs_f64() / two_best.as_secs_f64(),
+        100.0 * one_median.as_secs_f64() / two_median.as_secs_f64(),
         payload.len()
     );
 }

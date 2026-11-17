@@ -47,7 +47,7 @@ use tracing::{Instrument as _, Span, debug_span, info_span};
 use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
-use crate::mesh::{Links, Room, Target};
+use crate::mesh::{Links, Payload, Room, Target};
 use crate::plan::{Exchange, InputPlan, Plan, Sink};
 use crate::remote::{Holding, RemoteStream};
 use crate::replay::Replayer;
@@ -1157,19 +1157,32 @@ impl Lane {
         if let Some(local) = mesh.local(w) {
             return self.send_to(local, out).await;
         }
-        self.remote(Target::Writer(w), crate::mesh::wire(out)?)
-            .await
+        match out {
+            Out::Batch(s, b) => {
+                self.remote(Target::Writer(w), crate::mesh::wire_batch(s, &b)?)
+                    .await
+            }
+            out => {
+                self.remote(Target::Writer(w), crate::mesh::wire(out)?)
+                    .await
+            }
+        }
     }
 
     /// Queues a frame for another engine's writer lane or keyed lane, on
     /// the link to it, once there's room.
-    async fn remote(&self, to: Target, frame: (FrameKind, u32, Vec<u8>)) -> Result<(), JobError> {
+    async fn remote(
+        &self,
+        to: Target,
+        (kind, stream, payload): (FrameKind, u32, impl Into<Payload>),
+    ) -> Result<(), JobError> {
         let Some(mesh) = &self.mesh else {
             return Err(JobError::internal(format!(
                 "{to:?} is another engine's, and the lane has no mesh"
             )));
         };
-        let room = match mesh.room(to, frame.2.len())? {
+        let payload = payload.into();
+        let room = match mesh.room(to, payload.len())? {
             Room::Ready(r) => r,
             wait => {
                 self.enter(Doing::Backpressured);
@@ -1178,7 +1191,12 @@ impl Lane {
                 r.ok_or_else(|| JobError::stopped("the link stopped"))?
             }
         };
-        mesh.push(self.flow.plan.first_lane + self.lane, to, frame, room)
+        mesh.push(
+            self.flow.plan.first_lane + self.lane,
+            to,
+            (kind, stream, payload),
+            room,
+        )
     }
 
     /// Sends to the lane's own writer lane.
