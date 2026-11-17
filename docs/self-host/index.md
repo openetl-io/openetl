@@ -160,12 +160,12 @@ Before returning to a previously used backend, remove its old workflow state. Fo
 
 ## Scratch disk
 
-A runner uses local disk in its temporary directory (`TMPDIR`, or `/tmp`) for each job's engine. The engine keeps a disk cache there of the state that a SQL transform's group window reads from the checkpoint store. The cache is only a copy: the engine deletes it when the job ends, and a new run starts with an empty one.
+A runner gives each job's engine a folder on local disk, in the `scratch` folder of its `--cache`. The engine keeps a disk cache there of the state that a SQL transform's group window reads from the checkpoint store. The cache is only a copy: the engine deletes it when the job ends, and a new run starts with an empty one.
 
 - `--scratch` (`OPENETL_SCRATCH`) is what each job's engine may keep there, 1 GiB unless you set it. The disk cache takes up to half of it.
 - `--scratch 0` turns the disk cache off. The engine then reads the checkpoint store each time a block of state is not in memory.
 - A runner that runs several jobs at once needs room for each of them. Connectors' temporary files and the runner's `--cache` need room of their own.
-- If a runner stops without cleaning up, the next engine that a runner starts on the machine deletes what the stopped runner's engines left.
+- If a runner stops without cleaning up, the next engine that a runner with the same `--cache` starts deletes what the stopped runner's engines left.
 - On Kubernetes, the pod launcher sets each pod's `OPENETL_SCRATCH` to half of `OPENETL_POD_SCRATCH`, the pod's ephemeral storage ([Install on Kubernetes](./kubernetes.md)).
 
 To size it, give the cache about as much as the state that a job's group windows read often: the open windows of a continuous pipeline, and those that a sync reads. A larger cache makes fewer requests to the checkpoint store. The console's **SQL** tab shows how many reads the disk answered at the last checkpoint ([SQL](../use/index.md#sql)).

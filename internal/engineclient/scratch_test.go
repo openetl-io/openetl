@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,26 +64,25 @@ func (s *wideSource) Read(ctx context.Context, req source.ReadRequest, out sourc
 // size and scratch set on the engine as a runner's are: its lanes flush
 // their changes early as they pass their part of the engine's memory, and
 // later reads of those windows come from the disk cache. Every window's
-// row is right; the engine's directory, its scratch with it, is gone once
-// the job ends, and so is one a dead runner left, while a live runner's
-// stays.
+// row is right; the engine's scratch directory is gone once the job ends,
+// and so is one a dead runner left, while a live runner's stays, and so
+// does one whose lock is a FIFO, which the sweep doesn't wait on.
 func TestAWindowsStateGoesToScratchAndOutOfMemory(t *testing.T) {
-	// Short, for the engine's sockets.
-	tmp, err := os.MkdirTemp("", "s")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
-	t.Setenv("TMPDIR", tmp)
+	tmp := t.TempDir()
 	// One a dead runner left, its lock let go, and one a live runner holds.
-	dead, live := filepath.Join(tmp, "oe-dead"), filepath.Join(tmp, "oe-live")
-	for _, d := range []string{dead, live} {
-		if err := os.MkdirAll(filepath.Join(d, scratchDir, "state"), 0o700); err != nil {
+	dead, live, fifo := filepath.Join(tmp, "oe-dead"), filepath.Join(tmp, "oe-live"), filepath.Join(tmp, "oe-fifo")
+	for _, d := range []string{dead, live, fifo} {
+		if err := os.MkdirAll(filepath.Join(d, "state"), 0o700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	for _, d := range []string{dead, live} {
 		if err := os.WriteFile(filepath.Join(d, dirLock), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := syscall.Mkfifo(filepath.Join(fifo, dirLock), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	held, err := os.Open(filepath.Join(live, dirLock))
 	if err != nil {
@@ -95,7 +95,7 @@ func TestAWindowsStateGoesToScratchAndOutOfMemory(t *testing.T) {
 
 	opts := options(t, nil)
 	opts.Size = resources.Size{CPU: 4000, Memory: 64 * resources.MiB}
-	opts.Scratch = 256 * resources.MiB
+	opts.Scratch, opts.ScratchDir = 256*resources.MiB, tmp
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	schema := arrow.NewSchema([]arrow.Field{
@@ -148,8 +148,12 @@ func TestAWindowsStateGoesToScratchAndOutOfMemory(t *testing.T) {
 				disk.Count += o.Disk.Count
 				disk.Bytes += o.Disk.Bytes
 			}
-			got, _ := filepath.Glob(filepath.Join(tmp, "oe-*", scratchDir, "state"))
-			dirs = append(dirs, got...)
+			got, _ := filepath.Glob(filepath.Join(tmp, "oe-*", "state"))
+			for _, d := range got {
+				if e := filepath.Dir(d); e != dead && e != live && e != fifo {
+					dirs = append(dirs, d)
+				}
+			}
 		},
 	}
 	if _, err := runner.RunAttempt(ctx, job); err != nil {
@@ -194,8 +198,8 @@ func TestAWindowsStateGoesToScratchAndOutOfMemory(t *testing.T) {
 	if len(dirs) == 0 {
 		t.Error("the engine had no scratch while it ran")
 	}
-	if left, _ := filepath.Glob(filepath.Join(tmp, "oe-*")); len(left) != 1 || left[0] != live {
-		t.Errorf("left in the temporary directory: %v", left)
+	if left, _ := filepath.Glob(filepath.Join(tmp, "oe-*")); !slices.Equal(left, []string{fifo, live}) {
+		t.Errorf("left in the scratch directory: %v", left)
 	}
 	t.Logf("%d early runs, %d named, %d reads from disk (%d bytes)", early, named, disk.Count, disk.Bytes)
 }

@@ -51,9 +51,13 @@ type Options struct {
 	// one thread per core and no limit.
 	Size resources.Size
 	// What each engine may keep on local disk, in bytes, in a directory of
-	// its own in the system's temporary directory that goes when it stops:
-	// half of it for its state's disk cache. Zero: none, and no disk cache.
+	// its own in ScratchDir that goes when it stops: half of it for its
+	// state's disk cache. Zero, or no ScratchDir: none, and no disk cache.
 	Scratch int64
+	// Where engines' scratch directories are: the runner's own, which no
+	// other user may write. An engine's directory left by a runner that died
+	// goes when the next engine starts.
+	ScratchDir string
 	// Batches reach the sink as they came, without the engine's coercion,
 	// naming or metadata columns, and rows fail the job. For measuring the
 	// boundary.
@@ -71,11 +75,10 @@ const (
 	edgeSocketBuffer = 1 << 20
 	// The engine's exit code on reaching its memory limit, as Limits says.
 	exitOverLimit = 75
-	// The file in an engine's directory that its runner holds locked while
-	// the engine may run, so that no other runner's sweep removes it.
+	// The file in an engine's scratch directory that its runner holds
+	// locked while the engine may run, so that no other runner's sweep
+	// removes it.
 	dirLock = "lock"
-	// The engine's scratch, in its directory.
-	scratchDir = "scratch"
 )
 
 func (o Options) binary() (string, error) {
@@ -93,17 +96,20 @@ func (o Options) binary() (string, error) {
 
 // process is one running engine.
 type process struct {
-	cmd    *exec.Cmd
-	dir    string
-	lock   *os.File
-	data   string
-	stdin  io.WriteCloser
-	conn   *grpc.ClientConn
-	client enginev1.EngineServiceClient
-	log    *slog.Logger
-	peak   func(int64)
-	meter  *resources.Meter
-	size   resources.Size
+	cmd *exec.Cmd
+	dir string
+	// The engine's scratch directory, and the lock its runner holds on it;
+	// empty and nil for none.
+	scratch string
+	lock    *os.File
+	data    string
+	stdin   io.WriteCloser
+	conn    *grpc.ClientConn
+	client  enginev1.EngineServiceClient
+	log     *slog.Logger
+	peak    func(int64)
+	meter   *resources.Meter
+	size    resources.Size
 	// Closed once the process has exited and its output is drained.
 	exited chan struct{}
 	killed atomic.Bool
@@ -114,18 +120,18 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	if err != nil {
 		return nil, errs.Wrap(errs.ConfigInvalid, err, "engineclient: find openetl-engine")
 	}
-	sweep()
 	dir, err := os.MkdirTemp("", "oe-")
 	if err != nil {
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: make the socket directory")
 	}
-	lock, err := lockDir(dir)
-	if err != nil {
-		_ = os.RemoveAll(dir)
-		return nil, errs.Wrap(errs.Internal, err, "engineclient: lock the engine's directory")
-	}
 	control := filepath.Join(dir, "control.sock")
-	p := &process{dir: dir, lock: lock, data: filepath.Join(dir, "data.sock"), peak: opts.PeakMemory, meter: opts.Meter, size: opts.Size, exited: make(chan struct{})}
+	p := &process{dir: dir, data: filepath.Join(dir, "data.sock"), peak: opts.PeakMemory, meter: opts.Meter, size: opts.Size, exited: make(chan struct{})}
+	if opts.Scratch > 0 && opts.ScratchDir != "" {
+		if p.scratch, p.lock, err = makeScratch(opts.ScratchDir); err != nil {
+			p.removeDir()
+			return nil, errs.Wrap(errs.Internal, err, "engineclient: make the engine's scratch directory")
+		}
+	}
 	if len(control) > maxSocketPath {
 		p.removeDir()
 		return nil, errs.New(errs.ConfigInvalid, "engineclient: socket path %s is too long; set a shorter TMPDIR", control)
@@ -265,11 +271,14 @@ func (p *process) close() {
 	}
 }
 
-// removeDir removes the engine's directory, its scratch with it, and then
-// lets go of its lock.
+// removeDir removes the engine's directories, and then lets go of its
+// scratch's lock.
 func (p *process) removeDir() {
 	_ = os.RemoveAll(p.dir)
-	_ = p.lock.Close()
+	if p.scratch != "" {
+		_ = os.RemoveAll(p.scratch)
+		_ = p.lock.Close()
+	}
 }
 
 // limits are what the engine may use: its memory, and its scratch. Nil for
@@ -279,13 +288,37 @@ func (p *process) limits(o Options) *enginev1.Limits {
 	if o.Size != (resources.Size{}) {
 		l.MemoryBytes = ints.Uint64(o.Size.EngineMemory())
 	}
-	if o.Scratch > 0 {
-		l.ScratchDir, l.ScratchBytes = filepath.Join(p.dir, scratchDir), ints.Uint64(o.Scratch)
+	if p.scratch != "" {
+		l.ScratchDir, l.ScratchBytes = p.scratch, ints.Uint64(o.Scratch)
 	}
 	if l.MemoryBytes == 0 && l.ScratchDir == "" {
 		return nil
 	}
 	return &l
+}
+
+// makeScratch makes an engine's scratch directory in parent, after
+// removing those that engines of runners that died left there, and locks
+// it for as long as the file it gives is open.
+func makeScratch(parent string) (string, *os.File, error) {
+	parent, err := filepath.Abs(parent)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", nil, err
+	}
+	sweep(parent)
+	dir, err := os.MkdirTemp(parent, "oe-")
+	if err != nil {
+		return "", nil, err
+	}
+	lock, err := lockDir(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
+	}
+	return dir, lock, nil
 }
 
 // lockDir locks a new engine directory for as long as the file it gives is
@@ -307,26 +340,42 @@ func lockDir(dir string) (*os.File, error) {
 	return f, nil
 }
 
-// sweep removes the engine directories, with their scratch, that runners
-// which died left in the system's temporary directory: those whose lock no
-// process holds. One being made has no lock yet, and stays.
-func sweep() {
-	dirs, _ := filepath.Glob(filepath.Join(os.TempDir(), "oe-*"))
-	for _, d := range dirs {
-		root, err := os.OpenRoot(d)
-		if err != nil {
+// sweep removes the engine directories in parent whose lock no process
+// holds: those engines of runners that died left. One being made has no
+// lock yet, and stays. Only directories are looked in, and a lock that
+// isn't a regular file is left alone; nothing it opens can block.
+func sweep(parent string) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "oe-") {
 			continue
 		}
-		f, err := root.Open(dirLock)
-		_ = root.Close()
-		if err != nil {
-			continue
-		}
-		if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		d := filepath.Join(parent, e.Name())
+		if unlocked(d) {
 			_ = os.RemoveAll(d)
 		}
-		_ = f.Close()
 	}
+}
+
+// unlocked is whether d's lock is a regular file that no process holds.
+func unlocked(d string) bool {
+	root, err := os.OpenRoot(d)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.OpenFile(dirLock, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil
 }
 
 func (p *process) kill() {

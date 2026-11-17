@@ -847,15 +847,19 @@ impl Keyed {
         let Some(state) = &flow.plan.state.job else {
             return Ok(());
         };
-        let pressed = state.pressure();
-        if pressed && !state.read_only() && self.layer.memory().changes >= crate::state::MIN_EARLY {
+        if state.pressure()
+            && !state.read_only()
+            && self.layer.memory().changes >= crate::state::MIN_EARLY
+        {
             self.layer.flush().await.map_err(|e| {
                 crate::state::state_error(&format!("operator {}'s state", self.id), &e)
             })?;
         }
         let held = state.hold(&self.id, lane.lane, self.layer.memory().total());
         let budget = state.budget();
-        if !pressed || budget == 0 || held <= budget {
+        // As it is now: the flush took a while, and other lanes may have
+        // released memory meanwhile.
+        if budget == 0 || held <= budget || !state.pressure() {
             return Ok(());
         }
         let (at, output) = flow.plan.transform.as_ref().map_or_else(
@@ -1173,6 +1177,11 @@ impl Keyed {
                 pieces.snapshots.extend(named);
             }
             pieces.operator(op);
+        }
+        // The barrier released the epoch's changes and the sections that
+        // died, or the discard the changes.
+        if let Some(state) = &plan.state.job {
+            state.hold(&id, lane.lane, self.layer.memory().total());
         }
         let outputs_q = plan
             .transform

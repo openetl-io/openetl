@@ -553,7 +553,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		API:         apiClient,
 		Checkpoints: cps,
 		Storage:     cfg.Checkpoints,
-		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine"), Scratch: scratch},
+		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine"), Scratch: scratch, ScratchDir: filepath.Join(cfg.Cache, "scratch")},
 		Logger:      log,
 		Connectors:  connectors,
 		Versions:    versions,

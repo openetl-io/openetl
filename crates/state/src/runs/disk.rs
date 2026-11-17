@@ -97,6 +97,9 @@ pub struct DiskCache {
     segment_bytes: u64,
     inner: Mutex<Inner>,
     counters: Counters,
+    /// Writes an entry at an offset of a segment: [`write_at`], but in a
+    /// test.
+    writer: fn(&File, &[u8], u64) -> io::Result<()>,
 }
 
 impl std::fmt::Debug for DiskCache {
@@ -123,6 +126,7 @@ impl DiskCache {
             segment_bytes: (limit / 8).clamp(1, MAX_SEGMENT),
             inner: Mutex::new(Inner::default()),
             counters: Counters::default(),
+            writer: write_at,
         }))
     }
 
@@ -240,11 +244,18 @@ impl DiskCache {
             return;
         };
         let (file, offset) = (seg.file.clone(), seg.len);
-        if write_at(&file, data, offset).is_err() {
-            // A segment that can't be written takes nothing more.
+        if (self.writer)(&file, data, offset).is_err() {
+            // A segment that can't be written takes nothing more. What the
+            // write left of the entry goes, or else counts, so the bound
+            // still holds.
             if let Some(seg) = inner.segments.get_mut(&n) {
                 seg.closed = true;
+                if file.set_len(offset).is_err() {
+                    seg.len += len;
+                    inner.bytes += len;
+                }
             }
+            self.evict(&mut inner);
             return;
         }
         let entry = Entry {
@@ -261,6 +272,11 @@ impl DiskCache {
         inner.bytes += len;
         add(&self.counters.written, 1);
         add(&self.counters.written_bytes, len);
+        self.evict(&mut inner);
+    }
+
+    /// Drops the oldest segments while it holds more than its bound.
+    fn evict(&self, inner: &mut Inner) {
         while inner.bytes > self.limit && inner.segments.len() > 1 {
             let Some((n, seg)) = inner.segments.pop_first() else {
                 break;
@@ -289,8 +305,9 @@ impl DiskCache {
         if let Some((&last, s)) = inner.segments.last_key_value()
             && s.keys.is_empty()
         {
-            let path = s.path.clone();
+            let (path, len) = (s.path.clone(), s.len);
             inner.segments.remove(&last);
+            inner.bytes = inner.bytes.saturating_sub(len);
             let _ = fs::remove_file(path);
         }
         inner.segments.insert(
@@ -389,6 +406,48 @@ mod tests {
             c.get("op", "r", 0, 100).as_deref(),
             Some(&block(1, 100)[..])
         );
+    }
+
+    /// Writes half of an entry, then fails.
+    fn half(file: &File, data: &[u8], offset: u64) -> io::Result<()> {
+        write_at(file, &data[..data.len() / 2], offset)?;
+        Err(io::Error::other("disk full"))
+    }
+
+    #[test]
+    fn a_failed_write_leaves_nothing_uncounted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut c = DiskCache::open(tmp.path(), 8 * 1000).unwrap();
+        let on_disk = |c: &DiskCache| -> u64 {
+            fs::read_dir(c.dir())
+                .unwrap()
+                .map(|e| e.unwrap().metadata().unwrap().len())
+                .sum()
+        };
+        for i in 0..40u32 {
+            Arc::get_mut(&mut c).unwrap().writer = if i % 2 == 0 { write_at } else { half };
+            c.put("op", "r", u64::from(i) * 100, &block(i, 100));
+            assert!(
+                on_disk(&c) <= c.bytes(),
+                "{} on disk, {} counted",
+                on_disk(&c),
+                c.bytes()
+            );
+            assert!(c.bytes() <= 8 * 1000 + c.segment_bytes);
+        }
+        // The entries written whole read back, the others are misses.
+        let (mut hits, mut misses) = (0, 0);
+        for i in 30..40u32 {
+            match c.get("op", "r", u64::from(i) * 100, 100) {
+                Some(b) => {
+                    assert_eq!(&b[..], &block(i, 100)[..]);
+                    assert_eq!(i % 2, 0);
+                    hits += 1;
+                }
+                None => misses += 1,
+            }
+        }
+        assert!(hits > 0 && misses >= 5, "{hits} hits, {misses} misses");
     }
 
     #[test]

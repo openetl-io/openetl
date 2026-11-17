@@ -568,6 +568,7 @@ impl World {
     /// before the barrier: a restore from a record sees none of it.
     async fn flush(&mut self) {
         let ctx = self.ctx();
+        let mut any = false;
         for l in &mut self.lanes {
             if self.rng.chance(60) {
                 let flushes = l.layer.flushes();
@@ -580,12 +581,15 @@ impl World {
                     assert_eq!(l.layer.memory().changes, 0, "{ctx}");
                     assert_eq!(l.layer.flushes(), flushes + 1, "{ctx}");
                 }
+                any |= wrote;
             }
         }
         if self.rng.chance(25) {
             let from = self.records.keys().last().copied();
             let lanes = self.rng.pick(&LANES);
-            self.kills_after_flush += 1;
+            if any {
+                self.kills_after_flush += 1;
+            }
             self.open(lanes, from).await;
         }
     }
