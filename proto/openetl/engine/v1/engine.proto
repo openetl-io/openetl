@@ -115,6 +115,44 @@ message StartJobRequest {
   // A redo's job, of one epoch: its stateful operators read the restored
   // snapshots and write nothing, and EpochReady names no state.
   bool state_read_only = 27;
+  // Each group window's keyed lanes report the steps of its watermark that
+  // their rows met in each epoch (OperatorEpoch.steps), which a redo of a
+  // writer lane's part of the epoch replays. After 1,024 steps in an epoch,
+  // a keyed lane holds the window's watermark where it is until the
+  // barrier: its rows then meet that one, and each split's rows take at
+  // most one more step, to it.
+  bool record_window_steps = 28;
+  // A redo's: the steps of each group window's watermark in the epoch it
+  // redoes, as OperatorEpoch.steps gave them. Each row meets the watermark
+  // it met there, and the windows close in the order they did. Missing:
+  // its rows meet the floor, and the windows close at closes_at.
+  repeated WindowSteps window_steps = 29;
+}
+
+// WindowSteps are a group window's watermark steps in an epoch, on each of
+// its keyed lanes.
+message WindowSteps {
+  string operator = 1;
+  repeated LaneSteps lanes = 2;
+}
+
+// LaneSteps are the steps of a group window's watermark that one keyed
+// lane's rows met in an epoch, by the split they were read from.
+message LaneSteps {
+  // The keyed lane's.
+  KeyGroupRange key_groups = 1;
+  repeated SplitSteps splits = 2;
+}
+
+// SplitSteps are where a keyed lane's rows of one split met a later
+// watermark of the window. A split's places count the rows a lane read of
+// it in the epoch, from 0. The rows from places[i] on, before places[i+1],
+// met watermarks[i], in microseconds since the Unix epoch, and those before
+// places[0] the window's watermark at the epoch's start. Both ascend.
+message SplitSteps {
+  string split = 1;
+  repeated uint64 places = 2;
+  repeated int64 watermarks = 3;
 }
 
 // Mesh is the attempt's engines, whose lanes send an exchanged stream's rows
@@ -599,6 +637,10 @@ message OperatorEpoch {
   StateRequests merge_write = 15;
   // Its merges' reads of the runs they merge, counted as lookups are.
   StateRequests merge_read = 16;
+  // With record_window_steps, a group window's: the steps of its
+  // watermark that each of its keyed lanes' rows met in the epoch, for
+  // lanes whose rows met one past the watermark at the epoch's start.
+  repeated LaneSteps steps = 17;
 }
 
 // StateRequests are requests of one kind to object storage, and their

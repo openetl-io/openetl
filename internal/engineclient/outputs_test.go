@@ -1,6 +1,7 @@
 package engineclient
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -97,6 +99,33 @@ func TestStartRequestKeepsARangeOfKeyGroups(t *testing.T) {
 	}
 	if kg := req.GetStreams()[1].GetKeyGroups(); kg != nil {
 		t.Errorf("stream b keeps %v", kg)
+	}
+}
+
+// A worker's plan asks the engine for the steps of its windows'
+// watermarks; a redo's gives it those of the epoch it redoes, by operator.
+func TestStartRequestCarriesWindowSteps(t *testing.T) {
+	p := plan("a")
+	p.RecordSteps = true
+	steps := []checkpoint.LaneSteps{{KeyGroups: checkpoint.KeyGroupRange{First: 64, Last: 127}, Splits: []checkpoint.SplitSteps{
+		{Split: "p0", Steps: []checkpoint.Step{{Place: 3, Watermark: 70}, {Place: 9, Watermark: 90}}},
+	}}}
+	p.Steps = map[string][]checkpoint.LaneSteps{"w2": steps, "w1": nil}
+	req, _, _, err := startRequest(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := req.GetWindowSteps()
+	if !req.GetRecordWindowSteps() || len(ws) != 2 || ws[0].GetOperator() != "w1" || ws[1].GetOperator() != "w2" {
+		t.Fatalf("the request records steps: %v; carries %v", req.GetRecordWindowSteps(), ws)
+	}
+	got := ws[1].GetLanes()[0]
+	s := got.GetSplits()[0]
+	if got.GetKeyGroups().GetFirst() != 64 || s.GetSplit() != "p0" || !slices.Equal(s.GetPlaces(), []uint64{3, 9}) || !slices.Equal(s.GetWatermarks(), []int64{70, 90}) {
+		t.Errorf("w2's steps are %v", got)
+	}
+	if back := attempt.StepsOf(ws[1].GetLanes()); !reflect.DeepEqual(back, steps) {
+		t.Errorf("w2's steps read back as %+v", back)
 	}
 }
 

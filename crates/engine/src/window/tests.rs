@@ -279,6 +279,41 @@ async fn a_window_gives_its_row_once_the_watermark_reaches_its_end() {
     assert_eq!(run.table.0.len(), 3);
 }
 
+/// What rows can tell apart of a watermark: without lateness, the latest
+/// end of a tumbling or hopping window at or before it, as a timer there
+/// fires; a session's, or with lateness, the watermark itself.
+#[test]
+fn rows_tell_a_watermark_apart_by_the_windows_ends() {
+    let tumble = operator(TUMBLE, 0);
+    assert_eq!(
+        [MIN - 1, MIN, MIN + 5, -1].map(|w| tumble.level(w)),
+        [0, MIN, MIN, -MIN]
+    );
+    assert_eq!(
+        [i64::MIN, i64::MAX].map(|w| tumble.level(w)),
+        [i64::MIN, i64::MAX]
+    );
+    let hop = |size: &str| {
+        operator(
+            &format!(
+                "INSERT INTO o SELECT window_start, region, count(*) AS n FROM orders \
+                 GROUP BY hop(at, INTERVAL '1 minute', INTERVAL '{size}'), region"
+            ),
+            0,
+        )
+    };
+    // Ends a minute apart, at whole minutes, or half past.
+    assert_eq!(hop("3 minutes").level(2 * MIN + 5), 2 * MIN);
+    assert_eq!(hop("90 seconds").level(2 * MIN + 5), 3 * MIN / 2);
+    assert_eq!(operator(TUMBLE, 30_000_000).level(MIN + 5), MIN + 5);
+    let session = operator(
+        "INSERT INTO o SELECT window_start, region, count(*) AS n FROM orders \
+         GROUP BY session(at, INTERVAL '1 minute'), region",
+        0,
+    );
+    assert_eq!(session.level(MIN + 5), MIN + 5);
+}
+
 #[tokio::test]
 async fn hops_put_a_row_in_each_window_it_falls_in() {
     let bucket = MemoryBucket::new();
@@ -993,11 +1028,13 @@ async fn a_delete_without_aggregates_gives_the_end_the_output_has() {
 /// fail after it gives a delete, with its key and its other values.
 #[tokio::test]
 async fn a_delete_doesnt_evaluate_the_clock_again() {
+    // At least 2 seconds away: the moment is in whole seconds, and the
+    // window's row must be given before it, however slow the machine.
     let soon = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
-        + 1;
+        + 3;
     let sql = format!(
         "INSERT INTO o SELECT window_start, region, count(*) AS n, \
          CAST(CASE WHEN now() < to_timestamp({soon}) THEN '1' ELSE 'bad' END AS BIGINT) AS r \

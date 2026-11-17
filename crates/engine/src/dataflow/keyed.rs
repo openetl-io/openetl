@@ -18,13 +18,25 @@
 //! passes them, in the epoch it does, and the keyed lane passes it on to
 //! its writer lane as the output's, and reports it at each barrier.
 //!
+//! Where a redo may need them, each keyed lane records the steps of the
+//! window's watermark that its rows met in the epoch, by the split and
+//! place each row was read at (watermark::Steps), and reports them at the
+//! barrier. Past watermark::STEPS of them in an epoch, it holds the
+//! window's watermark until the barrier, and each split's rows take at
+//! most one more step, to the held watermark.
+//!
 //! A redo of one writer lane's part of an epoch keeps the output's key
 //! groups alone (Plan::keep): only rows of the window's keys in them reach a
 //! keyed lane, whose state is of those, and its windows stay at the floor
-//! while the epoch is read again, to close at the barrier by the watermark
-//! the epoch had there (EventTime::closes_at).
+//! while the epoch is read again. Each row comes with the watermark it met
+//! in the epoch, which the lane that read it finds in the epoch's steps: a
+//! row that met the floor is taken at once, and the others wait for the
+//! barrier. There the keyed lane moves the window's watermark to each
+//! watermark the rows met in turn, taking the rows that met it, then closes
+//! the windows by the watermark the epoch had at its barrier
+//! (EventTime::closes_at). Each row then meets what it met in the epoch.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
@@ -35,7 +47,10 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema};
 use openetl_normalize::{Cause, Code, NotHeld, Rejected, Typed, key_groups, render_row};
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
-use openetl_proto::engine::v1::{Barrier, FrameKind, OperatorEpoch, StateRequests, Watermark};
+use openetl_proto::engine::v1::{
+    Barrier, FrameKind, KeyGroupRange as KeyGroups, LaneSteps, OperatorEpoch, SplitSteps,
+    StateRequests, Watermark,
+};
 use openetl_state::runs::RunName;
 use openetl_state::{KeyGroupRange, Layer};
 use prost::Message;
@@ -49,20 +64,42 @@ use crate::frame;
 use crate::ipc;
 use crate::mesh::Target;
 use crate::plan::Plan;
-use crate::watermark::{self, Senders};
+use crate::watermark::{self, Senders, Steps};
 use crate::window::{Operator, Out};
+
+/// Each row's cell the stream holds, of a column the statement reads: the
+/// column and why.
+type Held = Vec<Option<(String, String)>>;
 
 /// What a lane sends a keyed lane, for a window's statement by its index.
 pub(crate) enum In {
     /// Rows of the statement's stream: the columns it reads. Each row the
     /// statement can't read, as a cell the stream holds, has the cell's
-    /// column and why it's held.
-    Rows(usize, RecordBatch, Vec<Option<(String, String)>>),
+    /// column and why it's held. With where they were read, where the
+    /// epoch's steps are recorded or replayed.
+    Rows(
+        usize,
+        RecordBatch,
+        Vec<Option<(String, String)>>,
+        Option<Origin>,
+    ),
     /// The sender's watermark of the statement's stream, in microseconds:
     /// every row before it has come, but late ones. It never goes back.
     Watermark(usize, i64),
     Barrier(usize, Epoch),
     End(usize),
+}
+
+/// Where rows of a window's stream were read.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Origin {
+    /// Their split, and the place of the first among the rows the lane
+    /// read of it in the epoch, from 0: a keyed lane that records the
+    /// epoch's steps records the watermark the rows meet from there on.
+    At(Arc<str>, u64),
+    /// A redo's: the watermark each row met in the epoch, as the epoch's
+    /// steps have it; None where it met the epoch's start.
+    Met(Vec<Option<i64>>),
 }
 
 impl In {
@@ -77,14 +114,30 @@ impl In {
 /// statement's: each row's held cell, its column and why.
 const HELD_COLUMN: &str = "\0held_column";
 const HELD_REASON: &str = "\0held_reason";
+/// Its schema's metadata of an Origin::At: the split, and the place.
+const SPLIT: &str = "\0split";
+const PLACE: &str = "\0place";
 
 /// A frame to another engine's keyed lane: its kind, statement and
 /// payload.
 pub(crate) fn wire(item: In) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
     let index = |s: usize| u32::try_from(s).map_err(|_| JobError::internal("a statement past u32"));
     Ok(match item {
-        In::Rows(s, batch, held) => {
+        In::Rows(s, batch, held, origin) => {
             let schema = batch.schema();
+            let mut metadata = schema.metadata().clone();
+            match origin {
+                Some(Origin::At(split, place)) => {
+                    metadata.insert(SPLIT.into(), split.to_string());
+                    metadata.insert(PLACE.into(), place.to_string());
+                }
+                Some(Origin::Met(_)) => {
+                    return Err(JobError::internal(
+                        "a redo's rows for another engine's keyed lane",
+                    ));
+                }
+                None => {}
+            }
             let mut fields: Vec<Field> =
                 schema.fields().iter().map(|f| f.as_ref().clone()).collect();
             fields.push(Field::new(HELD_COLUMN, DataType::Utf8, true));
@@ -100,7 +153,7 @@ pub(crate) fn wire(item: In) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
             columns.push(of(|h| &h.0));
             columns.push(of(|h| &h.1));
             let b = RecordBatch::try_new_with_options(
-                Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+                Arc::new(Schema::new_with_metadata(fields, metadata)),
                 columns,
                 &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
             )
@@ -153,7 +206,25 @@ pub(crate) fn unwire(f: frame::Frame, generation: u64) -> Result<In, String> {
             let rows = b
                 .project(&(0..n - 2).collect::<Vec<_>>())
                 .map_err(|e| e.to_string())?;
-            Ok(In::Rows(s, rows, held))
+            let mut metadata = rows.schema().metadata().clone();
+            let origin = match (metadata.remove(SPLIT), metadata.remove(PLACE)) {
+                (Some(split), Some(place)) => Some(Origin::At(
+                    split.into(),
+                    place
+                        .parse()
+                        .map_err(|_| format!("rows at place {place:?}"))?,
+                )),
+                (None, None) => None,
+                _ => return Err("rows with a split and no place, or a place and no split".into()),
+            };
+            let schema = Schema::new_with_metadata(rows.schema().fields().clone(), metadata);
+            let rows = RecordBatch::try_new_with_options(
+                Arc::new(schema),
+                rows.columns().to_vec(),
+                &RecordBatchOptions::new().with_row_count(Some(rows.num_rows())),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(In::Rows(s, rows, held, origin))
         }
         FrameKind::Watermark => Ok(In::Watermark(
             s,
@@ -201,15 +272,25 @@ fn lane_of(lanes: &[RangeInclusive<u32>], g: u32) -> usize {
 }
 
 /// Sends the window statements' rows of a typed batch of their stream to
-/// the keyed lanes owning their keys' groups: those the output keeps.
-pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Result<(), JobError> {
+/// the keyed lanes owning their keys' groups: those the output keeps. `at`
+/// is the split the batch was read from, and the rows the lane read of it
+/// in the epoch before the batch.
+pub(super) async fn rows(
+    lane: &Lane,
+    statements: &[usize],
+    typed: &Typed,
+    at: Option<(&str, u64)>,
+) -> Result<(), JobError> {
     let plan = &lane.flow.plan;
     let Some(t) = &plan.transform else {
         return Ok(());
     };
+    // Each row's place among its split's rows of the epoch, where the
+    // epoch's steps are recorded or replayed.
+    let mut placed: Option<(Arc<str>, Vec<u64>)> = None;
     for &i in statements {
         let st = &t.sql.statements[i];
-        let Some((window, _)) = &st.window else {
+        let Some((window, id)) = &st.window else {
             continue;
         };
         let batch = reads(st, &typed.batch, &t.sql.inputs[st.input].name)?;
@@ -229,16 +310,38 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
             .map_err(|e| shape_error(&t.sql.inputs[st.input].name, e.into()))?;
         let keep = output_of(plan, st).and_then(|o| plan.keep[o]);
         let mut parts: Vec<Vec<u32>> = vec![Vec::new(); plan.attempt_lanes.len()];
-        for (r, g) in groups.into_iter().enumerate() {
+        for (r, &g) in groups.iter().enumerate() {
             if keep.is_some_and(|(first, last)| g < first || g > last) {
                 continue;
             }
             parts[lane_of(&plan.attempt_lanes, g)].push(r as u32);
         }
+        let met = plan.state.steps.get(id);
+        if let Some((split, before)) = at.filter(|_| met.is_some() || plan.state.record_steps)
+            && placed.is_none()
+        {
+            let places = typed
+                .input_rows()
+                .into_iter()
+                .map(|r| before + r as u64)
+                .collect();
+            placed = Some((split.into(), places));
+        }
         for (k, rows) in parts.into_iter().enumerate() {
             if rows.is_empty() {
                 continue;
             }
+            let origin = match (&placed, met) {
+                (Some((split, places)), Some(met)) => Some(Origin::Met(
+                    rows.iter()
+                        .map(|&r| met.at(groups[r as usize], split, places[r as usize]))
+                        .collect(),
+                )),
+                (Some((split, places)), None) => {
+                    Some(Origin::At(split.clone(), places[rows[0] as usize]))
+                }
+                (None, _) => None,
+            };
             let part = match rows.len() == batch.num_rows() {
                 true => batch.clone(),
                 false => {
@@ -247,7 +350,7 @@ pub(super) async fn rows(lane: &Lane, statements: &[usize], typed: &Typed) -> Re
                 }
             };
             let h = rows.iter().map(|&r| held[r as usize].clone()).collect();
-            send(lane, k, In::Rows(i, part, h)).await?;
+            send(lane, k, In::Rows(i, part, h, origin)).await?;
         }
     }
     Ok(())
@@ -363,6 +466,14 @@ struct Keyed {
     /// A redo's: where it closes windows at the barrier, its senders'
     /// watermarks moving nothing before.
     closes_at: Option<i64>,
+    /// A redo's: rows that met a later watermark in the epoch than the
+    /// window's, by that watermark, which wait for the barrier.
+    later: BTreeMap<i64, Vec<(RecordBatch, Held)>>,
+    /// The key groups it owns.
+    owns: RangeInclusive<u32>,
+    /// Where it records the epoch's steps: the steps of the window's
+    /// watermark its rows met since the last barrier.
+    steps: Option<Steps>,
     ended: bool,
     /// What it did since its last barrier.
     counts: Counts,
@@ -494,12 +605,18 @@ pub(super) async fn run(
             watermarks: Senders::new(n, floor),
             wm: watermark::NONE,
             closes_at,
+            later: BTreeMap::new(),
+            owns: owned.clone(),
+            steps: None,
             ended: false,
             counts: Counts::default(),
         };
         // Windows the record's watermark passed closed before it.
         if floor != watermark::NONE {
             w.advance(&lane, floor).await?;
+        }
+        if plan.state.record_steps {
+            w.steps = Some(Steps::new(w.op.level(w.wm)));
         }
         windows.push(w);
     }
@@ -538,60 +655,14 @@ impl Keyed {
     /// Takes what an open sender sent.
     async fn take(&mut self, lane: &Lane, sender: usize, item: In) -> Result<(), JobError> {
         match item {
-            In::Rows(_, batch, held) => {
-                self.counts.rows_in += batch.num_rows() as u64;
-                let flow = lane.flow.clone();
-                let Some(st) = flow
-                    .plan
-                    .transform
-                    .as_ref()
-                    .map(|t| &t.sql.statements[self.statement])
-                else {
-                    return Err(JobError::internal("a keyed lane without a transform"));
-                };
-                let mut rejected = Vec::new();
-                let keep: Vec<usize> = (0..batch.num_rows())
-                    .filter(|&r| match &held[r] {
-                        Some((column, why)) => {
-                            rejected.push(Rejected {
-                                row: r,
-                                reason: format!(
-                                    "transform.sql {}, writing {}: column {column} has a value that doesn't fit its type, which the stream holds: {why}",
-                                    st.at, st.output
-                                ),
-                                cause: Cause::value(why, column, Some(NotHeld::Transform)),
-                            });
-                            false
-                        }
-                        None => true,
-                    })
-                    .collect();
-                self.reject(lane, &batch, rejected)?;
-                let input = match keep.len() == batch.num_rows() {
-                    true => batch.clone(),
-                    false => arrow_select::take::take_record_batch(
-                        &batch,
-                        &UInt32Array::from_iter_values(keep.iter().map(|&r| r as u32)),
-                    )
-                    .map_err(|e| JobError::internal(e.to_string()))?,
-                };
-                let out = self.op.rows(&mut self.layer, &input).await?;
-                self.counts.late += out
-                    .rejected
-                    .iter()
-                    .filter(|(_, _, cause)| cause.code == Code::Late)
-                    .count() as u64;
-                let rejected = out
-                    .rejected
-                    .iter()
-                    .map(|(r, why, cause)| Rejected {
-                        row: keep[*r],
-                        reason: why.clone(),
-                        cause: cause.clone(),
-                    })
-                    .collect();
-                self.reject(lane, &batch, rejected)?;
-                self.give(lane, out).await
+            In::Rows(_, batch, held, Some(Origin::Met(met))) if self.closes_at.is_some() => {
+                self.replay(lane, batch, held, &met).await
+            }
+            In::Rows(_, batch, held, origin) => {
+                if let (Some(steps), Some(Origin::At(split, place))) = (&mut self.steps, origin) {
+                    steps.met(&split, place, self.op.level(self.wm));
+                }
+                self.rows(lane, batch, held).await
             }
             In::Watermark(_, t) => {
                 let advanced = self
@@ -599,7 +670,9 @@ impl Keyed {
                     .take(sender, t)
                     .map_err(|e| JobError::internal(format!("a keyed lane's group window: {e}")))?;
                 match advanced {
-                    Some(wm) if self.closes_at.is_none() => self.advance(lane, wm).await,
+                    Some(wm) if self.closes_at.is_none() && !self.holds(wm) => {
+                        self.advance(lane, wm).await
+                    }
                     _ => Ok(()),
                 }
             }
@@ -612,6 +685,140 @@ impl Keyed {
                 Ok(())
             }
         }
+    }
+
+    /// It has taken as many steps as it takes this epoch, and `wm` would be
+    /// another: the window's watermark holds until the barrier. The end of
+    /// input never holds.
+    fn holds(&self, wm: i64) -> bool {
+        self.steps.as_ref().is_some_and(Steps::full)
+            && wm != watermark::END
+            && self.op.level(wm) != self.op.level(self.wm)
+    }
+
+    /// A redo's rows, each with the watermark it met in the epoch: those
+    /// that met the window's are taken now, and the others wait for the
+    /// barrier.
+    async fn replay(
+        &mut self,
+        lane: &Lane,
+        batch: RecordBatch,
+        held: Held,
+        met: &[Option<i64>],
+    ) -> Result<(), JobError> {
+        let mut now = Vec::new();
+        let mut later: BTreeMap<i64, Vec<u32>> = BTreeMap::new();
+        for (r, m) in met.iter().enumerate() {
+            match m {
+                Some(w) if *w > self.wm => later.entry(*w).or_default().push(r as u32),
+                _ => now.push(r as u32),
+            }
+        }
+        let some = |rows: &[u32]| -> Result<_, JobError> {
+            let b =
+                arrow_select::take::take_record_batch(&batch, &UInt32Array::from(rows.to_vec()))
+                    .map_err(|e| JobError::internal(e.to_string()))?;
+            let h = rows.iter().map(|&r| held[r as usize].clone()).collect();
+            Ok((b, h))
+        };
+        for (w, rows) in later {
+            let part = some(&rows)?;
+            let bytes = part.0.get_array_memory_size() as u64;
+            let deferred = &lane.flow.plan.state.deferred;
+            deferred
+                .hold(bytes)
+                .map_err(|limit| self.held_over(lane, limit))?;
+            self.later.entry(w).or_default().push(part);
+        }
+        match now.len() {
+            0 => Ok(()),
+            n if n == batch.num_rows() => self.rows(lane, batch, held).await,
+            _ => {
+                let (b, h) = some(&now)?;
+                self.rows(lane, b, h).await
+            }
+        }
+    }
+
+    /// A redo's error where the rows that wait for its barrier need more
+    /// than the `limit` bytes its keyed lanes may hold.
+    fn held_over(&self, lane: &Lane, limit: u64) -> JobError {
+        let plan = &lane.flow.plan;
+        let (at, output) = plan.transform.as_ref().map_or_else(
+            || (String::new(), String::new()),
+            |t| {
+                let st = &t.sql.statements[self.statement];
+                (st.at.to_string(), st.output.clone())
+            },
+        );
+        let limit = match limit >= 1 << 20 {
+            true => format!("{} MiB", limit >> 20),
+            false => format!("{limit} bytes"),
+        };
+        JobError::new(
+            ErrorCode::ResourceExhausted,
+            format!(
+                "transform.sql {at}: the redo of a writer lane's part of epoch {}, writing {output}, holds the rows that met a later watermark of the group window in the epoch until the epoch's barrier, and they need more than the {limit} it may hold, half of the job's memory. Run the pipeline with a larger resources.size, so that the next attempt can settle the epoch",
+                plan.first_epoch
+            ),
+        )
+    }
+
+    /// Takes rows of the window's stream, by the window's watermark now.
+    async fn rows(&mut self, lane: &Lane, batch: RecordBatch, held: Held) -> Result<(), JobError> {
+        self.counts.rows_in += batch.num_rows() as u64;
+        let flow = lane.flow.clone();
+        let Some(st) = flow
+            .plan
+            .transform
+            .as_ref()
+            .map(|t| &t.sql.statements[self.statement])
+        else {
+            return Err(JobError::internal("a keyed lane without a transform"));
+        };
+        let mut rejected = Vec::new();
+        let keep: Vec<usize> = (0..batch.num_rows())
+            .filter(|&r| match &held[r] {
+                Some((column, why)) => {
+                    rejected.push(Rejected {
+                        row: r,
+                        reason: format!(
+                            "transform.sql {}, writing {}: column {column} has a value that doesn't fit its type, which the stream holds: {why}",
+                            st.at, st.output
+                        ),
+                        cause: Cause::value(why, column, Some(NotHeld::Transform)),
+                    });
+                    false
+                }
+                None => true,
+            })
+            .collect();
+        self.reject(lane, &batch, rejected)?;
+        let input = match keep.len() == batch.num_rows() {
+            true => batch.clone(),
+            false => arrow_select::take::take_record_batch(
+                &batch,
+                &UInt32Array::from_iter_values(keep.iter().map(|&r| r as u32)),
+            )
+            .map_err(|e| JobError::internal(e.to_string()))?,
+        };
+        let out = self.op.rows(&mut self.layer, &input).await?;
+        self.counts.late += out
+            .rejected
+            .iter()
+            .filter(|(_, _, cause)| cause.code == Code::Late)
+            .count() as u64;
+        let rejected = out
+            .rejected
+            .iter()
+            .map(|(r, why, cause)| Rejected {
+                row: keep[*r],
+                reason: why.clone(),
+                cause: cause.clone(),
+            })
+            .collect();
+        self.reject(lane, &batch, rejected)?;
+        self.give(lane, out).await
     }
 
     /// Closes the windows the watermark `wm` passes, and passes it on to the
@@ -811,8 +1018,29 @@ impl Keyed {
                     "a keyed lane's senders passed different barriers",
                 ));
             }
-            if let Some(c) = self.closes_at.filter(|c| *c > self.wm) {
-                self.advance(lane, c).await?;
+            match self.closes_at {
+                // A redo's rows that met later watermarks, each in turn,
+                // then the windows the epoch closed.
+                Some(c) => {
+                    for (w, parts) in std::mem::take(&mut self.later) {
+                        self.advance(lane, w).await?;
+                        for (b, h) in parts {
+                            let bytes = b.get_array_memory_size() as u64;
+                            self.rows(lane, b, h).await?;
+                            lane.flow.plan.state.deferred.release(bytes);
+                        }
+                    }
+                    if c > self.wm {
+                        self.advance(lane, c).await?;
+                    }
+                }
+                // Where it held the watermark, it catches up.
+                None => {
+                    let wm = self.watermarks.watermark();
+                    if wm > self.wm {
+                        self.advance(lane, wm).await?;
+                    }
+                }
             }
             self.barrier(lane, e).await?;
             for i in 0..self.standing.len() {
@@ -871,7 +1099,26 @@ impl Keyed {
                 .iter()
                 .map(|sn| crate::state::named(&id, sn))
                 .collect::<Result<Vec<_>, _>>()?;
-            let op = self.epoch(&id, (plan.generation, e.n), &snapshots, memory)?;
+            let mut op = self.epoch(&id, (plan.generation, e.n), &snapshots, memory)?;
+            let start = self.op.level(self.wm);
+            if let Some(steps) = self.steps.as_mut().map(|s| s.take(start))
+                && !steps.is_empty()
+            {
+                op.steps.push(LaneSteps {
+                    key_groups: Some(KeyGroups {
+                        first: *self.owns.start(),
+                        last: *self.owns.end(),
+                    }),
+                    splits: steps
+                        .into_iter()
+                        .map(|(split, steps)| SplitSteps {
+                            split,
+                            places: steps.iter().map(|s| s.0).collect(),
+                            watermarks: steps.iter().map(|s| s.1).collect(),
+                        })
+                        .collect(),
+                });
+            }
             let mut align = flow.align.lock().await;
             let pieces = align.pieces(e.n);
             // At the end of input every window has closed and gone, at

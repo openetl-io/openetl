@@ -291,6 +291,26 @@ impl Operator {
         (self.watermark != i64::MIN).then_some(self.watermark)
     }
 
+    /// The watermark `wm`, in microseconds, as far as rows can tell it
+    /// apart: without lateness, what a tumbling or hopping window does with
+    /// a row or a timer depends only on which windows' ends the watermark
+    /// has reached, so it's the first microsecond at or after the latest
+    /// end at or before `wm`. Otherwise `wm`.
+    pub fn level(&self, wm: i64) -> i64 {
+        let (slide, size) = match self.plan.window {
+            Window::Tumble { size } => (size, size),
+            Window::Hop { slide, size } => (slide, size),
+            Window::Session { .. } => return wm,
+        };
+        if self.lateness != 0 || wm == i64::MIN || wm == i64::MAX {
+            return wm;
+        }
+        let end = wm
+            .checked_mul(self.per_micro)
+            .and_then(|w| w.checked_sub(size).map(|d| w - d.rem_euclid(slide)));
+        end.map_or(wm, |e| self.timer_at(e))
+    }
+
     /// The watermark, in the event time's unit.
     fn watermark(&self) -> i64 {
         self.watermark.saturating_mul(self.per_micro)
