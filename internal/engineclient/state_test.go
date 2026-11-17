@@ -1,7 +1,9 @@
 package engineclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -384,7 +386,7 @@ func stateOutlivesItsEngine(t *testing.T, runs bool) {
 	first, stop := context.WithCancel(ctx)
 	var once sync.Once
 	var named []string
-	var held bool
+	var held *checkpoint.Record
 	var wrote bool
 	j := job("a1", "s1", &spanSource{minute: minute, pause: 12}, state, dest)
 	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
@@ -392,7 +394,7 @@ func stateOutlivesItsEngine(t *testing.T, runs bool) {
 		wrote = wrote || len(r) > 0
 		if len(r) > 0 || !runs && carried(rec) > 0 {
 			once.Do(func() {
-				named, held = r, true
+				named, held = r, rec
 				stop()
 			})
 		}
@@ -400,8 +402,11 @@ func stateOutlivesItsEngine(t *testing.T, runs bool) {
 	if _, err := runner.RunAttempt(first, j); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the first attempt ended with %v", err)
 	}
-	if !held {
+	if held == nil {
 		t.Fatal("no record of the first attempt held state")
+	}
+	if !runs && windowEntries(t, held, minute) == 0 {
+		t.Fatal("the record that held state carries none of the open minute's")
 	}
 	if wrote != runs {
 		t.Fatalf("the first attempt's records named runs: %t", wrote)
@@ -414,12 +419,13 @@ func stateOutlivesItsEngine(t *testing.T, runs bool) {
 	drain := make(chan struct{})
 	var mu sync.Mutex
 	var last []string
+	var lastRec *checkpoint.Record
 	var done sync.Once
 	j = job("a2", "s1", &spanSource{minute: minute, pause: spanRows, closer: 140}, state, dest)
 	j.Drain = drain
 	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		mu.Lock()
-		last = stateRuns(rec)
+		last, lastRec = stateRuns(rec), rec
 		if !runs && carried(rec) > 0 {
 			last = append(last, "the record's own")
 		}
@@ -447,6 +453,60 @@ func stateOutlivesItsEngine(t *testing.T, runs bool) {
 			t.Errorf("the second attempt's last record names %s of the closed minute", r)
 		}
 	}
+	// The closed minute's value and timers left the pending sets, with no
+	// run to hold them, once the horizon passed them.
+	if n := windowEntries(t, lastRec, minute); !runs && n > 0 {
+		t.Errorf("the second attempt's last record carries %d entries of the closed minute", n)
+	} else if !runs {
+		t.Logf("the first attempt's record carried %d entries of the open minute; the last record carries none", windowEntries(t, held, minute))
+	}
+}
+
+// windowEntries counts the entries of rec's pending sets of a group
+// window's window starting at start, in microseconds: a window's value and
+// its timers have keys that end with its start, big-endian. A pending set
+// is a tag, a version, a count, each entry's key and then a delete (0) or a
+// value (1 and the value), as varint lengths and bytes, and a checksum.
+func windowEntries(t *testing.T, rec *checkpoint.Record, start int64) int {
+	t.Helper()
+	end := binary.BigEndian.AppendUint64(nil, uint64(start))
+	n := 0
+	for _, s := range rec.Snapshots {
+		b := s.Pending
+		if len(b) == 0 {
+			continue
+		}
+		if len(b) < 10 || b[0] != 'P' || b[1] != 1 {
+			t.Fatalf("a pending set of %d bytes that isn't one", len(b))
+		}
+		r := b[2 : len(b)-8]
+		next := func() []byte {
+			l, k := binary.Uvarint(r)
+			if k <= 0 || l > uint64(len(r)-k) {
+				t.Fatalf("a pending set that doesn't read")
+			}
+			v := r[k : k+int(l)]
+			r = r[k+int(l):]
+			return v
+		}
+		count, k := binary.Uvarint(r)
+		r = r[k:]
+		for range count {
+			key := next()
+			if len(r) == 0 {
+				t.Fatal("a pending entry without its flag")
+			}
+			flag := r[0]
+			r = r[1:]
+			if flag == 1 {
+				next()
+			}
+			if bytes.HasSuffix(key, end) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // carried is the bytes of their state rec's snapshots carry.
