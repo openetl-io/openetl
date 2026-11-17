@@ -509,11 +509,12 @@ func (j *Job) replay(ctx context.Context, n uint64, reads []redoRead, out chan<-
 // replaySplit reads one split again from where its part of epoch n began,
 // on a read of its own, which ends once the split emits the resume point
 // the record has for it, or completes where the record has it complete.
-// The read asks the source to end at that resume point. A completion's
-// state is where the next sync starts, which needn't be where the read
-// ended, so a split that completed is read to its completion. Only that
-// split's emits go on: a split it adds is read on a read of its own, if the
-// committable holds it.
+// The read asks the source to end at that resume point, or to complete at
+// that completion. A completion's state is where the next sync starts,
+// which needn't be where the read ended, so a source that can't tell where
+// from it reads the split to its completion. Only that split's emits go
+// on: a split it adds is read on a read of its own, if the committable
+// holds it.
 func (j *Job) replaySplit(ctx context.Context, n uint64, r redoRead, out chan<- Frame) error {
 	k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == r.stream })
 	s := j.Streams[k]
@@ -521,14 +522,18 @@ func (j *Job) replaySplit(ctx context.Context, n uint64, r redoRead, out chan<- 
 	defer stop()
 	em := &redoEmitter{ctx: rctx, stop: stop, read: r, out: out}
 	cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Columns: s.columns()}
-	var until []byte
-	if !r.to.Complete {
+	var until, completeAt []byte
+	switch {
+	case !r.to.Complete:
 		until = r.to.State
+	case len(r.to.State) > 0:
+		// Empty, the next sync starts over: no position to stop at.
+		completeAt = r.to.State
 	}
 	if r.id == checkpoint.WholeStream {
-		cs.State, cs.Until = r.from, until
+		cs.State, cs.Until, cs.CompleteAt = r.from, until, completeAt
 	} else {
-		cs.Splits = []source.Split{{ID: r.id, State: r.from, Until: until}}
+		cs.Splits = []source.Split{{ID: r.id, State: r.from, Until: until, CompleteAt: completeAt}}
 	}
 	// Never continuous: the source ends the read once it has caught up with
 	// where it was when the read started, which is past the position.
@@ -636,6 +641,13 @@ func (e *redoEmitter) at(mine, complete bool, state []byte) {
 	switch {
 	case !mine || e.done:
 		return
+	case to.Complete && complete && !bytes.Equal(state, to.State) && len(to.State) > 0:
+		// replaySplit asked for this state. A source that ignores that,
+		// always or for this read, completes where it caught up, past it
+		// once its upstream moved on.
+		e.err = errs.New(errs.PositionLost, "runner: %s completed again at another state than the epoch's, though the redo asked the source to complete it where the epoch did: "+
+			"this version of the source connector doesn't complete a split where OpenETL asks, or can't for this read, which its documentation says; "+
+			"to finish the epoch, use a version of the connector that completes this split where OpenETL asks, then resume the pipeline; if there is none, delete the pipeline and apply it again, which starts it over", name)
 	case to.Complete && complete && !bytes.Equal(state, to.State):
 		e.err = errs.New(errs.PositionLost, "runner: %s completed again at another state than the epoch's: %s", name, need)
 	case complete && !to.Complete:

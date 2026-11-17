@@ -694,7 +694,10 @@ type ConfiguredStream struct {
 	Columns []string `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`
 	// Where the whole stream's read ends, without splits, as a split's
 	// until says.
-	Until         []byte `protobuf:"bytes,7,opt,name=until,proto3,oneof" json:"until,omitempty"`
+	Until []byte `protobuf:"bytes,7,opt,name=until,proto3,oneof" json:"until,omitempty"`
+	// Where the whole stream's read completes, without splits, as a split's
+	// complete_at says.
+	CompleteAt    []byte `protobuf:"bytes,8,opt,name=complete_at,json=completeAt,proto3,oneof" json:"complete_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -778,6 +781,13 @@ func (x *ConfiguredStream) GetUntil() []byte {
 	return nil
 }
 
+func (x *ConfiguredStream) GetCompleteAt() []byte {
+	if x != nil {
+		return x.CompleteAt
+	}
+	return nil
+}
+
 // Split is one of a stream's splits. The whole stream has the empty ID. IDs
 // are the source's, and must stay unique within the stream for as long as
 // its read lasts.
@@ -793,7 +803,19 @@ type Split struct {
 	// with it. The platform sets it to read part of an epoch again. A source
 	// that ignores it must send the same resume points as before for that
 	// read to be exact. Unset: where the read would end.
-	Until         []byte `protobuf:"bytes,3,opt,name=until,proto3,oneof" json:"until,omitempty"`
+	Until []byte `protobuf:"bytes,3,opt,name=until,proto3,oneof" json:"until,omitempty"`
+	// In a read that isn't continuous, the state of a completion the source
+	// sent for the split before, which the read is to complete at again,
+	// having sent what the read that completed there sent: a log's offset or
+	// position, say. A source that can tell from this state where that read
+	// ended sends nothing past that position and completes the split with
+	// this state; it may send a resume point with it first. One that can't,
+	// as where the state is a cursor floor rather than where the read ended,
+	// ignores it. The platform sets it to read part of an epoch again where
+	// the split completed in the epoch. A source that ignores it makes that
+	// read exact only if its upstream hasn't moved past where the first read
+	// completed. Never set with until. Unset: where the read would end.
+	CompleteAt    []byte `protobuf:"bytes,4,opt,name=complete_at,json=completeAt,proto3,oneof" json:"complete_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -845,6 +867,13 @@ func (x *Split) GetState() []byte {
 func (x *Split) GetUntil() []byte {
 	if x != nil {
 		return x.Until
+	}
+	return nil
+}
+
+func (x *Split) GetCompleteAt() []byte {
+	if x != nil {
+		return x.CompleteAt
 	}
 	return nil
 }
@@ -1883,7 +1912,7 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\n" +
 	"continuous\x18\x04 \x01(\bR\n" +
 	"continuous\x12\x14\n" +
-	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\x94\x02\n" +
+	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\xca\x02\n" +
 	"\x10ConfiguredStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
 	"\tsync_mode\x18\x02 \x01(\x0e2\x1e.openetl.connector.v1.SyncModeR\bsyncMode\x12\x16\n" +
@@ -1891,15 +1920,21 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\x05state\x18\x04 \x01(\fH\x00R\x05state\x88\x01\x01\x123\n" +
 	"\x06splits\x18\x05 \x03(\v2\x1b.openetl.connector.v1.SplitR\x06splits\x12\x18\n" +
 	"\acolumns\x18\x06 \x03(\tR\acolumns\x12\x19\n" +
-	"\x05until\x18\a \x01(\fH\x01R\x05until\x88\x01\x01B\b\n" +
+	"\x05until\x18\a \x01(\fH\x01R\x05until\x88\x01\x01\x12$\n" +
+	"\vcomplete_at\x18\b \x01(\fH\x02R\n" +
+	"completeAt\x88\x01\x01B\b\n" +
 	"\x06_stateB\b\n" +
-	"\x06_until\"a\n" +
+	"\x06_untilB\x0e\n" +
+	"\f_complete_at\"\x97\x01\n" +
 	"\x05Split\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\x05state\x18\x02 \x01(\fH\x00R\x05state\x88\x01\x01\x12\x19\n" +
-	"\x05until\x18\x03 \x01(\fH\x01R\x05until\x88\x01\x01B\b\n" +
+	"\x05until\x18\x03 \x01(\fH\x01R\x05until\x88\x01\x01\x12$\n" +
+	"\vcomplete_at\x18\x04 \x01(\fH\x02R\n" +
+	"completeAt\x88\x01\x01B\b\n" +
 	"\x06_stateB\b\n" +
-	"\x06_until\"\x9a\x02\n" +
+	"\x06_untilB\x0e\n" +
+	"\f_complete_at\"\x9a\x02\n" +
 	"\fReadResponse\x129\n" +
 	"\x05batch\x18\x01 \x01(\v2!.openetl.connector.v1.RecordBatchH\x00R\x05batch\x12F\n" +
 	"\fresume_point\x18\x02 \x01(\v2!.openetl.connector.v1.ResumePointH\x00R\vresumePoint\x12B\n" +

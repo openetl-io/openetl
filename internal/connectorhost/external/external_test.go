@@ -444,20 +444,22 @@ func TestConfiguredStreams(t *testing.T) {
 	}
 }
 
-// Where a read of a whole stream or of a split is to end reaches the
-// connector.
+// Where a read of a whole stream or of a split is to end, or to complete,
+// reaches the connector.
 func TestReadsUntil(t *testing.T) {
 	src := NewSource(exe("source-echo"), nil, Options{})
 	defer func() { _ = src.Close() }()
 	var out collect
 	req := source.ReadRequest{Streams: []source.ConfiguredStream{
 		{Name: "echo", State: []byte("1"), Until: []byte("9")},
-		{Name: "echo", Splits: []source.Split{{ID: "p0", State: []byte("2"), Until: []byte("8")}, {ID: "p1"}}},
+		{Name: "echo", Splits: []source.Split{{ID: "p0", State: []byte("2"), Until: []byte("8")}, {ID: "p1"}, {ID: "p2", State: []byte("3"), CompleteAt: []byte("7")}}},
+		{Name: "echo", State: []byte("4"), CompleteAt: []byte("6")},
 	}}
 	if err := src.Read(t.Context(), req, &out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.raw) != 2 || !strings.Contains(string(out.raw[0]), `"until":"9"`) || !strings.Contains(string(out.raw[1]), `"splits":["p0@2..8","p1@.."]`) {
+	if len(out.raw) != 3 || !strings.Contains(string(out.raw[0]), `"until":"9"`) || !strings.Contains(string(out.raw[1]), `"splits":["p0@2..8","p1@..","p2@3..!7"]`) ||
+		!strings.Contains(string(out.raw[2]), `"complete_at":"6"`) || strings.Contains(string(out.raw[2]), `"until"`) {
 		t.Errorf("the connector saw %s", out.raw)
 	}
 }

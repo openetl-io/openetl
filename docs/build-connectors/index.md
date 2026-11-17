@@ -160,7 +160,11 @@ A transactional destination can declare **lane commits**: `laneCommits` in its p
 
 Keeping a copy of each lane's part, so that Recover can commit it, is the destination's choice. Without one, recovery reads the source again, which is exact only for a source that returns the same records from the same position.
 
-That read gives each split, or the whole stream, the state it starts from. If the epoch's part ended at a resume point, the read also gives an `until`: the state of that resume point. A source can assume that `until` is the state of a resume point it sent before. It is never the state of a completion, which can be a cursor floor rather than where the read ended. A source that can stop at `until` sends no record past that position. It sends a resume point with the `until` state, and completes the split with it. A source that ignores `until` makes the read exact only if it sends the same resume points as the first read did. A source that batches records by what it fetched, such as one reading a log, can rarely do that. A part that ended at the split's completion has no `until`: OpenETL reads it to its completion, which must be at the state the first read completed at.
+That read gives each split, or the whole stream, the state it starts from. If the epoch's part ended at a resume point, the read also gives an `until`: the state of that resume point. A source can assume that `until` is the state of a resume point it sent before. It is never the state of a completion. A source that can stop at `until` sends no record past that position. It sends a resume point with the `until` state, and completes the split with it. A source that ignores `until` makes the read exact only if it sends the same resume points as the first read did. A source that batches records by what it fetched, such as one reading a log, can rarely do that.
+
+If the epoch's part ended at the split's completion, the read gives a `complete_at` instead: the state that the first read completed the split at, unless that state was empty. A completion's state is where the next sync starts. For a source that reads a log, such as offsets or a WAL position, it is also where the read ended. A source that can tell from the state where the first read ended sends no record past that position. It completes the split with the `complete_at` state, and can send a resume point with that state first. A source whose completion state is a cursor floor, rather than where the read ended, ignores `complete_at`. A source that can stop there for some reads only ignores it for the others, and its documentation says which. A source that ignores it reads to where it catches up. The read is then exact only if the source has not moved past where the first read completed. If the read completes at another state, the attempt fails with `POSITION_LOST`. If it completes at the same state with more records, OpenETL commits them, as it does with more records before an `until`. A source whose completion state does not move with what it reads can do that.
+
+In Go, the SDK gives both as `Until` and `CompleteAt` on `source.Split`, and on `source.ConfiguredStream` for a stream read whole. A read never has both.
 
 ## Write a source in Go
 
@@ -300,7 +304,7 @@ Connectors run as trusted code: `egress` says what yours means to reach, and Ope
 
 ## Test it with the conformance kit
 
-The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications and their config schemas, connection checks and their items, a preflight of every discovered stream, discovery, reads, resumption, and reads that stop at a redo's `until`. Destination checks cover a preflight of the suite's streams, commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
+The [conformance kit](../../sdk/go/conformance) tests connectors through the protocol, regardless of implementation language. Source checks cover specifications and their config schemas, connection checks and their items, a preflight of every discovered stream, discovery, reads, resumption, and reads that stop at a redo's `until` or complete at its `complete_at`. Destination checks cover a preflight of the suite's streams, commits, recovery at each commit step, fencing, write modes, schema changes, types, type-change refusal, holds and writer lanes. For a destination with lane commits, the writer-lane checks commit each lane on its own lane, settle each committable on a writer of its lane, and write a lost lane's part again.
 
 Run it from the CLI:
 
@@ -316,6 +320,7 @@ SKIP errors
 SKIP setup
     the connector has no setup
 PASS discover
+PASS preflight
 PASS read/full
 SKIP read/resume
     no stream sent a resume point
@@ -323,16 +328,22 @@ SKIP read/until
     the suite doesn't say the source stops at until
 SKIP read/incremental
     the suite reads no stream incrementally
+SKIP read/complete-at
+    the suite doesn't say the source completes at complete_at
 SKIP read/committed
     the source doesn't acknowledge, so the platform never calls Committed
 SKIP read/continuous
     the suite reads no stream with cdc or stream
-source-greetings: 11 checks, 4 passed, 0 failed, 7 skipped
+source-greetings: 13 checks, 5 passed, 0 failed, 8 skipped
 ```
 
-`--bad-credentials` and `--unreachable` add configs for the errors check, and `--add-records-command` lets the incremental check add records upstream. A destination's checks that write need `--read-command`, which prints what the destination made visible; they're skipped without it. `openetl connector test -h` has the details.
+`--bad-credentials` and `--unreachable` add configs for the errors check, and `--add-records-command` lets the incremental and complete-at checks add records upstream. A destination's checks that write need `--read-command`, which prints what the destination made visible; they're skipped without it. `openetl connector test -h` has the details.
 
 The until check runs only for a source that stops at `until`: pass `--stops-at-until`, or set `StopsAtUntil` in Go. The check reads from a resume point, with the next resume point's state as `until`. It expects the records between the two and nothing past them, then a resume point and a completion at `until`. It also reads from the last resume point with no `until`, and expects a completion at the state the first read completed at.
+
+The complete-at check runs only for a source that completes at `complete_at`: pass `--stops-at-completion` and `--add-records-command`, or set `StopsAtCompletion` and `AddRecords` in Go. For each stream that completed with a state, the check first adds records upstream. It leaves out a stream that gets none, since a source that ignores `complete_at` would pass there. It then reads from the stream's last resume point, with the state the stream completed at as `complete_at`. It expects the records between the two and none that the first read did not return. It then expects a completion at `complete_at`, and nothing after it.
+
+The kit reads each stream whole, so the until and complete-at checks give a stream's `until` and `complete_at`, not a split's. A source that reads splits gets the same fields on each `Split`, and its own tests cover that.
 
 In Go, a connector's own tests run the same checks with `conformance.SourceSuite` or `conformance.DestinationSuite` and `Test(t)`, as every official connector does in its `conformance_test.go`.
 

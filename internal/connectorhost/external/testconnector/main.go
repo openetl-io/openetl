@@ -266,10 +266,17 @@ func (echo) Read(_ context.Context, req source.ReadRequest, out source.Emitter) 
 		if cs.Until != nil {
 			m["until"] = string(cs.Until)
 		}
+		if cs.CompleteAt != nil {
+			m["complete_at"] = string(cs.CompleteAt)
+		}
 		if len(cs.Splits) > 0 {
 			var splits []string
 			for _, sp := range cs.Splits {
-				splits = append(splits, sp.ID+"@"+string(sp.State)+".."+string(sp.Until))
+				s := sp.ID + "@" + string(sp.State) + ".." + string(sp.Until)
+				if sp.CompleteAt != nil {
+					s += "!" + string(sp.CompleteAt)
+				}
+				splits = append(splits, s)
 			}
 			m["splits"] = splits
 		}

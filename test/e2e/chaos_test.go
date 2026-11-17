@@ -57,9 +57,9 @@ var (
 	chaosTemporal = flag.Duration("chaos.temporal-restart", 0, "restart compose's Temporal about this often; 0: never")
 	chaosPostgres = flag.Duration("chaos.postgres-restart", 0, "restart or kill compose's Postgres about this often; 0: never")
 	chaosKills    = flag.Duration("chaos.orchestrator-kill", 0, "on DBOS, run two more orchestrators, and kill one about this often, which starts again; 0: neither")
-	// A job with a group window runs on one pod until engines exchange
-	// keyed rows between pods.
-	chaosWindowWorkers = flag.Bool("chaos.window-workers", false, "run group windows on workers too")
+	// Group windows run on workers, their engines exchanging keyed rows
+	// between pods; false keeps every windowed run on one pod.
+	chaosWindowWorkers = flag.Bool("chaos.window-workers", true, "run group windows on workers too, beside those on one pod")
 )
 
 type chaosConfig struct {
@@ -233,14 +233,11 @@ func drawConfig(seed uint64, i int) chaosConfig {
 			c.faults = append(c.faults, faultLauncher)
 		}
 	}
-	// Half the runs in pods run each attempt on workers, holds and SQL among
-	// them. Kafka's transactions run on one pod, so most of them write into
-	// Postgres or Iceberg; the rest show the one pod they fall back to.
+	// Half the runs in pods run each attempt on workers, holds, SQL and
+	// group windows among them, into each destination: Kafka's writer lanes
+	// commit on their own.
 	if c.pods && rng.IntN(2) == 0 && (c.transform != "window" || *chaosWindowWorkers) {
 		c.workers = 2 + rng.IntN(2)
-		if c.dest == "kafka" && rng.IntN(4) != 0 {
-			c.dest = pick("postgres", "iceberg")
-		}
 		for range 1 + rng.IntN(2) {
 			c.faults = append(c.faults, pick(faultWorker, faultWorker, "crash "+crashWorkerHead, "crash "+crashWorkerCommit))
 		}
@@ -248,9 +245,13 @@ func drawConfig(seed uint64, i int) chaosConfig {
 	return c
 }
 
-// onWorkers reports whether the run's job can run on workers.
+// onWorkers reports whether the run's job can run on workers, as the
+// runner's OnWorkers decides. Workers are drawn only for runs with lanes,
+// so no Spark or Flink transform, and each destination drawn takes
+// several writer lanes: Postgres and Iceberg, and Kafka, whose lanes
+// commit on their own.
 func (c chaosConfig) onWorkers() bool {
-	return c.workers > 0 && c.dest != "kafka"
+	return c.workers > 0
 }
 
 // lanes reports whether the run's job runs as many lanes as its size: a

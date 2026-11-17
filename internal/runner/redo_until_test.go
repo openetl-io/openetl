@@ -16,9 +16,11 @@ import (
 // the split with a cursor floor, where its next sync starts: the last
 // page's first ID less one, so the next sync reads that page again. It
 // stops a split at its Until, as the last ID to read, with a resume point
-// and its completion there. reads has each split's Until.
+// and its completion there, and can't tell from a completion's state where
+// the read ended, so it ignores CompleteAt. reads has each split's Until,
+// and completions its CompleteAt.
 type floorSource struct {
-	reads chan []byte
+	reads, completions chan []byte
 }
 
 func (floorSource) Discover(context.Context) (source.Catalog, error) { return source.Catalog{}, nil }
@@ -26,6 +28,7 @@ func (floorSource) Discover(context.Context) (source.Catalog, error) { return so
 func (f floorSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
 	return source.ReadSplits(ctx, req, out, func(_ context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
 		f.reads <- sp.Until
+		f.completions <- sp.CompleteAt
 		next, last := 1, 10
 		if sp.State != nil {
 			n, err := strconv.Atoi(string(sp.State))
@@ -60,22 +63,23 @@ func (f floorSource) Read(ctx context.Context, req source.ReadRequest, out sourc
 	})
 }
 
-// A split that completed in the epoch is read again to its completion: its
-// record holds where its next sync starts, which needn't be where the read
-// ended, so the redo gives the source no end for it. A split the epoch left
-// at a resume point is read to there.
-func TestARedoAsksNoEndOfACompletedSplit(t *testing.T) {
+// A split that completed in the epoch is asked to complete where it did:
+// its record holds where its next sync starts, which needn't be where the
+// read ended, so a source that can't tell where from it reads to its
+// completion, and that is still the redo's end. A split the epoch left at a
+// resume point is read to there.
+func TestARedoAsksACompletedSplitToCompleteWhereItDid(t *testing.T) {
 	for name, c := range map[string]struct {
-		to    checkpoint.SplitState
-		rows  int
-		until []byte
+		to                checkpoint.SplitState
+		rows              int
+		until, completeAt []byte
 	}{
-		"completed":          {to: checkpoint.SplitState{ID: "s0", State: []byte("5"), Complete: true}, rows: 10},
+		"completed":          {to: checkpoint.SplitState{ID: "s0", State: []byte("5"), Complete: true}, rows: 10, completeAt: []byte("5")},
 		"at a resume point":  {to: checkpoint.SplitState{ID: "s0", State: []byte("5")}, rows: 5, until: []byte("5")},
 		"later resume point": {to: checkpoint.SplitState{ID: "s0", State: []byte("10")}, rows: 10, until: []byte("10")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			src := floorSource{reads: make(chan []byte, 1)}
+			src := floorSource{reads: make(chan []byte, 1), completions: make(chan []byte, 1)}
 			j := &Job{Pipeline: "p", Source: src, Streams: []Stream{{Name: "s"}}}
 			out := make(chan Frame, 64)
 			r := redoRead{stream: "s", id: "s0", to: c.to, rows: uint64(c.rows)}
@@ -92,6 +96,9 @@ func TestARedoAsksNoEndOfACompletedSplit(t *testing.T) {
 			}
 			if until := <-src.reads; string(until) != string(c.until) {
 				t.Errorf("the read's until is %q, want %q", until, c.until)
+			}
+			if at := <-src.completions; string(at) != string(c.completeAt) {
+				t.Errorf("the read's complete_at is %q, want %q", at, c.completeAt)
 			}
 		})
 	}
