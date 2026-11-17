@@ -1,6 +1,6 @@
 //! Frames on a data edge: a 12-byte header, then the payload.
 
-use std::io;
+use std::io::{self, IoSlice};
 
 use openetl_proto::engine::v1::FrameKind;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -95,6 +95,36 @@ pub async fn write<W: AsyncWrite + Unpin>(
     w.write_all(payload).await
 }
 
+/// As write, with the payload in parts, after `before`: frames already
+/// laid out, which go in the same writes.
+pub async fn write_parts<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    before: &[u8],
+    kind: FrameKind,
+    stream: u32,
+    parts: &[&[u8]],
+) -> io::Result<()> {
+    let n: usize = parts.iter().map(|p| p.len()).sum();
+    let len = u32::try_from(n)
+        .ok()
+        .filter(|n| *n as usize <= MAX_PAYLOAD)
+        .ok_or_else(|| invalid(format!("frame payload of {n} bytes")))?;
+    let h = header(kind, stream, len);
+    let mut slices = Vec::with_capacity(parts.len() + 2);
+    slices.push(IoSlice::new(before));
+    slices.push(IoSlice::new(&h));
+    slices.extend(parts.iter().map(|p| IoSlice::new(p)));
+    let mut bufs = &mut slices[..];
+    IoSlice::advance_slices(&mut bufs, 0);
+    while !bufs.is_empty() {
+        match w.write_vectored(bufs).await? {
+            0 => return Err(io::ErrorKind::WriteZero.into()),
+            n => IoSlice::advance_slices(&mut bufs, n),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -126,6 +156,38 @@ mod tests {
         let f = read(&mut r).await.unwrap().unwrap();
         assert_eq!((f.kind, f.payload.len()), (FrameKind::EndOfStream, 0));
         assert!(read(&mut r).await.unwrap().is_none());
+    }
+
+    /// A payload in parts, after a frame laid out before it, reads back as
+    /// the frames written whole, through a pipe that takes a few bytes at a
+    /// time.
+    #[tokio::test]
+    async fn parts_write_as_one_frame() {
+        let mut before = Vec::new();
+        write(&mut before, FrameKind::Route, 0, b"r").await.unwrap();
+        let (mut w, mut r) = tokio::io::duplex(7);
+        let writer = tokio::spawn(async move {
+            let parts: [&[u8]; 4] = [b"ab", b"", b"cdefghij", b"k"];
+            write_parts(&mut w, &before, FrameKind::Batch, 3, &parts)
+                .await
+                .unwrap();
+            write_parts(&mut w, &[], FrameKind::EndOfStream, 3, &[])
+                .await
+                .unwrap();
+        });
+        let mut got = Vec::new();
+        while let Some(f) = read(&mut r).await.unwrap() {
+            got.push((f.kind, f.stream, f.payload));
+        }
+        writer.await.unwrap();
+        assert_eq!(
+            got,
+            [
+                (FrameKind::Route, 0, b"r".to_vec()),
+                (FrameKind::Batch, 3, b"abcdefghijk".to_vec()),
+                (FrameKind::EndOfStream, 3, Vec::new()),
+            ]
+        );
     }
 
     #[tokio::test]
