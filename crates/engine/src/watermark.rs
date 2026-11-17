@@ -229,7 +229,10 @@ impl Splits {
     }
 }
 
-/// The most steps a keyed lane takes of a window's watermark in an epoch.
+/// The steps after which a keyed lane holds a window's watermark until the
+/// barrier, in an epoch. The rows of each split can still take one step to
+/// the held watermark, so a keyed lane's steps of an epoch are at most this
+/// and one for each split whose rows reach it.
 pub const STEPS: usize = 1024;
 
 /// A split's steps: from each place on, the watermark its rows met.
@@ -269,8 +272,8 @@ impl Steps {
         }
     }
 
-    /// It has taken all it takes: the window's watermark holds until the
-    /// barrier.
+    /// It has taken STEPS: the window's watermark holds until the barrier,
+    /// and each split's rows take a step at most to the held one.
     pub fn full(&self) -> bool {
         self.taken >= STEPS
     }
@@ -608,6 +611,14 @@ pub(crate) mod tests {
             s.met("a", i as u64, 51 + i);
         }
         assert!(s.full());
+        // Past them, the watermark holds, and another split's rows take one
+        // step to it.
+        let held = 50 + STEPS as i64;
+        s.met("a", STEPS as u64, held);
+        s.met("b", 0, held);
+        s.met("b", 9, held);
+        let taken: usize = s.take(held).iter().map(|(_, v)| v.len()).sum();
+        assert_eq!(taken, STEPS + 1);
     }
 
     /// A redo finds the watermark each row met by its key group's lane, its

@@ -392,9 +392,10 @@ type StartJobRequest struct {
 	StateReadOnly bool `protobuf:"varint,27,opt,name=state_read_only,json=stateReadOnly,proto3" json:"state_read_only,omitempty"`
 	// Each group window's keyed lanes report the steps of its watermark that
 	// their rows met in each epoch (OperatorEpoch.steps), which a redo of a
-	// writer lane's part of the epoch replays. A keyed lane takes at most
-	// 1,024 steps an epoch, and past them holds the window's watermark where
-	// it is until the barrier: its rows then meet that one.
+	// writer lane's part of the epoch replays. After 1,024 steps in an epoch,
+	// a keyed lane holds the window's watermark where it is until the
+	// barrier: its rows then meet that one, and each split's rows take at
+	// most one more step, to it.
 	RecordWindowSteps bool `protobuf:"varint,28,opt,name=record_window_steps,json=recordWindowSteps,proto3" json:"record_window_steps,omitempty"`
 	// A redo's: the steps of each group window's watermark in the epoch it
 	// redoes, as OperatorEpoch.steps gave them. Each row meets the watermark

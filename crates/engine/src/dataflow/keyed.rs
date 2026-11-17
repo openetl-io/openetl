@@ -22,7 +22,8 @@
 //! window's watermark that its rows met in the epoch, by the split and
 //! place each row was read at (watermark::Steps), and reports them at the
 //! barrier. Past watermark::STEPS of them in an epoch, it holds the
-//! window's watermark until the barrier.
+//! window's watermark until the barrier, and each split's rows take at
+//! most one more step, to the held watermark.
 //!
 //! A redo of one writer lane's part of an epoch keeps the output's key
 //! groups alone (Plan::keep): only rows of the window's keys in them reach a

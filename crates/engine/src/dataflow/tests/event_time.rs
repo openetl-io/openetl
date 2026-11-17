@@ -2478,8 +2478,7 @@ async fn a_redo_of_each_epoch_is_the_live_epoch() {
 /// A redo holds the rows that wait for its barrier within half the job's
 /// memory, which every keyed lane's count against. Within it, the redo
 /// gives what the live epoch gave; past it, the redo fails as
-/// RESOURCE_EXHAUSTED and says to give the job more memory, before the
-/// rows it would hold could end the engine at the job's limit.
+/// RESOURCE_EXHAUSTED and says to give the job more memory.
 #[tokio::test]
 async fn a_redo_holds_the_rows_for_its_barrier_within_half_the_jobs_memory() {
     // Rows of x at 5 s, then 12 s, which closes [0, 10), then 7 s, late;

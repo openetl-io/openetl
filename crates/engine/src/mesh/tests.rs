@@ -1335,10 +1335,11 @@ mod windows {
         assert_eq!((live.rows, live.late), (vec![row(0, "x", 1, 1)], 0));
     }
 
-    /// A keyed lane takes 1,024 steps of the window's watermark an epoch at
-    /// most, and past them holds the watermark where it is until the
-    /// barrier: a row behind the senders' watermark then, but not behind
-    /// the held one, is on time, and the redo takes it so too.
+    /// After 1,024 steps of the window's watermark in an epoch, a keyed lane
+    /// holds the watermark where it is until the barrier: a row behind the
+    /// senders' watermark then, but not behind the held one, is on time,
+    /// and the redo takes it so too. One split's rows, which met the held
+    /// watermark already, take no step past the 1,024th.
     #[tokio::test]
     async fn past_its_steps_a_keyed_lane_holds_the_watermark_until_the_barrier() {
         const SESSIONS: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \

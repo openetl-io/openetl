@@ -168,9 +168,11 @@ type shape struct {
 // at most one window's end in a ten-second epoch, so each keyed lane's rows
 // of a split take a step at most once; sessions, or any window with
 // lateness, take one each time the watermark moved between the lane's rows
-// of a split, here twenty times an epoch, or eight with 64 splits. A keyed
-// lane takes 1,024 steps an epoch at most, which bounds a busy epoch's: 16
-// for each of 64 splits.
+// of a split, here twenty times an epoch, or eight with 64 splits. After
+// 1,024 steps in an epoch a keyed lane holds the watermark, and each
+// split's rows take at most one more step, to the held one: a lane's steps
+// are at most 1,024 and one a split, which bounds a busy epoch's. With 64
+// splits that's 1,088, 17 for each.
 func TestStepsBytes(t *testing.T) {
 	const floor = 1_763_000_000_000_000
 	for _, s := range []shape{
@@ -181,7 +183,7 @@ func TestStepsBytes(t *testing.T) {
 		{name: "session, 1 split", splits: 1, lanes: 1, steps: 20, step: 500_000, rows: 1_500, most: 200},
 		{name: "session, 8 splits", splits: 8, lanes: 8, steps: 20, step: 500_000, rows: 200, most: 6_000},
 		{name: "session, 64 splits", splits: 64, lanes: 32, steps: 8, step: 500_000, rows: 60, most: 60_000},
-		{name: "most steps, 64 splits", splits: 64, lanes: 32, steps: 16, step: 100_000, rows: 25, most: 100_000},
+		{name: "most steps, 64 splits", splits: 64, lanes: 32, steps: 17, step: 100_000, rows: 25, most: 105_000},
 	} {
 		ids := splitIDs(s.splits)
 		var lanes []LaneSteps
