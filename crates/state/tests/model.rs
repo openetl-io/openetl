@@ -1,9 +1,9 @@
 //! The layer against a model of a few maps, over random sequences of the
 //! primitives, barriers, recorded or not, failed epochs, kills and restores
 //! of a recorded epoch onto other numbers of lanes, older attempts still
-//! writing, and released versions, over each store. Each seed is a
-//! sequence: `OPENETL_STATE_SEEDS=n` runs n of them, and
-//! `OPENETL_STATE_SEED=s` the one.
+//! writing, released versions, and merges landing at any barrier, over
+//! each store. Each seed is a sequence: `OPENETL_STATE_SEEDS=n` runs n of
+//! them, and `OPENETL_STATE_SEED=s` the one.
 
 #![allow(clippy::unwrap_used)]
 
@@ -14,8 +14,8 @@ use bytes::Bytes;
 use object_store::memory::InMemory;
 use object_store::path::Path;
 use openetl_state::{
-    DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, NEVER, ObjectStorage, OperatorId, Result,
-    RunConfig, RunStores, Snapshot, StateBackend, Stores, Timer,
+    DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, MergeConfig, NEVER, ObjectStorage,
+    OperatorId, Result, RunConfig, RunStores, Snapshot, StateBackend, Stores, Timer,
 };
 
 const GROUPS: u32 = 16;
@@ -630,7 +630,7 @@ impl World {
 /// Runs over an in-memory object store, with blocks, filters, a cache
 /// and reads that vary by seed: tiny blocks and filters that let most keys
 /// through, so lookups go past false positives and scans across blocks.
-fn runs(seed: u64) -> Arc<dyn Stores> {
+fn runs(seed: u64) -> RunStores {
     let mut rng = Rng(seed ^ 0x5eed);
     let config = RunConfig {
         block_bytes: rng.pick(&[1, 40, 200, 4096]),
@@ -645,9 +645,17 @@ fn runs(seed: u64) -> Arc<dyn Stores> {
         max_read_bytes: rng.pick(&[1, 300, 1 << 20]),
         concurrency: rng.pick(&[1, 4]),
         drop: rng.below(4) != 0,
+        merge: rng.chance(80).then(|| MergeConfig {
+            values_bound: rng.pick(&[0, 1, 3, 8]),
+            fanout: rng.pick(&[2, 4]),
+            small_bytes: rng.pick(&[0, 300, 1 << 20]),
+            buckets: rng.pick(&[1, 2, 8]),
+            max_bytes: rng.pick(&[1, 500, 1 << 20]),
+            wait: rng.chance(50),
+        }),
     };
     let objects = ObjectStorage::new(Arc::new(InMemory::new()), Path::from("state"));
-    Arc::new(RunStores::new(Arc::new(objects), config))
+    RunStores::new(Arc::new(objects), config)
 }
 
 async fn run(seed: u64, stores: Arc<dyn Stores>, exact: bool) {
@@ -670,6 +678,10 @@ async fn run(seed: u64, stores: Arc<dyn Stores>, exact: bool) {
     for step in 0..STEPS {
         w.step = step;
         w.step().await;
+        // Merges in flight go on while the lanes wait.
+        if w.rng.chance(30) {
+            tokio::task::yield_now().await;
+        }
     }
     w.sweep(true).await;
 }
@@ -700,7 +712,12 @@ fn the_layer_matches_the_model_over_runs() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
+    let mut merges = 0;
     for seed in seeds() {
-        rt.block_on(run(seed, runs(seed), false));
+        let stores = runs(seed);
+        rt.block_on(run(seed, Arc::new(stores.clone()), false));
+        merges += stores.counts().merges;
     }
+    println!("{} seeds over runs: {merges} merges", seeds().len());
+    assert!(merges as usize >= seeds().len(), "{merges} merges");
 }

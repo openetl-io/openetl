@@ -189,6 +189,8 @@ function windowStats(i: number, commit?: { seconds: bigint; nanos: number }) {
       barrierRequests: { count: 4n, bytes: 1_310_720n },
       readRequests: { count: 37n, bytes: 151_552n },
       restoreRequests: { count: i === 0 ? 28n : 0n, bytes: i === 0 ? 57_344n : 0n },
+      mergeWriteRequests: { count: 1n, bytes: 262_144n },
+      mergeReadRequests: { count: 3n, bytes: 393_216n },
     },
   ];
 }

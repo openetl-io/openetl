@@ -193,6 +193,7 @@ func operatorStats(o checkpoint.Operator) *apiv1.OperatorStats {
 		Operator: o.Operator, RowsIn: o.RowsIn, Inserts: o.Inserts, Updates: o.Updates, Deletes: o.Deletes, LateRows: o.Late,
 		Windows: o.Windows, MemoryBytes: o.MemoryBytes, StoredBytes: o.StoredBytes,
 		BarrierRequests: req(o.Barrier), ReadRequests: req(o.Lookup), RestoreRequests: req(o.Restore),
+		MergeWriteRequests: req(o.MergeWrite), MergeReadRequests: req(o.MergeRead),
 	}
 	switch {
 	case o.Watermark == nil:

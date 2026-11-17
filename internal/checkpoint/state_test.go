@@ -203,3 +203,56 @@ func TestPruneKeepsARunUntilNoKeptRecordNamesAnyOfIt(t *testing.T) {
 		t.Fatalf("after epoch 5, state %v, want %v", got, want)
 	}
 }
+
+func merged(op string, g, n uint64) string {
+	return fmt.Sprintf("%s/g%d/e%d/kg0-255.merge.run", op, g, n)
+}
+
+// A merge's output is named first by the record of the barrier it's named
+// for, in place of its inputs: retention keeps the inputs while a kept
+// record names them, and the output once one does. An output whose record
+// never landed is an orphan, kept while it may yet be named: of its own
+// generation and a later epoch than the newest record's.
+func TestPruneAgreesWithMerges(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	a := claim(t, l, "a")
+	r1, r2, r3 := run(t, store, lane("w", 1, 1)), run(t, store, lane("w", 1, 2)), run(t, store, lane("w", 1, 3))
+	commitNaming(t, a, 1, r1)
+	commitNaming(t, a, 2, r1, r2)
+	commitNaming(t, a, 3, r1, r2, r3)
+	// Epoch 4's barrier names the merge of r1 to r3 in their place.
+	m4, r4 := run(t, store, merged("w", 1, 4)), run(t, store, lane("w", 1, 4))
+	rec := commitNaming(t, a, 4, m4, r4)
+	// Epoch 5's merge, which the barrier of epoch 5 is about to name.
+	m5 := run(t, store, merged("w", 1, 5))
+	if _, err := a.Prune(t.Context(), rec, 2); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{r1, r2, r3, m4, m5, r4}
+	if got := runs(t, store); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Fatalf("after epoch 4, state %v, want %v", got, want)
+	}
+	// Epoch 5's record never lands, and its merge is an orphan.
+	rec = commitNaming(t, a, 6, m4, r4)
+	if _, err := a.Prune(t.Context(), rec, 2); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{m4, r4}
+	if got := runs(t, store); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Fatalf("after epoch 6, state %v, want %v", got, want)
+	}
+	// The next attempt merges what it restored; an older attempt's merge
+	// that no record names goes.
+	b := claim(t, l, "b")
+	stale := run(t, store, merged("w", 1, 7))
+	m7 := run(t, store, merged("w", 2, 7))
+	rec = commitNaming(t, b, 7, m7)
+	if _, err := b.Prune(t.Context(), rec, 2); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{m4, r4, m7}
+	if got := runs(t, store); !slices.Equal(got, slices.Sorted(slices.Values(want))) {
+		t.Fatalf("after epoch 7, state %v, want %v; %s is an orphan", got, want, stale)
+	}
+}

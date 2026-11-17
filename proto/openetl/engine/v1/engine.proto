@@ -594,6 +594,11 @@ message OperatorEpoch {
   // epoch next to it, and every one counts once.
   StateRequests lookup = 13;
   StateRequests restore = 14;
+  // The outputs of its lanes' merges that their barriers of the epoch
+  // wrote, and their bytes.
+  StateRequests merge_write = 15;
+  // Its merges' reads of the runs they merge, counted as lookups are.
+  StateRequests merge_read = 16;
 }
 
 // StateRequests are requests of one kind to object storage, and their

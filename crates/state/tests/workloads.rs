@@ -1,21 +1,25 @@
-//! What runs cost on three workloads: a dedupe of mostly new ids, a
-//! windowed aggregate that keeps its rows, and one that doesn't. Each
-//! epoch prints its requests, bytes, why lookups reached storage and the
-//! write amplification; then the state restores onto the same lanes and
-//! others, each from a cold cache, and an epoch that closes windows after
-//! each prints too.
+//! What runs cost on four workloads: a dedupe of mostly new ids, a
+//! windowed aggregate that keeps its rows, one that doesn't, and a value
+//! per key that's never deleted. Each epoch prints its requests, bytes,
+//! why lookups reached storage and the write amplification; the totals
+//! give the amplification of each kind of state; then the state restores
+//! onto the same lanes and others, each from a cold cache, and an epoch
+//! that closes windows after each prints too.
 //!
 //! Run one with `cargo test --release -p openetl-state --test workloads --
 //! --ignored --nocapture dedupe`. `OPENETL_STATE_LANES`, `_EPOCHS`,
 //! `_EVENTS` (an epoch's), `_KEYS` (the windows' key space), `_LATENCY_MS`
 //! (added to each request), `_CACHE_MB` (the block cache, for all lanes),
-//! `_RETENTION` (the dedupe's, in epochs) and `_RESCALE` (lanes to restore
-//! onto, as `3,8`) change its size. `_DROP=0` names every section, and
-//! the windows don't move their horizon, as before dead sections were
-//! dropped.
+//! `_RETENTION` (the dedupe's, in epochs; 0 keeps ids for good) and
+//! `_RESCALE` (lanes to restore onto, as `3,8`) change its size. `_DROP=0`
+//! names every section, and the windows don't move their horizon, as
+//! before dead sections were dropped. `_MERGE=0` merges nothing, and
+//! `_WAIT=0` lets merges land when they end rather than at the next
+//! barrier.
 //!
 //! The columns: the epoch's time and its slowest barrier's; runs written
-//! and their KiB; reads of blocks, reads opening runs, and the KiB of both;
+//! at barriers and by merges, and their KiB; reads of blocks, reads opening
+//! runs, reads by merges, and the KiB of all three;
 //! probes of a section past its filter that read a block holding the key,
 //! that read one that didn't (false positives), and that the cache
 //! answered; probes the filters ruled out; the KiB of changes; write
@@ -35,8 +39,8 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use openetl_state::runs::Counts;
 use openetl_state::{
-    BoxFuture, KeyGroupRange, KeyRef, Layer, ObjectStorage, Objects, OperatorId, Result, RunConfig,
-    RunStores, Snapshot, StateBackend,
+    BoxFuture, KeyGroupRange, KeyRef, Layer, MergeConfig, ObjectStorage, Objects, OperatorId,
+    Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 use twox_hash::XxHash3_64;
 
@@ -58,6 +62,8 @@ struct Args {
     retention: i64,
     rescale: Vec<u32>,
     drop: bool,
+    merge: bool,
+    wait: bool,
 }
 
 fn env(name: &str, default: u64) -> u64 {
@@ -78,6 +84,8 @@ fn args() -> Args {
         cache_bytes: (env("CACHE_MB", 64) as usize) << 20,
         retention: env("RETENTION", 32) as i64,
         drop: env("DROP", 1) != 0,
+        merge: env("MERGE", 1) != 0,
+        wait: env("WAIT", 1) != 0,
         rescale: rescale.split(',').filter_map(|s| s.parse().ok()).collect(),
     }
 }
@@ -137,7 +145,11 @@ impl Rng {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Workload {
     Dedupe,
-    Window { rows: bool },
+    Window {
+        rows: bool,
+    },
+    /// A value per key, put and never deleted, as a key's last row.
+    LastValue,
 }
 
 /// What a lane does in an epoch: its events, keyed and grouped.
@@ -303,12 +315,29 @@ async fn window_epoch(
     out
 }
 
+async fn last_value_epoch(l: &mut Layer, events: Vec<Event>, epoch: u64) -> LaneOut {
+    let mut out = LaneOut::default();
+    for e in &events {
+        let mut v = BytesMut::with_capacity(16);
+        v.put_i64(e.time);
+        v.put_i64(e.value);
+        l.put(OP, KeyRef::new(e.group, &e.key), v.freeze());
+    }
+    let t = Instant::now();
+    out.named = named(&l.barrier(epoch).await.unwrap());
+    out.barrier = t.elapsed();
+    out
+}
+
 async fn dedupe_epoch(l: &mut Layer, ids: Vec<Event>, epoch: u64, retention: i64) -> LaneOut {
     let mut out = LaneOut::default();
     for chunk in ids.chunks(BATCH) {
         let refs: Vec<KeyRef> = chunk.iter().map(|i| KeyRef::new(i.group, &i.key)).collect();
         let at: Vec<i64> = chunk.iter().map(|i| i.time).collect();
-        let expires: Vec<i64> = at.iter().map(|t| t + retention).collect();
+        let expires: Vec<i64> = match retention {
+            0 => vec![openetl_state::NEVER; at.len()],
+            r => at.iter().map(|t| t + r).collect(),
+        };
         let fresh = l.insert_new(OP, &refs, &at, &expires).await.unwrap();
         out.repeats += fresh.iter().filter(|f| !**f).count() as u64;
     }
@@ -336,6 +365,10 @@ impl Run {
         let config = RunConfig {
             cache_bytes: self.args.cache_bytes,
             drop: self.args.drop,
+            merge: self.args.merge.then(|| MergeConfig {
+                wait: self.args.wait,
+                ..MergeConfig::default()
+            }),
             ..Default::default()
         };
         RunStores::new(Arc::new(slow), config)
@@ -352,7 +385,7 @@ impl Run {
         let ranges: Vec<KeyGroupRange> = lanes.iter().map(|l| l.range()).collect();
         let events = match self.workload {
             Workload::Dedupe => dedupe_ids(&self.args, epoch),
-            Workload::Window { .. } => window_events(&self.args, epoch),
+            Workload::Window { .. } | Workload::LastValue => window_events(&self.args, epoch),
         };
         let mut per: Vec<Vec<Event>> = vec![Vec::new(); ranges.len()];
         for e in events {
@@ -368,6 +401,7 @@ impl Run {
                 let out = match workload {
                     Workload::Dedupe => dedupe_epoch(&mut l, evs, epoch, retention).await,
                     Workload::Window { rows } => window_epoch(&mut l, evs, epoch, rows, drop).await,
+                    Workload::LastValue => last_value_epoch(&mut l, evs, epoch).await,
                 };
                 (l, out)
             }));
@@ -387,14 +421,16 @@ impl Run {
         let repeats: u64 = outs.iter().map(|o| o.repeats).sum();
         let named: usize = outs.iter().map(|o| o.named).sum();
         println!(
-            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>7.0} {:>6} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7} {:>5}",
+            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>4} {:>7.0} {:>6} {:>4} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7} {:>5}",
             ms(wall),
             ms(barrier),
             c.barrier.count,
-            kib(c.barrier.bytes),
+            c.merge_write.count,
+            kib(c.barrier.bytes + c.merge_write.bytes),
             c.lookup.count,
             c.restore.count,
-            kib(c.lookup.bytes + c.restore.bytes),
+            c.merge_read.count,
+            kib(c.lookup.bytes + c.restore.bytes + c.merge_read.bytes),
             c.hits,
             c.false_positives,
             c.cached,
@@ -426,21 +462,23 @@ fn mib(b: u64) -> f64 {
 fn amplification(c: &Counts) -> f64 {
     match c.changed_bytes {
         0 => 0.0,
-        n => c.barrier.bytes as f64 / n as f64,
+        n => (c.barrier.bytes + c.merge_write.bytes) as f64 / n as f64,
     }
 }
 
 fn header() {
     println!(
-        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>7} {:>6} {:>4} {:>8} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5}",
+        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>4} {:>7} {:>6} {:>4} {:>4} {:>8} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5}",
         "",
         "ep",
         "wall ms",
         "bar ms",
         "PUT",
+        "mPUT",
         "PUT KiB",
         "GET",
         "open",
+        "mGET",
         "GET KiB",
         "hits",
         "fp",
@@ -496,16 +534,31 @@ async fn measure(workload: Workload) {
         record.extend(l.barrier(args.epochs + 1).await.unwrap());
     }
     println!(
-        "totals: {} PUTs, {:.0} KiB written of {:.0} KiB changed (WA {:.2}); {} lookup GETs, {} opening; {} hits, {} false positives",
+        "totals: {} PUTs at barriers, {} by {} merges, {:.0} KiB written of {:.0} KiB changed (WA {:.2}); {} lookup GETs, {} opening, {} merging; {} hits, {} false positives",
         total.barrier.count,
-        kib(total.barrier.bytes),
+        total.merge_write.count,
+        total.merges,
+        kib(total.barrier.bytes + total.merge_write.bytes),
         kib(total.changed_bytes),
         amplification(&total),
         total.lookup.count,
         total.restore.count,
+        total.merge_read.count,
         total.hits,
         total.false_positives
     );
+    for kind in SectionKind::ALL {
+        let i = kind as usize;
+        if total.changed[i] > 0 {
+            println!(
+                "  {kind:?}: {:.0} KiB changed, {:.0} KiB at barriers, {:.0} KiB by merges: WA {:.2}",
+                kib(total.changed[i]),
+                kib(total.flushed[i]),
+                kib(total.merged[i]),
+                total.amplification(kind)
+            );
+        }
+    }
     drop(lanes);
     // The first epoch after the record whose watermark closes windows.
     let windows = (WINDOW / EPOCH) as u64;
@@ -542,4 +595,10 @@ async fn window_with_rows() {
 #[ignore = "a measurement: run it with --ignored --nocapture"]
 async fn window_without_rows() {
     measure(Workload::Window { rows: false }).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "a measurement: run it with --ignored --nocapture"]
+async fn last_value() {
+    measure(Workload::LastValue).await;
 }

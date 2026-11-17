@@ -102,7 +102,7 @@ Keys start with their key group, so a range of key groups is a range of keys. In
 
 The engine's store is `RunStores` ([`crates/state/src/runs`](../../crates/state/src/runs)): runs of its own on object storage, at the job's state URL, `{org}/{pipeline}/_state/` next to the checkpoints ([`crates/engine/src/state.rs`](../../crates/engine/src/state.rs)). Each stateful operator has a `RunStores` of its own, in a directory named by its ID, whose block cache its lanes share. A lane's snapshot is its key-group range, the layout, the sections of runs it reads and each operator's horizon in the run store's encoding, and the names of those runs, which retention reads without decoding the rest. A record names an operator's snapshots on every lane once any of its lanes names a run.
 
-Sections are never merged. A snapshot leaves out each section that is dead:
+A snapshot leaves out each section that is dead, and a lane merges some of the others ([Merges](#merges)). A section is dead in these cases:
 
 - An operator moves its horizon with `expire`, as its watermark moves. Its rows and timers at or before the horizon, and its set's entries that expire at or before it, are gone. Reads pass over them, and the layer writes no change of them. The snapshot keeps each operator's horizon in each key group.
 - A section of rows, timers or a set is dead once the horizon of each of its operators, in each of its key groups, is at or past its latest entry. A section that holds entries on both sides of a horizon stays, and reads leave out the entries the horizon passed. A set's entry that never expires never dies.
@@ -110,6 +110,23 @@ Sections are never merged. A snapshot leaves out each section that is dead:
 - A barrier whose run would hold only dead sections writes no run, and the operator's epoch reports no barrier request.
 
 An object stays while any kept record names one of its sections. So after a rescale, it stays while any lane names its part of it.
+
+#### Merges
+
+A lane merges sections by kind, since each kind dies in its own way ([`crates/state/src/runs/merge.rs`](../../crates/state/src/runs/merge.rs)):
+
+- Rows and timers are never merged. They die whole as the horizon passes them.
+- Values merge only while a lane names more than 8 values sections, since most windows' values are dead before a merge would reach them. A merge that takes the lane's oldest values section drops deletes.
+- A set whose entries expire merges only within a time bucket. The lane cuts its live expiries into 8 buckets, aligned in time and a power of two wide. Sections of the newest bucket with at most 256 KiB stored merge. Older buckets are left to die whole. A merge leaves out the entries that the horizon has passed.
+- A set kept for good merges by size.
+
+A merge by size takes sections of one tier: sections within a factor of 4 of each other in stored bytes. Values merge once two of one tier are next to each other, and a set once four are. A merge takes sections that are next to each other in the lane's order, newest first, and never part of an epoch's sections. Its output holds the newest entry of each key, as of its newest input's epoch, so reads find it where they found its inputs.
+
+Each lane runs at most one merge at a time, in a task of the engine, which starts after a barrier. The merges in flight of an operator's lanes take at most the block cache's bound of input bytes together. A merge holds its output in memory until a barrier writes it. That barrier writes the merge's output as `g{generation}/e{epoch}/kg{first}-{last}.merge.run`, beside its own run, and the snapshot names the output in place of the inputs. A merge that is not done waits for a later barrier, which names the output for its own epoch. A merge whose input dies first is dropped.
+
+A merge's output counts only once a committed record names it. Retention keeps a run of the attempt's own generation from an epoch after its newest record, so an output that a barrier is about to name stays. After a failed attempt, an output that no record names is an orphan, and retention deletes it. The inputs stay while a kept record names them, so a restore of the record before reads them.
+
+Each operator's epoch reports the merges' writes (`merge_write`) and reads (`merge_read`) beside the barrier's. Write amplification is the bytes that barriers and merges write for each kind of state, over the bytes of its changes. `crates/state/tests/workloads.rs` measures it for each kind.
 
 The record keeps an operator's snapshots also when its lanes name no run. A snapshot holds the operator's horizons beside its runs, and a group window's floor is one of them. At a barrier where a group window's watermark is the end of input, its keyed lanes report no snapshot. Every window has then closed and gone, at every lane's barrier alike. A later read of the stream, as of a stream read whole at each sync, starts the windows again.
 

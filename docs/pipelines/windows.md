@@ -126,6 +126,7 @@ A group window keeps state for each window that is open, or closed and within it
 - A file counts only once a checkpoint that names it commits. A file of an epoch that failed is never read.
 - After a failure, or between syncs, the next run opens the state that its checkpoint names, and reads each file when it first needs it.
 - The engine stops keeping a window's state when the watermark passes the window's end plus the lateness.
+- Each lane merges some of its files in the background, once it holds more than 8 files of windows' values. A checkpoint names the merged file in place of the files it replaces.
 - A checkpoint names only the files that hold state still in use. When every window that a file holds has closed and its lateness has passed, or newer files hold all of it, the next checkpoints stop naming it. When every window has closed and its lateness has passed, a checkpoint names no file of the window's state.
 - A run keeps the last 10 checkpoints. When it starts, and every 10 checkpoints after, it deletes each file of state that none of those checkpoints names. So the files of state follow how long windows stay open, and do not grow with the number of checkpoints.
 
