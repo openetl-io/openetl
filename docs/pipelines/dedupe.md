@@ -48,7 +48,7 @@ Set `source.streams[].dedupe.retention` to one of these:
 | Retention | What the dedupe does | What the plan reports |
 |---|---|---|
 | A duration, such as `24h` | It forgets a key once the watermark passes the key's first row's time plus the retention. The key's next row is then written again, as a new first row. | `exactly_once_within`, with the retention in its reason, over a stream that can repeat rows and is not read with `full_refresh`, into a destination that stages and applies or writes each commit in a transaction, unless the output is merged into a destination that stages and applies. The default `delivery.require` refuses it. [The output](#the-output) has the other cases. |
-| `unbounded` | It remembers every key. Its state grows with the number of keys. | `exactly_once`, and that the state grows with the number of keys |
+| `unbounded` | It remembers every key. Its state grows with the number of keys. | `exactly_once`, and that the state grows with the number of keys, over a stream that is not read with `full_refresh`, into a destination that stages and applies or writes each commit in a transaction. [The output](#the-output) has the other cases. |
 
 Choose a duration that is longer than the time over which the source can repeat a row. A queue that redelivers a message within an hour needs at least `1h`. If the plan finds a first-row dedupe over a stream that sets no retention, it has a problem, and `openetl apply` refuses the pipeline:
 
