@@ -352,6 +352,11 @@ message EventTime {
   // microseconds of event time from that row's; the largest int64 for good.
   // Unset: the stream sets none, and such a dedupe over it is refused.
   optional int64 dedupe_retention_micros = 7;
+  // Each sync reads the stream whole, with full_refresh, and each read
+  // starts with no state for the statements that read it. A dedupe that
+  // keeps each key's latest row then deletes a key its filters drop where
+  // its state doesn't know whether the output has the key's row.
+  bool full_read = 8;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and

@@ -26,11 +26,19 @@
 //! partition keys, as rows come: a row later than its key's, by event time,
 //! record ID, then a hash of its values, is written, and any other dropped,
 //! whatever the watermark, so an older row that comes after a newer one
-//! never replaces it. The key's latest rank stays in state for good. A row
-//! the filters after the operator drop is written as a delete of its key
-//! alone, its key's columns and nulls, where the output has the key's row,
-//! so the output holds a key's latest row where it passes them, and none
-//! where it doesn't.
+//! never replaces it. The key's latest rank stays in state for good, with
+//! whether the output has the key's row. A row the filters after the
+//! operator drop is written as a delete of its key alone, its key's
+//! columns and nulls, where the output has the key's row. Over a stream
+//! read whole each sync (full_refresh), whose reads each start with no
+//! state, the output may have a key's row from an earlier read: there a
+//! key is unknown until a row of it is written or deleted, and a dropped
+//! row of an unknown key is written as a delete too. So the output holds a
+//! key's latest row where it passes them, and none where it doesn't. Of a
+//! key's rows, only one later than every row written of it is written, and
+//! its sequence is its event time, so a merge, which keeps a key's row of
+//! the greatest sequence and of one sequence the last staged, ends with
+//! the key's latest row's.
 //!
 //! A written row has its record ID, and its event time as its sequence.
 
@@ -82,6 +90,8 @@ pub struct Operator {
     /// A first-row dedupe's, in the event time's unit; None for unbounded
     /// and for a latest-row dedupe.
     retention: Option<i64>,
+    /// Its stream is read whole each sync, each read with no state.
+    full_read: bool,
     /// Rows are due that it hasn't given yet.
     due: bool,
     /// Keys it began keeping, keys it forgot, and rows it dropped, since its
@@ -94,13 +104,14 @@ pub struct Operator {
 impl Operator {
     /// `id` is the statement's operator's, `at` where it is, `retention`
     /// the stream's, in microseconds or NEVER, which a first-row dedupe
-    /// needs, and `key_groups` the pipeline's.
+    /// needs, `full_read` whether the stream is read whole each sync, and
+    /// `key_groups` the pipeline's.
     pub fn new(
         id: &str,
         at: openetl_sql::Position,
         plan: Arc<openetl_sql::Dedupe>,
         output: &str,
-        retention: Option<i64>,
+        (retention, full_read): (Option<i64>, bool),
         key_groups: u32,
     ) -> Result<Self, JobError> {
         let base = Partitioned::new(
@@ -129,6 +140,7 @@ impl Operator {
             plan,
             base,
             retention,
+            full_read,
             due: false,
             kept: 0,
             forgot: 0,
@@ -393,8 +405,8 @@ impl Operator {
     /// A latest-row dedupe's rows: each one later than its key's latest is
     /// written, an upsert where it passes the filters after the operator,
     /// and a delete of its key where it doesn't and the output has the
-    /// key's row. A row the filters fail on is quarantined, and the output
-    /// keeps the key's row it has.
+    /// key's row, or, over a full read, may have it. A row the filters fail
+    /// on is quarantined, and the output keeps the key's row it has.
     async fn latest<S: StateBackend>(
         &mut self,
         state: &mut S,
@@ -402,11 +414,22 @@ impl Operator {
         timed: &[(usize, i64)],
         out: &mut Out,
     ) -> Result<(), JobError> {
+        // A key state doesn't have: over a full read, the output may have
+        // its row from an earlier read.
+        let unseen = match self.full_read {
+            true => Shown::Unknown,
+            false => Shown::No,
+        };
         let mut latest: BTreeMap<(u32, Vec<u8>), Latest> = timed
             .iter()
             .map(|&(r, _)| {
                 let name = (taken.groups[r], named(LATEST, &taken.keys[r]));
-                (name, Latest::default())
+                let l = Latest {
+                    stored: None,
+                    shown: unseen,
+                    row: None,
+                };
+                (name, l)
             })
             .collect();
         let refs: Vec<KeyRef<'_>> = latest.keys().map(|(g, k)| KeyRef::new(*g, k)).collect();
@@ -419,7 +442,7 @@ impl Operator {
         };
         for (l, v) in latest.values_mut().zip(got) {
             if let Some(v) = v {
-                (l.stored, l.visible) = decode_latest(&v).map_err(|e| self.base.corrupt(&e))?;
+                (l.stored, l.shown) = decode_latest(&v).map_err(|e| self.base.corrupt(&e))?;
             }
         }
         // Rows of one time and ID go by their values' hashes, which only
@@ -490,20 +513,24 @@ impl Operator {
         }
         let (mut written, mut ops, mut deleted) = (Vec::new(), Vec::new(), Vec::new());
         for (i, ((g, name), l)) in changed.iter().enumerate() {
-            let mut visible = l.visible;
+            let mut shown = l.shown;
             if let Some(p) = passed[i] {
                 written.push(p);
-                ops.push(if visible { "update" } else { "insert" });
-                visible = true;
+                ops.push(match shown {
+                    Shown::Yes => "update",
+                    Shown::No | Shown::Unknown => "insert",
+                });
+                shown = Shown::Yes;
             } else if let Some(why) = failed.get(&i) {
+                // The output keeps what it has, known or not.
                 out.failed.push((
                     render_row(&rows, i),
                     self.base.reason(why),
                     Cause::new(Code::Statement),
                 ));
-            } else if visible {
+            } else if shown != Shown::No {
                 deleted.push(i);
-                visible = false;
+                shown = Shown::No;
             }
             self.kept += u64::from(l.stored.is_none());
             let (r, time) = l.row.unwrap_or_default();
@@ -512,7 +539,7 @@ impl Operator {
                 id: taken.ids[r],
                 values: hash(r)?,
             };
-            state.put(self.id, KeyRef::new(*g, name), latest_value(&rank, visible));
+            state.put(self.id, KeyRef::new(*g, name), latest_value(&rank, shown));
         }
         let mut batches = Vec::new();
         if !written.is_empty() {
@@ -600,11 +627,19 @@ impl Operator {
 /// A latest-row dedupe's key in a batch: its latest row as state has it,
 /// whether the output has its row, and the row of the batch later than
 /// that, with its time.
-#[derive(Default)]
 struct Latest {
     stored: Option<Rank>,
-    visible: bool,
+    shown: Shown,
     row: Option<(usize, i64)>,
+}
+
+/// Whether the output has a key's row: unknown, over a full read, until a
+/// row of the key is written or deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    No,
+    Yes,
+    Unknown,
 }
 
 /// Where a row stands among its key's, for a latest-row dedupe: by event
@@ -624,18 +659,23 @@ fn named(kind: u8, key: &[u8]) -> Vec<u8> {
     b
 }
 
-/// A key's latest row's rank, and whether the output has it.
-fn latest_value(rank: &Rank, visible: bool) -> Bytes {
+/// A key's latest row's rank, and whether the output has it: 0 no, 1 yes,
+/// 2 unknown.
+fn latest_value(rank: &Rank, shown: Shown) -> Bytes {
     let mut b = Vec::with_capacity(34);
     b.push(LAYOUT);
     b.extend_from_slice(&rank.time.to_be_bytes());
     b.extend_from_slice(&rank.id);
     b.extend_from_slice(&rank.values.to_be_bytes());
-    b.push(u8::from(visible));
+    b.push(match shown {
+        Shown::No => 0,
+        Shown::Yes => 1,
+        Shown::Unknown => 2,
+    });
     Bytes::from(b)
 }
 
-fn decode_latest(v: &[u8]) -> Result<(Option<Rank>, bool), String> {
+fn decode_latest(v: &[u8]) -> Result<(Option<Rank>, Shown), String> {
     let mut at = v;
     let [layout] = take::<1>(&mut at)?;
     if layout != LAYOUT {
@@ -646,8 +686,13 @@ fn decode_latest(v: &[u8]) -> Result<(Option<Rank>, bool), String> {
         id: take(&mut at)?,
         values: u64::from_be_bytes(take(&mut at)?),
     };
-    let [visible] = take::<1>(&mut at)?;
-    Ok((Some(rank), visible == 1))
+    let shown = match take::<1>(&mut at)? {
+        [0] => Shown::No,
+        [1] => Shown::Yes,
+        [2] => Shown::Unknown,
+        [b] => return Err(format!("a key's latest row shown as {b}")),
+    };
+    Ok((Some(rank), shown))
 }
 
 fn count(v: &[u8]) -> Result<u64, String> {

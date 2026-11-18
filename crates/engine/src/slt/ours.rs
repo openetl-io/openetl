@@ -345,6 +345,8 @@ impl Ours {
                 event_time: d.event_time.clone(),
                 lateness: 0,
                 dedupe: Some(openetl_state::NEVER),
+                // One read, of every row, into an empty output.
+                full_read: false,
             })
             .collect();
         let t = Arc::new(
@@ -486,7 +488,49 @@ async fn run_keyed(
             rows: None,
         },
     };
-    // The suites' tables aren't changelogs: rows show no op.
+    // The suites' tables aren't changelogs: rows show no op. The operator
+    // read every row in one batch, so a merge of what it wrote leaves its
+    // rows but its deletes, which a key it hadn't seen gets.
+    let kept: Vec<usize> = match &typed.control.op {
+        Some(o) => o
+            .as_string::<i32>()
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| *op != Some("delete"))
+            .map(|(r, _)| r)
+            .collect(),
+        None => (0..typed.batch.num_rows()).collect(),
+    };
+    let typed = match kept.len() == typed.batch.num_rows() {
+        true => typed,
+        false => {
+            let at = arrow_array::UInt32Array::from_iter_values(
+                kept.iter().map(|&r| u32::try_from(r).unwrap_or(u32::MAX)),
+            );
+            let batch = arrow_select::take::take_record_batch(&typed.batch, &at)
+                .map_err(|e| Failure(e.to_string()))?;
+            let ids = arrow_select::take::take(&typed.ids, &at, None)
+                .map_err(|e| Failure(e.to_string()))?
+                .as_fixed_size_binary()
+                .clone();
+            let rows = typed.rows.map(|rs| kept.iter().map(|&r| rs[r]).collect());
+            let cells = typed
+                .cells
+                .into_iter()
+                .filter_map(|mut c| {
+                    c.row = kept.iter().position(|&r| r == c.row)?;
+                    Some(c)
+                })
+                .collect();
+            Typed {
+                batch,
+                ids,
+                cells,
+                rows,
+                ..typed
+            }
+        }
+    };
     let typed = Typed {
         control: Control::default(),
         ..typed

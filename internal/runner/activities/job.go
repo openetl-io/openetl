@@ -154,7 +154,7 @@ func settleJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, src s
 		}
 		if col := ps.GetEventTime(); col != "" && p.GetTransform().GetSql() != nil {
 			s.EventTime = &runner.EventTime{Column: col, Delay: ps.GetWatermark().GetDelay().AsDuration(), Held: !plan.OrderedRead(read, cursor, col),
-				Lateness: ps.GetWatermark().GetLateness().AsDuration(), Dedupe: plan.DedupeRetention(ps)}
+				Lateness: ps.GetWatermark().GetLateness().AsDuration(), Dedupe: plan.DedupeRetention(ps), FullRead: read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}
 		}
 		if !transformed && plan.Holds(caps, mode, keyed) {
 			s.Holds = streamHolds(ps)

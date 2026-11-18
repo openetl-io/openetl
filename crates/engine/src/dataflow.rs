@@ -5557,6 +5557,7 @@ pub(crate) mod tests {
             event_time: None,
             lateness: 0,
             dedupe: None,
+            full_read: false,
         };
         let t = crate::transform::Transform::plan(
             "INSERT INTO c SELECT * FROM a",

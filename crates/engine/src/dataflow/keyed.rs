@@ -531,7 +531,7 @@ impl Op {
                 st.at,
                 d.clone(),
                 &st.output,
-                input.dedupe,
+                (input.dedupe, input.full_read),
                 key_groups,
             )?),
             Planned::Window(w) => Op::Window(window::Operator::new(
