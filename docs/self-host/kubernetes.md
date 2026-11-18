@@ -202,8 +202,13 @@ spec:
 
 Coordinators listen on port 7720 for their workers, and workers for each other's engines. No label tells them apart, so the policy opens the port on every job pod, both ways. Each attempt's certificates, token and secret keep other pods out of it. To allow the route only within one pool, add `openetl.io/pool: POOL` to the three selectors, and make one such policy for each pool.
 
-> [!WARNING]
-> A NetworkPolicy that selects a pod blocks all the pod's traffic that no policy allows. Apply this policy only with the policies that already let job pods reach DNS, the API, the bucket, the connector registry and your data systems, and let Prometheus scrape them. Without those policies, every job pod loses that traffic, and its jobs fail.
+Before applying this policy, check that your other policies permit these routes:
+
+- Job pods to DNS, the API, object storage, connector registries and data systems.
+- Prometheus to the job pods' metrics endpoint.
+
+> [!CAUTION]
+> This policy blocks traffic that no policy allows. Keep the required service routes open before you apply it.
 
 1. Save the policy as `network-policy.yaml` in your kustomization's directory.
 2. Add the file to `resources` in your `kustomization.yaml`:
@@ -365,7 +370,7 @@ A newer version can write a checkpoint format that older runners cannot read. An
 ## Uninstall
 
 > [!WARNING]
-> Deleting the namespace deletes the Secret `openetl`, with `OPENETL_SECRETS_KEY`. Without a copy of that key, nobody can read the secrets that the metadata database holds.
+> Deleting the namespace removes the encryption key. Without a copy of `OPENETL_SECRETS_KEY`, stored secrets cannot be read.
 
 In your kustomization's directory, delete the manifests, then the namespace with its Secrets and any job pods that remain:
 

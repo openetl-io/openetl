@@ -164,8 +164,8 @@ A connector that runs inside `openetld` cannot take a role. Apply refuses `aws` 
 
 If `OPENETL_CONNECTOR_AWS_CREDENTIALS` is `inherit`, each connector gets the runner's `AWS_` variables, and the AWS SDK in the connector can use EC2's instance metadata. A connector then has all of the runner's AWS access, including every pipeline's checkpoints and staging in the bucket.
 
-> [!WARNING]
-> With `inherit`, any connector on the runner can read and change every pipeline's checkpoints. A wrong checkpoint can make a pipeline read data again or skip data.
+> [!CAUTION]
+> `inherit` gives connectors the runner’s AWS access, including access to every pipeline’s checkpoints. Changed checkpoints can cause repeated or skipped reads.
 
 Use `inherit` only if one team owns every pipeline and connector on those runners. A source or destination that names a role still gets only that role.
 

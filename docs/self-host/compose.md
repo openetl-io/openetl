@@ -136,7 +136,7 @@ The new installation's volumes are `openetl-2_postgres`, `openetl-2_server` and 
 ### Delete the earlier installation
 
 > [!WARNING]
-> These commands delete the earlier installation's database, owner key, checkpoints and staging files. You cannot recover them, except from a backup.
+> These commands delete the earlier installation’s database, owner key, checkpoints and staging files. Recovery requires a backup.
 
 In this directory, remove the earlier installation's containers and volumes. Then start the new stack:
 
@@ -307,7 +307,7 @@ A newer version can write a checkpoint format that older runners cannot read. An
 
 `docker compose stop` stops the stack, and `docker compose down` removes its containers too. Both keep the volumes, and `docker compose up -d` starts it again where it was.
 
-> [!CAUTION]
-> `docker compose down -v` also deletes the volumes: the database, the owner key and the checkpoints. You cannot recover the installation after this command, except from a backup.
+> [!WARNING]
+> `docker compose down -v` deletes the database, owner key and checkpoints. Recovery requires a backup.
 
 To remove the installation and all its data, run `docker compose down -v`. Then delete the directory, which holds `.env`.

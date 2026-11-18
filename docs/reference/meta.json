@@ -2,5 +2,21 @@
   "title": "Reference",
   "description": "Specs, commands, settings, events and schemas",
   "icon": "BookOpen",
-  "pages": ["index", "specs", "sql", "pipeline-cli", "openetld", "connector-file", "connector-descriptor", "manifest", "events", "quarantine-files", "built-in-connectors"]
+  "pages": [
+    "index",
+    "specs",
+    "sql",
+    "sql-windows",
+    "sql-expressions",
+    "sql-functions",
+    "sql-errors",
+    "pipeline-cli",
+    "openetld",
+    "connector-file",
+    "connector-descriptor",
+    "manifest",
+    "events",
+    "quarantine-files",
+    "built-in-connectors"
+  ]
 }
