@@ -345,6 +345,8 @@ impl Ours {
                 event_time: d.event_time.clone(),
                 lateness: 0,
                 dedupe: Some(openetl_state::NEVER),
+                // One read, of every row, into an empty output.
+                full_read: false,
             })
             .collect();
         let t = Arc::new(

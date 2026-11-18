@@ -31,10 +31,14 @@ type profile struct {
 	sec    int64
 }
 
+// errReadBroke is the failure profileSource injects.
+var errReadBroke = errors.New("the read broke")
+
 // profileSource reads stream s's rows, one at a time with a resume point
 // after each, from the one its state names. A bounded read then completes,
-// so that the next starts over; a continuous one waits. With failAt, a read fails once it has given that
-// many rows and failed closes.
+// so that the next starts over; a continuous one waits. With failAt, a
+// read fails with errReadBroke once it has given that many rows and failed
+// closes.
 type profileSource struct {
 	rows       []profile
 	continuous bool
@@ -55,7 +59,7 @@ func (p profileSource) Read(ctx context.Context, req source.ReadRequest, out sou
 			if p.failed != nil && n == p.failAt {
 				select {
 				case <-p.failed:
-					return errors.New("the read broke")
+					return errReadBroke
 				case <-ctx.Done():
 					return ctx.Err()
 				}
@@ -165,18 +169,23 @@ func newLatestJob(ctx context.Context, t *testing.T, read source.SyncMode, sql s
 		state: "file://" + t.TempDir(), dest: opDest{newKeyDest(1)}}
 }
 
-// profileStream is s as the runner has it read with read: held, but where
-// it's read in the order of its time.
+// profileStream is s as the runner has it read with read: held, and read
+// whole each sync, with full_refresh; incremental by its time, or stream,
+// otherwise.
 func profileStream(read source.SyncMode) runner.Stream {
+	cursor := ""
+	if read == source.Incremental {
+		cursor = "at"
+	}
 	return runner.Stream{
-		Name: "s", Replay: source.Exact, Mode: destination.Append, Read: read,
+		Name: "s", Replay: source.Exact, Mode: destination.Append, Read: read, CursorField: cursor,
 		Schema: arrow.NewSchema([]arrow.Field{
 			{Name: "id", Type: arrow.PrimitiveTypes.Int64},
 			{Name: "region", Type: arrow.BinaryTypes.String, Nullable: true},
 			{Name: "amount", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
 			{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
 		}, nil),
-		EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Held: read != source.Stream},
+		EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Held: read == source.FullRefresh, FullRead: read == source.FullRefresh},
 	}
 }
 
@@ -225,7 +234,8 @@ const latestSmall = "INSERT INTO latest SELECT region, amount, at FROM (SELECT r
 // latest passes keeps its latest; a key the read doesn't have keeps its
 // row, as with any full_refresh merge. Within a read, a key whose latest
 // row fails ends with no row. A retry within the second sync restores the
-// state of the rows it read, and deletes a key it hasn't come to yet.
+// state of the rows it read: it deletes a key it hasn't come to yet, and
+// drops an older row of a key it has, which fails the filter.
 func TestALatestRowDedupeAcrossFullReads(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -234,23 +244,27 @@ func TestALatestRowDedupeAcrossFullReads(t *testing.T) {
 		{1, "eu", 10, 1}, {2, "eu", 20, 2}, {3, "us", 30, 1}, {5, "jp", 40, 1},
 		// de passes, then fails within the read.
 		{6, "de", 20, 1}, {7, "de", 90, 2},
+		// fr fails, then passes.
+		{8, "fr", 90, 1}, {9, "fr", 5, 2},
 	}
 	if _, err := runner.RunAttempt(ctx, l.job("a1", "s1", profileSource{rows: sync1}, nil)); err != nil {
 		t.Fatal(err)
 	}
 	got, ops := l.dest.merged(t, "latest", 0)
-	if want := map[string]string{"eu": "20", "us": "30", "jp": "40"}; !maps.Equal(got, want) {
+	if want := map[string]string{"eu": "20", "us": "30", "jp": "40", "fr": "5"}; !maps.Equal(got, want) {
 		t.Fatalf("after sync 1, %v, want %v (ops %v)", got, want, ops)
 	}
-	if n := l.takeDeletes(); n != 1 {
-		t.Errorf("sync 1 counted %d deletes, want de's", n)
+	// de's, and fr's earlier row's unless it came with fr's latest.
+	if n := l.takeDeletes(); n < 1 || n > 2 {
+		t.Errorf("sync 1 counted %d deletes, want de's, and fr's at most", n)
 	}
 
-	// Sync 2: us as it was; fr's earlier row fails and its latest passes;
-	// then the attempt fails, and its retry reads eu, whose latest row,
-	// first of eu's, now fails: the state the retry restores hasn't eu. jp
-	// is gone from the source.
-	sync2 := []profile{{3, "us", 30, 1}, {8, "fr", 90, 1}, {9, "fr", 5, 2}, {4, "eu", 90, 3}, {1, "eu", 10, 1}, {2, "eu", 20, 2}}
+	// Sync 2: us and fr as they were, and a new key, it; then the attempt
+	// fails. Its retry restores the state of those, and reads an older row
+	// of fr that fails the filter, which its state drops, and eu, whose
+	// latest row, first of eu's, now fails: the state hasn't eu. jp is gone
+	// from the source.
+	sync2 := []profile{{3, "us", 30, 1}, {9, "fr", 5, 2}, {10, "it", 10, 1}, {11, "fr", 95, 1}, {4, "eu", 90, 3}, {1, "eu", 10, 1}, {2, "eu", 20, 2}}
 	failed := make(chan struct{})
 	var once sync.Once
 	read := func(rec *checkpoint.Record) {
@@ -259,61 +273,92 @@ func TestALatestRowDedupeAcrossFullReads(t *testing.T) {
 		}
 	}
 	before := len(ops)
-	if _, err := runner.RunAttempt(ctx, l.job("a2", "s2", profileSource{rows: sync2, failAt: 3, failed: failed}, read)); err == nil {
-		t.Fatal("the first attempt of sync 2 succeeded")
+	if _, err := runner.RunAttempt(ctx, l.job("a2", "s2", profileSource{rows: sync2, failAt: 3, failed: failed}, read)); !errors.Is(err, errReadBroke) {
+		t.Fatalf("the first attempt of sync 2 ended with %v, want the read's failure", err)
 	}
 	if _, err := runner.RunAttempt(ctx, l.job("a3", "s2", profileSource{rows: sync2}, nil)); err != nil {
 		t.Fatal(err)
 	}
 	got, ops = l.dest.merged(t, "latest", before)
-	if want := map[string]string{"us": "30", "fr": "5", "jp": "40"}; !maps.Equal(got, want) {
+	if want := map[string]string{"us": "30", "fr": "5", "jp": "40", "it": "10"}; !maps.Equal(got, want) {
 		t.Errorf("after sync 2, %v, want %v (ops %v)", got, want, ops)
 	}
-	if !slices.Contains(ops[before:], "delete eu") || !slices.Contains(ops[before:], "insert us") {
-		t.Errorf("sync 2 wrote %v, want eu deleted and us written again", ops[before:])
+	if two := ops[before:]; !slices.Contains(two, "delete eu") || !slices.Contains(two, "insert us") || slices.Contains(two, "delete fr") {
+		t.Errorf("sync 2 wrote %v, want eu deleted, us written again, and no delete of fr", two)
 	}
-	if n := l.takeDeletes(); n == 0 || n > 2 {
-		t.Errorf("sync 2 counted %d deletes, want eu's, and fr's earlier row's at most", n)
+	if n := l.takeDeletes(); n != 1 {
+		t.Errorf("sync 2 counted %d deletes, want eu's", n)
 	}
 }
 
-// A continuous pipeline's restart restores the operator's state: a key it
-// knows the output has no row of writes no delete, and one whose row it
-// knows the output has writes one, once.
-func TestALatestRowDedupesRestartWritesNoExtraDeletes(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	l := newLatestJob(ctx, t, source.Stream, latestSmall)
-	rows := []profile{{1, "eu", 5, 1}, {2, "us", 500, 1}, {3, "us", 600, 2}, {4, "eu", 700, 2}}
-	run := func(owner string, upTo int) {
-		t.Helper()
-		drain := make(chan struct{})
-		var once sync.Once
-		j := l.job(owner, "c1", profileSource{rows: rows[:upTo], continuous: true}, func(rec *checkpoint.Record) {
-			if slices.ContainsFunc(rec.Splits("s"), func(sp checkpoint.SplitState) bool { return string(sp.State) == strconv.Itoa(upTo) }) {
-				once.Do(func() { close(drain) })
+// Over a read that isn't whole, the state a dedupe restores holds every
+// key it has seen, and a key it hasn't seen has no row of its writing: a
+// filtered row of a new key writes no delete. A continuous pipeline's
+// first start and restart, and an incremental pipeline's next sync,
+// delete only a key whose row they wrote. After a reset, which drops the
+// dedupe's state, a key's row from before stays when its latest row now
+// fails the filter: the documented gap.
+func TestALatestRowDedupeOverOtherReadsDeletesOnlyWhatItWrote(t *testing.T) {
+	for _, read := range []source.SyncMode{source.Stream, source.Incremental} {
+		t.Run(map[source.SyncMode]string{source.Stream: "continuous", source.Incremental: "incremental"}[read], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			l := newLatestJob(ctx, t, read, latestSmall)
+			// run reads rows to their end: a continuous pipeline drains once a
+			// record holds them all, and a scheduled one's read completes.
+			run := func(n int, resets []runner.Reset, rows ...profile) {
+				t.Helper()
+				owner, syncID := fmt.Sprintf("a%d", n), fmt.Sprintf("s%d", n)
+				if read != source.Stream {
+					j := l.job(owner, syncID, profileSource{rows: rows}, nil)
+					j.Resets = resets
+					if _, err := runner.RunAttempt(ctx, j); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+				drain := make(chan struct{})
+				var once sync.Once
+				all := strconv.Itoa(len(rows))
+				j := l.job(owner, "c1", profileSource{rows: rows, continuous: true}, func(rec *checkpoint.Record) {
+					if slices.ContainsFunc(rec.Splits("s"), func(sp checkpoint.SplitState) bool { return string(sp.State) == all }) {
+						once.Do(func() { close(drain) })
+					}
+				})
+				j.Drain, j.Resets = drain, resets
+				if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
+					t.Fatalf("%s ended with %v", owner, err)
+				}
+			}
+			// The first start: us is new, and fails the filter.
+			rows := []profile{{1, "eu", 5, 1}, {2, "us", 500, 1}}
+			run(1, nil, rows...)
+			_, ops := l.dest.merged(t, "latest", 0)
+			if want := []string{"insert eu"}; !slices.Equal(ops, want) {
+				t.Errorf("the first start wrote %v, want %v", ops, want)
+			}
+			// A restart, or the next sync, reads on: us again, eu now fails,
+			// and it is new and fails.
+			rows = append(rows, profile{3, "us", 600, 2}, profile{4, "eu", 700, 2}, profile{5, "it", 90, 2}, profile{6, "jp", 10, 3})
+			run(2, nil, rows...)
+			got, ops := l.dest.merged(t, "latest", 0)
+			if want := []string{"insert eu", "delete eu", "insert jp"}; !slices.Equal(ops, want) || !maps.Equal(got, map[string]string{"jp": "10"}) {
+				t.Errorf("after the restart, %v and ops %v, want jp's row and %v", got, ops, want)
+			}
+			if n := l.takeDeletes(); n != 1 {
+				t.Errorf("%d deletes counted, want eu's alone", n)
+			}
+
+			// A reset drops the dedupe's state, and the read starts over. The
+			// source has only jp's newer row now, which fails the filter.
+			run(3, []runner.Reset{{ID: "r1"}}, profile{7, "jp", 90, 4})
+			got, ops = l.dest.merged(t, "latest", 0)
+			// The documented gap: jp's row from before stays, until a row of
+			// it passes again or someone deletes it.
+			if got["jp"] != "10" || slices.Contains(ops, "delete jp") {
+				t.Errorf("after the reset, %v and ops %v, want jp's row from before kept", got, ops)
 			}
 		})
-		j.Drain = drain
-		if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
-			t.Fatalf("%s ended with %v", owner, err)
-		}
-	}
-	run("a1", 2)
-	_, ops := l.dest.merged(t, "latest", 0)
-	if want := []string{"insert eu", "delete us"}; !slices.Equal(ops, want) {
-		t.Errorf("the first run wrote %v, want %v", ops, want)
-	}
-	if n := l.takeDeletes(); n != 1 {
-		t.Errorf("the first run counted %d deletes, want 1", n)
-	}
-	run("a2", 4)
-	got, ops := l.dest.merged(t, "latest", 0)
-	if want := []string{"insert eu", "delete us", "delete eu"}; !slices.Equal(ops, want) || len(got) != 0 {
-		t.Errorf("after the restart, %v and ops %v, want none and %v", got, ops, want)
-	}
-	if n := l.takeDeletes(); n != 1 {
-		t.Errorf("the restart counted %d deletes, want eu's alone", n)
 	}
 }
 

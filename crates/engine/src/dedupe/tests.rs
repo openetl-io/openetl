@@ -37,6 +37,11 @@ fn stream() -> SchemaRef {
 /// The dedupe of a statement over `orders`, whose event time is `at`, with
 /// `retention` in microseconds.
 fn planned(sql: &str, retention: Option<i64>) -> Operator {
+    planned_read(sql, retention, false)
+}
+
+/// As planned, over a stream read whole each sync where `full_read`.
+fn planned_read(sql: &str, retention: Option<i64>, full_read: bool) -> Operator {
     let mut c = Catalog::new();
     c.insert(
         "orders",
@@ -54,7 +59,15 @@ fn planned(sql: &str, retention: Option<i64>) -> Operator {
         panic!("{sql}: not a dedupe");
     };
     let d = Arc::new(*d);
-    Operator::new(&d.id, st.at, d.clone(), &st.output, retention, GROUPS).unwrap()
+    Operator::new(
+        &d.id,
+        st.at,
+        d.clone(),
+        &st.output,
+        (retention, full_read),
+        GROUPS,
+    )
+    .unwrap()
 }
 
 /// Each region's first order.
@@ -122,6 +135,8 @@ struct Run {
     flush_at: usize,
     /// The early flushes of the lanes before a restore.
     flushes: u64,
+    /// Its stream is read whole each sync.
+    full_read: bool,
 }
 
 impl Run {
@@ -160,7 +175,17 @@ impl Run {
             forgot: 0,
             flush_at: 0,
             flushes: 0,
+            full_read: false,
         }
+    }
+
+    /// The run over a stream read whole each sync, as a full_refresh read.
+    fn full_read(mut self, retention: Option<i64>) -> Run {
+        self.full_read = true;
+        for op in &mut self.ops {
+            *op = planned_read(self.sql, retention, true);
+        }
+        self
     }
 
     /// Has each lane flush its changes early past `bytes`.
@@ -189,6 +214,9 @@ impl Run {
     ) -> Run {
         let watermark = self.ops[0].base.watermark;
         let mut run = Run::new(self.sql, retention, bucket, at, lanes, snapshots).await;
+        if self.full_read {
+            run = run.full_read(retention);
+        }
         run.flush_at(self.flush_at);
         run.flushes = self.flushes();
         run.out = self.out;
@@ -500,69 +528,125 @@ async fn the_latest_row_is_an_upsert_and_an_older_one_never_replaces_it() {
 
 /// A filter after a latest-row dedupe holds the output to a key's latest
 /// row where it passes: a later row that fails it deletes the key's row,
-/// and so does one of a key state doesn't have, whose row the output may
-/// have from before; one of a key state has, which the output doesn't
-/// have, writes nothing.
+/// and one of a key whose row the output doesn't have writes nothing. Over
+/// a full read, a key state doesn't have may have a row from an earlier
+/// read, so a row of it that fails the filter deletes it too.
 #[tokio::test]
 async fn a_latest_row_a_filter_drops_deletes_its_keys_row() {
-    let bucket = MemoryBucket::new();
-    let mut run = Run::new(LATEST_SMALL, None, &bucket, (1, 1), 1, &[]).await;
-    run.rows(&[(1, "eu", 5, SEC), (2, "us", 500, SEC)]).await;
-    assert_eq!(run.out.ops, ["insert eu", "delete us"]);
-    run.rows(&[(3, "eu", 500, 2 * SEC)]).await;
-    assert!(run.out.merged.is_empty(), "{:?}", run.out);
-    run.rows(&[(6, "us", 600, 2 * SEC)]).await;
-    assert_eq!(run.out.ops, ["insert eu", "delete us", "delete eu"]);
-    run.rows(&[(4, "eu", 7, 3 * SEC), (5, "us", 6, 3 * SEC)])
-        .await;
-    let mut last: Vec<&str> = run.out.ops[3..].iter().map(String::as_str).collect();
-    last.sort_unstable();
-    assert_eq!(last, ["insert eu", "insert us"]);
-    let ids: Vec<u64> = run.out.merged.values().map(|r| r.0).collect();
-    assert_eq!(ids, [4, 5]);
-    assert_eq!(
-        latest(
-            &[
-                (1, "eu", 5, SEC),
-                (2, "us", 500, SEC),
-                (3, "eu", 500, 2 * SEC),
-                (6, "us", 600, 2 * SEC),
-                (4, "eu", 7, 3 * SEC),
-                (5, "us", 6, 3 * SEC)
-            ],
-            |a| a < 50
-        )
-        .len(),
-        2
-    );
+    let rows: [&[Row]; 4] = [
+        &[(1, "eu", 5, SEC), (2, "us", 500, SEC)],
+        &[(3, "eu", 500, 2 * SEC)],
+        &[(6, "us", 600, 2 * SEC)],
+        &[(4, "eu", 7, 3 * SEC), (5, "us", 6, 3 * SEC)],
+    ];
+    let mut compared = 0;
+    for (full_read, want) in [
+        (false, &["insert eu", "delete eu"][..]),
+        (true, &["insert eu", "delete us", "delete eu"][..]),
+    ] {
+        let mut run = Run::new(LATEST_SMALL, None, &MemoryBucket::new(), (1, 1), 1, &[]).await;
+        if full_read {
+            run = run.full_read(None);
+        }
+        for (i, part) in rows.iter().enumerate() {
+            run.rows(part).await;
+            if i == 1 {
+                assert!(run.out.merged.is_empty(), "{:?}", run.out);
+            }
+        }
+        assert_eq!(run.out.ops[..want.len()], *want, "full read {full_read}");
+        let mut last: Vec<&str> = run.out.ops[want.len()..]
+            .iter()
+            .map(String::as_str)
+            .collect();
+        last.sort_unstable();
+        assert_eq!(last, ["insert eu", "insert us"], "full read {full_read}");
+        let ids: Vec<u64> = run.out.merged.values().map(|r| r.0).collect();
+        assert_eq!(ids, [4, 5]);
+        compared += 1;
+    }
+    assert_eq!(compared, 2);
+    let all: Vec<Row> = rows.iter().flat_map(|r| r.iter().copied()).collect();
+    assert_eq!(latest(&all, |a| a < 50).len(), 2);
 }
 
 /// The next full read starts with no state, and the output has the last
 /// read's rows: a key whose latest row the filter now drops is deleted, a
 /// key whose latest row passes is written again, and a key the read
-/// doesn't have keeps its row, as nothing of it comes.
+/// doesn't have keeps its row, as nothing of it comes. Another read whose
+/// state started empty, as after a reset, keeps the dropped key's row: it
+/// knows of no row of the key.
 #[tokio::test]
-async fn a_read_without_state_deletes_the_keys_the_filter_drops() {
-    let bucket = MemoryBucket::new();
-    let mut run = Run::new(LATEST_SMALL, None, &bucket, (1, 1), 1, &[]).await;
+async fn a_full_read_without_state_deletes_the_keys_the_filter_drops() {
+    let mut run = Run::new(LATEST_SMALL, None, &MemoryBucket::new(), (1, 1), 1, &[]).await;
     run.rows(&[(1, "eu", 5, SEC), (2, "us", 6, SEC), (3, "jp", 7, SEC)])
         .await;
     assert_eq!(run.out.merged.len(), 3);
-    let before = run.out.clone();
-    let mut next = Run::new(LATEST_SMALL, None, &MemoryBucket::new(), (2, 1), 1, &[]).await;
-    next.out = before;
-    next.rows(&[(1, "eu", 5, SEC), (4, "eu", 90, 2 * SEC), (2, "us", 6, SEC)])
-        .await;
-    let mut ops: Vec<&str> = next.out.ops[3..].iter().map(String::as_str).collect();
-    ops.sort_unstable();
-    assert_eq!(ops, ["delete eu", "insert us"]);
-    let ids: BTreeMap<&str, u64> = next
-        .out
-        .merged
-        .iter()
-        .map(|(k, r)| (k.as_str(), r.0))
-        .collect();
-    assert_eq!(ids, BTreeMap::from([("jp", 3), ("us", 2)]));
+    let mut compared = 0;
+    for (full_read, ops, ids) in [
+        (
+            true,
+            &["delete eu", "insert us"][..],
+            &[("jp", 3), ("us", 2)][..],
+        ),
+        // The documented gap: eu keeps its row until a row of it passes.
+        (
+            false,
+            &["insert us"][..],
+            &[("eu", 1), ("jp", 3), ("us", 2)][..],
+        ),
+    ] {
+        let mut next = Run::new(LATEST_SMALL, None, &MemoryBucket::new(), (2, 1), 1, &[]).await;
+        if full_read {
+            next = next.full_read(None);
+        }
+        next.out = run.out.clone();
+        next.rows(&[(1, "eu", 5, SEC), (4, "eu", 90, 2 * SEC), (2, "us", 6, SEC)])
+            .await;
+        let mut got: Vec<&str> = next.out.ops[3..].iter().map(String::as_str).collect();
+        got.sort_unstable();
+        assert_eq!(got, ops, "full read {full_read}");
+        let kept: BTreeMap<&str, u64> = next
+            .out
+            .merged
+            .iter()
+            .map(|(k, r)| (k.as_str(), r.0))
+            .collect();
+        assert_eq!(kept, ids.iter().copied().collect(), "full read {full_read}");
+        compared += 1;
+    }
+    assert_eq!(compared, 2);
+}
+
+/// Over a full read, a key whose first row the filter can't evaluate,
+/// which is quarantined, stays unknown: the output keeps what it has, and
+/// a later row of the key that fails the filter deletes the key's row from
+/// an earlier read. Over another read, such a key's row is known to be
+/// absent, and nothing is written.
+#[tokio::test]
+async fn a_quarantined_row_leaves_its_key_unknown_in_a_full_read() {
+    let sql = "INSERT INTO o SELECT region, amount, at FROM \
+               (SELECT *, row_number() OVER (PARTITION BY region ORDER BY at DESC) AS rn FROM orders) \
+               WHERE rn = 1 AND 100 / amount > 1";
+    let mut compared = 0;
+    for (full_read, want) in [(true, &["delete eu"][..]), (false, &[][..])] {
+        let mut run = Run::new(sql, None, &MemoryBucket::new(), (1, 1), 1, &[]).await;
+        if full_read {
+            run = run.full_read(None);
+        }
+        run.out.merged.insert("eu".into(), (0, "earlier".into()));
+        // 100 / 0 fails, and the row is quarantined.
+        let (b, i) = batch(&run.ops[0], &[(1, "eu", 0, SEC)]);
+        let out = run.ops[0].rows(&mut run.layers[0], &b, &i).await.unwrap();
+        assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
+        assert!(out.rows.is_none());
+        // 100 / 500 is 0, which fails the filter.
+        run.rows(&[(2, "eu", 500, 2 * SEC)]).await;
+        assert_eq!(run.out.ops, want, "full read {full_read}");
+        assert_eq!(run.out.merged.contains_key("eu"), !full_read);
+        compared += 1;
+    }
+    assert_eq!(compared, 2);
 }
 
 /// Whatever order a key's rows come in, one batch or several, its row ends
@@ -589,9 +673,10 @@ async fn a_keys_row_ends_as_its_latest_whatever_the_order() {
         }
         for order in orders {
             for one_batch in [true, false] {
-                // The output has eu's row from an earlier read.
-                let mut run =
-                    Run::new(LATEST_SMALL, None, &MemoryBucket::new(), (1, 1), 1, &[]).await;
+                // The output has eu's row from an earlier full read.
+                let mut run = Run::new(LATEST_SMALL, None, &MemoryBucket::new(), (1, 1), 1, &[])
+                    .await
+                    .full_read(None);
                 run.out.merged.insert("eu".into(), (0, "earlier".into()));
                 let picked: Vec<Row> = order.iter().map(|&i| rows[i]).collect();
                 if one_batch {
@@ -620,13 +705,15 @@ async fn a_keys_row_ends_as_its_latest_whatever_the_order() {
 
 /// A key state has keeps whether the output has its row across a restore:
 /// a key the output doesn't have writes no delete, and one it has writes
-/// one. A key state doesn't have yet, which the read's retry hasn't come
-/// to, is deleted where the filter drops its latest row, as the output may
-/// have its row from the last read.
+/// one. In a full read, a key state doesn't have yet, which the read's
+/// retry hasn't come to, is deleted where the filter drops its latest row,
+/// as the output may have its row from the last read.
 #[tokio::test]
 async fn a_restore_keeps_what_state_knows_of_the_output() {
     let bucket = MemoryBucket::new();
-    let mut run = Run::new(LATEST_SMALL, None, &bucket, (1, 1), 1, &[]).await;
+    let mut run = Run::new(LATEST_SMALL, None, &bucket, (1, 1), 1, &[])
+        .await
+        .full_read(None);
     // jp's row is in the output from the last read.
     run.out.merged.insert("jp".into(), (0, "earlier".into()));
     run.rows(&[(1, "eu", 5, SEC), (2, "us", 500, SEC)]).await;
@@ -720,7 +807,7 @@ fn a_first_row_dedupe_needs_a_retention() {
         (None, "and stream \"orders\" sets no dedupe.retention"),
         (Some(0), "a dedupe's retention of 0µs"),
     ] {
-        let Err(e) = Operator::new(&d.id, st.at, d.clone(), "o", retention, GROUPS) else {
+        let Err(e) = Operator::new(&d.id, st.at, d.clone(), "o", (retention, false), GROUPS) else {
             panic!("{retention:?} takes");
         };
         assert!(e.message.contains(want), "{}", e.message);

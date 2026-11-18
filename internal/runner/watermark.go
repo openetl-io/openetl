@@ -34,6 +34,9 @@ type EventTime struct {
 	// microseconds of event time; math.MaxInt64 for good, and nil where the
 	// stream sets none.
 	Dedupe *int64
+	// It's read whole each sync, with full_refresh, each read with no state
+	// for the statements that read it.
+	FullRead bool
 }
 
 func (e *EventTime) idle() time.Duration {
