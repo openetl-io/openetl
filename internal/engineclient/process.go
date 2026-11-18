@@ -130,11 +130,9 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	}
 	control := filepath.Join(dir, "control.sock")
 	p := &process{dir: dir, data: filepath.Join(dir, "data.sock"), peak: opts.PeakMemory, meter: opts.Meter, size: opts.Size, exited: make(chan struct{})}
-	if opts.Scratch > 0 && opts.ScratchDir != "" {
-		if p.scratch, p.lock, err = makeScratch(opts.ScratchDir); err != nil {
-			p.removeDir()
-			return nil, errs.Wrap(errs.Internal, err, "engineclient: make the engine's scratch directory")
-		}
+	if p.scratch, p.lock, err = prepareScratch(opts); err != nil {
+		p.removeDir()
+		return nil, errs.Wrap(errs.Internal, err, "engineclient: make the engine's scratch directory")
 	}
 	if len(control) > maxSocketPath {
 		p.removeDir()
@@ -299,6 +297,22 @@ func (p *process) limits(o Options) *enginev1.Limits {
 		return nil
 	}
 	return &l
+}
+
+// prepareScratch makes an engine's scratch directory in o.ScratchDir, if
+// it has scratch; with none, it only removes what engines of runners that
+// died left there, as after --scratch was turned to 0.
+func prepareScratch(o Options) (string, *os.File, error) {
+	switch {
+	case o.ScratchDir == "":
+		return "", nil, nil
+	case o.Scratch <= 0:
+		if parent, err := filepath.Abs(o.ScratchDir); err == nil {
+			sweep(parent)
+		}
+		return "", nil, nil
+	}
+	return makeScratch(o.ScratchDir)
 }
 
 // makeScratch makes an engine's scratch directory in parent, after

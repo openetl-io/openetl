@@ -203,3 +203,23 @@ func TestAWindowsStateGoesToScratchAndOutOfMemory(t *testing.T) {
 	}
 	t.Logf("%d early runs, %d named, %d reads from disk (%d bytes)", early, named, disk.Count, disk.Bytes)
 }
+
+// With --scratch 0 an engine gets no scratch directory, and what engines
+// of runners that died left in the scratch folder still goes.
+func TestNoScratchStillSweepsWhatDeadRunnersLeft(t *testing.T) {
+	tmp := t.TempDir()
+	dead := filepath.Join(tmp, "oe-dead")
+	if err := os.MkdirAll(filepath.Join(dead, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dead, dirLock), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir, lock, err := prepareScratch(Options{ScratchDir: tmp})
+	if err != nil || dir != "" || lock != nil {
+		t.Fatalf("scratch %q, %v, %v; want none", dir, lock, err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(tmp, "oe-*")); len(left) != 0 {
+		t.Errorf("left in the scratch folder: %v", left)
+	}
+}

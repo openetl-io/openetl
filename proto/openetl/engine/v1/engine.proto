@@ -656,9 +656,15 @@ message OperatorEpoch {
   // lanes whose rows met one past the watermark at the epoch's start.
   repeated LaneSteps steps = 17;
   // Reads of blocks and of runs' indexes and filters that the disk cache
-  // answered, which aren't requests, and their bytes; counted as lookups
-  // are.
-  StateRequests disk = 18;
+  // answered, counted as lookups are.
+  DiskReads disk = 18;
+}
+
+// DiskReads are reads of state that the engine's disk cache answered in
+// place of object storage, which aren't requests to it, and their bytes.
+message DiskReads {
+  uint64 count = 1;
+  uint64 bytes = 2;
 }
 
 // StateRequests are requests of one kind to object storage, and their

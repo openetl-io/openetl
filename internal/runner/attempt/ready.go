@@ -77,7 +77,7 @@ func OperatorOf(p *enginev1.OperatorEpoch) checkpoint.OperatorPart {
 		Operator: p.GetOperator(), RowsIn: p.GetRowsIn(), Inserts: p.GetInserts(), Updates: p.GetUpdates(), Deletes: p.GetDeletes(),
 		Late: p.GetLate(), Opened: p.GetWindowsOpened(), Dropped: p.GetWindowsDropped(), Watermark: p.Watermark,
 		MemoryBytes: p.GetMemoryBytes(), Runs: p.GetRuns(), Barrier: req(p.GetBarrier()), Lookup: req(p.GetLookup()), Restore: req(p.GetRestore()),
-		MergeWrite: req(p.GetMergeWrite()), MergeRead: req(p.GetMergeRead()), Disk: req(p.GetDisk()),
+		MergeWrite: req(p.GetMergeWrite()), MergeRead: req(p.GetMergeRead()), Disk: checkpoint.Requests{Count: p.GetDisk().GetCount(), Bytes: p.GetDisk().GetBytes()},
 		Steps: StepsOf(p.GetSteps()),
 	}
 }
@@ -129,7 +129,7 @@ func OperatorProto(o checkpoint.OperatorPart) *enginev1.OperatorEpoch {
 		Operator: o.Operator, RowsIn: o.RowsIn, Inserts: o.Inserts, Updates: o.Updates, Deletes: o.Deletes,
 		Late: o.Late, WindowsOpened: o.Opened, WindowsDropped: o.Dropped, Watermark: o.Watermark,
 		MemoryBytes: o.MemoryBytes, Runs: o.Runs, Barrier: req(o.Barrier), Lookup: req(o.Lookup), Restore: req(o.Restore),
-		MergeWrite: req(o.MergeWrite), MergeRead: req(o.MergeRead), Disk: req(o.Disk),
+		MergeWrite: req(o.MergeWrite), MergeRead: req(o.MergeRead), Disk: &enginev1.DiskReads{Count: o.Disk.Count, Bytes: o.Disk.Bytes},
 		Steps: StepsProto(o.Steps),
 	}
 }

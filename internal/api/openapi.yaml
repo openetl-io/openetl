@@ -3917,6 +3917,16 @@ components:
             properties:
                 catalog:
                     $ref: '#/components/schemas/Catalog'
+        DiskReads:
+            type: object
+            properties:
+                count:
+                    type: string
+                bytes:
+                    type: string
+            description: |-
+                DiskReads are reads of state that a runner's disk cache answered in place
+                 of object storage, which aren't requests to it, and their bytes.
         Document:
             type: object
             properties:
@@ -5049,7 +5059,7 @@ components:
                          its lanes changed since each last wrote its state to object storage.
                 diskReads:
                     allOf:
-                        - $ref: '#/components/schemas/StateRequests'
+                        - $ref: '#/components/schemas/DiskReads'
                     description: |-
                         Its reads of state that the runner's disk cache answered in the epoch,
                          which aren't requests to object storage, and their bytes. They can

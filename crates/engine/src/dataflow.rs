@@ -29,9 +29,9 @@ use openetl_normalize::{
 };
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
-    Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, LaneMetrics,
-    Metrics, OperatorEpoch, QuarantineCause, QuarantineFile, ReplayProgress, Rows, SchemaChange,
-    Split, SplitWatermarks, StagedStream, StateRequests, StreamHolds, StreamMetrics,
+    Barrier, CellHolds, ColumnHold, DiskReads, EpochReady, EventsResponse, FrameKind, HoldCause,
+    LaneMetrics, Metrics, OperatorEpoch, QuarantineCause, QuarantineFile, ReplayProgress, Rows,
+    SchemaChange, Split, SplitWatermarks, StagedStream, StateRequests, StreamHolds, StreamMetrics,
     events_response, hold_cause,
 };
 use openetl_state::runs::{Counts, Requests};
@@ -2498,7 +2498,11 @@ impl Flow {
                 op.lookup = requests(now.lookup, was.lookup);
                 op.restore = requests(now.restore, was.restore);
                 op.merge_read = requests(now.merge_read, was.merge_read);
-                op.disk = requests(now.disk, was.disk);
+                let disk = requests(now.disk, was.disk);
+                op.disk = disk.map(|d| DiskReads {
+                    count: d.count,
+                    bytes: d.bytes,
+                });
                 op.memory_bytes += stores.cache_bytes() as u64;
             }
         }
