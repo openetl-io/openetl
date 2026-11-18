@@ -188,8 +188,21 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 		if err != nil {
 			return err
 		}
+		if s.bug == "resume-other-split" && k == 1 {
+			e = resumesAs{e, out.Split("changes", "0")}
+		}
 		return s.readChanges(ctx, req.Continuous, sp.State, sp.Until, e, k)
 	})
+}
+
+// resumesAs sends a split's resume points as another split's.
+type resumesAs struct {
+	source.SplitEmitter
+	other source.SplitEmitter
+}
+
+func (e resumesAs) ResumePoint(state []byte, added ...source.Split) error {
+	return e.other.ResumePoint(state, added...)
 }
 
 // The log of changes splits by id, modulo changeSplits.
@@ -533,6 +546,7 @@ func TestSourceBugsFail(t *testing.T) {
 		"continuous-completes":   {"read/continuous", "read/continuous-splits"},
 		"continuous-no-resume":   {"read/continuous", "read/continuous-splits"},
 		"continuous-splits-wait": {"read/continuous-splits"},
+		"resume-other-split":     {"read/continuous-splits"},
 		"until-ignored":          {"read/until"},
 		"until-no-end":           {"read/until"},
 		"until-completes-first":  {"read/until"},

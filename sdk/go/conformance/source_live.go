@@ -3,6 +3,8 @@ package conformance
 import (
 	"context"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -377,6 +379,13 @@ func (r *sourceRun) checkContinuousSplits(t T) {
 	if !l.wait(r.readTimeout(), func(events []event) bool { return caughtUp(upstream, follow, events) }) {
 		r.liveFailed(t, l, "every split's records, on one lane")
 	}
+	// Time to end, for a read that ends once it has caught up.
+	l.wait(2*time.Second, func([]event) bool { return false })
+	if _, ended, err := l.state(); ended && err != nil {
+		t.Fatalf("the continuous read failed after it read every split's records: %s: %v", codeOf(err), err)
+	} else if ended {
+		t.Fatalf("the continuous read ended after it read every split's records")
+	}
 	r.addAndFollow(t, l, follow)
 }
 
@@ -406,7 +415,7 @@ func (r *sourceRun) liveFailed(t T, l *liveRead, what string) {
 }
 
 // addAndFollow adds records upstream to each stream, and checks the read
-// gets them, and a resume point after them.
+// gets them, and in each split that gets some, a resume point after them.
 func (r *sourceRun) addAndFollow(t T, l *liveRead, streams []*protocolv1.ConfiguredStream) {
 	t.Helper()
 	if r.s.AddRecords == nil {
@@ -426,7 +435,7 @@ func (r *sourceRun) addAndFollow(t T, l *liveRead, streams []*protocolv1.Configu
 		arrived := l.wait(r.readTimeout(), func(events []event) bool {
 			ev := eventsOf(events, name)
 			fresh := novel(allRows(ev), seen)
-			return len(fresh) >= n && lastRowBeforeResume(ev)
+			return len(fresh) >= n && unresumed(ev, seen) == nil
 		})
 		if !arrived {
 			events, ended, err := l.state()
@@ -438,22 +447,43 @@ func (r *sourceRun) addAndFollow(t T, l *liveRead, streams []*protocolv1.Configu
 			case len(fresh) < n:
 				t.Errorf("%s: %d records were added upstream, and within %s the continuous read read %d of them", name, n, r.readTimeout(), len(fresh))
 			default:
-				t.Errorf("%s: no resume point followed the records added upstream within %s, so the platform can't commit them", name, r.readTimeout())
+				t.Errorf("%s: no resume point of %s followed the records added upstream within %s, so the platform can't commit them", name, splitNames(unresumed(ev, seen)), r.readTimeout())
 			}
 		}
 	}
 }
 
-// lastRowBeforeResume reports whether a resume point follows the stream's
-// last batch.
-func lastRowBeforeResume(events []event) bool {
-	for i := len(events) - 1; i >= 0; i-- {
+// unresumed are the splits of a stream's events with records not in seen
+// whose last batch no resume point of theirs follows; the whole stream is
+// the empty split.
+func unresumed(events []event, seen multiset) []string {
+	fresh, open := map[string]bool{}, map[string]bool{}
+	for _, e := range events {
 		switch {
-		case events[i].resume:
-			return true
-		case events[i].batch && len(events[i].rows) > 0:
-			return false
+		case e.resume:
+			open[e.split] = false
+		case e.batch && len(e.rows) > 0:
+			open[e.split] = true
+			fresh[e.split] = fresh[e.split] || len(novel(e.rows, seen)) > 0
 		}
 	}
-	return false
+	var out []string
+	for split := range fresh {
+		if open[split] {
+			out = append(out, split)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func splitNames(splits []string) string {
+	names := make([]string, len(splits))
+	for i, s := range splits {
+		names[i] = "split " + strconv.Quote(s)
+		if s == "" {
+			names[i] = "the whole stream"
+		}
+	}
+	return strings.Join(names, ", ")
 }

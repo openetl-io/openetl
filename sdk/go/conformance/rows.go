@@ -56,6 +56,8 @@ func newRow(fields map[string]string, control ...string) row {
 // event is one message of a read, in the order it came.
 type event struct {
 	stream string
+	// The split it's of; empty for the whole stream.
+	split string
 	// A batch: its records, and its Arrow schema unless it was JSON rows.
 	batch  bool
 	rows   []row
@@ -125,9 +127,9 @@ func readWith(ctx context.Context, conn grpc.ClientConnInterface, req *protocolv
 				return res, fmt.Errorf("a batch of %s: %w", m.Batch.GetStream(), err)
 			}
 		case *protocolv1.ReadResponse_ResumePoint:
-			e = event{stream: m.ResumePoint.GetStream(), resume: true, state: m.ResumePoint.GetState()}
+			e = event{stream: m.ResumePoint.GetStream(), split: m.ResumePoint.GetSplit(), resume: true, state: m.ResumePoint.GetState()}
 		case *protocolv1.ReadResponse_Complete:
-			e = event{stream: m.Complete.GetStream(), complete: true, next: m.Complete.GetNext(), hasNext: m.Complete.Next != nil}
+			e = event{stream: m.Complete.GetStream(), split: m.Complete.GetSplit(), complete: true, next: m.Complete.GetNext(), hasNext: m.Complete.Next != nil}
 		case *protocolv1.ReadResponse_Progress:
 			e = event{stream: m.Progress.GetStream(), progress: true}
 		default:
@@ -141,7 +143,7 @@ func readWith(ctx context.Context, conn grpc.ClientConnInterface, req *protocolv
 }
 
 func decodeBatch(b *protocolv1.RecordBatch) (event, error) {
-	e := event{stream: b.GetStream(), batch: true}
+	e := event{stream: b.GetStream(), split: b.GetSplit(), batch: true}
 	if rows := b.GetRows(); rows != nil {
 		for _, r := range rows.GetRows() {
 			var m map[string]json.RawMessage
