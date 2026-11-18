@@ -99,7 +99,8 @@ func (j *Job) OnWorkers(workers int) error {
 		return errs.New(errs.ConfigInvalid, "runner: %d workers", workers)
 	}
 	_, engineSink := j.Destination.(EngineSink)
-	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode()}
+	facts := plan.WorkerJob{Workers: workers, Caps: j.Destination.Capabilities(), EngineWritten: engineSink, OwnCode: j.ownCode(),
+		Holds: slices.ContainsFunc(j.sinkStreams(), j.holdsOn)}
 	why := plan.OnePod(facts)
 	if why == "" && workers > 1 && j.stateful() && !meshes(j.Dataflow) {
 		why = "a SQL statement with state, as a group window or OVER, takes its rows from every worker, and the dataflow's engines don't exchange rows between workers"

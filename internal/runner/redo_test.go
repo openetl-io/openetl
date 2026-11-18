@@ -639,6 +639,53 @@ func TestARedoUnderAnotherKeyIsRefused(t *testing.T) {
 	}
 }
 
+// A redo doesn't hold what its epoch held, so an epoch whose record holds
+// isn't redone, on workers or on one pod: a job whose streams hold runs on
+// one pod into a destination whose lanes commit on their own, where an
+// epoch commits whole.
+func TestARedoOfAnEpochThatHeldIsRefused(t *testing.T) {
+	for _, n := range []int{0, 2} {
+		t.Run(fmt.Sprintf("workers=%d", n), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			s := newTxnStore(t)
+			p := txnPool(t, s, ranges(6, 100, 5))
+			store := checkpoint.NewMemStore()
+			p.log = checkpoint.NewLog(store, "org", "p")
+			p.change = func(j *runner.Job) { j.Streams[0].PrimaryKey = []string{"id"} }
+			head := p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+			// As a record of an epoch that held x would have it.
+			key := fmt.Sprintf("org/p/_checkpoints/%020d-g%020d.json", head.Epoch, head.Generation)
+			b, v, err := store.Get(ctx, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rec checkpoint.Record
+			if err := json.Unmarshal(b, &rec); err != nil {
+				t.Fatal(err)
+			}
+			st := rec.Streams["s"]
+			st.Holds = &checkpoint.Holds{Columns: []checkpoint.ColumnHold{{Column: "x", Since: rec.Ref()}}}
+			rec.Streams["s"] = st
+			if b, err = json.Marshal(rec); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Swap(ctx, key, b, v); err != nil {
+				t.Fatal(err)
+			}
+			err = p.attempt(ctx, s, "a2", n)
+			if errs.CodeOf(err) != errs.Internal || !strings.Contains(fmt.Sprint(err), `"s" held columns or cells in epoch`) {
+				t.Fatalf("the attempt ended with %v (%s)", err, errs.CodeOf(err))
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.marked[laneMark{head.Generation, head.Epoch, 0}] {
+				t.Error("lane 0 was committed")
+			}
+		})
+	}
+}
+
 // A worker settling when the attempt fails stops: its redo, which would
 // otherwise go on to its end, ends with the attempt.
 func TestASettlingWorkerStopsWithTheAttempt(t *testing.T) {

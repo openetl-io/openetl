@@ -77,6 +77,7 @@ These jobs run on one pod:
 - a job with a Spark or Flink transform;
 - a job whose destination loads staged epochs or is written by the engine;
 - a job whose destination is transactional and does not have lane commits;
+- a job whose destination has lane commits, where a stream holds (`Job.holdsOn`): a redo plans without holds, since a record does not say where in its epoch a hold started, or which held values a release patched in. A redo of an epoch whose record, or the record before it, holds anything fails;
 - a job whose destination takes fewer writer lanes than there are workers;
 - a job with a SQL statement that keeps state, as a group window, when the engines of its dataflow do not exchange rows between workers: its keyed lanes then take the stream from every lane of the attempt in one engine. Without the exchange, the engine refuses such a statement in a part of an attempt. It accepts one only in the part that a redo writes again.
 

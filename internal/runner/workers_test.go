@@ -1284,8 +1284,8 @@ type meshingPassthrough struct{ runner.Passthrough }
 func (meshingPassthrough) Meshes() bool { return true }
 
 // What only one pod runs is refused workers; a SQL transform, into a
-// destination whose lanes commit on their own too, and holds aren't. A
-// group window takes its rows from every worker, so it runs on workers
+// destination whose lanes commit on their own too, and holds aren't, but
+// into such a destination. A group window takes its rows from every worker, so it runs on workers
 // whose engines exchange rows between them, and on one pod otherwise.
 func TestWhatRunsOnOnePod(t *testing.T) {
 	p := newPool(t, ranges(1, 1, 1))
@@ -1329,6 +1329,17 @@ func TestWhatRunsOnOnePod(t *testing.T) {
 			j.HeldURL = "file:///held"
 			j.Streams[0].PrimaryKey, j.Streams[0].Holds = []string{"id"}, &runner.StreamHolds{Cells: true}
 		}, false},
+		// A redo of a lost writer lane's part of an epoch doesn't hold what
+		// the epoch held.
+		"holds into lane commits": {2, func(j *runner.Job) {
+			j.Destination = holdingTxnDest{txnDest{s: newTxnStore(t)}}
+			j.HeldURL = "file:///held"
+			j.Streams[0].PrimaryKey, j.Streams[0].Holds = []string{"id"}, &runner.StreamHolds{}
+		}, true},
+		"lane commits that could hold, of a stream that doesn't": {2, func(j *runner.Job) {
+			j.Destination = holdingTxnDest{txnDest{s: newTxnStore(t)}}
+			j.HeldURL = "file:///held"
+		}, false},
 	} {
 		j := p.job("a1", p.source(), stagingDest{s: p.store, t: t})
 		c.change(&j)
@@ -1340,6 +1351,16 @@ func TestWhatRunsOnOnePod(t *testing.T) {
 	if err := j.OnWorkers(16); err != nil {
 		t.Error(err)
 	}
+}
+
+// holdingTxnDest is txnDest taking holds.
+type holdingTxnDest struct{ txnDest }
+
+func (d holdingTxnDest) Capabilities() destination.Capabilities {
+	c := d.txnDest.Capabilities()
+	c.WriteModes = []destination.WriteMode{destination.Append, destination.Merge}
+	c.Holds = destination.Holds{ByID: true, ByKey: true, Guarded: true}
+	return c
 }
 
 // holdingStagingDest is stagingDest taking holds.

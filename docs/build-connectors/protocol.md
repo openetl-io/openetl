@@ -142,7 +142,7 @@ A pipeline can run each job on several workers, each a runner in a pod of its ow
 - **Positions.** Each worker's source gets `Committed` only for the positions of its own splits.
 - **Writer lanes.** Each worker opens at least one writer lane, so a job runs on workers only if `maxWriterLanes` is at least the number of workers. Writer lane 0 is on the first worker.
 - **Commits.** The first worker calls `Recover`, and commits each checkpoint with every worker's committables. `Commit` must work from committables that writers in other processes returned from `PreCommit`. A destination with [lane commits](#lane-commits) is different: each worker commits its own writer lanes.
-- **One pod.** A job runs on one pod when its destination is a `transactional_stream` without `laneCommits`, or has `delivery: staged`.
+- **One pod.** A job runs on one pod when its destination is a `transactional_stream` without `laneCommits`, or has `delivery: staged`. It also runs on one pod when its destination declares `laneCommits` and takes holds for a stream's write mode, so that the stream can hold columns.
 - **Schemas and holds.** Every worker's writers get the same schemas, and the first worker applies them. A destination that takes holds gets the same held columns from every worker, and patches only from the first worker.
 
 #### Lane commits

@@ -82,6 +82,7 @@ The pipeline still applies, and its jobs run on one pod. These are the reasons, 
 | `a transactional destination runs on one pod unless its writer lanes commit on their own` | Nothing today: a transactional destination runs on workers only if its connector declares lane commits. Its documentation says whether it does. |
 | `a destination that loads staged epochs runs on one pod` | Nothing today: a destination that loads files that OpenETL stages runs on one pod. |
 | `a destination the engine writes runs on one pod` | Nothing today: the built-in `parquet` destination runs on one pod. |
+| `a stream that can hold columns runs on one pod into a destination whose writer lanes commit on their own` | Nothing today: a keyed stream can hold columns when the destination takes holds for its write mode, and then a job into a destination with [lane commits](#when-a-pod-fails) runs on one pod. |
 | `no pod launcher of data plane "PLANE" and pool "POOL" has reported in the last ten minutes, and an attempt runs on workers only in pods` | Run the pipeline in a pool that has a pod launcher, or ask your operator to add one. |
 
 A plan **problem**, not a warning, says when no pod launcher of the pool can ever take the job's pods. `apply` refuses the pipeline. Lower `resources.workers` or `resources.size`, or ask your operator to raise the launcher's limits.
@@ -173,6 +174,8 @@ Some transactional destinations commit each writer lane in a transaction of its 
 - It reads that lane's part of the epoch again from the source, from the same positions, and commits it. With an exchange, the lane's part holds its keys' rows of every split that the epoch read, on any worker, so the next attempt reads all those splits again. One worker reads the streams read with `cdc` again, one stream at a time. Only one reader can hold the log that their changes come from.
 
 If that attempt is stopped while it reads a lane's part again, the lane stays uncommitted, and the attempt after it reads the part again.
+
+A job runs on one pod when its destination has lane commits and one of its streams can hold columns. On one pod, such a destination gets one writer lane, and the next attempt recovers or rolls back each epoch whole.
 
 With a [SQL transform](./sql-transforms.md), the next attempt runs the statements again on what it reads. It commits each output's rows that the lane wrote, and no others:
 

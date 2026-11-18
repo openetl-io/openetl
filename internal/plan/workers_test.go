@@ -14,6 +14,8 @@ func TestWorkers(t *testing.T) {
 		WriteModes: []destination.WriteMode{destination.Append, destination.Merge, destination.Overwrite}}
 	held := lanes
 	held.Holds = destination.Holds{ByKey: true, Guarded: true}
+	heldLaneCommits := destination.Capabilities{Class: destination.TransactionalStream, WriterLanes: 4, LaneCommits: true,
+		WriteModes: []destination.WriteMode{destination.Append, destination.Merge}, Holds: held.Holds}
 	keyed := func(name string, splitsByKey bool, modes ...apiv1.SyncMode) *apiv1.CatalogStream {
 		return &apiv1.CatalogStream{Name: name, PrimaryKey: []string{"id"}, SyncModes: modes, SplitsByKey: splitsByKey}
 	}
@@ -103,6 +105,17 @@ func TestWorkers(t *testing.T) {
 			workers: 2, oneWorker: []string{
 				`changes: each attempt reads it on one of its 2 workers: the source reads its changes from one log, with those of every stream read with cdc, which one worker reads`,
 			}},
+		// A redo of a lost writer lane's part of an epoch doesn't hold what
+		// the epoch held: changes, keyed and merged, holds.
+		{name: "holds into lane commits", spec: spec(2, nil), cat: cat, caps: heldLaneCommits,
+			onePod: "a stream that can hold columns runs on one pod into a destination whose writer lanes commit on their own"},
+		{name: "sql passing a held stream into lane commits", spec: spec(2, func(p *apiv1.PipelineSpec) {
+			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
+		}), cat: cat, caps: heldLaneCommits, sql: &sqlplan.Answer{},
+			onePod: "a stream that can hold columns runs on one pod into a destination whose writer lanes commit on their own"},
+		{name: "nothing held into lane commits", spec: spec(2, nil), cat: &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
+			{Name: "logs", SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}},
+		}}, caps: heldLaneCommits, workers: 2},
 		{name: "sql not planned", spec: spec(2, func(p *apiv1.PipelineSpec) {
 			p.Transform = &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: "SELECT 1"}}}
 		}), cat: cat, caps: held, workers: 2},
