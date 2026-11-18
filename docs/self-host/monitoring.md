@@ -47,14 +47,15 @@ Source progress gauges are present only while a job reports them. Missing lag is
 
 ## Stateful operators
 
-A SQL transform's group window or `OVER` is a stateful operator: it keeps state between rows ([Aggregate by windows of time](../pipelines/windows.md), [Compute running totals with OVER](../pipelines/over.md)). The runner that commits a job records these metrics at each commit, from every worker's lanes of the operator, so a job on several pods reports each number once. Each has the attributes `openetl.org`, `openetl.pipeline` and `openetl.operator`, the operator's ID as `openetl plan` shows it. Counters count committed epochs only, as `openetl.job.rows.committed` does. Gauges hold the values at the operator's last commit.
+A SQL transform's group window, `OVER` or dedupe is a stateful operator: it keeps state between rows ([Aggregate by windows of time](../pipelines/windows.md), [Compute running totals with OVER](../pipelines/over.md), [Deduplicate rows with ROW_NUMBER](../pipelines/dedupe.md)). The runner that commits a job records these metrics at each commit, from every worker's lanes of the operator, so a job on several pods reports each number once. Each has the attributes `openetl.org`, `openetl.pipeline` and `openetl.operator`, the operator's ID as `openetl plan` shows it. Counters count committed epochs only, as `openetl.job.rows.committed` does. Gauges hold the values at the operator's last commit.
 
 | Instrument | Unit | Meaning |
 |---|---|---|
 | `openetl.operator.rows.in` | rows, counter | Rows of the statement's stream that reached the operator. |
 | `openetl.operator.rows.written` | rows, counter | Rows the operator wrote to its output, by `openetl.op`: `insert`, `update` or `delete`. Rows that the output quarantined are not counted. |
 | `openetl.operator.rows.late` | rows, counter | Rows the operator quarantined with the code `late`, as they came after their windows' allowed lateness, or after their windows had gone under an earlier lateness. |
-| `openetl.operator.windows` | windows | Windows, or sessions, whose state the operator keeps: open, or closed and within their lateness. A reset, or a version that changes the operator, starts it again from 0. |
+| `openetl.operator.rows.repeats` | rows, counter | Rows a dedupe dropped: repeats of a key it keeps, and for a dedupe that keeps each key's latest row, rows no later than the key's latest. |
+| `openetl.operator.windows` | windows | Windows, or sessions, whose state the operator keeps: open, or closed and within their lateness. For a dedupe, the keys it keeps. A first-row dedupe with a retention counts keys forgotten by buckets of their first rows' times, a sixteenth of the retention wide and at least a second, once the watermark passes a bucket's end plus the retention. A reset, or a version that changes the operator, starts it again from 0. |
 | `openetl.operator.watermark` | seconds since the Unix epoch | The operator's watermark: the least of its lanes'. It is absent until every lane has one, and is not updated at the end of input. |
 | `openetl.operator.watermark.lag` | seconds | How far the watermark was behind the time of the commit. |
 | `openetl.operator.state.memory` | bytes | What the operator's state held in memory at the end of the epoch. It counts the epoch's changes, the changes that the checkpoint record holds, and the indexes and filters of the state files that the operator opened. It also counts the hashes of the windows' keys in the files it names, what its merges hold, and its block cache. |

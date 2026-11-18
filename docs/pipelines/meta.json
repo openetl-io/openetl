@@ -19,6 +19,7 @@
     "sql-transforms",
     "windows",
     "over",
+    "dedupe",
     "workers",
     "troubleshooting"
   ]

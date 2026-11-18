@@ -594,9 +594,29 @@ func printOperators(out io.Writer, ops []*apiv1.OperatorPlan) {
 	_ = tw.Flush()
 }
 
+// dedupeText is what a dedupe keeps and guarantees.
+func dedupeText(op *apiv1.OperatorPlan) string {
+	what := "dedupe " + op.GetKeep() + " by " + op.GetEventTime()
+	if len(op.GetKeys()) > 0 {
+		what += " on " + strings.Join(op.GetKeys(), ", ")
+	}
+	switch {
+	case op.GetKeep() == "latest":
+		return what + "; keeps each key's latest row's time, and writes it as an upsert: exactly_once, and its state grows with the number of keys"
+	case op.GetGuarantee() == "":
+		return what + "; its stream sets no dedupe.retention"
+	case op.GetRetention() != nil:
+		r := op.GetRetention().AsDuration().String()
+		return what + "; remembers a key " + r + " of event time from its first row: exactly once within " + r + " of event time"
+	}
+	return what + "; remembers every key: exactly_once, and its state grows with the number of keys"
+}
+
 func operatorText(op *apiv1.OperatorPlan) string {
 	var what string
-	if op.GetClass() == "over" {
+	if op.GetKeep() != "" {
+		what = dedupeText(op)
+	} else if op.GetClass() == "over" {
 		what = "over by " + op.GetEventTime()
 		if len(op.GetKeys()) > 0 {
 			what += " on " + strings.Join(op.GetKeys(), ", ")

@@ -30,10 +30,17 @@ import (
 // so it never passes them. Once the writes stop, a record an hour past the
 // last on every partition, of a key the check leaves out, closes every
 // window.
+//
+// A dedupe run is the same, with many more keys: its statements keep each
+// key's first record, appended to Postgres, with a retention the run
+// draws, so each key's first records land once each, by their times alone,
+// however the run fails.
 
 const (
 	windowPartitions = 3
 	windowKeys       = 5
+	// A dedupe run's keys, each a few records.
+	dedupeKeys = 200
 	// The key of the records that close the windows. Its own windows
 	// never close.
 	windowEnd = "~end"
@@ -120,7 +127,10 @@ type windowWork struct {
 	kinds    []windowKind
 	delay    string
 	lateness string
-	cl       *kgo.Client
+	// A dedupe run's retention, which its streams set; empty for windows.
+	dedupe string
+	keys   int
+	cl     *kgo.Client
 	// Each topic's records produced, in the order of their times.
 	recs [][]windowRecord
 	// The latest timestamp produced.
@@ -132,7 +142,11 @@ func newWindowWork(t *testing.T, c chaosConfig, name string) *windowWork {
 	rng := rand.New(rand.NewPCG(c.seed, uint64(c.i)<<32|0x3d0e5))
 	sch := schema(name)
 	w := &windowWork{c: c, out: sch + "_out", delay: []string{"0s", "2s"}[rng.IntN(2)], lateness: []string{"0s", "30s"}[rng.IntN(2)],
-		at: time.Now().Add(time.Hour).Truncate(time.Minute)}
+		keys: windowKeys, at: time.Now().Add(time.Hour).Truncate(time.Minute)}
+	// A dedupe takes no lateness.
+	if c.transform == "dedupe" {
+		w.dedupe, w.lateness, w.keys = []string{"unbounded", "20s"}[rng.IntN(2)], "0s", dedupeKeys
+	}
 	for _, tbl := range chaosTables {
 		w.topics = append(w.topics, sch+"_"+tbl)
 		w.kinds = append(w.kinds, drawWindow(rng))
@@ -185,7 +199,7 @@ func (w *windowWork) produce(ctx context.Context, rng *rand.Rand, n int) error {
 		}
 		at = at.Add(step)
 		topic := rng.IntN(len(w.topics))
-		r := windowRecord{key: fmt.Sprintf("k%d", rng.IntN(windowKeys)), partition: rng.Int32N(windowPartitions), at: at}
+		r := windowRecord{key: fmt.Sprintf("k%d", rng.IntN(w.keys)), partition: rng.Int32N(windowPartitions), at: at}
 		batch = append(batch, made{topic, r})
 		recs = append(recs, &kgo.Record{Topic: w.topics[topic], Partition: r.partition, Key: []byte(r.key),
 			Value: []byte(`{"x": 1}`), Timestamp: at})
@@ -205,21 +219,31 @@ func (w *windowWork) produce(ctx context.Context, rng *rand.Rand, n int) error {
 func (w *windowWork) docs() (src, dst, pipeSource, pipeDest string) {
 	var streams []map[string]any
 	for _, topic := range w.topics {
-		streams = append(streams, map[string]any{"name": topic, "eventTime": "_kafka_timestamp",
-			"watermark": map[string]string{"delay": w.delay, "lateness": w.lateness}})
+		s := map[string]any{"name": topic, "eventTime": "_kafka_timestamp", "watermark": map[string]string{"delay": w.delay, "lateness": w.lateness}}
+		if w.dedupe != "" {
+			s["dedupe"] = map[string]string{"retention": w.dedupe}
+		}
+		streams = append(streams, s)
 	}
 	return mustJSON(map[string]any{"connector": "kafka", "config": map[string]any{"brokers": []string{kafkaBrokers()}, "topics": w.topics}}),
 		`{"connector": "postgres", "config": {"dsn": {"secret": "e2e-dsn"}}}`,
 		mustJSON(map[string]any{"streams": streams}),
-		mustJSON(map[string]string{"namespace": w.out, "write": "merge"})
+		mustJSON(map[string]string{"namespace": w.out, "write": w.c.write})
 }
 
-// transform is the pipeline's: a window's statement per topic, into the
-// output of its table's name, and none of the topics passed through.
+// transform is the pipeline's: a window's statement per topic, or a
+// dedupe's that keeps each key's first record, into the output of its
+// table's name, and none of the topics passed through.
 func (w *windowWork) transform() map[string]any {
 	var b strings.Builder
 	for i, tbl := range chaosTables {
-		b.WriteString(w.kinds[i].sql(tbl, w.topics[i]))
+		switch w.dedupe {
+		case "":
+			b.WriteString(w.kinds[i].sql(tbl, w.topics[i]))
+		default:
+			fmt.Fprintf(&b, "INSERT INTO %s SELECT _kafka_key AS k, _kafka_partition AS p, _kafka_timestamp AS at FROM %s "+
+				"QUALIFY row_number() OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) = 1;\n", tbl, w.topics[i])
+		}
 	}
 	return map[string]any{"sql": b.String(), "passthrough": "none"}
 }
@@ -280,11 +304,94 @@ func (w *windowWork) want(i int) map[windowKey]windowAgg {
 	return out
 }
 
+// A dedupe's row: its key and its time in microseconds.
+type dedupeRow struct {
+	key string
+	at  int64
+}
+
+// kept is each key's first records of topic i, by their times alone: in
+// order of time, a record is a first where its key's last first is the
+// retention or more before it, or it has none; unbounded, only the key's
+// first is.
+func (w *windowWork) kept(i int) map[dedupeRow]bool {
+	retention, forever := time.Duration(0), w.dedupe == "unbounded"
+	if !forever {
+		retention, _ = time.ParseDuration(w.dedupe)
+	}
+	last, out := map[string]time.Time{}, map[dedupeRow]bool{}
+	for _, r := range w.recs[i] {
+		if l, ok := last[r.key]; ok && (forever || r.at.Sub(l) < retention) {
+			continue
+		}
+		last[r.key] = r.at
+		out[dedupeRow{r.key, r.at.UnixMicro()}] = true
+	}
+	return out
+}
+
+// checkDedupe compares each output's table with its keys' first records:
+// each lands once, and a row twice is extra.
+func (w *windowWork) checkDedupe(t *testing.T) (missing, extra int, detail string) {
+	t.Helper()
+	var details []string
+	for i, tbl := range chaosTables {
+		got, err := rowsOf(t, `SELECT k, (extract(epoch FROM at) * 1000000)::bigint FROM `+pgx.Identifier{w.out, tbl}.Sanitize()+` WHERE k <> `+quote(windowEnd),
+			func(rows pgx.CollectableRow) (dedupeRow, error) {
+				var r dedupeRow
+				return r, rows.Scan(&r.key, &r.at)
+			})
+		if err != nil {
+			missing++
+			details = append(details, fmt.Sprintf("%s: %v", tbl, err))
+			continue
+		}
+		want := w.kept(i)
+		seen := map[dedupeRow]bool{}
+		m, e := 0, 0
+		for _, r := range got {
+			if !want[r] || seen[r] {
+				e++
+			}
+			seen[r] = true
+		}
+		for r := range want {
+			if !seen[r] {
+				m++
+			}
+		}
+		missing, extra = missing+m, extra+e
+		if m > 0 || e > 0 {
+			details = append(details, fmt.Sprintf("%s (retention %s): %d missing, %d extra of %d first records", tbl, w.dedupe, m, e, len(want)))
+		}
+	}
+	return missing, extra, strings.Join(details, "; ")
+}
+
+// rowsOf are what scan gives of each row of query.
+func rowsOf[T any](t *testing.T, query string, scan pgx.RowToFunc[T]) ([]T, error) {
+	t.Helper()
+	conn, err := pgx.Connect(t.Context(), env.dbURL)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	rows, err := conn.Query(t.Context(), query)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, scan)
+}
+
 // check compares each output's table with its windows. A window's row
 // lands once, when the window closes with every record of it, so a row
-// that differs never goes away: it's extra, as well as missing.
+// that differs never goes away: it's extra, as well as missing. A dedupe
+// run's, with its keys' first records.
 func (w *windowWork) check(t *testing.T) (missing, extra int, detail string) {
 	t.Helper()
+	if w.dedupe != "" {
+		return w.checkDedupe(t)
+	}
 	var details []string
 	for i, tbl := range chaosTables {
 		got, twice, err := windowTable(t, pgx.Identifier{w.out, tbl}.Sanitize())
@@ -352,11 +459,15 @@ func windowTable(t *testing.T, table string) (map[windowKey]windowAgg, int, erro
 func (w *windowWork) plant(t *testing.T, what string) {
 	t.Helper()
 	out := pgx.Identifier{w.out, chaosTables[0]}.Sanitize()
-	row := "(SELECT ctid FROM " + out + " WHERE NOT _openetl_deleted AND k <> " + quote(windowEnd) + " LIMIT 1)"
+	live, change := "NOT _openetl_deleted AND ", "n = n + 1"
+	if w.dedupe != "" {
+		live, change = "", "at = at + interval '1 second'"
+	}
+	row := "(SELECT ctid FROM " + out + " WHERE " + live + "k <> " + quote(windowEnd) + " LIMIT 1)"
 	if what == plantLoss {
 		run(t, "DELETE FROM "+out+" WHERE ctid = "+row)
 	} else {
-		run(t, "UPDATE "+out+" SET n = n + 1 WHERE ctid = "+row)
+		run(t, "UPDATE "+out+" SET "+change+" WHERE ctid = "+row)
 	}
 }
 
@@ -391,6 +502,20 @@ func (w *windowWork) drop(*testing.T) {
 // that commits killed once HEAD points to the record, on three; and the
 // coordinator killed there, on two.
 func TestChaosWindows(t *testing.T) {
+	keyedChaos(t, "window", "merge")
+}
+
+// TestChaosDedupe runs dedupes that keep each key's first record over
+// Kafka's partitions, appended to Postgres, through the faults
+// TestChaosWindows does: each key's first records land once each.
+func TestChaosDedupe(t *testing.T) {
+	keyedChaos(t, "dedupe", "append")
+}
+
+// keyedChaos runs a stateful statement, transform window or dedupe, over
+// Kafka's partitions into Postgres, written with write, through each of
+// the suite's faults, one a run, as TestChaosWindows says.
+func keyedChaos(t *testing.T, transform, write string) {
 	s := newChaosSuite(t, 1, 1)
 	type variant struct {
 		fault    string
@@ -413,7 +538,7 @@ func TestChaosWindows(t *testing.T) {
 	sem := make(chan struct{}, *chaosParallel)
 	for i, v := range variants {
 		c := chaosConfig{
-			i: i, seed: 1, source: "kafka", continuous: true, write: "merge", dest: "postgres", transform: "window", scope: "stream", interval: "1s",
+			i: i, seed: 1, source: "kafka", continuous: true, write: write, dest: "postgres", transform: transform, scope: "stream", interval: "1s",
 			size: "m", pods: v.pods, workers: v.workers, rescales: v.rescales, noise: v.noise, faults: []string{v.fault}, writeFor: 30 * time.Second, strict: true,
 		}
 		name := fmt.Sprintf("%s-%s", c.name(), strings.ReplaceAll(v.fault, " ", "-"))

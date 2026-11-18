@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +16,7 @@ import (
 	"github.com/openetl-io/openetl/internal/engineclient"
 	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/sqlplan"
+	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
 // openetl plan lists each stateful operator: where its statement is, its
@@ -38,6 +42,101 @@ func TestPlanShowsState(t *testing.T) {
 `
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
+// A dedupe's line says which row it keeps, how long it remembers a key and
+// what it guarantees.
+func TestPlanShowsDedupes(t *testing.T) {
+	var out bytes.Buffer
+	dedupe := func(id, keep, guarantee string, retention *durationpb.Duration) *apiv1.OperatorPlan {
+		return &apiv1.OperatorPlan{Id: id, Output: id, Line: 1, Column: 1, Class: "over", EventTime: "at", Keys: []string{"event_id"}, Keep: keep,
+			Guarantee: guarantee, Retention: retention, Change: apiv1.OperatorChange_OPERATOR_CHANGE_KEPT}
+	}
+	printOperators(&out, []*apiv1.OperatorPlan{
+		dedupe("a", "first", "exactly_once_within", durationpb.New(24*time.Hour)),
+		dedupe("b", "first", "exactly_once", nil),
+		dedupe("c", "first", "", nil),
+		dedupe("d", "latest", "exactly_once", nil),
+	})
+	want := `  state:
+    1:1  a  a  kept  dedupe first by at on event_id; remembers a key 24h0m0s of event time from its first row: exactly once within 24h0m0s of event time
+    1:1  b  b  kept  dedupe first by at on event_id; remembers every key: exactly_once, and its state grows with the number of keys
+    1:1  c  c  kept  dedupe first by at on event_id; its stream sets no dedupe.retention
+    1:1  d  d  kept  dedupe latest by at on event_id; keeps each key's latest row's time, and writes it as an upsert: exactly_once, and its state grows with the number of keys
+`
+	if out.String() != want {
+		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)
+	}
+}
+
+// Planned by the engine, a dedupe that keeps each key's first row is a
+// problem until its stream sets dedupe.retention, and then reports it and
+// what it guarantees; one that keeps the latest is merged.
+func TestPlanOfADedupeThroughTheEngine(t *testing.T) {
+	bin := os.Getenv("OPENETL_ENGINE")
+	if bin == "" {
+		t.Skip("set OPENETL_ENGINE to an openetl-engine binary; make test does")
+	}
+	cat := &apiv1.Catalog{Streams: []*apiv1.CatalogStream{{
+		Name: "events", SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_STREAM},
+		Columns: []*apiv1.CatalogColumn{{Name: "event_id", Type: "utf8"}, {Name: "kind", Type: "utf8"}, {Name: "at", Type: "timestamp[us, tz=UTC]"}},
+	}}}
+	sql := "INSERT INTO first_events\nSELECT event_id, kind, at FROM events\nQUALIFY row_number() OVER (PARTITION BY event_id ORDER BY at) = 1;\n" +
+		"INSERT INTO latest_events\nSELECT event_id, kind, at FROM events\nQUALIFY row_number() OVER (PARTITION BY event_id ORDER BY at DESC) = 1"
+	planned := func(d *apiv1.Dedupe) ([]*apiv1.OperatorPlan, []error, []*apiv1.StreamPlan) {
+		sp := &apiv1.PipelineSpec{
+			Mode:        apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
+			Source:      &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at", Dedupe: d}}},
+			Destination: &apiv1.PipelineDestination{},
+			Transform:   &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
+		}
+		req, unknown := plan.SQLRequest(sp, cat, nil)
+		if len(unknown) != 0 {
+			t.Fatal(unknown)
+		}
+		a, err := engineclient.Plan(t.Context(), engineclient.Options{Binary: bin}, req)
+		if err != nil || len(a.Errors) != 0 {
+			t.Fatalf("%+v, %v", a, err)
+		}
+		caps := destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream},
+			WriteModes: []destination.WriteMode{destination.Append, destination.Merge}}
+		streams, problems, _ := plan.PipelineSQL(sp, cat, caps, &a)
+		ops, _, _ := plan.Operators(sp, cat, &a, nil, nil, nil)
+		return ops, problems, streams
+	}
+	_, problems, _ := planned(nil)
+	if err := errors.Join(problems...); err == nil || !strings.Contains(err.Error(),
+		`transform.sql:1:1: the dedupe writing "first_events", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, and stream "events" sets no dedupe.retention`) {
+		t.Errorf("without a retention: %v", err)
+	}
+	ops, problems, streams := planned(&apiv1.Dedupe{Retention: durationpb.New(24 * time.Hour)})
+	if len(problems) != 0 {
+		t.Errorf("problems %v", problems)
+	}
+	var out bytes.Buffer
+	printOperators(&out, ops)
+	for _, want := range []string{
+		"first_events   dedupe-", "dedupe first by at on event_id; remembers a key 24h0m0s of event time from its first row: exactly once within 24h0m0s of event time",
+		"latest_events  dedupe-", "dedupe latest by at on event_id; keeps each key's latest row's time, and writes it as an upsert: exactly_once",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("printed\n%s\nwithout %q", out.String(), want)
+		}
+	}
+	// Over a superset stream, each output is written once a key: within the
+	// retention, or for good.
+	got := map[string]string{}
+	for _, s := range streams {
+		got[s.GetName()] = fmt.Sprintf("%v %v %s", s.GetWrite(), s.GetLevel(), s.GetReason())
+	}
+	want := map[string]string{
+		"first_events": "WRITE_MODE_APPEND DELIVERY_LEVEL_EXACTLY_ONCE exactly once within 24h0m0s of event time: a dedupe's output over superset inputs, " +
+			"which remembers a key 24h0m0s from its first row and writes a repeat after that again",
+		"latest_events": "WRITE_MODE_MERGE DELIVERY_LEVEL_EXACTLY_ONCE a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys",
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("streams %v, want %v", got, want)
 	}
 }
 

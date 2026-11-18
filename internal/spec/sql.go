@@ -53,9 +53,45 @@ type watermarkYAML struct {
 	Lateness string `yaml:"lateness"`
 }
 
+type dedupeYAML struct {
+	Retention string `yaml:"retention"`
+}
+
+// parseDedupe reads a stream's dedupe: a retention, a duration of event
+// time more than zero, or unbounded. Only a SQL transform takes it, over a
+// stream with eventTime.
+func parseDedupe(at string, s streamYAML, sql bool, st *apiv1.PipelineStream) error {
+	switch {
+	case s.Dedupe == nil:
+		return nil
+	case !sql:
+		return fmt.Errorf("%s.dedupe: a dedupe is a SQL transform's statement, and the pipeline has no transform.sql", at)
+	case s.EventTime == "":
+		return fmt.Errorf("%s.dedupe needs %s.eventTime, the column whose time its retention counts", at, at)
+	case s.Dedupe.Retention == "":
+		return fmt.Errorf("%s.dedupe.retention is empty: give how long, in event time, a dedupe remembers a key, such as 24h, or unbounded", at)
+	case s.Dedupe.Retention == "unbounded":
+		st.Dedupe = &apiv1.Dedupe{Unbounded: true}
+		return nil
+	}
+	d, err := duration(at+".dedupe.retention", s.Dedupe.Retention)
+	if err != nil {
+		return fmt.Errorf("%w, or unbounded", err)
+	}
+	if d.AsDuration() <= 0 {
+		return fmt.Errorf("%s.dedupe.retention must be more than zero, or unbounded", at)
+	}
+	st.Dedupe = &apiv1.Dedupe{Retention: d}
+	return nil
+}
+
 // parseEventTime reads a stream's eventTime and watermark, which only a SQL
-// transform takes. at is the stream's field, source.streams[i].
+// transform takes, and its dedupe. at is the stream's field,
+// source.streams[i].
 func parseEventTime(at string, s streamYAML, sql bool, st *apiv1.PipelineStream) error {
+	if err := parseDedupe(at, s, sql, st); err != nil {
+		return err
+	}
 	switch {
 	case s.EventTime == "" && s.Watermark == nil:
 		return nil

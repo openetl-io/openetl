@@ -348,6 +348,10 @@ message EventTime {
   // senders' watermarks, and close the windows up to this one at the
   // barrier. Unset: they go by their senders'.
   optional int64 closes_at = 6;
+  // How long a dedupe that keeps each key's first row remembers a key, in
+  // microseconds of event time from that row's; the largest int64 for good.
+  // Unset: the stream sets none, and such a dedupe over it is refused.
+  optional int64 dedupe_retention_micros = 7;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -618,6 +622,7 @@ message OperatorEpoch {
   uint64 late = 6;
   // Windows, or sessions, whose state it began keeping, and stopped
   // keeping: closed past their lateness, or merged into another session.
+  // A dedupe's keys it began keeping, and forgot past their retention.
   uint64 windows_opened = 7;
   uint64 windows_dropped = 8;
   // The least of its lanes' watermarks at their barriers, in microseconds
@@ -647,6 +652,9 @@ message OperatorEpoch {
   // watermark that each of its keyed lanes' rows met in the epoch, for
   // lanes whose rows met one past the watermark at the epoch's start.
   repeated LaneSteps steps = 17;
+  // A dedupe's rows it didn't write: repeats of a key it keeps, and for one
+  // that keeps each key's latest row, rows no later than the key's.
+  uint64 repeats = 18;
 }
 
 // StateRequests are requests of one kind to object storage, and their

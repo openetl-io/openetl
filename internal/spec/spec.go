@@ -402,6 +402,7 @@ type streamYAML struct {
 	TypeChanges string         `yaml:"typeChanges"`
 	EventTime   string         `yaml:"eventTime"`
 	Watermark   *watermarkYAML `yaml:"watermark"`
+	Dedupe      *dedupeYAML    `yaml:"dedupe"`
 	Columns     map[string]struct {
 		Type     string `yaml:"type"`
 		heldYAML `yaml:",inline"`

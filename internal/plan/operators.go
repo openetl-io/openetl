@@ -103,8 +103,17 @@ func Operators(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer, 
 // keeps fills in what op keeps, from planning's state and the spec's
 // settings for the stream it reads, ps. OVER's functions, with their
 // frames, are its aggregates, and it has no window, lateness or retention.
+// A dedupe has which row it keeps and what it guarantees, and a first-row
+// dedupe its retention, unset for unbounded.
 func keeps(op *apiv1.OperatorPlan, s *sqlplan.State, ps *apiv1.PipelineStream) {
 	if s == nil {
+		return
+	}
+	if s.Keep != "" {
+		op.EventTime, op.Keys, op.Keep, op.Guarantee = s.EventTime, s.Keys, s.Keep, s.Guarantee
+		if r := s.RetentionMicros; r != nil {
+			op.Retention = durationpb.New(time.Duration(*r) * time.Microsecond)
+		}
 		return
 	}
 	if s.Window == "" {
@@ -128,7 +137,12 @@ func keeps(op *apiv1.OperatorPlan, s *sqlplan.State, ps *apiv1.PipelineStream) {
 func changeWarning(op *apiv1.OperatorPlan) string {
 	at := fmt.Sprintf("transform.sql:%d:%d: ", op.GetLine(), op.GetColumn())
 	what, holds := "the group window", "its windows hold only rows read from then on, and a window open now loses the rows read before"
-	if op.GetClass() == "over" {
+	switch {
+	case op.GetKeep() == "first":
+		what, holds = "the dedupe", "it remembers only the keys of rows read from then on, so a key it kept before is written again"
+	case op.GetKeep() == "latest":
+		what, holds = "the dedupe", "it knows only the rows read from then on, so an older row of a key can replace a later one it wrote before"
+	case op.GetClass() == "over":
 		what, holds = "OVER", "each key's frame holds only rows read from then on, so running values start again"
 	}
 	backfill := ""

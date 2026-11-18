@@ -15,7 +15,8 @@ use openetl_state::{
     Snapshot, Stores,
 };
 
-use super::{Operator, RELEASE, TAKE};
+use super::Operator;
+use super::partitioned::{RELEASE, TAKE};
 use crate::window::tests::{REGIONS, next, orders, ranges, routed};
 
 const GROUPS: u32 = 256;
@@ -508,7 +509,7 @@ async fn each_rows_values_dont_depend_on_order_barriers_or_lanes() {
                         restores += 1;
                         lanes = 1 + u32::try_from(next(&mut s) % 4).unwrap();
                         let given = std::mem::take(&mut run.given);
-                        let watermark = run.ops[0].watermark;
+                        let watermark = run.ops[0].base.watermark;
                         run = Run::new(sql, &bucket, generation, epoch, lanes, &snaps).await;
                         run.given = given;
                         if watermark > i64::MIN {
@@ -585,7 +586,7 @@ async fn restores_from_records_that_carry_pending_sets() {
             // another number of lanes.
             let lanes = 1 + u32::try_from(next(&mut s) % 4).unwrap();
             let given = std::mem::take(&mut run.given);
-            let watermark = run.ops[0].watermark;
+            let watermark = run.ops[0].base.watermark;
             run = Run::new(RUNNING, &stores, epoch, epoch, lanes, &snaps).await;
             run.given = given;
             run.advance(watermark).await;

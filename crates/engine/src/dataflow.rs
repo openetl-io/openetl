@@ -2347,6 +2347,7 @@ impl Pieces {
         to.late += op.late;
         to.windows_opened += op.windows_opened;
         to.windows_dropped += op.windows_dropped;
+        to.repeats += op.repeats;
         to.watermark = to.watermark.zip(op.watermark).map(|(a, b)| a.min(b));
         to.memory_bytes += op.memory_bytes;
         to.runs.extend(op.runs);
@@ -5517,6 +5518,7 @@ pub(crate) mod tests {
             changelog: false,
             event_time: None,
             lateness: 0,
+            dedupe: None,
         };
         let t = crate::transform::Transform::plan(
             "INSERT INTO c SELECT * FROM a",
@@ -5665,18 +5667,18 @@ pub(crate) mod tests {
         first_epoch: u64,
     ) -> openetl_proto::engine::v1::StartJobRequest {
         let email = arrow_schema::Field::new("email", DataType::Utf8, true);
-        window_request_by(state, sql, email, lanes, generation, first_epoch)
+        window_request_by(state, sql, email, (lanes, generation, first_epoch), None)
     }
 
     /// As window_request, with `key` in place of email, the column the
-    /// output is keyed by beside window_start.
+    /// output is keyed by beside window_start, and the stream's dedupe
+    /// `retention`, in microseconds.
     fn window_request_by(
         state: &std::path::Path,
         sql: &str,
         key: arrow_schema::Field,
-        lanes: u32,
-        generation: u64,
-        first_epoch: u64,
+        (lanes, generation, first_epoch): (u32, u64, u64),
+        retention: Option<i64>,
     ) -> openetl_proto::engine::v1::StartJobRequest {
         let mut req = sql_request(
             sql,
@@ -5695,6 +5697,7 @@ pub(crate) mod tests {
         req.streams[0].arrow_schema = ipc::encode_schema(&Arc::new(declared)).unwrap();
         req.streams[0].event_time = Some(openetl_proto::engine::v1::EventTime {
             column: "at".into(),
+            dedupe_retention_micros: retention,
             ..Default::default()
         });
         req.generation = generation;
@@ -6149,6 +6152,164 @@ pub(crate) mod tests {
             got,
             [(16, 14, 0, Some(91 * SEC)), (0, 2, 0, Some(watermark::END))]
         );
+    }
+
+    /// A job whose statement dedupes stream a by `sql`, which writes
+    /// minutes, keyed by email, with the stream's dedupe `retention`, in
+    /// microseconds.
+    pub(crate) fn dedupe_request(
+        state: &std::path::Path,
+        sql: &str,
+        (lanes, generation, first_epoch): (u32, u64, u64),
+        retention: Option<i64>,
+    ) -> openetl_proto::engine::v1::StartJobRequest {
+        let email = arrow_schema::Field::new("email", DataType::Utf8, true);
+        let at = (lanes, generation, first_epoch);
+        let mut req = window_request_by(state, sql, email, at, retention);
+        req.outputs[0].primary_key = vec!["email".into()];
+        req
+    }
+
+    /// Each email's first row of a.
+    pub(crate) const FIRST: &str = "INSERT INTO minutes SELECT id, email, v, at FROM a \
+         QUALIFY row_number() OVER (PARTITION BY email ORDER BY at) = 1";
+    /// Each email's latest row of a.
+    pub(crate) const LATEST: &str = "INSERT INTO minutes SELECT id, email, v, at FROM a \
+         QUALIFY row_number() OVER (PARTITION BY email ORDER BY at DESC) = 1";
+
+    /// A row a dedupe gave, as a writer lane gave it: its id, email and op,
+    /// and the epoch it came in.
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub(crate) struct DedupeRow {
+        pub id: i64,
+        pub email: String,
+        pub op: Option<String>,
+        pub epoch: u64,
+    }
+
+    /// Each writer lane's rows of a dedupe, in order. `first` is the epoch
+    /// the job starts at.
+    pub(crate) fn dedupe_rows(outs: &[Vec<frame::Frame>], first: u64) -> Vec<Vec<DedupeRow>> {
+        outs.iter()
+            .map(|frames| {
+                let mut epoch = first;
+                let mut got = Vec::new();
+                for f in frames {
+                    if f.kind == FrameKind::Barrier && f.stream == 0 {
+                        epoch += 1;
+                    }
+                    if f.kind != FrameKind::Batch || f.stream != 0 {
+                        continue;
+                    }
+                    let b = ipc::decode_batch(f.payload.clone()).unwrap();
+                    let ops = match b.column_by_name("_openetl_op") {
+                        Some(_) => column_strings(&b, "_openetl_op"),
+                        None => vec![None; b.num_rows()],
+                    };
+                    for ((id, e), op) in column_ints(&b, "id")
+                        .into_iter()
+                        .zip(column_strings(&b, "email"))
+                        .zip(ops)
+                    {
+                        got.push(DedupeRow {
+                            id: id.unwrap(),
+                            email: e.unwrap(),
+                            op,
+                            epoch,
+                        });
+                    }
+                }
+                got
+            })
+            .collect()
+    }
+
+    /// Dedupes run past an exchange on their PARTITION BY inside the
+    /// engine. The first-row dedupe writes each email's first row once, on
+    /// the writer lane its email's keyed lane feeds, once every lane's
+    /// watermark has passed its time, and drops the email's other rows as
+    /// repeats; the latest-row dedupe writes each email's latest as an
+    /// upsert as rows come, an insert then updates, never an older one.
+    #[tokio::test]
+    async fn dedupes_keep_each_keys_first_or_latest_row() {
+        for (sql, retention) in [(FIRST, Some(openetl_state::NEVER)), (LATEST, None)] {
+            let state = tempfile::tempdir().unwrap();
+            let mut h = start_lanes(dedupe_request(state.path(), sql, (2, 1, 1), retention));
+            let mut all = Vec::new();
+            for (l, w) in h.ins.iter_mut().enumerate() {
+                let l = i64::try_from(l).unwrap();
+                let input = over_input(l);
+                all.extend(input.clone());
+                put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+                let rs: Vec<String> = input
+                    .iter()
+                    .map(|(id, e, s)| minute_row(*id, e, *s))
+                    .collect();
+                let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                put(w, FrameKind::Rows, 0, rows(&refs)).await;
+                barriers(w, 1, 1).await;
+                put(
+                    w,
+                    FrameKind::Split,
+                    0,
+                    split(&format!("s{l}"), Some(watermark::END)),
+                )
+                .await;
+                barriers(w, 1, 2).await;
+            }
+            h.end_all(2).await;
+            let (outs, ready) = h.finish().await;
+            let per_lane = dedupe_rows(&outs, 1);
+            // Each email's rows, by time: the first, or the latest.
+            let mut want = BTreeMap::new();
+            for &(id, email, at) in &all {
+                let e = want.entry(email).or_insert((id, at));
+                let later = (at, id) > (e.1, e.0);
+                if (sql == LATEST) == later {
+                    *e = (id, at);
+                }
+            }
+            let mut last = BTreeMap::new();
+            for r in per_lane.iter().flatten() {
+                if let Some(was) = last.insert(r.email.clone(), r.id) {
+                    assert!(sql == LATEST, "{sql}: {} twice", r.email);
+                    let at = |id| all.iter().find(|a| a.0 == id).unwrap().2;
+                    assert!(at(r.id) > at(was), "{r:?} after {was}");
+                }
+            }
+            let got: BTreeMap<&str, i64> = last.iter().map(|(e, id)| (e.as_str(), *id)).collect();
+            let want: BTreeMap<&str, i64> = want.iter().map(|(e, w)| (*e, w.0)).collect();
+            assert_eq!(got, want, "{sql}");
+            for e in ["x", "y", "z", "w"] {
+                let lanes = per_lane
+                    .iter()
+                    .filter(|r| r.iter().any(|o| o.email == e))
+                    .count();
+                assert_eq!(lanes, 1, "{sql}: {e} on {lanes} writer lanes");
+            }
+            let ops: Vec<&OperatorEpoch> = ready.iter().flat_map(|r| &r.operators).collect();
+            let rows_in: u64 = ops.iter().map(|o| o.rows_in).sum();
+            let inserts: u64 = ops.iter().map(|o| o.inserts).sum();
+            let updates: u64 = ops.iter().map(|o| o.updates).sum();
+            let repeats: u64 = ops.iter().map(|o| o.repeats).sum();
+            let kept: u64 = ops.iter().map(|o| o.windows_opened).sum();
+            assert_eq!((rows_in, inserts, kept), (16, 4, 4), "{sql}");
+            assert_eq!(updates + repeats, 12, "{sql}");
+            if sql == FIRST {
+                // The first rows, before 39 seconds, leave in the first
+                // epoch, whose watermark is 91 seconds.
+                assert!(
+                    per_lane
+                        .iter()
+                        .flatten()
+                        .all(|r| r.epoch == 1 && r.op.as_deref() == Some("insert")),
+                    "{per_lane:?}"
+                );
+                assert_eq!(updates, 0);
+                assert!(!ready[0].snapshots.is_empty());
+                assert!(ready[1].snapshots.is_empty(), "{:?}", ready[1].snapshots);
+            }
+        }
     }
 
     /// A lane holds a window open until each of its splits' watermarks
@@ -6774,7 +6935,7 @@ pub(crate) mod tests {
         let sql = "INSERT INTO minutes SELECT window_start, j, count(*) AS n \
                    FROM a GROUP BY tumble(at, INTERVAL '1 minute'), j";
         let state = tempfile::tempdir().unwrap();
-        let req = window_request_by(state.path(), sql, json, 3, 1, 1);
+        let req = window_request_by(state.path(), sql, json, (3, 1, 1), None);
         let mut h = start_lanes(req);
         let spellings = [
             r#"{"a": 1, "b": {"y": 2, "x": [3, {"q": 4, "p": 5}]}}"#,

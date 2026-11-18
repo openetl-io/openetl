@@ -30,6 +30,10 @@ type EventTime struct {
 	// How long after a group window over the stream closes a row may still
 	// come.
 	Lateness time.Duration
+	// How long a dedupe that keeps each key's first row remembers a key, in
+	// microseconds of event time; math.MaxInt64 for good, and nil where the
+	// stream sets none.
+	Dedupe *int64
 }
 
 func (e *EventTime) idle() time.Duration {

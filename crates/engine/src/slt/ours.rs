@@ -1,9 +1,9 @@
 //! Our engine as sqllogictest's database. A table is a stream and its rows
 //! one batch of it. A query is the statement `INSERT INTO slt_result` with
 //! it, planned with the views defined before it, and run by the operator a
-//! lane or a keyed lane runs: a group window or `OVER` to the end of
-//! input. Errors are `kind line:column message`, with the
-//! position in the record's own SQL.
+//! lane or a keyed lane runs: a group window, `OVER` or a dedupe to the end
+//! of input; a first-row dedupe remembers every key. Errors are
+//! `kind line:column message`, with the position in the record's own SQL.
 //!
 //! A changelog table's `INSERT` may set `_op` (insert, update or delete;
 //! insert by default) and `_unsent`, the columns an update didn't send. A
@@ -344,6 +344,7 @@ impl Ours {
                 changelog: d.table.changelog,
                 event_time: d.event_time.clone(),
                 lateness: 0,
+                dedupe: Some(openetl_state::NEVER),
             })
             .collect();
         let t = Arc::new(
@@ -357,7 +358,7 @@ impl Ours {
             let typed = data.typed()?;
             let pushed: Vec<usize> = (0..typed.batch.num_rows()).collect();
             let applied = match &st.keyed {
-                Some(_) => keyed(st, &typed)?,
+                Some(_) => keyed(st, &t.inputs[st.input], &typed)?,
                 None => Stage::statement(&t, i)
                     .apply(&typed, &pushed, None)
                     .map_err(|e| Failure(format!("{:?} {}", e.code, e.message)))?,
@@ -411,7 +412,11 @@ impl Ours {
 /// A stateful statement run on a table's rows, as one keyed lane with
 /// every key group runs it, to the end of input: what it gives, and the
 /// rows it can't take.
-fn keyed(st: &crate::transform::Statement, typed: &Typed) -> Result<Applied, Failure> {
+fn keyed(
+    st: &crate::transform::Statement,
+    stream: &Input,
+    typed: &Typed,
+) -> Result<Applied, Failure> {
     let Some((plan, id)) = &st.keyed else {
         return Err(Failure("not a stateful statement".into()));
     };
@@ -421,16 +426,19 @@ fn keyed(st: &crate::transform::Statement, typed: &Typed) -> Result<Applied, Fai
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .map_err(|e| Failure(e.to_string()))?;
-        rt.block_on(run_keyed(st, plan, id, &input, &typed.ids))
+        rt.block_on(run_keyed(st, plan, id, stream, &input, &typed.ids))
     };
     std::thread::scope(|s| s.spawn(run).join())
         .map_err(|_| Failure("a keyed lane's thread panicked".into()))?
 }
 
+/// The operator a keyed lane runs, on a lane of every key group: `input`
+/// in one batch, then the end of input.
 async fn run_keyed(
     st: &crate::transform::Statement,
     plan: &crate::transform::Keyed,
     id: &str,
+    stream: &Input,
     input: &RecordBatch,
     ids: &FixedSizeBinaryArray,
 ) -> Result<Applied, Failure> {
@@ -441,52 +449,29 @@ async fn run_keyed(
     let mut layer = openetl_state::Layer::open(&bucket, 1, 1, range, &[])
         .await
         .map_err(|e| Failure(e.to_string()))?;
-    let (mut out, closed) = match plan {
-        crate::transform::Keyed::Window(w) => {
-            let mut op = crate::window::Operator::new(
-                id,
-                st.at,
-                w.clone(),
-                &st.output,
-                st.schema.clone(),
-                0,
-                groups,
-            )
-            .map_err(fail)?;
-            let out = op.rows(&mut layer, input).await.map_err(fail)?;
-            let closed = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
-            (out, closed)
+    let mut op = crate::dataflow::keyed::Op::new(st, plan, id, stream, groups).map_err(fail)?;
+    let ids = plan.ids().then_some(ids);
+    let mut out = op.rows(&mut layer, input, ids).await.map_err(fail)?;
+    let mut closed = crate::window::Out::default();
+    loop {
+        let (got, more) = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
+        closed.add(got).map_err(fail)?;
+        if !more {
+            break;
         }
-        crate::transform::Keyed::Over(o) => {
-            let mut op = crate::over::Operator::new(id, st.at, o.clone(), &st.output, groups)
-                .map_err(fail)?;
-            let out = op.rows(&mut layer, input, ids).await.map_err(fail)?;
-            let mut closed = crate::window::Out::default();
-            loop {
-                let (got, more) = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
-                closed.add(got).map_err(fail)?;
-                if !more {
-                    break;
-                }
-            }
-            // A row OVER can't give, once it leaves, has no place among the
-            // table's rows here to quarantine: the record fails, with why.
-            if !closed.failed.is_empty() {
-                let why: Vec<&str> = closed
-                    .failed
-                    .iter()
-                    .map(|(_, why, _)| why.as_str())
-                    .collect();
-                return Err(Failure(format!(
-                    "OVER couldn't give rows: {}",
-                    why.join("; ")
-                )));
-            }
-            (out, closed)
-        }
-    };
-    out.rejected.extend(closed.rejected);
-    let typed = match closed.rows {
+    }
+    out.add(closed).map_err(fail)?;
+    // A row OVER or a dedupe can't give, once it leaves, has no place among
+    // the table's rows here to quarantine: the record fails, with why.
+    if plan.ids() && !out.failed.is_empty() {
+        let why: Vec<&str> = out.failed.iter().map(|(_, why, _)| why.as_str()).collect();
+        return Err(Failure(format!(
+            "{} couldn't give rows: {}",
+            plan.what(),
+            why.join("; ")
+        )));
+    }
+    let typed = match out.rows {
         Some(t) => t,
         None => Typed {
             batch: RecordBatch::new_empty(st.schema.clone()),

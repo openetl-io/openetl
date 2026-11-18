@@ -34,7 +34,7 @@ A **CREATE VIEW** card shows a view: a named part of the SQL that statements rea
 Below the cards, **State** lists each statement that keeps state between rows, such as a statement that adds up rows by windows of time. Each row shows:
 
 - **Operator**: the name that the pipeline's checkpoints give the statement's state, with the output and the statement's place.
-- **Keeps**: what the statement computes, and how long it keeps each window, in the time of the rows.
+- **Keeps**: what the statement computes, and how long it keeps each window, in the time of the rows. A statement that keeps one row for each key, a dedupe, shows whether it keeps each key's first or latest row, how long it remembers a key, and what it guarantees, such as exactly once within 24 hours of the rows' time.
 - **State**: **Kept**, **New**, **Changed**, **Dropped** or **Unknown**, against the pipeline's current version. **Changed** means that an edit changed what the statement computes, so its state starts empty. When the pipeline has already read the stream, the row also shows the command that reads the stream again to build the state. The row also says whether the pipeline's last checkpoint holds the state, where that is known.
 
 **Passed through** lists the source's streams that no statement writes, and **Not delivered** the ones left out.
@@ -45,9 +45,9 @@ If a statement keeps state, **At the last checkpoint** shows what it did in the 
 
 - **Operator**: the statement's operator, and its output.
 - **Watermark**: the time in the rows before which the statement expects no more rows, and how far it was behind the commit. A window of time closes when the watermark reaches its end. **None** means that a part of the stream has had no rows, or that the watermark is outside the years 1 to 9999. **End of input** means that the read ended and every window closed.
-- **Windows**: the windows the statement keeps: open ones, and closed ones that can still take late rows.
+- **Windows or keys**: the windows the statement keeps: open ones, and closed ones that can still take late rows. For a dedupe, the keys it remembers.
 - **Rows in**: the rows of the stream that reached the statement in the epoch.
-- **Written**: the rows it wrote to its output in the epoch, as new rows, updates and deletes.
+- **Written**: the rows it wrote to its output in the epoch, as new rows, updates and deletes. For a dedupe, also the repeats it dropped, if any.
 - **Late**: the late rows that came after their window had closed and its allowed lateness had passed, which OpenETL quarantined with the code `late`. Late rows that still went into their window are not in this count. [Quarantined rows](./held-data.md#quarantined-rows) shows them under the output.
 - **State** shows memory usage and the state kept by the checkpoint. **stored** counts files that hold state still in use. This count reaches zero after every window closes and its allowed lateness passes. **in the checkpoint** counts recent changes held in the checkpoint record before they move to a file. The pipeline can keep up to 1 MiB of these changes in the record.
 - **Requests**: its requests to the data plane's storage in the epoch, with their bytes.

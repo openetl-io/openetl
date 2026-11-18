@@ -257,7 +257,7 @@ func (c chaosConfig) onWorkers() bool {
 // lanes reports whether the run's job runs as many lanes as its size: a
 // SQL transform runs in each of them.
 func (c chaosConfig) lanes() bool {
-	return c.transform == "" || c.transform == "sql" || c.transform == "window"
+	return c.transform == "" || c.transform == "sql" || c.transform == "window" || c.transform == "dedupe"
 }
 
 func (c chaosConfig) name() string {
@@ -473,8 +473,9 @@ func TestChaosChecks(t *testing.T) {
 		chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", transform: "sql"},
 		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", transform: "sql"},
 		chaosConfig{source: "cdc", write: "append", dest: "kafka", transform: "sql"})
-	// A run with group windows.
-	kinds = append(kinds, chaosConfig{source: "kafka", continuous: true, write: "merge", dest: "postgres", transform: "window"})
+	// A run with group windows, and one with dedupes.
+	kinds = append(kinds, chaosConfig{source: "kafka", continuous: true, write: "merge", dest: "postgres", transform: "window"},
+		chaosConfig{source: "kafka", continuous: true, write: "append", dest: "postgres", transform: "dedupe"})
 	for i, c := range kinds {
 		plants := []string{plantLoss, plantExtra}
 		if c.holds {
@@ -596,7 +597,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	var pipeline string
 	s.pg.do(func() {
 		switch {
-		case c.transform == "window":
+		case c.transform == "window" || c.transform == "dedupe":
 			w = newWindowWork(t, c, name)
 		case c.source == "kafka":
 			w = newKafkaWork(t, c, name, &s.pg)

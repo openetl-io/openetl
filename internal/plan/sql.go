@@ -2,8 +2,10 @@ package plan
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
+	"time"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/sqlplan"
@@ -49,11 +51,12 @@ func SQLRequest(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, history map[string
 			continue
 		}
 		st := sqlplan.Stream{
-			Name:        name,
-			Key:         s.cs.GetPrimaryKey(),
-			Changelog:   ReadMode(spec, s.cs.GetSyncModes(), s.ps) == apiv1.SyncMode_SYNC_MODE_CDC,
-			Nanoseconds: s.ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
-			EventTime:   s.ps.GetEventTime(),
+			Name:                  name,
+			Key:                   s.cs.GetPrimaryKey(),
+			Changelog:             ReadMode(spec, s.cs.GetSyncModes(), s.ps) == apiv1.SyncMode_SYNC_MODE_CDC,
+			Nanoseconds:           s.ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
+			EventTime:             s.ps.GetEventTime(),
+			DedupeRetentionMicros: DedupeRetention(s.ps),
 		}
 		for _, c := range s.cs.GetColumns() {
 			st.Columns = append(st.Columns, sqlplan.Column{Name: c.GetName(), Type: c.GetType()})
@@ -68,6 +71,22 @@ func SQLRequest(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, history map[string
 		req.Streams = append(req.Streams, st)
 	}
 	return req, unknown
+}
+
+// DedupeRetention is how long a dedupe over the stream that keeps each
+// key's first row remembers a key, its dedupe.retention, in microseconds of
+// event time: math.MaxInt64 for unbounded, and nil where it sets none.
+func DedupeRetention(ps *apiv1.PipelineStream) *int64 {
+	d := ps.GetDedupe()
+	switch {
+	case d.GetUnbounded():
+		forever := int64(math.MaxInt64)
+		return &forever
+	case d.GetRetention() != nil:
+		r := d.GetRetention().AsDuration().Microseconds()
+		return &r
+	}
+	return nil
 }
 
 // Transform is the plan of a SQL transform whose statements planned: each
@@ -189,9 +208,11 @@ func SQLSettingProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities,
 // stream that OVER reads and no group window does, as OVER takes none.
 // And a merged output of OVER keyed otherwise than by its PARTITION BY on
 // several writer lanes: OVER gives each row to the writer lane of its
-// PARTITION BY's key group, so two rows of a key may be on two.
+// PARTITION BY's key group, so two rows of a key may be on two. A dedupe
+// reads as OVER does but for one that keeps each key's latest row, which
+// takes any read, and dedupeProblems has the rest.
 func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output, caps destination.Capabilities) []error {
-	var out []error
+	out := dedupeProblems(a, inputs, outs)
 	windowed := func(stream string) bool {
 		return slices.ContainsFunc(a.Statements, func(st sqlplan.Statement) bool {
 			return st.Class == "group_window" && slices.Contains(st.Inputs, stream)
@@ -202,13 +223,20 @@ func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output, caps desti
 			continue
 		}
 		over := st.Class == "over"
+		what := "OVER"
+		if st.Keep() != "" {
+			what = "the dedupe"
+		}
 		for _, in := range inputs {
 			if !slices.Contains(st.Inputs, in.Name) {
 				continue
 			}
 			column := in.Spec.GetEventTime()
 			switch {
-			case in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, column == "":
+			case in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, column == "", st.Keep() == "latest":
+			case !OrderedRead(in.Read, in.Cursor, column) && st.Keep() == "first":
+				out = append(out, fmt.Errorf("the dedupe writing %q reads stream %q with %s by cursor %q, not by its eventTime %q, "+
+					"so each sync's read would start its keys again, and write each key's first row again: read it with full_refresh", st.Output, in.Name, syncName(in.Read), in.Cursor, column))
 			case !OrderedRead(in.Read, in.Cursor, column) && over:
 				out = append(out, fmt.Errorf("OVER writing %q reads stream %q with %s by cursor %q, not by its eventTime %q, "+
 					"so each sync's rows would leave in their own order, after rows an earlier sync gave that come later in time: read it with full_refresh", st.Output, in.Name, syncName(in.Read), in.Cursor, column))
@@ -218,9 +246,12 @@ func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output, caps desti
 			}
 			late := in.Spec.GetWatermark().GetLateness().AsDuration() > 0
 			switch {
+			case late && st.Keep() == "latest" && !windowed(in.Name):
+				out = append(out, fmt.Errorf("stream %q sets watermark.lateness, which the dedupe writing %q doesn't take: it writes each key's latest row as it comes, "+
+					"whatever the watermark. Set no lateness", in.Name, st.Output))
 			case late && over && !windowed(in.Name):
-				out = append(out, fmt.Errorf("stream %q sets watermark.lateness, which OVER writing %q doesn't take: a row that comes behind the watermark is quarantined as late. "+
-					"Set a longer watermark.delay to wait for later rows, or no lateness", in.Name, st.Output))
+				out = append(out, fmt.Errorf("stream %q sets watermark.lateness, which %s writing %q doesn't take: a row that comes behind the watermark is quarantined as late. "+
+					"Set a longer watermark.delay to wait for later rows, or no lateness", in.Name, what, st.Output))
 			case late && !over && i < len(outs) && outs[i].Mode != destination.Merge:
 				out = append(out, fmt.Errorf("stream %q sets watermark.lateness, so a row that comes late gives its window's row again, "+
 					"and output %q isn't merged, which would keep both rows: set destination.write: merge, or no lateness", in.Name, st.Output))
@@ -230,6 +261,43 @@ func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output, caps desti
 			out = append(out, fmt.Errorf("OVER writing %q gives each row to the destination's writer lane of its PARTITION BY's key group, and its primary key (%s) doesn't hold PARTITION BY's columns (%s), "+
 				"so merged, two rows of one key could reach two writer lanes in either order: write it with destination.write: append, or partition by columns of its primary key",
 				st.Output, strings.Join(outs[i].PrimaryKey, ", "), strings.Join(st.Need, ", ")))
+		}
+	}
+	return out
+}
+
+// dedupeProblems fail a dedupe that keeps each key's first row over a
+// stream that sets no dedupe.retention, which has no default; one that
+// keeps each key's latest row whose output isn't merged, as it writes
+// upserts and, where a filter after it drops a key's latest row, deletes;
+// and a stream's dedupe.retention that no first-row dedupe over it takes.
+// outs are the statements' outputs, as SQLOutputs gives them.
+func dedupeProblems(a *sqlplan.Answer, inputs []Input, outs []Output) []error {
+	var out []error
+	first := func(stream string) bool {
+		return slices.ContainsFunc(a.Statements, func(st sqlplan.Statement) bool {
+			return st.Keep() == "first" && slices.Contains(st.Inputs, stream)
+		})
+	}
+	for i, st := range a.Statements {
+		at := fmt.Sprintf("transform.sql:%d:%d: ", st.At.Line, st.At.Column)
+		for _, in := range inputs {
+			if st.Keep() == "first" && slices.Contains(st.Inputs, in.Name) && DedupeRetention(in.Spec) == nil {
+				out = append(out, fmt.Errorf("%sthe dedupe writing %q, ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, "+
+					"and stream %q sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time, "+
+					"such as 24h, after which a key's next row is written again, or to unbounded, to remember every key", at, st.Output, in.Name))
+			}
+		}
+		if st.Keep() == "latest" && i < len(outs) && outs[i].Mode != destination.Merge {
+			mode := strings.ToLower(strings.TrimPrefix(apiWriteMode(outs[i].Mode).String(), "WRITE_MODE_"))
+			out = append(out, fmt.Errorf("%sthe dedupe writing %q, ROW_NUMBER() … = 1 in descending order of the event time, keeps each key's latest row, "+
+				"as upserts and deletes that only a merge applies, and the output is written with %s: set destination.write: merge, on a destination that merges", at, st.Output, mode))
+		}
+	}
+	for _, in := range inputs {
+		if in.Spec.GetDedupe() != nil && !first(in.Name) {
+			out = append(out, fmt.Errorf("stream %q sets dedupe.retention, which only a dedupe that keeps each key's first row takes, "+
+				"ROW_NUMBER() … = 1 in ascending order of its eventTime, and no statement of transform.sql dedupes it so: set no dedupe", in.Name))
 		}
 	}
 	return out
@@ -306,10 +374,10 @@ func schemaColumns(fs []sqlplan.Field) []*apiv1.SchemaColumn {
 
 // SQLOutputs are the outputs of a SQL transform's statements. An output that
 // replaces a source's stream takes that stream's require, as its table in
-// destination.tables. Without destination.write, it's overwritten when its
-// statement's inputs are all read with full_refresh, merged when it has a
-// primary key and an input is read with cdc, and appended to otherwise,
-// where the destination has the mode.
+// destination.tables. Without destination.write, a latest-row dedupe's is
+// merged; another is overwritten when its statement's inputs are all read
+// with full_refresh, merged when it has a primary key and an input is read
+// with cdc, and appended to otherwise, where the destination has the mode.
 func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlplan.Answer, inputs []Input) ([]Output, [][]Input) {
 	var outs []Output
 	var reads [][]Input
@@ -321,6 +389,12 @@ func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlp
 			}
 		}
 		o := Output{Name: st.Output, PrimaryKey: st.Key, Exact: len(ins) > 0, Engine: "sql"}
+		if s := st.State; s != nil && s.Guarantee != "" {
+			o.Deduped = true
+			if r := s.RetentionMicros; r != nil {
+				o.Remembers = time.Duration(*r) * time.Microsecond
+			}
+		}
 		refresh, cdc := len(ins) > 0, false
 		for _, in := range ins {
 			o.Exact = o.Exact && in.Replay == source.Exact
@@ -333,6 +407,8 @@ func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlp
 		switch {
 		case WriteMode(spec) != 0:
 			o.Mode = WriteMode(spec)
+		case st.Keep() == "latest" && caps.SupportsMode(destination.Merge):
+			o.Mode = destination.Merge
 		case refresh && caps.SupportsMode(destination.Overwrite):
 			o.Mode = destination.Overwrite
 		case cdc && len(o.PrimaryKey) > 0 && caps.SupportsMode(destination.Merge):

@@ -615,6 +615,22 @@ message PipelineStream {
   // How far event time may run behind before a window closes. Only with
   // event_time.
   Watermark watermark = 13;
+  // How long a SQL statement's dedupe over the stream that keeps each key's
+  // first row remembers a key. Only with event_time.
+  Dedupe dedupe = 14;
+}
+
+// Dedupe says how long a dedupe by ROW_NUMBER() … = 1, in ascending order of
+// the stream's event time, remembers a key it kept: a retention, or
+// unbounded. Such a dedupe over a stream that sets neither is refused.
+message Dedupe {
+  // A key is forgotten once the stream's watermark passes its first row's
+  // event time plus this much, and its next row is written again. More
+  // than zero.
+  google.protobuf.Duration retention = 1;
+  // Every key is remembered for good, so the dedupe's state grows with the
+  // number of keys. Not with retention.
+  bool unbounded = 2;
 }
 
 // Watermark says how late a stream's rows may arrive in event time.
@@ -991,8 +1007,9 @@ message OperatorPlan {
   // for a dropped one.
   uint32 line = 3;
   uint32 column = 4;
-  // group_window. It and the fields up to retention, what the operator
-  // keeps, are unset for a dropped one.
+  // group_window, or over for OVER and a dedupe. It, the fields up to
+  // retention and keep and guarantee, what the operator keeps, are unset
+  // for a dropped one.
   string class = 5;
   // The stream it reads, and the stream's eventTime.
   string input = 6;
@@ -1012,7 +1029,9 @@ message OperatorPlan {
   google.protobuf.Duration lateness = 13;
   // How long, in event time, it keeps a window's state: from the window's
   // start until lateness after its end, or for a session, until gap and
-  // lateness after its last row.
+  // lateness after its last row. A dedupe that keeps each key's first row:
+  // how long it remembers a key from that row, its stream's
+  // dedupe.retention; unset for unbounded.
   google.protobuf.Duration retention = 14;
   OperatorChange change = 15;
   // With OPERATOR_CHANGE_CHANGED, the operator of the current version it
@@ -1034,6 +1053,12 @@ message OperatorPlan {
   // Whether the pipeline's last checkpoint names its state; unset where
   // that isn't known.
   optional bool held = 19;
+  // A dedupe's: first, the first row of each key, or latest, the latest.
+  string keep = 20;
+  // What a dedupe guarantees of a key's repeats from the source:
+  // exactly_once, or exactly_once_within its retention. Empty where its
+  // stream sets no dedupe.retention, which a first-row dedupe needs.
+  string guarantee = 21;
 }
 
 // OperatorChange is what a stateful operator is against the pipeline's
@@ -1328,7 +1353,7 @@ message OperatorStats {
   // Rows it quarantined as late: past their windows' allowed lateness.
   uint64 late_rows = 6;
   // The windows, or sessions, whose state it keeps: open, or closed and
-  // kept for their lateness.
+  // kept for their lateness. A dedupe's: the keys it keeps.
   int64 windows = 7;
   // Its watermark: the least of its lanes'. Unset while a lane has none, at
   // the end of input, and outside the years 1 to 9999, which a Timestamp
@@ -1354,6 +1379,9 @@ message OperatorStats {
   // The bytes of its state that the checkpoint record itself carries: what
   // its lanes changed since each last wrote its state to object storage.
   uint64 checkpoint_bytes = 17;
+  // A dedupe's rows it didn't write: repeats of a key it keeps, and for one
+  // that keeps each key's latest row, rows no later than the key's.
+  uint64 repeats = 18;
 }
 
 // StateRequests are requests of one kind to object storage, and their

@@ -132,6 +132,8 @@ Or write with append, the default, which Postgres dedupes at apply, for this str
 | `a transform's output over exact inputs` | `exactly_once` | A [transform](../integrate/index.md)'s output, when every stream it reads replays exactly. |
 | `a transform's output over superset inputs, written with merge` | `effectively_once` | As for merge above. |
 | `a transform's output over superset inputs, which isn't deduped unless written with merge` | `at_least_once` | Once your code has changed the rows, an `_openetl_id` cannot tell a repeated input from a new one. |
+| `exactly once within 24h0m0s of event time: a dedupe's output over superset inputs, which remembers a key 24h0m0s from its first row and writes a repeat after that again` | `exactly_once` | A SQL [dedupe](./dedupe.md) that keeps each key's first row drops a repeat of a key it keeps, for its retention. A repeat that comes later than the retention is written again. |
+| `a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys` | `exactly_once` | A SQL [dedupe](./dedupe.md) with an `unbounded` retention, or one that keeps each key's latest row, drops every repeat. |
 
 ## Commits, as a reader sees them
 

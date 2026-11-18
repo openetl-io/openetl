@@ -13,7 +13,7 @@ import {
 } from "@/gen/openetl/api/v1/pipeline_pb";
 import { full } from "@/lib/format";
 import { requests, stateBytes, watermark, written } from "@/lib/operator-stats";
-import { changeLabel, changeText, classLabel, heldText, operatorComputes, position, span, type SqlMessage } from "@/lib/sql-plan";
+import { changeLabel, changeText, classLabel, heldText, operatorComputes, operatorKeeps, position, type SqlMessage } from "@/lib/sql-plan";
 
 /** A place in the SQL, as line:column. */
 export function SqlPosition({ line, column }: { line: number; column: number }) {
@@ -195,12 +195,10 @@ export function SqlOperators({ operators }: { operators: OperatorPlan[] }) {
                   </div>
                 </TableCell>
                 <TableCell className="whitespace-normal">
-                  {op.window ? (
+                  {operatorComputes(op) ? (
                     <>
                       <div className="font-mono text-[0.8125rem] break-words">{operatorComputes(op)}</div>
-                      <div className="text-[0.8125rem] text-muted-foreground">
-                        Each window's state for {span(op.retention)} of event time, lateness {span(op.lateness)} included
-                      </div>
+                      <div className="text-[0.8125rem] text-muted-foreground">{operatorKeeps(op)}</div>
                     </>
                   ) : (
                     <span className="text-muted-foreground">—</span>
@@ -240,7 +238,7 @@ export function SqlOperatorStats({ checkpoint, operators }: { checkpoint: Checkp
           <TableRow>
             <TableHead>Operator</TableHead>
             <TableHead>Watermark</TableHead>
-            <TableHead className="text-right">Windows</TableHead>
+            <TableHead className="text-right">Windows or keys</TableHead>
             <TableHead className="text-right">Rows in</TableHead>
             <TableHead>Written</TableHead>
             <TableHead className="text-right">Late</TableHead>

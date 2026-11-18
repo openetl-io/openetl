@@ -946,6 +946,7 @@ mod tests {
             changelog,
             event_time: None,
             lateness: 0,
+            dedupe: None,
         }
     }
 
@@ -1629,6 +1630,7 @@ mod tests {
                     changelog: false,
                     event_time: None,
                     lateness: 0,
+                    dedupe: None,
                 }],
             )
             .unwrap(),

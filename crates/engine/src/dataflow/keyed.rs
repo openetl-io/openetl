@@ -1,7 +1,8 @@
-//! Keyed lanes: where a statement with state runs, a group window or
-//! `OVER`. A lane that reads the statement's stream sends each typed row to
-//! the keyed lane owning the key group of the operator's keys, the window's
-//! group keys or `OVER`'s `PARTITION BY`, and its barriers, watermarks and
+//! Keyed lanes: where a statement with state runs, a group window, `OVER`
+//! or a dedupe. A lane that reads the statement's stream sends each typed
+//! row to the keyed lane owning the key group of the operator's keys, the
+//! window's group keys or the `PARTITION BY` of `OVER` or a dedupe, whose
+//! output is keyed by it, and its barriers, watermarks and
 //! end to every keyed lane: the exchange before the statement. Keyed lanes are the
 //! attempt's lanes' twins, each owning its lane's key groups: inside one
 //! engine they're its channels, and with a mesh, other engines' are reached
@@ -66,11 +67,11 @@ use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
 use crate::mesh::Target;
-use crate::over;
 use crate::plan::Plan;
 use crate::transform::Keyed as Planned;
 use crate::watermark::{self, Senders, Steps};
 use crate::window::{self, Out};
+use crate::{dedupe, over};
 
 /// Each row's cell the stream holds, of a column the statement reads: the
 /// column and why.
@@ -78,8 +79,8 @@ type Held = Vec<Option<(String, String)>>;
 
 /// What a lane sends a keyed lane, for a stateful statement by its index.
 pub(crate) enum In {
-    /// Rows of the statement's stream: the columns it reads, and for `OVER`,
-    /// each row's record ID after them, in ID_COLUMN. Each row the
+    /// Rows of the statement's stream: the columns it reads, and for `OVER`
+    /// and a dedupe, each row's record ID after them, in ID_COLUMN. Each row the
     /// statement can't read, as a cell the stream holds, has the cell's
     /// column and why it's held. With where they were read, where the
     /// epoch's steps are recorded or replayed.
@@ -123,7 +124,7 @@ const HELD_REASON: &str = "\0held_reason";
 /// Its schema's metadata of an Origin::At: the split, and the place.
 const SPLIT: &str = "\0split";
 const PLACE: &str = "\0place";
-/// The column of each row's record ID, after the columns `OVER` reads.
+/// The column of each row's record ID, after the columns `OVER` or a dedupe reads.
 const ID_COLUMN: &str = "\0id";
 
 /// A frame to another engine's keyed lane: its kind, statement and
@@ -316,9 +317,9 @@ pub(super) async fn rows(
         }
         let groups = key_groups(&batch, keyed.need(), plan.key_groups)
             .map_err(|e| shape_error(&t.sql.inputs[st.input].name, e.into()))?;
-        let batch = match keyed {
-            Planned::Over(_) => with_ids(&batch, &typed.ids)?,
-            Planned::Window(_) => batch,
+        let batch = match keyed.ids() {
+            true => with_ids(&batch, &typed.ids)?,
+            false => batch,
         };
         let keep = output_of(plan, st).and_then(|o| plan.keep[o]);
         let mut parts: Vec<Vec<u32>> = vec![Vec::new(); plan.attempt_lanes.len()];
@@ -432,7 +433,8 @@ fn with_ids(
     .map_err(|e| JobError::internal(e.to_string()))
 }
 
-/// `OVER`'s rows without the record IDs after them, and the IDs.
+/// The rows of `OVER` or a dedupe without the record IDs after them, and
+/// the IDs.
 fn without_ids(
     batch: &RecordBatch,
 ) -> Result<(RecordBatch, arrow_array::FixedSizeBinaryArray), JobError> {
@@ -508,20 +510,30 @@ enum Standing {
 }
 
 /// A statement's stateful operator, as a keyed lane runs it.
-enum Op {
+pub(crate) enum Op {
     Window(window::Operator),
     Over(over::Operator),
+    Dedupe(dedupe::Operator),
 }
 
 impl Op {
-    fn new(
+    pub(crate) fn new(
         st: &crate::transform::Statement,
         keyed: &Planned,
         id: &str,
-        lateness: i64,
+        input: &crate::transform::Input,
         key_groups: u32,
     ) -> Result<Op, JobError> {
+        let lateness = input.lateness;
         Ok(match keyed {
+            Planned::Dedupe(d) => Op::Dedupe(dedupe::Operator::new(
+                id,
+                st.at,
+                d.clone(),
+                &st.output,
+                input.dedupe,
+                key_groups,
+            )?),
             Planned::Window(w) => Op::Window(window::Operator::new(
                 id,
                 st.at,
@@ -545,7 +557,7 @@ impl Op {
     fn open(&self, layer: &mut Layer) {
         match self {
             Op::Window(w) => w.open(layer),
-            Op::Over(_) => {}
+            Op::Over(_) | Op::Dedupe(_) => {}
         }
     }
 
@@ -554,6 +566,7 @@ impl Op {
         match self {
             Op::Window(w) => w.level(wm),
             Op::Over(o) => o.level(wm),
+            Op::Dedupe(d) => d.level(wm),
         }
     }
 
@@ -561,12 +574,13 @@ impl Op {
         match self {
             Op::Window(w) => w.watermark_micros(),
             Op::Over(o) => o.watermark_micros(),
+            Op::Dedupe(d) => d.watermark_micros(),
         }
     }
 
-    /// Takes rows of the statement's input: for `OVER`, with `ids`, their
-    /// record IDs.
-    async fn rows(
+    /// Takes rows of the statement's input: for `OVER` and a dedupe, with
+    /// `ids`, their record IDs.
+    pub(crate) async fn rows(
         &mut self,
         layer: &mut Layer,
         input: &RecordBatch,
@@ -575,28 +589,42 @@ impl Op {
         match (self, ids) {
             (Op::Window(w), _) => w.rows(layer, input).await,
             (Op::Over(o), Some(ids)) => o.rows(layer, input, ids).await,
-            (Op::Over(_), None) => Err(JobError::internal("OVER's rows without their record IDs")),
+            (Op::Dedupe(d), Some(ids)) => d.rows(layer, input, ids).await,
+            (Op::Over(_) | Op::Dedupe(_), None) => {
+                Err(JobError::internal("rows without their record IDs"))
+            }
         }
     }
 
     /// Moves the watermark to `wm`: what it gave, and whether it has more
     /// to give at it.
-    async fn advance(&mut self, layer: &mut Layer, wm: i64) -> Result<(Out, bool), JobError> {
+    pub(crate) async fn advance(
+        &mut self,
+        layer: &mut Layer,
+        wm: i64,
+    ) -> Result<(Out, bool), JobError> {
         match self {
             Op::Window(w) => Ok((w.advance(layer, wm).await?, false)),
             Op::Over(o) => o.advance(layer, wm).await,
+            Op::Dedupe(d) => d.advance(layer, wm).await,
         }
     }
 
-    /// The windows, or sessions, it began keeping and stopped keeping since
-    /// the last call.
-    fn take_counts(&mut self) -> (u64, u64) {
+    /// The windows, sessions or keys it began keeping and stopped keeping
+    /// since the last call, and the rows it dropped as repeats.
+    fn take_counts(&mut self) -> (u64, u64, u64) {
         match self {
             Op::Window(w) => (
                 std::mem::take(&mut w.opened),
                 std::mem::take(&mut w.dropped),
+                0,
             ),
-            Op::Over(_) => (0, 0),
+            Op::Over(_) => (0, 0, 0),
+            Op::Dedupe(d) => (
+                std::mem::take(&mut d.kept),
+                std::mem::take(&mut d.forgot),
+                std::mem::take(&mut d.repeats),
+            ),
         }
     }
 }
@@ -661,13 +689,7 @@ pub(super) async fn run(
         let Some(output) = output_of(plan, st) else {
             continue;
         };
-        let op = Op::new(
-            st,
-            keyed,
-            id,
-            t.sql.inputs[st.input].lateness,
-            plan.key_groups,
-        )?;
+        let op = Op::new(st, keyed, id, &t.sql.inputs[st.input], plan.key_groups)?;
         // A redo keeps the rows of its key groups alone, and so the state.
         let range = match plan.keep[output] {
             None => Some(owned.clone()),
@@ -921,7 +943,7 @@ impl Keyed {
     /// now.
     async fn rows(&mut self, lane: &Lane, batch: RecordBatch, held: Held) -> Result<(), JobError> {
         let (batch, ids) = match &self.op {
-            Op::Over(_) => {
+            Op::Over(_) | Op::Dedupe(_) => {
                 let (rows, ids) = without_ids(&batch)?;
                 (rows, Some(ids))
             }
@@ -1114,7 +1136,7 @@ impl Keyed {
         memory: usize,
     ) -> Result<OperatorEpoch, JobError> {
         let c = std::mem::take(&mut self.counts);
-        let (opened, dropped) = self.op.take_counts();
+        let (opened, dropped, repeats) = self.op.take_counts();
         let dir = crate::state::dir(id);
         let mut runs = HashMap::new();
         let mut barrier = StateRequests::default();
@@ -1149,6 +1171,7 @@ impl Keyed {
             late: c.late,
             windows_opened: opened,
             windows_dropped: dropped,
+            repeats,
             watermark: self.op.watermark_micros(),
             memory_bytes: memory as u64,
             runs,

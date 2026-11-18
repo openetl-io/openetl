@@ -12,6 +12,7 @@
 //! answer as JSON on stdout (see [`sqlplan`]).
 
 mod dataflow;
+mod dedupe;
 mod error;
 mod frame;
 mod ipc;

@@ -1,0 +1,133 @@
+# Dedupe: ROW_NUMBER() OVER (PARTITION BY keys ORDER BY event time) = 1
+# keeps one row for each key, on rows that have all come. Ascending keeps
+# the first row, descending the latest. A NULL key is a key, as a NULL
+# group is. Rows of a key with the same event time go by their record IDs,
+# which here are the order the rows were inserted in: the first keeps the
+# least, the latest the greatest. DuckDB writes that ORDER BY ts, rowid, or
+# ts DESC, rowid DESC, so each query is ours, then the same query in
+# DuckDB's SQL. Here a first-row dedupe remembers every key: its retention
+# is unbounded.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE events (id BIGINT NOT NULL, device TEXT, kind TEXT, amount DECIMAL(10, 2), ts TIMESTAMPTZ NOT NULL, PRIMARY KEY (id))
+
+onlyif openetl
+statement ok
+ALTER TABLE events SET EVENT TIME ts
+
+statement ok
+INSERT INTO events VALUES (1, 'a', 'click', 10.00, '2024-02-29 12:00:05+00:00'), (2, 'a', 'view', 3.50, '2024-02-29 12:00:01+00:00'), (3, 'b', 'click', 7.25, '2024-02-29 12:00:01+00:00'), (4, 'b', 'click', 120.00, '2024-02-29 12:00:09+00:00'), (5, NULL, 'view', 1.00, '2024-02-29 12:00:03+00:00'), (6, NULL, 'buy', 99.99, '2024-02-29 12:00:02+00:00'), (7, 'a', 'buy', 50.00, '2024-02-29 12:00:01+00:00'), (8, 'c', NULL, NULL, '2024-02-29 12:00:04+00:00'), (9, 'b', 'view', 2.00, '2024-02-29 12:00:09+00:00'), (10, 'c', 'buy', 15.00, '2024-02-29 12:00:04+00:00')
+
+# Each device's first event, in QUALIFY: of a's two at 12:00:01, the one
+# inserted first.
+onlyif openetl
+query ITT
+SELECT id, device, kind FROM events QUALIFY row_number() OVER (PARTITION BY device ORDER BY ts) = 1
+----
+2 a view
+3 b click
+6 NULL buy
+8 c NULL
+
+onlyif duckdb
+query ITT
+SELECT id, device, kind FROM events QUALIFY row_number() OVER (PARTITION BY device ORDER BY ts, rowid) = 1
+----
+2 a view
+3 b click
+6 NULL buy
+8 c NULL
+
+# Each device's latest, read from a subquery whose number is 1: of b's two
+# at 12:00:09, the one inserted last.
+onlyif openetl
+query ITR
+SELECT id, device, amount FROM (SELECT id, device, amount, row_number() OVER (PARTITION BY device ORDER BY ts DESC) AS rn FROM events) AS t WHERE rn = 1
+----
+1 a 10
+10 c 15
+5 NULL 1
+9 b 2
+
+onlyif duckdb
+query ITR
+SELECT id, device, amount FROM (SELECT id, device, amount, row_number() OVER (PARTITION BY device ORDER BY ts DESC, rowid DESC) AS rn FROM events) AS t WHERE rn = 1
+----
+1 a 10
+10 c 15
+5 NULL 1
+9 b 2
+
+# A filter beside the number runs on the rows kept: a device whose latest
+# event fails it has no row, though an earlier one passes.
+onlyif openetl
+query IT
+SELECT id, device FROM (SELECT id, device, amount, row_number() OVER (PARTITION BY device ORDER BY ts DESC) AS rn FROM events) AS t WHERE rn = 1 AND amount < 10
+----
+5 NULL
+9 b
+
+onlyif duckdb
+query IT
+SELECT id, device FROM (SELECT id, device, amount, row_number() OVER (PARTITION BY device ORDER BY ts DESC, rowid DESC) AS rn FROM events) AS t WHERE rn = 1 AND amount < 10
+----
+5 NULL
+9 b
+
+# WHERE runs before the dedupe, on the stream's rows; the key is two
+# columns, one of them NULL in some rows.
+onlyif openetl
+query TTI
+SELECT device, kind, id FROM events WHERE amount > 5 QUALIFY row_number() OVER (PARTITION BY kind, device ORDER BY ts) = 1
+----
+NULL buy 6
+a buy 7
+a click 1
+b click 3
+c buy 10
+
+onlyif duckdb
+query TTI
+SELECT device, kind, id FROM events WHERE amount > 5 QUALIFY row_number() OVER (PARTITION BY kind, device ORDER BY ts, rowid) = 1
+----
+NULL buy 6
+a buy 7
+a click 1
+b click 3
+c buy 10
+
+# A filter after a first-row dedupe drops kept rows that fail it.
+onlyif openetl
+query IT
+SELECT id, d FROM (SELECT id, device AS d, amount FROM events QUALIFY row_number() OVER (PARTITION BY device ORDER BY ts) = 1) AS t WHERE amount > 5
+----
+3 b
+6 NULL
+
+onlyif duckdb
+query IT
+SELECT id, d FROM (SELECT id, device AS d, amount FROM events QUALIFY row_number() OVER (PARTITION BY device ORDER BY ts, rowid) = 1) AS t WHERE amount > 5
+----
+3 b
+6 NULL
+
+# The number compared in QUALIFY through a cast that keeps numbers apart.
+onlyif openetl
+query TIT
+SELECT device, id, kind FROM events QUALIFY CAST(row_number() OVER (PARTITION BY device ORDER BY ts DESC) AS VARCHAR) = '1'
+----
+NULL 5 view
+a 1 click
+b 9 view
+c 10 buy
+
+onlyif duckdb
+query TIT
+SELECT device, id, kind FROM events QUALIFY CAST(row_number() OVER (PARTITION BY device ORDER BY ts DESC, rowid DESC) AS VARCHAR) = '1'
+----
+NULL 5 view
+a 1 click
+b 9 view
+c 10 buy

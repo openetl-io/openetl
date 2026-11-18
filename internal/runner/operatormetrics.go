@@ -15,6 +15,7 @@ var (
 	operatorRowsIn, _       = meter.Int64Counter("openetl.operator.rows.in", metric.WithUnit("{row}"), metric.WithDescription("Rows a stateful operator took in, in committed epochs"))
 	operatorRowsWritten, _  = meter.Int64Counter("openetl.operator.rows.written", metric.WithUnit("{row}"), metric.WithDescription("Rows a stateful operator wrote to its output in committed epochs, by op"))
 	operatorRowsLate, _     = meter.Int64Counter("openetl.operator.rows.late", metric.WithUnit("{row}"), metric.WithDescription("Rows a stateful operator quarantined as late in committed epochs"))
+	operatorRowsRepeats, _  = meter.Int64Counter("openetl.operator.rows.repeats", metric.WithUnit("{row}"), metric.WithDescription("Rows a dedupe dropped in committed epochs: repeats of a key it keeps, or rows no later than a key's latest"))
 	operatorWindows, _      = meter.Int64Gauge("openetl.operator.windows", metric.WithUnit("{window}"), metric.WithDescription("Windows whose state a stateful operator kept at its last commit"))
 	operatorWatermark, _    = meter.Float64Gauge("openetl.operator.watermark", metric.WithUnit("s"), metric.WithDescription("A stateful operator's watermark at its last commit, in seconds since the Unix epoch"))
 	operatorWatermarkLag, _ = meter.Float64Gauge("openetl.operator.watermark.lag", metric.WithUnit("s"), metric.WithDescription("How far a stateful operator's watermark was behind its last commit"))
@@ -42,6 +43,7 @@ func measureOperator(ctx context.Context, org, pipeline string, o checkpoint.Ope
 	add(operatorRowsWritten, o.Updates, with("openetl.op", "update"))
 	add(operatorRowsWritten, o.Deletes, with("openetl.op", "delete"))
 	add(operatorRowsLate, o.Late, attrs)
+	add(operatorRowsRepeats, o.Repeats, attrs)
 	kinds := map[string]checkpoint.Requests{"barrier": o.Barrier, "lookup": o.Lookup, "restore": o.Restore, "merge_write": o.MergeWrite, "merge_read": o.MergeRead}
 	for kind, r := range kinds {
 		add(operatorRequests, r.Count, with("openetl.request.kind", kind))

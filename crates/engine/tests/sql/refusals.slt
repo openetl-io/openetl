@@ -32,9 +32,8 @@ SELECT count(*) AS n FROM orders GROUP BY hop(created_at, INTERVAL '1 minute', I
 unsupported 1:43 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
 
-# Window functions: dedupe by ROW_NUMBER() … = 1 plans, and the engine
-# doesn't run it yet (tier 3). OVER runs (over.slt); what it refuses is
-# refused as it plans.
+# Window functions: OVER (over.slt) and dedupe by ROW_NUMBER() … = 1
+# (dedupe.slt) run; what they refuse is refused as they plan.
 statement ok
 CREATE TABLE clicks (id BIGINT NOT NULL, region TEXT, amount DECIMAL(12, 2), at TIMESTAMPTZ, PRIMARY KEY (id))
 
@@ -42,9 +41,9 @@ statement ok
 ALTER TABLE clicks SET EVENT TIME at
 
 query error
-SELECT id, amount FROM clicks QUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1
+SELECT id, amount FROM clicks QUALIFY row_number() OVER (ORDER BY at DESC) = 1
 ----
-later_tier over 1:39 OVER: transforms don't run window functions yet (tier 3)
+unsupported 1:39 ROW_NUMBER() … = 1 keeps a row for each key of its PARTITION BY: partition by the columns that identify a row
 
 
 query error

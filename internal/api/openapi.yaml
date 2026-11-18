@@ -3788,6 +3788,25 @@ components:
                     type: string
                     description: 'The target schema. Unset: the schema the pipeline writes to.'
             description: DbtStep runs a dbt project against the pipeline's destination.
+        Dedupe:
+            type: object
+            properties:
+                retention:
+                    pattern: ^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,9})?s$
+                    type: string
+                    description: |-
+                        A key is forgotten once the stream's watermark passes its first row's
+                         event time plus this much, and its next row is written again. More
+                         than zero.
+                unbounded:
+                    type: boolean
+                    description: |-
+                        Every key is remembered for good, so the dedupe's state grows with the
+                         number of keys. Not with retention.
+            description: |-
+                Dedupe says how long a dedupe by ROW_NUMBER() … = 1, in ascending order of
+                 the stream's event time, remembers a key it kept: a retention, or
+                 unbounded. Such a dedupe over a stream that sets neither is refused.
         DeleteConnectorSourceResponse:
             type: object
             properties: {}
@@ -4895,8 +4914,9 @@ components:
                 class:
                     type: string
                     description: |-
-                        group_window. It and the fields up to retention, what the operator
-                         keeps, are unset for a dropped one.
+                        group_window, or over for OVER and a dedupe. It, the fields up to
+                         retention and keep and guarantee, what the operator keeps, are unset
+                         for a dropped one.
                 input:
                     type: string
                     description: The stream it reads, and the stream's eventTime.
@@ -4935,7 +4955,9 @@ components:
                     description: |-
                         How long, in event time, it keeps a window's state: from the window's
                          start until lateness after its end, or for a session, until gap and
-                         lateness after its last row.
+                         lateness after its last row. A dedupe that keeps each key's first row:
+                         how long it remembers a key from that row, its stream's
+                         dedupe.retention; unset for unbounded.
                 change:
                     enum:
                         - OPERATOR_CHANGE_UNSPECIFIED
@@ -4974,6 +4996,15 @@ components:
                     description: |-
                         Whether the pipeline's last checkpoint names its state; unset where
                          that isn't known.
+                keep:
+                    type: string
+                    description: 'A dedupe''s: first, the first row of each key, or latest, the latest.'
+                guarantee:
+                    type: string
+                    description: |-
+                        What a dedupe guarantees of a key's repeats from the source:
+                         exactly_once, or exactly_once_within its retention. Empty where its
+                         stream sets no dedupe.retention, which a first-row dedupe needs.
             description: |-
                 OperatorPlan is a stateful operator of a SQL transform, and what it does
                  to state the pipeline keeps. Its ID is a hash of what it computes and
@@ -5005,7 +5036,7 @@ components:
                     type: string
                     description: |-
                         The windows, or sessions, whose state it keeps: open, or closed and
-                         kept for their lateness.
+                         kept for their lateness. A dedupe's: the keys it keeps.
                 watermark:
                     type: string
                     description: |-
@@ -5047,6 +5078,11 @@ components:
                     description: |-
                         The bytes of its state that the checkpoint record itself carries: what
                          its lanes changed since each last wrote its state to object storage.
+                repeats:
+                    type: string
+                    description: |-
+                        A dedupe's rows it didn't write: repeats of a key it keeps, and for one
+                         that keeps each key's latest row, rows no later than the key's.
             description: |-
                 OperatorStats is what a stateful operator of a SQL transform did in an
                  epoch, on every lane of every worker, and held at the epoch's barrier.
@@ -5501,6 +5537,12 @@ components:
                     description: |-
                         How far event time may run behind before a window closes. Only with
                          event_time.
+                dedupe:
+                    allOf:
+                        - $ref: '#/components/schemas/Dedupe'
+                    description: |-
+                        How long a SQL statement's dedupe over the stream that keeps each key's
+                         first row remembers a key. Only with event_time.
         PipelineVersion:
             type: object
             properties:

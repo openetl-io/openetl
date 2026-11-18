@@ -64,7 +64,7 @@ func sqlRequest(sql string, streams []runner.Stream, restored map[string][]byte)
 		}
 		st := sqlplan.Stream{Name: s.Name, Changelog: s.Read == source.CDC, Nanoseconds: s.NanosecondTimestamps, RestoredSchema: restored[s.Name]}
 		if s.EventTime != nil {
-			st.EventTime = s.EventTime.Column
+			st.EventTime, st.DedupeRetentionMicros = s.EventTime.Column, s.EventTime.Dedupe
 		}
 		if d := s.Declared(); d != nil {
 			if st.DeclaredSchema, err = arrowipc.EncodeSchema(d); err != nil {
@@ -189,6 +189,8 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			Partitioning: plan.Place(s.Partitioning, plan.StatementOperator(st)).Out(),
 			Table:        p.GetDestination().GetTables()[o.Name],
 			From:         s.Name,
+			Deduped:      o.Deduped,
+			Remembers:    o.Remembers,
 		}
 		if plan.Holds(caps, o.Mode, len(o.PrimaryKey) > 0) {
 			out.Holds = streamHolds(o.Spec)
