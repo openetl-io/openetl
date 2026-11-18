@@ -44,10 +44,22 @@ type profileSource struct {
 	continuous bool
 	failAt     int
 	failed     <-chan struct{}
+	// Where each read starts: the state it's given. Nil: not kept.
+	starts *readStarts
+}
+
+type readStarts struct {
+	mu sync.Mutex
+	at []string
 }
 
 func (p profileSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
 	return source.ReadSplits(ctx, req, out, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		if p.starts != nil {
+			p.starts.mu.Lock()
+			p.starts.at = append(p.starts.at, string(sp.State))
+			p.starts.mu.Unlock()
+		}
 		n := 0
 		if len(sp.State) > 0 {
 			var err error
@@ -276,8 +288,13 @@ func TestALatestRowDedupeAcrossFullReads(t *testing.T) {
 	if _, err := runner.RunAttempt(ctx, l.job("a2", "s2", profileSource{rows: sync2, failAt: 3, failed: failed}, read)); !errors.Is(err, errReadBroke) {
 		t.Fatalf("the first attempt of sync 2 ended with %v, want the read's failure", err)
 	}
-	if _, err := runner.RunAttempt(ctx, l.job("a3", "s2", profileSource{rows: sync2}, nil)); err != nil {
+	starts := &readStarts{}
+	if _, err := runner.RunAttempt(ctx, l.job("a3", "s2", profileSource{rows: sync2, starts: starts}, nil)); err != nil {
 		t.Fatal(err)
+	}
+	// The retry reads on from the resume point after the third row.
+	if !slices.Equal(starts.at, []string{"3"}) {
+		t.Errorf("the retry's read started at %q, want the resume point after the third row", starts.at)
 	}
 	got, ops = l.dest.merged(t, "latest", before)
 	if want := map[string]string{"us": "30", "fr": "5", "jp": "40", "it": "10"}; !maps.Equal(got, want) {

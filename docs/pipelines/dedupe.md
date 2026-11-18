@@ -115,10 +115,12 @@ If a customer's latest row has `plan = 'free'`, and the output can have the cust
 
 The dedupe keeps, for each key it has seen, whether the output has the key's row. When the filter drops a key's latest row, the stream's read decides whether it writes the delete:
 
-| Read | Key the dedupe wrote a row of | Key it has not seen, or saw only in quarantined rows |
-|---|---|---|
-| `full_refresh` | Writes the delete | Writes the delete: each sync's read starts with no state, and the output can have the key's row from an earlier sync |
-| `incremental` or `stream` | Writes the delete | Writes nothing: its state holds every key since its state began |
+| Read | Key whose row the dedupe wrote last | Key whose delete the dedupe wrote last | Key it has not seen, or saw only in quarantined rows |
+|---|---|---|---|
+| `full_refresh` | Writes the delete | Writes nothing: the output has no row of the key | Writes the delete: each sync's read starts with no state, and the output can have the key's row from an earlier sync |
+| `incremental` or `stream` | Writes the delete | Writes nothing | Writes nothing: its state holds every key since its state began |
+
+For example, with the filter `amount < 50`, a key's rows with the amounts 20, 90 and 95, which come one after another in that order of time, write an insert, then one delete, then nothing for 95.
 
 A delete of a key that the table does not have does nothing with `destination.deletes: hard`. With `soft`, the default, the official Postgres and Iceberg destinations add a row for the key with `_openetl_deleted` true and nulls in its other columns. So over `full_refresh` with `soft`, each sync writes such a row for every key whose latest row the filter drops, also for a key whose rows never passed the filter.
 
