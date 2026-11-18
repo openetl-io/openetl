@@ -9,21 +9,21 @@
 //! the seed: a lane shapes a batch, which may wait on its proposal; the
 //! owner answers a proposal; an engine takes the next version the owner
 //! sent it, which may also come while a lane's batch is shaped, with a
-//! follow as another lane would make; a lane passes its next barrier; the
-//! owner merges the epoch every lane has passed the barrier of; or the
-//! attempt loses a worker, and the next restores from the last record on
-//! other engines and lanes. One engine of an attempt may start late, with
-//! no rows until a record has the stream's columns. The invariants are
-//! schemaOwner's (internal/runner/workers.go), with one of the lanes': a
-//! lane returns a batch shaped by its engine's newest version. Each broken
-//! variant puts a past bug back, and must break one.
+//! follow as another of the engine's lanes would make; a lane passes its
+//! next barrier; the owner merges the epoch every lane has passed the
+//! barrier of; or the attempt loses a worker, and the next restores from
+//! the last record on other engines and lanes. One engine of an attempt
+//! may start late, with no rows until a record has the stream's columns.
+//! The invariants are schemaOwner's (internal/runner/workers.go), with one
+//! of the lanes': a lane returns a batch shaped by its engine's newest
+//! version. Each broken variant puts a past bug back, and must break one.
 //!
 //! A follow on another lane is one step here: the model runs on one
 //! thread, so it can't stop a follow between its writes, as
 //! `another_lanes_follow_is_seen_whole` does with two.
 //!
 //! `OPENETL_SCHEMA_SEEDS=n` runs n seeds, and `OPENETL_SCHEMA_SEED=s` the
-//! one.
+//! one; a value that isn't a number fails the test.
 
 #![allow(clippy::unwrap_used)]
 
@@ -191,10 +191,22 @@ struct Engine {
     pending: VecDeque<(SchemasResponse, u64)>,
     /// Versions the owner sent it, not taken yet.
     inbox: Rc<RefCell<VecDeque<SchemasRequest>>>,
-    /// Of its batch being shaped: the versions it took meanwhile, the
-    /// follows then, and how often it was shaped.
-    counts: Option<Rc<Cell<(usize, usize, usize)>>>,
+    /// Of its batch being shaped.
+    midway: Option<Rc<Cell<Midway>>>,
     late: bool,
+}
+
+/// What came while a lane's batch was shaped.
+#[derive(Clone, Copy, Default)]
+struct Midway {
+    /// Shapes in which the engine took a newer version.
+    took: usize,
+    /// Shapes in which another lane followed a newer version.
+    followed: usize,
+    /// Shapes again for a version the shape before took.
+    reshaped: usize,
+    /// The last shape took a newer version.
+    last_took: bool,
 }
 
 /// A batch a lane gave its writer lane.
@@ -229,11 +241,11 @@ struct Stats {
     record_later: usize,
     restored_with: usize,
     restored_without: usize,
-    /// A version taken while a lane's batch was shaped, and one followed
-    /// then too.
+    /// A newer version taken while a lane's batch was shaped, and one
+    /// another lane of its engine followed then.
     mid_shape: usize,
     mid_follow: usize,
-    /// A batch shaped again, as a version came while it was shaped.
+    /// A batch shaped again for a version taken while it was shaped.
     reshaped: usize,
 }
 
@@ -331,7 +343,7 @@ impl Model {
                     op: None,
                     pending: VecDeque::new(),
                     inbox: Rc::default(),
-                    counts: None,
+                    midway: None,
                     late: late == Some(i),
                 }
             })
@@ -383,14 +395,16 @@ impl Model {
         let lane = self.rng.below(self.engines[e].lanes.len());
         let engine = &mut self.engines[e];
         let epoch = engine.lanes[lane].1;
+        let others = engine.lanes.len() > 1;
         let mut ls = engine.lanes[lane].0.take().unwrap();
         let (plan, owner) = (engine.plan.clone(), engine.owner.clone());
         let (inbox, remote) = (engine.inbox.clone(), engine.remote.clone());
         // Each time the batch is shaped, the engine may take the versions
-        // sent it meanwhile, and another lane may follow them.
+        // sent it meanwhile, and another lane, if it has one, may follow
+        // them.
         let dice = Cell::new(self.rng.next());
-        let counts = Rc::new(Cell::new((0usize, 0usize, 0usize)));
-        let shaped = counts.clone();
+        let midway = Rc::new(Cell::new(Midway::default()));
+        let shaped = midway.clone();
         let fut: Shaping = Box::pin(async move {
             let out = ls
                 .shape_own(
@@ -398,20 +412,26 @@ impl Model {
                     &owner,
                     |sh| {
                         let mut r = Rng(dice.get());
-                        let (mut mid, mut follows, mut tries) = shaped.get();
-                        tries += 1;
-                        if r.chance(30) && !inbox.borrow().is_empty() {
-                            mid += 1;
+                        let mut m = shaped.get();
+                        m.reshaped += usize::from(m.last_took);
+                        m.last_took = false;
+                        if r.chance(30) {
+                            let newest = || remote.stream(0).unwrap().newest();
+                            let was = newest();
                             for u in inbox.borrow_mut().drain(..) {
                                 remote.update(&u).unwrap();
                             }
-                            if r.chance(50) {
-                                follows += 1;
+                            m.last_took = newest() > was;
+                            m.took += usize::from(m.last_took);
+                            if others && r.chance(50) {
+                                let followed = || owner.remote_version.load(Ordering::Acquire);
+                                let was = followed();
                                 owner.follow(&plan, 0).unwrap();
+                                m.followed += usize::from(followed() > was);
                             }
                         }
                         dice.set(r.next());
-                        shaped.set((mid, follows, tries));
+                        shaped.set(m);
                         sh.type_rows(rows.iter().map(Vec::as_slice))
                     },
                     |_, e| shape_error("a", e),
@@ -419,7 +439,7 @@ impl Model {
                 .await;
             (ls, out)
         });
-        engine.counts = Some(counts);
+        engine.midway = Some(midway);
         engine.op = Some(Op { lane, epoch, fut });
         self.poll(e, stats)
     }
@@ -443,11 +463,11 @@ impl Model {
             return Ok(());
         };
         let lane = engine.op.take().unwrap().lane;
-        if let Some(c) = engine.counts.take() {
-            let (mid, follows, tries) = c.get();
-            stats.mid_shape += mid;
-            stats.mid_follow += follows;
-            stats.reshaped += usize::from(tries > 1);
+        if let Some(m) = engine.midway.take() {
+            let m = m.get();
+            stats.mid_shape += m.took;
+            stats.mid_follow += m.followed;
+            stats.reshaped += m.reshaped;
         }
         // The lane shaped the batch by its engine's newest version.
         let newest = engine.remote.stream(0).unwrap().newest();
@@ -705,24 +725,32 @@ fn run(seed: u64, broken: Option<Broken>, stats: &mut Stats) -> Result<(), Strin
     Ok(())
 }
 
-fn seeds() -> Vec<u64> {
-    if let Some(s) = std::env::var("OPENETL_SCHEMA_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-    {
-        return vec![s];
+/// The seeds to run, and whether they replay one: OPENETL_SCHEMA_SEED's
+/// alone, or the first OPENETL_SCHEMA_SEEDS, 300 without it. A value that
+/// isn't a number fails the test.
+fn seeds() -> (Vec<u64>, bool) {
+    let var = |name: &str| match std::env::var(name) {
+        Ok(s) => Some(
+            s.parse::<u64>()
+                .unwrap_or_else(|e| panic!("{name}={s:?}: {e}")),
+        ),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(e) => panic!("{name}: {e}"),
+    };
+    match var("OPENETL_SCHEMA_SEED") {
+        Some(s) => (vec![s], true),
+        None => (
+            (0..var("OPENETL_SCHEMA_SEEDS").unwrap_or(300)).collect(),
+            false,
+        ),
     }
-    let n = std::env::var("OPENETL_SCHEMA_SEEDS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(300);
-    (0..n).collect()
 }
 
 #[test]
 fn the_schema_protocol_keeps_its_invariants() {
     let mut stats = Stats::default();
-    for seed in seeds() {
+    let (seeds, replay) = seeds();
+    for &seed in &seeds {
         if let Err(e) = run(seed, None, &mut stats) {
             panic!("{e}");
         }
@@ -743,7 +771,7 @@ fn the_schema_protocol_keeps_its_invariants() {
         stats.mid_follow,
         stats.reshaped,
     ];
-    if seeds().len() >= 300 {
+    if !replay && seeds.len() >= 300 {
         assert!(reached.iter().all(|&n| n > 0), "{stats:#?}");
     }
 }
@@ -751,11 +779,10 @@ fn the_schema_protocol_keeps_its_invariants() {
 #[test]
 fn each_broken_variant_breaks_an_invariant() {
     // A seed replays alone; a sweep runs at least 300.
-    let replay = std::env::var("OPENETL_SCHEMA_SEED").is_ok();
-    let seeds: Vec<u64> = match replay {
-        true => seeds(),
-        false => (0..u64::try_from(seeds().len().max(300)).unwrap()).collect(),
-    };
+    let (mut seeds, replay) = seeds();
+    if !replay && seeds.len() < 300 {
+        seeds = (0..300).collect();
+    }
     for broken in BROKEN {
         let mut stats = Stats::default();
         let mut caught = Vec::new();

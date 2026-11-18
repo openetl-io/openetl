@@ -160,10 +160,14 @@ impl Lanes {
     }
 }
 
-/// A test's hook into an owner's follow.
+/// A test's hook into an owner's follow, given how many other threads are
+/// in the owner's lock.
 #[cfg(test)]
 #[derive(Clone, Default)]
-pub(crate) struct Park(pub(crate) Option<Arc<dyn Fn() + Send + Sync>>);
+pub(crate) struct Park(pub(crate) Option<Arc<ParkHook>>);
+
+#[cfg(test)]
+type ParkHook = dyn Fn(&std::sync::atomic::AtomicUsize) + Send + Sync;
 
 #[cfg(test)]
 impl std::fmt::Debug for Park {
@@ -232,6 +236,9 @@ struct Owner {
     /// The remote owner's version the shaper is; 0 where there's none.
     remote_version: AtomicU64,
     state: Mutex<OwnerState>,
+    /// Threads in lock, waiting for state or about to have it.
+    #[cfg(test)]
+    waiting: std::sync::atomic::AtomicUsize,
 }
 
 struct OwnerState {
@@ -394,11 +401,18 @@ impl Owner {
                 ended: 0,
                 at_end: At::default(),
             }),
+            #[cfg(test)]
+            waiting: Default::default(),
         })
     }
 
     fn lock(&self) -> MutexGuard<'_, OwnerState> {
-        self.state.lock().unwrap_or_else(|e| e.into_inner())
+        #[cfg(test)]
+        self.waiting.fetch_add(1, Ordering::SeqCst);
+        let o = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        self.waiting.fetch_sub(1, Ordering::SeqCst);
+        o
     }
 
     /// Takes the remote owner's newest schema of stream s, and what it holds,
@@ -431,7 +445,7 @@ impl Owner {
         self.remote_version.store(v, Ordering::Release);
         #[cfg(test)]
         if let Some(park) = &plan.park_follow.0 {
-            park();
+            park(&self.waiting);
         }
         o.version += 1;
         self.version.store(o.version, Ordering::Release);
@@ -4123,24 +4137,39 @@ pub(crate) mod tests {
     // Another lane's follow, parked between taking the remote version and
     // publishing it to the lanes, is seen whole or not at all: a batch that
     // fits the version its lane shaped by waits for it, and is shaped again
-    // by the version it took, which holds x.
+    // by the version it took, which holds x. The follow stays parked until
+    // the lane checks its version: until the lane waits for the owner's
+    // lock, or returns its batch, having read the owner without it.
     #[tokio::test]
     async fn another_lanes_follow_is_seen_whole() {
         use openetl_proto::engine::v1::SchemasRequest;
         use std::sync::atomic::AtomicBool;
+
+        /// Says the follow returned, or panicked.
+        struct Ended(std::sync::mpsc::SyncSender<bool>);
+        impl Drop for Ended {
+            fn drop(&mut self) {
+                let _ = self.0.send(false);
+            }
+        }
 
         let dir = tempfile::tempdir().unwrap();
         let mut req = guarded_request(dir.path(), 1);
         req.remote_schemas = true;
         let mut plan = Plan::from_request(req).unwrap();
         let armed = Arc::new(AtomicBool::new(false));
-        let (parked, wait) = std::sync::mpsc::sync_channel::<()>(1);
+        let returned = Arc::new(AtomicBool::new(false));
+        // True once the follow parks, false once it returns.
+        let (parked, wait) = std::sync::mpsc::sync_channel::<bool>(2);
+        let ended = parked.clone();
         {
-            let armed = armed.clone();
-            plan.park_follow = Park(Some(Arc::new(move || {
+            let (armed, returned) = (armed.clone(), returned.clone());
+            plan.park_follow = Park(Some(Arc::new(move |waiting| {
                 if armed.swap(false, Ordering::SeqCst) {
-                    parked.send(()).unwrap();
-                    std::thread::sleep(Duration::from_millis(200));
+                    parked.send(true).unwrap();
+                    while waiting.load(Ordering::SeqCst) == 0 && !returned.load(Ordering::SeqCst) {
+                        std::thread::yield_now();
+                    }
                 }
             })));
         }
@@ -4187,16 +4216,23 @@ pub(crate) mod tests {
                         // lane follows it, parking halfway.
                         remote.update(&held).unwrap();
                         armed.store(true, Ordering::SeqCst);
-                        let (plan, owner) = (plan.clone(), owner.clone());
-                        *follower = Some(std::thread::spawn(move || owner.follow(&plan, 0)));
-                        wait.recv().unwrap();
+                        let (plan, owner, ended) = (plan.clone(), owner.clone(), ended.clone());
+                        *follower = Some(std::thread::spawn(move || {
+                            let _ended = Ended(ended);
+                            owner.follow(&plan, 0)
+                        }));
+                        if !wait.recv().unwrap() {
+                            let r = follower.take().unwrap().join().unwrap();
+                            panic!("the follow returned {r:?} without parking");
+                        }
                     }
                     sh.type_rows(rows)
                 },
                 |_, e| shape_error("a", e),
             )
-            .await
-            .unwrap();
+            .await;
+        returned.store(true, Ordering::SeqCst);
+        let shaped = shaped.unwrap();
         let follower = follower.lock().unwrap().take().unwrap();
         follower.join().unwrap().unwrap();
         assert_eq!(
