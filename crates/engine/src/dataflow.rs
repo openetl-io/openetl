@@ -29,9 +29,9 @@ use openetl_normalize::{
 };
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
-    Barrier, CellHolds, ColumnHold, EpochReady, EventsResponse, FrameKind, HoldCause, LaneMetrics,
-    Metrics, OperatorEpoch, QuarantineCause, QuarantineFile, ReplayProgress, Rows, SchemaChange,
-    Split, SplitWatermarks, StagedStream, StateRequests, StreamHolds, StreamMetrics,
+    Barrier, CellHolds, ColumnHold, DiskReads, EpochReady, EventsResponse, FrameKind, HoldCause,
+    LaneMetrics, Metrics, OperatorEpoch, QuarantineCause, QuarantineFile, ReplayProgress, Rows,
+    SchemaChange, Split, SplitWatermarks, StagedStream, StateRequests, StreamHolds, StreamMetrics,
     events_response, hold_cause,
 };
 use openetl_state::runs::{Counts, Requests};
@@ -2498,6 +2498,11 @@ impl Flow {
                 op.lookup = requests(now.lookup, was.lookup);
                 op.restore = requests(now.restore, was.restore);
                 op.merge_read = requests(now.merge_read, was.merge_read);
+                let disk = requests(now.disk, was.disk);
+                op.disk = disk.map(|d| DiskReads {
+                    count: d.count,
+                    bytes: d.bytes,
+                });
                 op.memory_bytes += stores.cache_bytes() as u64;
             }
         }
@@ -3032,7 +3037,10 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn start_lanes(req: openetl_proto::engine::v1::StartJobRequest) -> LaneHarness {
-        let plan = Arc::new(Plan::from_request(req).unwrap());
+        start_plan(Arc::new(Plan::from_request(req).unwrap()))
+    }
+
+    pub(crate) fn start_plan(plan: Arc<Plan>) -> LaneHarness {
         let (mut ins, mut readers, mut outs, mut writers) = (vec![], vec![], vec![], vec![]);
         for _ in 0..plan.inbound.len() {
             let (w, r) = duplex(1 << 16);
@@ -6600,6 +6608,280 @@ pub(crate) mod tests {
         assert!(ready.iter().all(|r| r.snapshots.is_empty()));
         let after = if state.exists() { files(&state) } else { 0 };
         assert_eq!(after, before, "a redo writes no run");
+    }
+
+    /// A window of many aggregates, so that a window's state is wider than
+    /// what the layer holds of it in memory.
+    const WIDE: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n, \
+                        sum(v) AS s, min(v) AS lo, max(v) AS hi, avg(v) AS mean, \
+                        sum(id) AS ids, min(id) AS first_id, max(id) AS last_id \
+                        FROM a GROUP BY tumble(at, INTERVAL '1 minute'), email";
+
+    /// A job of two lanes of `sql` whose limits are `memory` bytes, with
+    /// `scratch` bytes of scratch in `dir`.
+    fn limited_window_plan(
+        dir: &std::path::Path,
+        sql: &str,
+        memory: u64,
+        scratch: u64,
+    ) -> Arc<Plan> {
+        let mut req = window_request(&dir.join("state"), sql, 2, 1, 1);
+        req.limits = Some(openetl_proto::engine::v1::Limits {
+            memory_bytes: memory,
+            scratch_dir: dir.join("scratch").display().to_string(),
+            scratch_bytes: scratch,
+        });
+        Arc::new(Plan::from_request(req).unwrap())
+    }
+
+    /// Lane `l`'s rows of batch `b`: new keys, and a tenth of keys already
+    /// seen, all in the first minute, which stays open to the end of
+    /// input. Each with its key.
+    fn wide_rows(l: usize, b: usize, per: usize) -> Vec<(String, String)> {
+        let key = |k: usize| format!("l{l}-{k:07}");
+        let first = b * per;
+        let mut out = Vec::new();
+        for i in 0..per {
+            let k = key(first + i);
+            out.push((
+                k.clone(),
+                minute_row((first + i) as i64, &k, (i % 60) as i64),
+            ));
+            if first > 0 && i % 10 == 0 {
+                let old = key((first + i * 7) % first);
+                out.push((old.clone(), minute_row(i as i64, &old, (i % 60) as i64)));
+            }
+        }
+        out
+    }
+
+    /// The bytes, uncompressed, of the sections of state that `ready`'s
+    /// snapshots name.
+    fn named_raw_bytes(ready: &EpochReady) -> u64 {
+        let mut sections = BTreeSet::new();
+        for s in &ready.snapshots {
+            let (_, sn) = crate::state::snapshot(s).unwrap();
+            for r in openetl_state::runs::runs(&sn).unwrap() {
+                for sec in r.sections {
+                    sections.insert((
+                        r.name.clone(),
+                        format!("{:?}", sec.kind),
+                        sec.meta,
+                        sec.raw_bytes,
+                    ));
+                }
+            }
+        }
+        sections.iter().map(|s| s.3).sum()
+    }
+
+    /// A group window whose state outgrows the job's memory: each keyed
+    /// lane flushes its epoch's changes early past its part of the memory,
+    /// so what the state holds in memory at each barrier stays within half
+    /// of the job's, and within the job's at every point, closing every
+    /// window at the end of input among them. Its keys come back after a flush, in the same epoch and in
+    /// later ones, read through the early runs, the block cache and the
+    /// disk cache before any record names them, and every window's row is
+    /// right. Each barrier names its epoch's early runs with its own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_windows_state_past_the_jobs_memory_stays_within_it() {
+        const MEMORY: u64 = 8 << 20;
+        const EPOCHS: usize = 3;
+        const BATCHES: usize = 12;
+        let dir = tempfile::tempdir().unwrap();
+        let plan = limited_window_plan(dir.path(), WIDE, MEMORY, 1 << 30);
+        let state = plan.state.job.clone().unwrap();
+        assert!(dir.path().join("scratch/state").is_dir());
+        let mut h = start_plan(plan);
+        let mut want: BTreeMap<String, i64> = BTreeMap::new();
+        for e in 0..EPOCHS {
+            for b in 0..BATCHES {
+                for (l, w) in h.ins.iter_mut().enumerate() {
+                    if e == 0 && b == 0 {
+                        put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+                    }
+                    let rs = wide_rows(l, e * BATCHES + b, 1000);
+                    for (k, _) in &rs {
+                        *want.entry(k.clone()).or_default() += 1;
+                    }
+                    let refs: Vec<&str> = rs.iter().map(|r| r.1.as_str()).collect();
+                    put(w, FrameKind::Rows, 0, rows(&refs)).await;
+                }
+            }
+            for (l, w) in h.ins.iter_mut().enumerate() {
+                if e == EPOCHS - 1 {
+                    let id = format!("s{l}");
+                    put(w, FrameKind::Split, 0, split(&id, Some(watermark::END))).await;
+                }
+                barriers(w, 1, e as u64 + 1).await;
+            }
+        }
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        let got: BTreeMap<String, i64> = all_rows(&outs, 1)
+            .into_iter()
+            .map(|r| {
+                assert_eq!(r.start, 0);
+                (r.email, r.n)
+            })
+            .collect();
+        assert_eq!(got.len(), want.len());
+        assert!(got == want, "a window's count is wrong");
+        // The last barrier is at the end of input, where every window has
+        // gone and the state names nothing.
+        let mut early = 0;
+        let mut raw = 0;
+        for r in &ready[..EPOCHS - 1] {
+            let runs: BTreeSet<&String> = r.snapshots.iter().flat_map(|s| &s.runs).collect();
+            early += runs.iter().filter(|n| n.contains(".early")).count();
+            raw = raw.max(named_raw_bytes(r));
+            let op = &r.operators[0];
+            assert!(
+                op.memory_bytes <= state.budget(),
+                "epoch {:?}: {} bytes in memory, {} named",
+                r.epoch,
+                op.memory_bytes,
+                named_raw_bytes(r)
+            );
+        }
+        let peak = state.peak.load(std::sync::atomic::Ordering::Relaxed);
+        println!(
+            "{} windows: {raw} bytes of state named, {peak} in memory at the most, {early} early runs, {:?}",
+            got.len(),
+            state.disk().unwrap().counts()
+        );
+        assert!(early >= 2 * (EPOCHS - 1), "{early} early runs named");
+        assert!(raw > MEMORY, "{raw} bytes of state");
+        assert!(peak <= MEMORY, "{peak} bytes in memory at the most");
+        // Every lane has ended, holding state or not: none counts, and the
+        // job's state is its block cache's alone.
+        let after = state.hold("none", usize::MAX, 0);
+        assert!(after <= 1 << 20, "{after} bytes held after the end");
+        let disk = state.disk().unwrap().counts();
+        let reported: u64 = ready
+            .iter()
+            .flat_map(|r| &r.operators)
+            .map(|o| o.disk.unwrap_or_default().count)
+            .sum();
+        assert!(disk.hits > 0, "{disk:?}");
+        assert_eq!(reported, disk.hits);
+    }
+
+    /// An OVER statement's state is a window's as far as memory goes: its
+    /// waiting rows and frames count as the job's state, a lane past its
+    /// part of a small memory limit flushes them early, and every row's
+    /// running total and the row before it are right, read back through
+    /// the early runs and the disk cache.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_over_statements_state_flushes_early_and_is_counted() {
+        const MEMORY: u64 = 2 << 20;
+        const ROWS: i64 = 4000;
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = over_request(&dir.path().join("state"), RUNNING, 2, 1, 1);
+        // The watermark stays a day behind: every row waits for the end.
+        event_time(&mut req).delay_micros = 86_400 * SEC;
+        req.limits = Some(openetl_proto::engine::v1::Limits {
+            memory_bytes: MEMORY,
+            scratch_dir: dir.path().join("scratch").display().to_string(),
+            scratch_bytes: 1 << 30,
+        });
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let state = plan.state.job.clone().unwrap();
+        let mut h = start_plan(plan);
+        // By email: each row's time, id and v, which is its id.
+        let mut by_email: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
+        for (l, w) in h.ins.iter_mut().enumerate() {
+            let l = i64::try_from(l).unwrap();
+            put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+            for chunk in (0..ROWS).collect::<Vec<_>>().chunks(500) {
+                let mut rs = Vec::new();
+                for &i in chunk {
+                    let (id, email, at) =
+                        (l * 1_000_000 + i, format!("e{:03}", i % 200), i * 2 + l);
+                    by_email.entry(email.clone()).or_default().push((at, id));
+                    rs.push(minute_row(id, &email, at));
+                }
+                let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                put(w, FrameKind::Rows, 0, rows(&refs)).await;
+            }
+            barriers(w, 1, 1).await;
+            put(
+                w,
+                FrameKind::Split,
+                0,
+                split(&format!("s{l}"), Some(watermark::END)),
+            )
+            .await;
+            barriers(w, 1, 2).await;
+        }
+        h.end_all(2).await;
+        let (outs, ready) = h.finish().await;
+        let mut want: BTreeMap<i64, (i64, Option<i64>)> = BTreeMap::new();
+        for rows in by_email.values_mut() {
+            rows.sort();
+            let (mut total, mut before) = (0, None);
+            for &(_, id) in rows.iter() {
+                total += id;
+                want.insert(id, (total, before));
+                before = Some(id);
+            }
+        }
+        let got: BTreeMap<i64, (i64, Option<i64>)> = over_rows(&outs, 1)
+            .into_iter()
+            .flatten()
+            .map(|r| (r.id, (r.total, r.before)))
+            .collect();
+        assert_eq!(got.len(), want.len());
+        assert!(got == want, "a row's running total or row before is wrong");
+        let early = ready[0]
+            .snapshots
+            .iter()
+            .flat_map(|s| &s.runs)
+            .filter(|r| r.contains(".early"))
+            .count();
+        assert!(early >= 2, "{early} early runs named at the first barrier");
+        let peak = state.peak.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            peak > 0 && peak <= MEMORY,
+            "{peak} bytes counted at the most"
+        );
+        assert!(state.disk().unwrap().counts().written > 0);
+    }
+
+    /// A job whose state doesn't fit, near the engine's memory limit even
+    /// once flushed, fails with RESOURCE_EXHAUSTED and says what to raise.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn state_that_cant_fit_fails_the_job_saying_what_to_raise() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan = limited_window_plan(dir.path(), MINUTES, 1 << 20, 0);
+        let state = plan.state.job.clone().unwrap();
+        assert!(state.disk().is_none(), "no scratch bytes, no disk cache");
+        state
+            .pressed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut h = start_plan(plan);
+        'feed: for b in 0..200 {
+            for (l, w) in h.ins.iter_mut().enumerate() {
+                if b == 0 {
+                    put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
+                }
+                let rs = wide_rows(l, b, 1000);
+                let refs: Vec<&str> = rs.iter().map(|r| r.1.as_str()).collect();
+                if frame::write(w, FrameKind::Rows, 0, &rows(&refs))
+                    .await
+                    .is_err()
+                {
+                    break 'feed;
+                }
+            }
+        }
+        let err = h.job.await.unwrap().unwrap_err();
+        assert_eq!(err.code, ErrorCode::ResourceExhausted, "{}", err.message);
+        assert!(
+            err.message.contains("larger resources.size"),
+            "{}",
+            err.message
+        );
     }
 
     /// A job with a group window keeps its state at the job's state URL, and

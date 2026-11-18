@@ -1006,6 +1006,7 @@ async fn run_job(name: &str, dir: &std::path::Path, case: &Case, job: &Job, seed
         if job.memory > 0 {
             req.limits = Some(openetl_proto::engine::v1::Limits {
                 memory_bytes: job.memory,
+                ..Default::default()
             });
         }
         req.state_pending_bytes = job.pending;
@@ -2287,6 +2288,7 @@ async fn run_frames(
             req.window_steps = r.steps.clone();
             req.limits = (r.memory > 0).then_some(openetl_proto::engine::v1::Limits {
                 memory_bytes: r.memory,
+                ..Default::default()
             });
         }
     }

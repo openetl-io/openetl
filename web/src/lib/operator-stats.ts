@@ -1,4 +1,4 @@
-import type { OperatorStats, StateRequests } from "@/gen/openetl/api/v1/pipeline_pb";
+import type { DiskReads, OperatorStats, StateRequests } from "@/gen/openetl/api/v1/pipeline_pb";
 import { timestampDate, type Timestamp } from "@bufbuild/protobuf/wkt";
 import { duration, full } from "@/lib/format";
 
@@ -31,8 +31,8 @@ export function written(s: OperatorStats) {
   return `${full(s.inserts)} new, ${full(s.updates)} updated, ${full(s.deletes)} deleted`;
 }
 
-/** Requests of one kind: "3 (1.2 MiB)", or "0". */
-export function requests(r?: StateRequests) {
+/** Requests of one kind, or reads from disk: "3 (1.2 MiB)", or "0". */
+export function requests(r?: StateRequests | DiskReads) {
   if (!r || r.count === 0n) return "0";
   return `${full(r.count)} (${stateBytes(r.bytes)})`;
 }

@@ -64,10 +64,13 @@ pub struct RunRef {
 }
 
 /// The name of a run a lane writes: `g{generation}/e{epoch}/kg{first}-
-/// {last}.run` at a barrier, of that epoch's changes, and `….merge.run` for
-/// a merge's output, which the barrier of `epoch` names first. No two
-/// attempts or epochs write the same name, and none is written twice: a
-/// lane names at most one merge at a barrier.
+/// {last}.run` at a barrier, of that epoch's changes; `….early{n}.run`
+/// for its `n`th early flush, from 1, of the epoch's changes until then,
+/// which the barrier's run follows; and `….merge.run` for a merge's
+/// output, which the barrier of `epoch` names first. No two attempts or
+/// epochs write the same name, and none is written twice: a lane names at
+/// most one merge at a barrier, and counts its early flushes on across an
+/// epoch that it opens again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunName {
     pub generation: u64,
@@ -75,24 +78,28 @@ pub struct RunName {
     pub range: KeyGroupRange,
     /// A merge's output, whose sections hold earlier epochs'.
     pub merged: bool,
+    /// An early flush's number in its epoch, from 1; `None` for the
+    /// barrier's run and a merge's.
+    pub early: Option<u32>,
 }
 
 impl fmt::Display for RunName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "g{}/e{}/kg{}-{}{}",
-            self.generation,
-            self.epoch,
-            self.range.first,
-            self.range.last,
-            if self.merged { MERGED } else { BARRIER }
-        )
+            "g{}/e{}/kg{}-{}",
+            self.generation, self.epoch, self.range.first, self.range.last
+        )?;
+        if let Some(n) = self.early {
+            write!(f, "{EARLY}{n}")?;
+        }
+        f.write_str(if self.merged { MERGED } else { BARRIER })
     }
 }
 
 const BARRIER: &str = ".run";
 const MERGED: &str = ".merge.run";
+const EARLY: &str = ".early";
 
 impl RunName {
     pub fn parse(name: &str) -> Option<RunName> {
@@ -104,6 +111,11 @@ impl RunName {
             Some(g) => (g, true),
             None => (file.strip_suffix(BARRIER)?, false),
         };
+        let (groups, early) = match groups.split_once(EARLY) {
+            Some((g, n)) if !merged => (g, Some(n.parse().ok().filter(|n| *n > 0)?)),
+            Some(_) => return None,
+            None => (groups, None),
+        };
         let (first, last) = groups.split_once('-')?;
         if parts.next().is_some() {
             return None;
@@ -114,6 +126,7 @@ impl RunName {
             epoch,
             range,
             merged,
+            early,
         };
         (parsed.to_string() == name).then_some(parsed)
     }
@@ -358,13 +371,24 @@ mod tests {
             epoch: 40,
             range: KeyGroupRange::new(0, 63),
             merged: false,
+            early: None,
         };
         assert_eq!(n.to_string(), "g3/e40/kg0-63.run");
         assert_eq!(RunName::parse("g3/e40/kg0-63.run"), Some(n));
         let m = RunName { merged: true, ..n };
         assert_eq!(m.to_string(), "g3/e40/kg0-63.merge.run");
         assert_eq!(RunName::parse("g3/e40/kg0-63.merge.run"), Some(m));
+        let e = RunName {
+            early: Some(2),
+            ..n
+        };
+        assert_eq!(e.to_string(), "g3/e40/kg0-63.early2.run");
+        assert_eq!(RunName::parse("g3/e40/kg0-63.early2.run"), Some(e));
         for bad in [
+            "g3/e40/kg0-63.early0.run",
+            "g3/e40/kg0-63.early02.run",
+            "g3/e40/kg0-63.early.run",
+            "g3/e40/kg0-63.early2.merge.run",
             "g3/e40/kg0-63",
             "g3/e40/kg0-63.run/x",
             "g03/e40/kg0-63.run",

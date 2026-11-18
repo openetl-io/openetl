@@ -2350,6 +2350,7 @@ dependencies = [
  "futures-util",
  "lz4_flex",
  "object_store 0.14.2",
+ "tempfile",
  "thiserror",
  "tokio",
  "twox-hash",

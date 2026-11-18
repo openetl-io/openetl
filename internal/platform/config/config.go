@@ -113,6 +113,8 @@ type Config struct {
 	Kubeconfig string
 	// Each pod's ephemeral storage, such as 10Gi; 0: none set.
 	PodScratch string
+	// The local disk each job's engine may use, such as 1Gi; 0: none.
+	Scratch string
 	// Whether stream pods avoid spot nodes or only prefer to.
 	PodStreamSpot string
 	// The one attempt a pod's runner runs, and its placement, and which of
@@ -185,7 +187,8 @@ var options = []option{
 	{"pod-namespace", "OPENETL_POD_NAMESPACE", "", "the namespace the kubernetes launcher makes pods in (default: the kubeconfig context's, or the launcher's own)", func(c *Config) *string { return &c.PodNamespace }},
 	{"kubeconfig", "OPENETL_KUBECONFIG", "", "a kubeconfig file for the kubernetes launcher (default: its service account; it never reads one it isn't given)", func(c *Config) *string { return &c.Kubeconfig }},
 	{"pod-stream-spot", "OPENETL_POD_STREAM_SPOT", "prefer", "whether the kubernetes launcher's stream pods keep off spot nodes: prefer, so they run on spot only where there's nothing else, or avoid, so they never do", func(c *Config) *string { return &c.PodStreamSpot }},
-	{"pod-scratch", "OPENETL_POD_SCRATCH", "10Gi", "each pod's ephemeral storage, for its runner's scratch; 0: none set", func(c *Config) *string { return &c.PodScratch }},
+	{"pod-scratch", "OPENETL_POD_SCRATCH", "10Gi", "each pod's ephemeral storage, for its runner's scratch; its engines get half of it as their --scratch; 0: none set, and its engines get none", func(c *Config) *string { return &c.PodScratch }},
+	{"scratch", "OPENETL_SCRATCH", "1Gi", "the local disk each job's engine may use, in the scratch folder of --cache, such as 10Gi, half of it for the disk cache of its SQL transform's state, which it removes when the job ends; 0: none, which turns the cache off; the kubernetes launcher sets it in its pods, to half of --pod-scratch", func(c *Config) *string { return &c.Scratch }},
 	{"attempt", "OPENETL_ATTEMPT", "", "the one attempt this runner runs before it stops, as a pod launcher's pod; set by the launcher", func(c *Config) *string { return &c.Attempt }},
 	{"report-interval", "OPENETL_REPORT_INTERVAL", "10s", "how often this runner reports what it runs to the API, as a Go duration; keep it well under its work's heartbeat timeouts", func(c *Config) *string { return &c.ReportInterval }},
 	{"web", "OPENETL_WEB", "", "a directory holding the built UI (web/dist) for the API server to serve at /; empty: no UI", func(c *Config) *string { return &c.Web }},

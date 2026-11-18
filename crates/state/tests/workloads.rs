@@ -17,11 +17,13 @@
 //! names every section, and the windows don't move their horizon, as
 //! before dead sections were dropped. `_MERGE=0` merges nothing, and
 //! `_WAIT=0` lets merges land when they end rather than at the next
-//! barrier.
+//! barrier. `_DISK_MB` gives the lanes a disk cache of that many MiB; each
+//! restore then runs twice, with a cold disk cache and with the run's.
 //!
 //! The columns: the epoch's time and its slowest barrier's; runs written
 //! at barriers and by merges, and their KiB; reads of blocks, reads opening
 //! runs, reads by merges, and the KiB of all three;
+//! reads the disk cache answered;
 //! probes of a section past its filter that read a block holding the key,
 //! that read one that didn't (false positives), and that the cache
 //! answered; probes the filters ruled out; the KiB of changes; write
@@ -42,8 +44,8 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use openetl_state::runs::Counts;
 use openetl_state::{
-    BoxFuture, KeyGroupRange, KeyRef, Layer, MergeConfig, ObjectStorage, Objects, OperatorId,
-    PendingLimit, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
+    BoxFuture, DiskCache, KeyGroupRange, KeyRef, Layer, MergeConfig, ObjectStorage, Objects,
+    OperatorId, PendingLimit, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 use twox_hash::XxHash3_64;
 
@@ -67,6 +69,7 @@ struct Args {
     drop: bool,
     merge: bool,
     wait: bool,
+    disk_bytes: u64,
     pending: usize,
 }
 
@@ -90,6 +93,7 @@ fn args() -> Args {
         drop: env("DROP", 1) != 0,
         merge: env("MERGE", 1) != 0,
         wait: env("WAIT", 1) != 0,
+        disk_bytes: env("DISK_MB", 0) << 20,
         pending: (env("PENDING_KB", 1024) as usize) << 10,
         rescale: rescale.split(',').filter_map(|s| s.parse().ok()).collect(),
     }
@@ -368,7 +372,8 @@ struct Run {
 }
 
 impl Run {
-    fn stores(&self) -> RunStores {
+    /// Stores over `disk`, if any.
+    fn stores_on(&self, disk: Option<&Arc<DiskCache>>) -> RunStores {
         let inner = ObjectStorage::new(self.bucket.clone(), Path::from("state"));
         let slow = Slow {
             inner,
@@ -387,7 +392,11 @@ impl Run {
             bytes: self.args.pending,
             key_groups: GROUPS,
         };
-        RunStores::new(Arc::new(slow), config).with_pending(pending)
+        match disk {
+            Some(d) => RunStores::with_disk(Arc::new(slow), config, d.clone(), "op"),
+            None => RunStores::new(Arc::new(slow), config),
+        }
+        .with_pending(pending)
     }
 
     /// An epoch on every lane at once, and a line of what it cost.
@@ -439,7 +448,7 @@ impl Run {
         let carried: usize = outs.iter().map(|o| o.carried).sum();
         let recorded: usize = outs.iter().map(|o| o.recorded).sum();
         println!(
-            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>4} {:>7.0} {:>6} {:>4} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7} {:>5} {:>7.1} {:>8.1}",
+            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>4} {:>7.0} {:>6} {:>4} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7} {:>5} {:>7.1} {:>8.1}",
             ms(wall),
             ms(barrier),
             c.barrier.count,
@@ -449,6 +458,7 @@ impl Run {
             c.restore.count,
             c.merge_read.count,
             kib(c.lookup.bytes + c.restore.bytes + c.merge_read.bytes),
+            c.disk.count,
             c.hits,
             c.false_positives,
             c.cached,
@@ -488,7 +498,7 @@ fn amplification(c: &Counts) -> f64 {
 
 fn header() {
     println!(
-        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>4} {:>7} {:>6} {:>4} {:>4} {:>8} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5} {:>7} {:>8}",
+        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>4} {:>7} {:>6} {:>4} {:>4} {:>8} {:>6} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5} {:>7} {:>8}",
         "",
         "ep",
         "wall ms",
@@ -500,6 +510,7 @@ fn header() {
         "open",
         "mGET",
         "GET KiB",
+        "disk",
         "hits",
         "fp",
         "cached",
@@ -543,7 +554,13 @@ async fn measure(workload: Workload) {
         bucket: Arc::new(InMemory::new()),
     };
     header();
-    let stores = run.stores();
+    let dir = tempfile::tempdir().unwrap();
+    let disk = |name: &str| {
+        (args.disk_bytes > 0)
+            .then(|| DiskCache::open(&dir.path().join(name), args.disk_bytes).unwrap())
+    };
+    let warm = disk("run");
+    let stores = run.stores_on(warm.as_ref());
     let mut lanes = open(&stores, 1, 1, args.lanes, &[]).await;
     let mut total = Counts::default();
     for e in 1..=args.epochs {
@@ -589,19 +606,32 @@ async fn measure(workload: Workload) {
     // The first epoch after the record whose watermark closes windows.
     let windows = (WINDOW / EPOCH) as u64;
     let next = (args.epochs + 2).div_ceil(windows) * windows;
-    for (i, n) in std::iter::once(args.lanes)
-        .chain(args.rescale.iter().copied())
-        .enumerate()
-    {
-        let stores = run.stores();
-        let t = Instant::now();
-        let lanes = open(&stores, 2 + i as u64, next, n, &record).await;
-        println!(
-            "restore onto {n} lanes: {:.1} ms, {:?}",
-            ms(t.elapsed()),
-            stores.counts()
-        );
-        run.epoch(&stores, lanes, next, &format!("after {n}")).await;
+    let mut generation = 2;
+    for n in std::iter::once(args.lanes).chain(args.rescale.iter().copied()) {
+        let caches = match &warm {
+            None => vec![("", None)],
+            Some(w) => vec![
+                ("cold ", disk(&format!("cold-{generation}"))),
+                ("warm ", Some(w.clone())),
+            ],
+        };
+        for (how, cache) in caches {
+            let stores = run.stores_on(cache.as_ref());
+            let t = Instant::now();
+            let lanes = open(&stores, generation, next, n, &record).await;
+            generation += 1;
+            println!(
+                "restore onto {n} lanes, {how}disk cache: {:.1} ms, {:?}",
+                ms(t.elapsed()),
+                stores.counts()
+            );
+            let (_, c) = run.epoch(&stores, lanes, next, &format!("{how}{n}")).await;
+            println!(
+                "  first epoch: {} GETs, {} from disk",
+                c.lookup.count + c.restore.count + c.merge_read.count,
+                c.disk.count
+            );
+        }
     }
 }
 

@@ -71,6 +71,20 @@ func env(c *corev1.Container) map[string]string {
 	return out
 }
 
+// A pod given no scratch requests no ephemeral storage, and its runner's
+// engines get no scratch either, so no disk cache.
+func TestAPodWithoutScratchGivesItsEnginesNone(t *testing.T) {
+	k, _ := launcher(t)
+	k.Scratch = 0
+	c := &k.Pod(batch()).Spec.Containers[1]
+	if e := env(c); e["OPENETL_SCRATCH"] != "0" {
+		t.Errorf("OPENETL_SCRATCH %q, want 0", e["OPENETL_SCRATCH"])
+	}
+	if _, ok := c.Resources.Limits[corev1.ResourceEphemeralStorage]; ok {
+		t.Errorf("limits %v, want no ephemeral storage", c.Resources.Limits)
+	}
+}
+
 // A pod is the template with the attempt's size, labels and environment,
 // and what keeps batch pods off nothing and streams off spot.
 func TestPodFromTemplate(t *testing.T) {
@@ -98,7 +112,7 @@ func TestPodFromTemplate(t *testing.T) {
 		t.Errorf("a batch pod's node affinity %v, want the template's", exprs)
 	}
 	c := &p.Spec.Containers[1]
-	if e := env(c); e["OPENETL_ATTEMPT"] != "run/attempt/1" || e["OPENETL_PLACEMENT"] != "2" || e["OPENETL_POOL"] != "big" || e["OPENETL_CAPACITY"] != "2,4294967296" || e["OPENETL_API_URL"] == "" {
+	if e := env(c); e["OPENETL_ATTEMPT"] != "run/attempt/1" || e["OPENETL_PLACEMENT"] != "2" || e["OPENETL_POOL"] != "big" || e["OPENETL_CAPACITY"] != "2,4294967296" || e["OPENETL_API_URL"] == "" || e["OPENETL_SCRATCH"] != "5368709120" {
 		t.Errorf("env %v", e)
 	}
 	if len(p.Spec.Containers[0].Env) != 0 {

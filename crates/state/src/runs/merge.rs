@@ -278,7 +278,7 @@ impl Cursor {
         )
         .await?;
         self.held = 0;
-        for (_, block) in read {
+        for (_, block, _) in read {
             let mut at = 0;
             while at < block.len() {
                 let (k, v) = super::format::entry(&block, &mut at)?;

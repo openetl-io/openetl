@@ -506,6 +506,10 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("daemon: --egress-allow: %w", err)
 	}
+	scratch, err := resources.ParseMemory(cfg.Scratch)
+	if err != nil {
+		return fmt.Errorf("daemon: --scratch: %w", err)
+	}
 	connectors := connectorhost.Env{Egress: netguard.Policy{Allow: allow}, Connectors: connectorsDir(cfg), Logger: log.With("component", "connector"),
 		InheritAWS: cfg.ConnectorAWSCredentials == "inherit"}
 	roles, err := awsroles.New(cfg.AWSAssumeRoles)
@@ -549,7 +553,7 @@ func runRunner(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 		API:         apiClient,
 		Checkpoints: cps,
 		Storage:     cfg.Checkpoints,
-		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine")},
+		Engine:      engineclient.Options{Binary: cfg.Engine, Logger: log.With("component", "engine"), Scratch: scratch, ScratchDir: filepath.Join(cfg.Cache, "scratch")},
 		Logger:      log,
 		Connectors:  connectors,
 		Versions:    versions,

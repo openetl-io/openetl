@@ -158,6 +158,18 @@ At startup, the control plane rebuilds schedules and job monitors from the metad
 
 Before returning to a previously used backend, remove its old workflow state. For DBOS, drop the installation's `_dbos` database while the control plane is stopped. For Temporal, use a new namespace. Otherwise, old workflows can restart with outdated pipeline definitions.
 
+## Scratch disk
+
+A runner gives each job's engine a folder on local disk, in the `scratch` folder of its `--cache`. The engine keeps a disk cache there of the state that a SQL transform's group window reads from the checkpoint store. The cache is only a copy: the engine deletes it when the job ends, and a new run starts with an empty one.
+
+- `--scratch` (`OPENETL_SCRATCH`) is what each job's engine may keep there, 1 GiB unless you set it. The disk cache takes up to half of it.
+- `--scratch 0` turns the disk cache off. The engine then reads the checkpoint store each time a block of state is not in memory.
+- A runner that runs several jobs at once needs room for each of them. Connectors' temporary files and the runner's `--cache` need room of their own.
+- If a runner stops without cleaning up, the next engine that a runner with the same `--cache` starts deletes what the stopped runner's engines left, also with `--scratch 0`. To check, list `scratch/` under the runner's `--cache`: it holds one `oe-*` folder for each engine that runs, and none when no job runs.
+- On Kubernetes, the pod launcher sets each pod's `OPENETL_SCRATCH` to half of `OPENETL_POD_SCRATCH`, the pod's ephemeral storage ([Install on Kubernetes](./kubernetes.md)). If `OPENETL_POD_SCRATCH` is `0`, the pods get `OPENETL_SCRATCH=0`, and their engines have no disk cache.
+
+To size it, give the cache about as much as the state that a job's group windows read often: the open windows of a continuous pipeline, and those that a sync reads. A larger cache makes fewer requests to the checkpoint store. The console's **SQL** tab shows how many reads the disk answered at the last checkpoint ([SQL](../use/sql.md#sql)).
+
 ## Monitoring
 
 `openetld` exports metrics and traces through OpenTelemetry. Configure an exporter or OTLP endpoint with the standard `OTEL_*` variables to enable export. `OTEL_METRICS_EXPORTER=prometheus` serves metrics for Prometheus to scrape. The Kubernetes manifests expose this endpoint on port 9464.
