@@ -546,7 +546,7 @@ impl InputOwner {
                 (owned.version, wanted)
             };
             if let Some(r) = remote {
-                r.propose(base, &wanted, Holding::default()).await?;
+                r.propose(base, &wanted, Holding::default(), 0).await?;
             }
         }
     }
@@ -977,6 +977,8 @@ struct LaneStream {
     cells: BTreeMap<String, CellHolds>,
     /// Lane 0 replays released holds.
     replay: Option<Replayer>,
+    /// The epoch its rows are in: one past the last barrier it passed.
+    epoch: u64,
 }
 
 impl LaneStream {
@@ -1074,7 +1076,13 @@ impl LaneStream {
             drop(out);
             if let Some(schema) = schema {
                 let holding = holding_of(plan, self.stream, &self.shaper)?;
-                remote.propose(base, &schema, holding).await?;
+                // A change made without the policy says its epoch, so the
+                // owner can tell whether an earlier epoch's had columns.
+                let epoch = match self.shaper.sealed() {
+                    true => 0,
+                    false => self.epoch,
+                };
+                remote.propose(base, &schema, holding, epoch).await?;
             }
         }
     }
@@ -1296,6 +1304,7 @@ where
             quarantined: Quarantined::default(),
             cells: BTreeMap::new(),
             replay,
+            epoch: plan.first_epoch,
         })
     };
     let mut streams = Vec::with_capacity(plan.inbound[lane.lane].streams.len());
@@ -1498,6 +1507,7 @@ where
                             std::mem::take(&mut ls.cells),
                             replayed,
                         )?;
+                        ls.epoch = epoch.n + 1;
                         lane.all(input, || Out::Barrier(input, epoch)).await?;
                         if ls.replay.is_some() {
                             ls.catch_up(owner);
@@ -1546,6 +1556,7 @@ where
                                 std::mem::take(&mut ls.cells),
                                 replayed,
                             )?;
+                            ls.epoch = epoch.n + 1;
                             lane.all(s, || Out::Barrier(s, epoch)).await?;
                             if ls.replay.is_some() {
                                 ls.catch_up(owner);
@@ -3641,6 +3652,7 @@ pub(crate) mod tests {
                     quarantined: Quarantined::default(),
                     cells: BTreeMap::new(),
                     replay: None,
+                    epoch: 1,
                 }
             })
             .collect();
@@ -3934,6 +3946,7 @@ pub(crate) mod tests {
                 quarantined: Quarantined::default(),
                 cells: BTreeMap::new(),
                 replay: None,
+                epoch: 1,
             }
         };
         let rows = [br#"{"x": 4, "y": 5}"#.as_slice()];
@@ -4094,8 +4107,12 @@ pub(crate) mod tests {
             let s = ipc::decode_schema(schema).unwrap();
             s.field_with_name("x").unwrap().data_type().clone()
         };
+        // Made without the policy, the proposal says the epoch of its rows.
         let p = proposals.recv().await.unwrap().unwrap();
-        assert_eq!((p.base, x(&p.arrow_schema)), (1, DataType::Utf8));
+        assert_eq!(
+            (p.base, p.epoch, x(&p.arrow_schema)),
+            (1, 3, DataType::Utf8)
+        );
         assert!(p.holding.is_empty(), "{:?}", p.holding);
         // The owner sealed version 1 before it got the proposal.
         let sealed = SchemasRequest {
@@ -4104,7 +4121,7 @@ pub(crate) mod tests {
         };
         remote.update(&sealed).unwrap();
         let p = proposals.recv().await.unwrap().unwrap();
-        assert_eq!(p.base, 2);
+        assert_eq!((p.base, p.epoch), (2, 0));
         let held: Vec<&str> = p.holding.iter().map(|h| h.column.as_str()).collect();
         assert_eq!(held, ["x"]);
         assert_eq!(x(&p.delivered), DataType::Int64);

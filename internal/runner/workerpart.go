@@ -878,7 +878,7 @@ func newSchemaRelay(w attempt.Worker) *schemaRelay {
 
 func (r *schemaRelay) Propose(p SchemaProposal) error {
 	return r.w.Propose(&attemptv1.SchemaProposal{
-		Stream: p.Stream, Input: p.Input, Base: p.Base, ArrowSchema: p.Schema, Holding: attempt.ColumnHolds(p.Holding), Delivered: p.Delivered,
+		Stream: p.Stream, Input: p.Input, Base: p.Base, ArrowSchema: p.Schema, Holding: attempt.ColumnHolds(p.Holding), Delivered: p.Delivered, Epoch: p.Epoch,
 	})
 }
 

@@ -192,12 +192,13 @@ impl RemoteStream {
 
     /// Proposes schema, made from version base, unless the owner has moved
     /// on from it since, and returns once the owner has a newer version, or
-    /// the Schemas call fails.
+    /// the Schemas call fails. `epoch` is SchemasResponse.epoch.
     pub async fn propose(
         &self,
         base: u64,
         schema: &SchemaRef,
         holding: Holding,
+        epoch: u64,
     ) -> Result<(), JobError> {
         let _turn = self.turn.lock().await;
         self.check()?;
@@ -213,6 +214,7 @@ impl RemoteStream {
             input: self.input,
             holding: holding.columns,
             delivered: holding.delivered,
+            epoch,
         };
         self.proposals
             .send(Ok(proposal))
@@ -266,7 +268,7 @@ mod tests {
             tokio::spawn(async move {
                 r.stream(1)
                     .unwrap()
-                    .propose(0, &s, Holding::default())
+                    .propose(0, &s, Holding::default(), 0)
                     .await
             })
         };
@@ -291,7 +293,7 @@ mod tests {
         );
         r.stream(1)
             .unwrap()
-            .propose(0, &s, Holding::default())
+            .propose(0, &s, Holding::default(), 0)
             .await
             .unwrap();
         assert!(proposals.try_recv().is_err());
@@ -323,9 +325,12 @@ mod tests {
         let s = schema(&["a"]);
         let waiting = {
             let (r, s) = (r.clone(), s.clone());
-            tokio::spawn(
-                async move { r.input(0).unwrap().propose(0, &s, Holding::default()).await },
-            )
+            tokio::spawn(async move {
+                r.input(0)
+                    .unwrap()
+                    .propose(0, &s, Holding::default(), 0)
+                    .await
+            })
         };
         let p = proposals.recv().await.unwrap().unwrap();
         assert_eq!((p.stream, p.input), (0, true));
@@ -351,7 +356,7 @@ mod tests {
             tokio::spawn(async move {
                 r.stream(0)
                     .unwrap()
-                    .propose(0, &s, Holding::default())
+                    .propose(0, &s, Holding::default(), 0)
                     .await
             })
         };
@@ -364,7 +369,7 @@ mod tests {
         let err = r
             .stream(0)
             .unwrap()
-            .propose(0, &s, Holding::default())
+            .propose(0, &s, Holding::default(), 0)
             .await
             .unwrap_err();
         assert_eq!(err.message, "the owner is gone");

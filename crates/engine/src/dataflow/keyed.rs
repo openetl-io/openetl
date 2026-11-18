@@ -771,6 +771,7 @@ pub(super) async fn run(
                 quarantined: Quarantined::default(),
                 cells: Default::default(),
                 replay: None,
+                epoch: plan.first_epoch,
             }
         };
         let n = senders.len();
@@ -1415,6 +1416,7 @@ impl Keyed {
         )
         .await?;
         flow.owners[s].cross(plan, s, e.n, q, std::mem::take(&mut self.ls.cells), None)?;
+        self.ls.epoch = e.n + 1;
         lane.all(s, || super::Out::Barrier(s, e)).await
     }
 

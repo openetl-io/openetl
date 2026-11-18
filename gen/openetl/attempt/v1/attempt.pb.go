@@ -2488,7 +2488,10 @@ type SchemaProposal struct {
 	Holding []*v11.ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
 	// Where columns are held whole, the schema the destination gets, as
 	// arrow_schema; empty where it's arrow_schema.
-	Delivered     []byte `protobuf:"bytes,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
+	Delivered []byte `protobuf:"bytes,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
+	// As openetl.engine.v1.SchemasResponse's: the epoch of the rows of a
+	// change made without the schema policy; 0 for one made under it.
+	Epoch         uint64 `protobuf:"varint,7,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2563,6 +2566,13 @@ func (x *SchemaProposal) GetDelivered() []byte {
 		return x.Delivered
 	}
 	return nil
+}
+
+func (x *SchemaProposal) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
 }
 
 // Usage is what a worker's part of the attempt has used and moved so far,
@@ -2974,14 +2984,15 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\aEmitted\"\x06\n" +
 	"\x04Full\"\"\n" +
 	"\bReadDone\x12\x16\n" +
-	"\x06active\x18\x01 \x01(\bR\x06active\"\xcc\x01\n" +
+	"\x06active\x18\x01 \x01(\bR\x06active\"\xe2\x01\n" +
 	"\x0eSchemaProposal\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x12\n" +
 	"\x04base\x18\x02 \x01(\x04R\x04base\x12!\n" +
 	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
 	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
 	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x1c\n" +
-	"\tdelivered\x18\x06 \x01(\fR\tdelivered\"\xa9\x03\n" +
+	"\tdelivered\x18\x06 \x01(\fR\tdelivered\x12\x14\n" +
+	"\x05epoch\x18\a \x01(\x04R\x05epoch\"\xa9\x03\n" +
 	"\x05Usage\x12\x1f\n" +
 	"\vcpu_seconds\x18\x01 \x01(\x01R\n" +
 	"cpuSeconds\x12*\n" +

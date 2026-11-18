@@ -534,11 +534,12 @@ func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
 // change proposed from the version it holds, and sends every worker the new
 // one; a proposal from an older version gets the proposer the one it holds.
 // The destination's streams and the streams a SQL transform reads have
-// versions apart. As it takes the shares of the first epoch with one of the
-// destination's streams' columns, it seals the stream's schema in a version
-// of its own, so a worker whose lanes have had no rows yet shapes by it
-// under the schema policy: its change proposed from an earlier version is
-// shaped again from the sealed one.
+// versions apart. The owner seals one of the destination's streams in a
+// version of its own, which every worker shapes by under the schema policy,
+// those whose lanes have had no rows too: once a lane proposes a change it
+// made without the policy in a later epoch than such a change the owner
+// took, or once the owner takes an epoch's shares while the stream has
+// columns. A change made from an earlier version is shaped again by it.
 type schemaOwner struct {
 	co      attempt.Coordinator
 	mu      sync.Mutex
@@ -557,10 +558,12 @@ type ownedSchema struct {
 	// destination gets, nil where it's schema, and the columns held whole.
 	delivered []byte
 	holding   []checkpoint.ColumnHold
-	// One of the destination's streams whose columns a record has: the
-	// attempt restored them, or the owner has taken an epoch's shares since
-	// it had some.
+	// One of the destination's streams under the schema policy on every
+	// worker: the attempt restored its columns, or it has been sealed.
 	sealed bool
+	// The earliest epoch of a change taken that a lane made without the
+	// policy; 0 for none.
+	first uint64
 }
 
 // newSchemaOwner starts each stream at version 0, which restored holds.
@@ -586,9 +589,22 @@ func (o *schemaOwner) propose(worker int, p *attemptv1.SchemaProposal) error {
 		o.streams[k] = s
 	}
 	to := worker
-	if p.GetBase() == s.version {
+	e := p.GetEpoch()
+	switch {
+	case p.GetBase() != s.version:
+	case !k.input && e > 0 && (s.sealed || s.first > 0 && e > s.first):
+		// The change was made without the policy, which an earlier epoch's
+		// columns put the stream under: every worker gets the sealed version,
+		// and the proposer shapes its batch again by it.
+		s.version++
+		s.sealed = true
+		to = -1
+	default:
 		s.version++
 		s.schema, s.delivered, s.holding = p.GetArrowSchema(), p.GetDelivered(), attempt.ColumnHoldsOf(p.GetHolding())
+		if !k.input && e > 0 && (s.first == 0 || e < s.first) {
+			s.first = e
+		}
 		to = -1
 	}
 	return o.co.Schema(to, s.message(k))

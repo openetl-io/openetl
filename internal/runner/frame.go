@@ -282,6 +282,10 @@ type SchemaProposal struct {
 	// that's Schema.
 	Holding   []checkpoint.ColumnHold
 	Delivered []byte
+	// One of the destination's streams whose change a lane made without the
+	// schema policy: the epoch of the rows that made it; 0 for one made
+	// under the policy.
+	Epoch uint64
 }
 
 type SchemaUpdate struct {

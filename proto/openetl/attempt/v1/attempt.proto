@@ -444,6 +444,9 @@ message SchemaProposal {
   // Where columns are held whole, the schema the destination gets, as
   // arrow_schema; empty where it's arrow_schema.
   bytes delivered = 6;
+  // As openetl.engine.v1.SchemasResponse's: the epoch of the rows of a
+  // change made without the schema policy; 0 for one made under it.
+  uint64 epoch = 7;
 }
 
 // Usage is what a worker's part of the attempt has used and moved so far,

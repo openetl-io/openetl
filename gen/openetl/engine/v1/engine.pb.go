@@ -4367,7 +4367,13 @@ type SchemasResponse struct {
 	Holding     []*ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
 	// Where columns are held whole, the schema the destination gets, as
 	// EpochReady.delivered; empty where it's arrow_schema.
-	Delivered     []byte `protobuf:"bytes,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
+	Delivered []byte `protobuf:"bytes,6,opt,name=delivered,proto3" json:"delivered,omitempty"`
+	// One of the destination's streams whose lane made the change without the
+	// schema policy, as before the stream's schema is sealed: the epoch of the
+	// rows that made it. 0: the lane made it under the policy. The owner takes
+	// such a change only if no earlier epoch's change had columns; otherwise
+	// it seals the stream, and the lane shapes its batch again by that.
+	Epoch         uint64 `protobuf:"varint,7,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4442,6 +4448,13 @@ func (x *SchemasResponse) GetDelivered() []byte {
 		return x.Delivered
 	}
 	return nil
+}
+
+func (x *SchemasResponse) GetEpoch() uint64 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
 }
 
 var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
@@ -4813,14 +4826,15 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
 	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
 	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x16\n" +
-	"\x06sealed\x18\x06 \x01(\bR\x06sealed\"\xcd\x01\n" +
+	"\x06sealed\x18\x06 \x01(\bR\x06sealed\"\xe3\x01\n" +
 	"\x0fSchemasResponse\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\rR\x06stream\x12\x12\n" +
 	"\x04base\x18\x02 \x01(\x04R\x04base\x12!\n" +
 	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
 	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
 	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x1c\n" +
-	"\tdelivered\x18\x06 \x01(\fR\tdelivered*\xa2\x01\n" +
+	"\tdelivered\x18\x06 \x01(\fR\tdelivered\x12\x14\n" +
+	"\x05epoch\x18\a \x01(\x04R\x05epoch*\xa2\x01\n" +
 	"\fSchemaPolicy\x12\x1d\n" +
 	"\x19SCHEMA_POLICY_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17SCHEMA_POLICY_ALLOW_ALL\x10\x01\x12\x1f\n" +

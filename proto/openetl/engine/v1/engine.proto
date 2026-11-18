@@ -853,4 +853,10 @@ message SchemasResponse {
   // Where columns are held whole, the schema the destination gets, as
   // EpochReady.delivered; empty where it's arrow_schema.
   bytes delivered = 6;
+  // One of the destination's streams whose lane made the change without the
+  // schema policy, as before the stream's schema is sealed: the epoch of the
+  // rows that made it. 0: the lane made it under the policy. The owner takes
+  // such a change only if no earlier epoch's change had columns; otherwise
+  // it seals the stream, and the lane shapes its batch again by that.
+  uint64 epoch = 7;
 }
