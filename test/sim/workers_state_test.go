@@ -57,7 +57,9 @@ import (
 //     took the oldest;
 //   - pending: while a lane's pending set is within its share of the job's
 //     threshold, the record carries it and no run is written; a restore
-//     takes the record's pending set as its lane's;
+//     takes the record's pending set, of its own key groups, as its lane's;
+//     a pending set leaves out a window's deletion that no section the lane
+//     names may hold, and keeps one of a window an older section holds;
 //   - lazy: a restore reads timers only, and a lane reads a key group's
 //     values and set when a row or a due timer first needs them.
 //
@@ -571,7 +573,7 @@ func (l *wLane) restoreNames(rec *wRecord, read func(string) (wRun, error)) ([]w
 	}
 	var pend []wStEntry
 	for _, e := range rec.pending() {
-		if inRange(l.kg, e.G) {
+		if inRange(l.kg, e.G) || m.cfg.broken == "pending-whole" {
 			pend = append(pend, e)
 		}
 	}
@@ -899,6 +901,21 @@ func (l *wLane) nextNames(e uint64) (run wRun, url string, sections []wSection, 
 		maps.DeleteFunc(pend, func(_ string, x wStEntry) bool { return x.Kind != kValues && x.At <= h })
 	}
 	sections = slices.Clone(l.handles)
+	if m.cfg.pending {
+		maps.DeleteFunc(pend, func(_ string, x wStEntry) bool {
+			if x.Kind != kValues || !x.Del {
+				return false
+			}
+			if m.cfg.broken == "pending-drops-deletes" {
+				return true
+			}
+			gone := !l.mayHold(sections, x)
+			if gone {
+				m.stats["pending deletions of what no section holds left out"]++
+			}
+			return gone
+		})
+	}
 	if len(pend) > 0 && (!m.cfg.pending || len(pend) > l.share()) {
 		run = wRun{Generation: w.gen, Epoch: e, Lane: l.idx, KG: l.kg, Sections: map[string][]wStEntry{}}
 		for _, x := range sortedEntries(pend) {
@@ -939,6 +956,18 @@ func (l *wLane) nextNames(e uint64) (run wRun, url string, sections []wSection, 
 	}
 	slices.SortFunc(sections, cmpSection)
 	return run, url, sections, pend
+}
+
+// mayHold says whether a values section of sections may hold x's window:
+// one the lane hasn't read may hold any.
+func (l *wLane) mayHold(sections []wSection, x wStEntry) bool {
+	return slices.ContainsFunc(sections, func(s wSection) bool {
+		if s.Kind != kValues || !inRange(s.KG, x.G) {
+			return false
+		}
+		r, ok := l.known[s.URL]
+		return !ok || slices.ContainsFunc(r.Sections[kValues], func(y wStEntry) bool { return y.slot() == x.slot() })
+	})
 }
 
 // learn reads each values section of sections the lane hasn't read, as a

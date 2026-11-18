@@ -85,6 +85,7 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		index[n] = ints.Uint32(i)
 	}
 	req.Passthrough = d.Options.Passthrough
+	req.StatePendingBytes = d.Options.StatePendingBytes
 	req.Limits = p.limits(d.Options)
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		return p.explain(ctx, err)

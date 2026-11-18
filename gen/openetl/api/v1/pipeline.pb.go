@@ -7177,10 +7177,13 @@ type OperatorStats struct {
 	// the epoch next to it, as a read can.
 	MergeWriteRequests *StateRequests `protobuf:"bytes,15,opt,name=merge_write_requests,json=mergeWriteRequests,proto3" json:"merge_write_requests,omitempty"`
 	MergeReadRequests  *StateRequests `protobuf:"bytes,16,opt,name=merge_read_requests,json=mergeReadRequests,proto3" json:"merge_read_requests,omitempty"`
+	// The bytes of its state that the checkpoint record itself carries: what
+	// its lanes changed since each last wrote its state to object storage.
+	CheckpointBytes uint64 `protobuf:"varint,17,opt,name=checkpoint_bytes,json=checkpointBytes,proto3" json:"checkpoint_bytes,omitempty"`
 	// Its reads of state that the runner's disk cache answered in the epoch,
 	// which aren't requests to object storage, and their bytes. They can
 	// count in the epoch next to it, as reads can.
-	DiskReads     *StateRequests `protobuf:"bytes,17,opt,name=disk_reads,json=diskReads,proto3" json:"disk_reads,omitempty"`
+	DiskReads     *StateRequests `protobuf:"bytes,18,opt,name=disk_reads,json=diskReads,proto3" json:"disk_reads,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -7325,6 +7328,13 @@ func (x *OperatorStats) GetMergeReadRequests() *StateRequests {
 		return x.MergeReadRequests
 	}
 	return nil
+}
+
+func (x *OperatorStats) GetCheckpointBytes() uint64 {
+	if x != nil {
+		return x.CheckpointBytes
+	}
+	return 0
 }
 
 func (x *OperatorStats) GetDiskReads() *StateRequests {
@@ -9289,7 +9299,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"commitTime\x12:\n" +
 	"\astreams\x18\a \x03(\v2 .openetl.api.v1.CheckpointStreamR\astreams\x12+\n" +
 	"\x05usage\x18\b \x01(\v2\x15.openetl.api.v1.UsageR\x05usage\x12;\n" +
-	"\toperators\x18\t \x03(\v2\x1d.openetl.api.v1.OperatorStatsR\toperators\"\xa1\x06\n" +
+	"\toperators\x18\t \x03(\v2\x1d.openetl.api.v1.OperatorStatsR\toperators\"\xcc\x06\n" +
 	"\rOperatorStats\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x12\x17\n" +
 	"\arows_in\x18\x02 \x01(\x04R\x06rowsIn\x12\x18\n" +
@@ -9308,9 +9318,10 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\rread_requests\x18\r \x01(\v2\x1d.openetl.api.v1.StateRequestsR\freadRequests\x12H\n" +
 	"\x10restore_requests\x18\x0e \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x0frestoreRequests\x12O\n" +
 	"\x14merge_write_requests\x18\x0f \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x12mergeWriteRequests\x12M\n" +
-	"\x13merge_read_requests\x18\x10 \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x11mergeReadRequests\x12<\n" +
+	"\x13merge_read_requests\x18\x10 \x01(\v2\x1d.openetl.api.v1.StateRequestsR\x11mergeReadRequests\x12)\n" +
+	"\x10checkpoint_bytes\x18\x11 \x01(\x04R\x0fcheckpointBytes\x12<\n" +
 	"\n" +
-	"disk_reads\x18\x11 \x01(\v2\x1d.openetl.api.v1.StateRequestsR\tdiskReads\";\n" +
+	"disk_reads\x18\x12 \x01(\v2\x1d.openetl.api.v1.StateRequestsR\tdiskReads\";\n" +
 	"\rStateRequests\x12\x14\n" +
 	"\x05count\x18\x01 \x01(\x04R\x05count\x12\x14\n" +
 	"\x05bytes\x18\x02 \x01(\x04R\x05bytes\"\xa2\x03\n" +

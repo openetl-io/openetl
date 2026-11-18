@@ -180,14 +180,14 @@ func KeyGroups(first, last int) *enginev1.KeyGroupRange {
 // SnapshotProto is a lane's snapshot as the engine and a share carry it.
 func SnapshotProto(s checkpoint.Snapshot) *enginev1.StateSnapshot {
 	return &enginev1.StateSnapshot{Operator: s.Operator, KeyGroups: KeyGroups(s.KeyGroups.First, s.KeyGroups.Last),
-		Layout: s.Layout, Data: s.Data, Runs: s.Runs}
+		Layout: s.Layout, Data: s.Data, Runs: s.Runs, Pending: s.Pending}
 }
 
 // SnapshotOf is a lane's snapshot as the record keeps it.
 func SnapshotOf(p *enginev1.StateSnapshot) checkpoint.Snapshot {
 	kg := p.GetKeyGroups()
 	return checkpoint.Snapshot{Operator: p.GetOperator(), KeyGroups: checkpoint.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())},
-		Layout: p.GetLayout(), Data: p.GetData(), Runs: p.GetRuns()}
+		Layout: p.GetLayout(), Data: p.GetData(), Runs: p.GetRuns(), Pending: p.GetPending()}
 }
 
 // WindowMarksOf are the windows' watermarks as the engine reports them at

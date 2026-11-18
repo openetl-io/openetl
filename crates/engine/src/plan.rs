@@ -405,6 +405,8 @@ impl Plan {
                 req.state_read_only,
                 n,
                 req.limits.as_ref().map_or(0, |l| l.memory_bytes),
+                key_groups,
+                req.state_pending_bytes,
                 req.limits
                     .as_ref()
                     .filter(|l| !l.scratch_dir.is_empty())
@@ -1132,6 +1134,7 @@ pub(crate) mod tests {
             state_read_only: false,
             record_window_steps: false,
             window_steps: Vec::new(),
+            state_pending_bytes: None,
         }
     }
 

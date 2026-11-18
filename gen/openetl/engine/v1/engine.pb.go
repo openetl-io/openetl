@@ -401,9 +401,15 @@ type StartJobRequest struct {
 	// redoes, as OperatorEpoch.steps gave them. Each row meets the watermark
 	// it met there, and the windows close in the order they did. Missing:
 	// its rows meet the floor, and the windows close at closes_at.
-	WindowSteps   []*WindowSteps `protobuf:"bytes,29,rep,name=window_steps,json=windowSteps,proto3" json:"window_steps,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	WindowSteps []*WindowSteps `protobuf:"bytes,29,rep,name=window_steps,json=windowSteps,proto3" json:"window_steps,omitempty"`
+	// What an epoch's snapshots on every engine of the attempt carry at most
+	// of their lanes' changes (StateSnapshot.pending), in bytes. Unset: 1
+	// MiB, or a 64th of limits.memory_bytes where that's less. 0: every
+	// barrier that changed something writes a run. For tests of runs; the
+	// runner leaves it unset.
+	StatePendingBytes *uint64 `protobuf:"varint,30,opt,name=state_pending_bytes,json=statePendingBytes,proto3,oneof" json:"state_pending_bytes,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *StartJobRequest) Reset() {
@@ -637,6 +643,13 @@ func (x *StartJobRequest) GetWindowSteps() []*WindowSteps {
 		return x.WindowSteps
 	}
 	return nil
+}
+
+func (x *StartJobRequest) GetStatePendingBytes() uint64 {
+	if x != nil && x.StatePendingBytes != nil {
+		return *x.StatePendingBytes
+	}
+	return 0
 }
 
 // WindowSteps are a group window's watermark steps in an epoch, on each of
@@ -3629,7 +3642,15 @@ type StateSnapshot struct {
 	// The sections of runs it reads, which only the engine reads.
 	Data []byte `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
 	// The runs it names, below state_url: what retention keeps.
-	Runs          []string `protobuf:"bytes,5,rep,name=runs,proto3" json:"runs,omitempty"`
+	Runs []string `protobuf:"bytes,5,rep,name=runs,proto3" json:"runs,omitempty"`
+	// The lane's changes since it last wrote a run, newer than all the runs
+	// hold, which only the engine reads: the record carries them in place of
+	// a run while they're small. An epoch's snapshots on every engine of an
+	// attempt carry at most StartJobRequest.state_pending_bytes of them,
+	// shared evenly by the stateful operators, and by each operator's lanes
+	// as their key groups are of the pipeline's. At a barrier where a lane's
+	// would pass its share, it writes them as a run. Empty: none.
+	Pending       []byte `protobuf:"bytes,6,opt,name=pending,proto3" json:"pending,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3695,6 +3716,13 @@ func (x *StateSnapshot) GetData() []byte {
 func (x *StateSnapshot) GetRuns() []string {
 	if x != nil {
 		return x.Runs
+	}
+	return nil
+}
+
+func (x *StateSnapshot) GetPending() []byte {
+	if x != nil {
+		return x.Pending
 	}
 	return nil
 }
@@ -4330,7 +4358,8 @@ var File_openetl_engine_v1_engine_proto protoreflect.FileDescriptor
 
 const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xf7\t\n" +
+	"\x1eopenetl/engine/v1/engine.proto\x12\x11openetl.engine.v1\x1a&openetl/connector/v1/destination.proto\"\xc4\n" +
+	"\n" +
 	"\x0fStartJobRequest\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x10\n" +
 	"\x03job\x18\x02 \x01(\tR\x03job\x12\x1e\n" +
@@ -4366,7 +4395,9 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\tstate_url\x18\x1a \x01(\tR\bstateUrl\x12&\n" +
 	"\x0fstate_read_only\x18\x1b \x01(\bR\rstateReadOnly\x12.\n" +
 	"\x13record_window_steps\x18\x1c \x01(\bR\x11recordWindowSteps\x12A\n" +
-	"\fwindow_steps\x18\x1d \x03(\v2\x1e.openetl.engine.v1.WindowStepsR\vwindowSteps\"]\n" +
+	"\fwindow_steps\x18\x1d \x03(\v2\x1e.openetl.engine.v1.WindowStepsR\vwindowSteps\x123\n" +
+	"\x13state_pending_bytes\x18\x1e \x01(\x04H\x00R\x11statePendingBytes\x88\x01\x01B\x16\n" +
+	"\x14_state_pending_bytes\"]\n" +
 	"\vWindowSteps\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x122\n" +
 	"\x05lanes\x18\x02 \x03(\v2\x1c.openetl.engine.v1.LaneStepsR\x05lanes\"\x83\x01\n" +
@@ -4639,14 +4670,15 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x16\n" +
 	"\x06column\x18\x02 \x01(\tR\x06column\x12\x19\n" +
 	"\bnot_held\x18\x03 \x01(\tR\anotHeld\x12\x12\n" +
-	"\x04rows\x18\x04 \x01(\x04R\x04rows\"\xac\x01\n" +
+	"\x04rows\x18\x04 \x01(\x04R\x04rows\"\xc6\x01\n" +
 	"\rStateSnapshot\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x12?\n" +
 	"\n" +
 	"key_groups\x18\x02 \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12\x16\n" +
 	"\x06layout\x18\x03 \x01(\rR\x06layout\x12\x12\n" +
 	"\x04data\x18\x04 \x01(\fR\x04data\x12\x12\n" +
-	"\x04runs\x18\x05 \x03(\tR\x04runs\"9\n" +
+	"\x04runs\x18\x05 \x03(\tR\x04runs\x12\x18\n" +
+	"\apending\x18\x06 \x01(\fR\apending\"9\n" +
 	"\rKeyGroupRange\x12\x14\n" +
 	"\x05first\x18\x01 \x01(\rR\x05first\x12\x12\n" +
 	"\x04last\x18\x02 \x01(\rR\x04last\"\x9e\x01\n" +
@@ -4913,6 +4945,7 @@ func file_openetl_engine_v1_engine_proto_init() {
 	if File_openetl_engine_v1_engine_proto != nil {
 		return
 	}
+	file_openetl_engine_v1_engine_proto_msgTypes[0].OneofWrappers = []any{}
 	file_openetl_engine_v1_engine_proto_msgTypes[12].OneofWrappers = []any{}
 	file_openetl_engine_v1_engine_proto_msgTypes[21].OneofWrappers = []any{
 		(*SinkPlan_Runner)(nil),

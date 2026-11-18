@@ -21,15 +21,42 @@ pub type Change = (Bytes, Option<Bytes>);
 /// A version keeps them beside its state.
 pub type Horizons = BTreeMap<(OperatorId, KeyGroup), i64>;
 
-/// One version of a store's state, for a range of key groups: what the
+/// One version of a lane's state, for a range of key groups: what the
 /// checkpoint record keeps, and a restore opens. `data` means something
 /// only to the kind of store that wrote it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub range: KeyGroupRange,
     /// The [`crate::LAYOUT`] of its keys.
     pub layout: u32,
     pub data: Bytes,
+    /// The lane's changes since it last committed them to the store, newer
+    /// than all `data` names, in the pending set's encoding
+    /// ([`crate::PENDING_VERSION`]); empty for none.
+    pub pending: Bytes,
+}
+
+/// What a job's records may carry of its lanes' pending sets, for one
+/// operator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PendingLimit {
+    /// Bytes of their encoding, for all of its lanes on every engine.
+    pub bytes: usize,
+    /// The pipeline's key groups: a lane's share of `bytes` is as its own
+    /// are of these.
+    pub key_groups: u32,
+}
+
+impl PendingLimit {
+    /// The share of a lane of `range`; 0 where there's no limit.
+    pub fn share(&self, range: KeyGroupRange) -> usize {
+        if self.key_groups == 0 || range.first > range.last {
+            return 0;
+        }
+        let groups = u128::from((range.last - range.first + 1).min(self.key_groups));
+        let share = self.bytes as u128 * groups / u128::from(self.key_groups);
+        usize::try_from(share).unwrap_or(self.bytes)
+    }
 }
 
 /// Where stores come from: object storage, or memory.
@@ -44,6 +71,14 @@ pub trait Stores: Send + Sync {
         range: KeyGroupRange,
         snapshots: &'a [Snapshot],
     ) -> BoxFuture<'a, Result<Box<dyn Store>>>;
+
+    /// What a lane of `range` may carry in a record as its pending set, in
+    /// bytes of its encoding, before a barrier commits it to the store: its
+    /// share of a [`PendingLimit`]. 0: every barrier commits.
+    fn pending_share(&self, range: KeyGroupRange) -> usize {
+        let _ = range;
+        0
+    }
 }
 
 /// A lane's committed state. Its keys are the layout's, all in its range.
@@ -64,6 +99,10 @@ pub trait Store: Send + Sync {
     /// The horizons the version it opened keeps, in its key groups.
     fn horizons(&self) -> Horizons;
 
+    /// Whether its version may hold `key`, so that a delete of it must be
+    /// kept. Where it can't tell without a read, it may.
+    fn may_hold(&self, key: &[u8]) -> bool;
+
     /// Applies epoch `epoch`'s changes, sorted by key with each key once,
     /// makes the result a version with `horizons`, and returns the
     /// snapshots that name it. What the horizons have passed the version
@@ -82,26 +121,30 @@ pub trait Store: Send + Sync {
         false
     }
 
-    /// Writes some of open epoch `epoch`'s changes before its barrier,
-    /// sorted by key with each key once, so the memory they hold is
-    /// released: the store reads them, under what a later flush or the
-    /// barrier's commit writes, and the barrier's snapshots name them. They
-    /// count only once a record names those. Changes that `horizons`
-    /// passed it may leave out. An error leaves the store unusable.
+    /// Writes changes before open epoch `epoch`'s barrier, sorted by key
+    /// with each key once, so the memory they hold is released: the store
+    /// reads them, under what a later flush or the barrier's commit writes,
+    /// and the barrier's snapshots name them. They count only once a record
+    /// names those. `kept` changes are older than the epoch's, the lane's
+    /// pending set, and [`Store::discard`] leaves them; the others are the
+    /// open epoch's own. Changes that `horizons` passed it may leave out.
+    /// An error leaves the store unusable.
     fn flush<'a>(
         &'a mut self,
         epoch: u64,
         changes: Vec<Change>,
         horizons: &'a Horizons,
+        kept: bool,
     ) -> BoxFuture<'a, Result<()>> {
-        let _ = (epoch, changes, horizons);
+        let _ = (epoch, changes, horizons, kept);
         Box::pin(std::future::ready(Err(crate::Error::Invalid(
             "this store keeps its changes in memory".into(),
         ))))
     }
 
-    /// Forgets what [`Store::flush`] wrote of open epoch `epoch`, which
-    /// failed: the store reads as its last commit left it.
+    /// Forgets what [`Store::flush`] wrote of open epoch `epoch`'s own
+    /// changes, which failed: the store reads as its last commit, and the
+    /// flushes of pending sets since, left it.
     fn discard(&mut self, epoch: u64) {
         let _ = epoch;
     }

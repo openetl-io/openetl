@@ -66,6 +66,9 @@ type Operator struct {
 	MemoryBytes uint64 `json:"memory_bytes,omitempty"`
 	// The bytes of the runs of its that the record names.
 	StoredBytes uint64 `json:"stored_bytes,omitempty"`
+	// The bytes of its state that the record carries itself: its lanes'
+	// changes since each last wrote a run, in their snapshots' Pending.
+	CheckpointBytes uint64 `json:"checkpoint_bytes,omitempty"`
 	// Its requests to object storage in the epoch: runs written at
 	// barriers, blocks read, and runs opened as a record names them.
 	Barrier Requests `json:"barrier"`
@@ -82,10 +85,15 @@ type Operator struct {
 
 // Operators adds up an epoch's parts by operator, sorted. Each counts its
 // windows on from kept's, which are the operators' as the record before
-// had them.
-func Operators(parts []OperatorPart, kept map[string]int64) []Operator {
+// had them, and the bytes of its pending sets that snapshots, the record's,
+// carry.
+func Operators(parts []OperatorPart, kept map[string]int64, snapshots []Snapshot) []Operator {
 	if len(parts) == 0 {
 		return nil
+	}
+	carried := map[string]uint64{}
+	for _, s := range snapshots {
+		carried[s.Operator] += uint64(len(s.Pending))
 	}
 	by := map[string]*Operator{}
 	runs := map[string]map[string]uint64{}
@@ -123,6 +131,7 @@ func Operators(parts []OperatorPart, kept map[string]int64) []Operator {
 		for _, b := range runs[name] {
 			o.StoredBytes += b
 		}
+		o.CheckpointBytes = carried[name]
 		out = append(out, *o)
 	}
 	return out

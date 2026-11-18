@@ -1,20 +1,23 @@
 //! Where a job's stateful operators keep their state, and how the record
 //! names it. Each operator's lanes write runs below a directory of the
-//! job's state URL of the operator's own, a run per lane at each barrier
-//! that changed something. A lane's snapshot names the runs that hold what
-//! it reads, less what's dead: windows deleted and timers fired, which
-//! the operator's horizon, its watermark, has passed. A lane merges some
-//! of its sections in the background, by kind, and a barrier writes the
-//! merge's run and names it in their place. A run counts once the epoch's
-//! record does: a run no committed record names is never read, and
-//! retention deletes it. A restore opens what the record names, by
-//! each lane's own range of key groups, so state moves to any number of
-//! lanes, and reads nothing until a lane needs it.
+//! job's state URL of the operator's own. A lane's changes since its last
+//! run ride in the record, in its snapshot's pending set, while they're
+//! within its share of what a record may carry ([`PENDING_BYTES`]); at the
+//! barrier where they'd pass it, the lane writes them as a run. A lane's
+//! snapshot names the runs that hold what it reads, less what's dead:
+//! windows deleted and timers fired, which the operator's horizon, its
+//! watermark, has passed. A lane merges some of its sections in the
+//! background, by kind, and a barrier writes the merge's run and names it
+//! in their place. A run counts once the epoch's record does: a run no
+//! committed record names is never read, and retention deletes it. A
+//! restore opens what the record names, by each lane's own range of key
+//! groups, its part of the pending sets too, so state moves to any number
+//! of lanes, and reads no run until a lane needs it.
 //!
 //! With a scratch directory, the job's operators keep what they read of
 //! their runs, and the runs they write, in a disk cache there, within half
-//! of the job's scratch. Under memory pressure a lane flushes its epoch's
-//! changes early, as a run its next record names with the barrier's; a
+//! of the job's scratch. Under memory pressure a lane flushes its pending
+//! set and its epoch's changes early, as a run its next record names; a
 //! job whose state still doesn't fit fails with RESOURCE_EXHAUSTED.
 
 use std::collections::HashMap;
@@ -25,7 +28,7 @@ use bytes::Bytes;
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_proto::engine::v1::{KeyGroupRange as ProtoRange, StateSnapshot};
 use openetl_state::runs::{MergeConfig, ObjectStorage, RunConfig, RunStores, runs};
-use openetl_state::{DiskCache, Error as StateError, KeyGroupRange, Snapshot};
+use openetl_state::{DiskCache, Error as StateError, KeyGroupRange, PendingLimit, Snapshot};
 
 use crate::error::JobError;
 use crate::store::Location;
@@ -38,6 +41,14 @@ use crate::store::Location;
 const CACHE_SHARE: u64 = 16;
 const MIN_CACHE: usize = 1 << 20;
 const MAX_CACHE: usize = 64 << 20;
+
+/// What a record carries at most of the pending sets of a job's stateful
+/// operators, in bytes of their encoding: this, or a [`PENDING_SHARE`]th of
+/// the job's memory where that's less, shared evenly by the operators, and
+/// by each one's lanes on every engine as their key groups are of the
+/// pipeline's.
+pub const PENDING_BYTES: usize = 1 << 20;
+pub const PENDING_SHARE: u64 = 64;
 
 /// The share of the job's scratch its state's disk cache takes.
 const DISK_SHARE: u64 = 2;
@@ -67,6 +78,8 @@ pub struct JobState {
     location: Location,
     read_only: bool,
     config: RunConfig,
+    /// Each operator's.
+    pending: PendingLimit,
     /// Each operator's, which its lanes share with their block cache.
     stores: Mutex<HashMap<String, RunStores>>,
     operators: usize,
@@ -94,14 +107,18 @@ impl std::fmt::Debug for JobState {
 
 impl JobState {
     /// Opens `url` as [`Location::open`] does, for `operators` stateful
-    /// operators in a job of `memory` bytes, 0 for no limit, with its disk
-    /// cache in `scratch`, if any. A scratch directory that can't be made
-    /// leaves the cache off.
+    /// operators in a job of `memory` bytes, 0 for no limit, of a pipeline
+    /// of `key_groups`, whose records carry at most `pending` bytes of
+    /// their pending sets, or `None` for [`PENDING_BYTES`] or the job's
+    /// share, with its disk cache in `scratch`, if any. A scratch directory
+    /// that can't be made leaves the cache off.
     pub fn open(
         url: &str,
         read_only: bool,
         operators: usize,
         memory: u64,
+        key_groups: u32,
+        pending: Option<u64>,
         scratch: Option<&Scratch>,
     ) -> Result<Self, JobError> {
         let location = Location::open(url, "state URL")?;
@@ -125,9 +142,20 @@ impl JobState {
                 .unwrap_or(MAX_CACHE)
                 .clamp(MIN_CACHE, MAX_CACHE),
         };
+        let pending = match (pending, memory) {
+            (Some(p), _) => usize::try_from(p).unwrap_or(usize::MAX),
+            (None, 0) => PENDING_BYTES,
+            (None, m) => usize::try_from(m / PENDING_SHARE)
+                .unwrap_or(PENDING_BYTES)
+                .min(PENDING_BYTES),
+        };
         Ok(Self {
             location,
             read_only,
+            pending: PendingLimit {
+                bytes: pending / operators.max(1),
+                key_groups,
+            },
             config: RunConfig {
                 cache_bytes: cache,
                 merge: Some(MergeConfig {
@@ -231,8 +259,15 @@ impl JobState {
                     ),
                     None => RunStores::new(objects, self.config.clone()),
                 }
+                .with_pending(self.pending)
             })
             .clone()
+    }
+
+    /// What a record carries at most of each operator's pending sets.
+    #[cfg(test)]
+    pub fn pending(&self) -> PendingLimit {
+        self.pending
     }
 }
 
@@ -266,6 +301,7 @@ pub fn named(operator: &str, s: &Snapshot) -> Result<StateSnapshot, JobError> {
         }),
         layout: s.layout,
         data: s.data.to_vec(),
+        pending: s.pending.to_vec(),
         runs: names
             .into_iter()
             .map(|r| format!("{dir}/{}", r.name))
@@ -300,6 +336,7 @@ pub fn snapshot(s: &StateSnapshot) -> Result<(String, Snapshot), JobError> {
             range: KeyGroupRange::new(r.first, r.last),
             layout: s.layout,
             data: Bytes::copy_from_slice(&s.data),
+            pending: Bytes::copy_from_slice(&s.pending),
         },
     ))
 }
@@ -333,6 +370,7 @@ mod tests {
                 size: 10,
                 sections: Vec::new(),
             }]),
+            pending: Bytes::from_static(b"carried as it is"),
         };
         let named = named("window-1", &s).unwrap();
         assert_eq!(named.runs, ["window-1/g2/e9/kg64-127.run"]);
@@ -356,7 +394,9 @@ mod tests {
         let url = format!("file://{}", dir.path().display());
         let op = OperatorId(1);
         let range = KeyGroupRange::new(0, 15);
-        let state = JobState::open(&url, false, 1, 0, None).unwrap();
+        // Records carry none of the lanes' changes, so they write runs, and
+        // merge them.
+        let state = JobState::open(&url, false, 1, 0, 16, Some(0), None).unwrap();
         let stores = state.stores("window-1");
         let mut lane = Layer::open(&stores, 1, 1, range, &[]).await.unwrap();
         let key = |i: u32| format!("key-{i}").into_bytes();
@@ -378,7 +418,7 @@ mod tests {
             .flat_map(|s| named("window-1", s).unwrap().runs)
             .collect();
         assert!(names.iter().any(|n| n.ends_with(".merge.run")), "{names:?}");
-        let again = JobState::open(&url, false, 1, 0, None).unwrap();
+        let again = JobState::open(&url, false, 1, 0, 16, None, None).unwrap();
         let back = again.stores("window-1");
         let mut lane = Layer::open(&back, 2, epoch, range, &snapshots)
             .await
@@ -396,6 +436,40 @@ mod tests {
             }
         }
         assert_eq!(read, (epoch - 1) * 50);
+    }
+
+    /// What records carry of pending sets: 1 MiB, or a 64th of a smaller
+    /// job's memory, shared by the operators, and by each one's lanes as
+    /// their key groups are of the pipeline's, so every lane of every
+    /// operator together stays within it.
+    #[test]
+    fn records_carry_at_most_a_mib_of_pending_sets_shared_by_lanes() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        for (operators, memory, asked, total) in [
+            (1, 0, None, 1 << 20),
+            (3, 0, None, 1 << 20),
+            (1, 4 << 30, None, 1 << 20),
+            (2, 32 << 20, None, 512 << 10),
+            (1, 4 << 10, None, 64),
+            (2, 4 << 30, Some(3000), 3000),
+            (1, 0, Some(0), 0),
+        ] {
+            use openetl_state::Stores;
+            let state = JobState::open(&url, false, operators, memory, 256, asked, None).unwrap();
+            let limit = state.pending();
+            assert_eq!(limit.bytes, total / operators, "{operators}, {memory}");
+            assert_eq!(limit.key_groups, 256);
+            for lanes in [1u32, 3, 7, 64, 256] {
+                let mut sum = 0;
+                for i in 0..lanes {
+                    let range = KeyGroupRange::new(256 * i / lanes, 256 * (i + 1) / lanes - 1);
+                    sum += state.stores("w").pending_share(range);
+                }
+                assert!(sum * operators <= total, "{sum} on {lanes} lanes");
+                assert!(sum + lanes as usize >= limit.bytes, "{sum}");
+            }
+        }
     }
 
     #[test]

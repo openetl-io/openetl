@@ -12,12 +12,16 @@
 //!
 //! State is scoped by operator and key group. A lane opens one [`Layer`] for
 //! its range of key groups, which all its operators share. The layer keeps
-//! the open epoch's changes in memory over a [`Store`]. A barrier commits
-//! them to the store, which returns the [`Snapshot`]s the checkpoint record
-//! names, and a failed epoch discards them. A restore opens exactly what a
-//! record names, for any range of its key groups, so state moves by range
-//! to other lanes and workers. State is durable when the record of its epoch
-//! is, and only then: a layer never reads a version no record names.
+//! the open epoch's changes in memory over a [`Store`], and a failed epoch
+//! discards them. A barrier adds them to the lane's pending set, its
+//! changes since it last committed to the store. While the pending set is
+//! within the lane's share of what a record may carry, the [`Snapshot`]s the
+//! checkpoint record names carry it, and the store writes nothing; past it,
+//! the barrier commits it to the store, and the set starts empty. A restore
+//! opens exactly what a record names, its pending sets too, for any range
+//! of its key groups, so state moves by range to other lanes and workers.
+//! State is durable when the record of its epoch is, and only then: a layer
+//! never reads a version no record names.
 //!
 //! Times are `i64`s from the data, by convention microseconds of event time,
 //! or a time a record carries; never the clock at a call, so a replay sees
@@ -34,14 +38,16 @@ use bytes::Bytes;
 mod layer;
 mod layout;
 mod memory;
+mod pending;
 pub mod runs;
 mod store;
 
 pub use layer::{Layer, Memory};
 pub use layout::{LAYOUT, SectionKind};
 pub use memory::MemoryBucket;
+pub use pending::VERSION as PENDING_VERSION;
 pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, RunConfig, RunStores};
-pub use store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
+pub use store::{BoxFuture, Change, Horizons, PendingLimit, Snapshot, Store, Stores};
 
 /// A key's group, out of the pipeline's key groups, as routing gives it.
 /// The layer takes groups up to `u16::MAX`.
@@ -56,7 +62,7 @@ pub struct OperatorId(pub u32);
 pub const NEVER: i64 = i64::MAX;
 
 /// Key groups `first` to `last`, inclusive.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct KeyGroupRange {
     pub first: KeyGroup,
     pub last: KeyGroup,

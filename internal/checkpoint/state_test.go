@@ -288,3 +288,51 @@ func TestPruneAgreesWithEarlyFlushes(t *testing.T) {
 		t.Fatalf("after the next attempt's epoch 2, state %v, want %v; %s is an orphan", got, want, e2)
 	}
 }
+
+// A lane's changes since its last run ride in the record, which keeps them
+// as they came and restores them, and they name no object: retention keeps
+// the runs a kept record names beside them, and deletes a run once the
+// records that name it are gone, though their pending sets went on.
+func TestPendingSetsRideInTheRecordAndNameNoState(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	a := claim(t, l, "a")
+	r1 := run(t, store, lane("w", 1, 1))
+	commitNaming(t, a, 1, r1)
+	carrying := func(n uint64, pending string, named ...string) *checkpoint.Record {
+		return &checkpoint.Record{Epoch: n, Streams: map[string]checkpoint.StreamState{"s": {State: []byte{byte(n)}}}, Snapshots: []checkpoint.Snapshot{
+			{Operator: "w", KeyGroups: checkpoint.KeyGroupRange{Last: 255}, Layout: 1, Data: []byte("R"), Runs: named, Pending: []byte(pending)},
+		}}
+	}
+	for _, rec := range []*checkpoint.Record{carrying(2, "two", r1), carrying(3, "three")} {
+		if err := a.Commit(t.Context(), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b := claim(t, l, "b")
+	head, err := b.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(head.Snapshots[0].Pending); got != "three" || len(head.Snapshots[0].Runs) != 0 {
+		t.Fatalf("the record restores %q, naming %v", got, head.Snapshots[0].Runs)
+	}
+	// Epoch 2's record names r1 still.
+	if _, err := b.Prune(t.Context(), head, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(t, store); !slices.Equal(got, []string{r1}) {
+		t.Fatalf("state %v, want %v", got, []string{r1})
+	}
+	// Kept back to epoch 3 only, nothing names r1.
+	four := carrying(4, "four")
+	if err := b.Commit(t.Context(), four); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Prune(t.Context(), four, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(t, store); len(got) != 0 {
+		t.Fatalf("state %v, want none", got)
+	}
+}

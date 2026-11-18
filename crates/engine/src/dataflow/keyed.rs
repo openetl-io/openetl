@@ -849,7 +849,7 @@ impl Keyed {
         };
         if state.pressure()
             && !state.read_only()
-            && self.layer.memory().changes >= crate::state::MIN_EARLY
+            && self.layer.memory().changes + self.layer.memory().pending >= crate::state::MIN_EARLY
         {
             self.layer.flush().await.map_err(|e| {
                 crate::state::state_error(&format!("operator {}'s state", self.id), &e)
@@ -1111,9 +1111,11 @@ impl Keyed {
         }
     }
 
-    /// The epoch's state is the layer's barrier: a run of what the epoch
-    /// changed, which counts once the record names the lane's snapshot, and
-    /// that once every writer lane has passed the epoch; then the output's
+    /// The epoch's state is the layer's barrier: what the lane changed
+    /// since its last run, in its snapshot, or past its share of the
+    /// record, a run of it. It counts once the record names the lane's
+    /// snapshot, and that once every writer lane has passed the epoch; then
+    /// the output's
     /// barrier goes on. A read-only job's epoch changes nothing, and reports
     /// no numbers. Each keyed lane reports the window's watermark there, the
     /// same on all of them.

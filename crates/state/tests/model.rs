@@ -3,10 +3,11 @@
 //! of a recorded epoch onto other numbers of lanes, older attempts still
 //! writing, released versions, merges landing at any barrier, and early
 //! flushes at any point, kills between them and the barrier among them,
-//! over each store. Over runs, a seed has a disk cache or not, which may
-//! be small enough to evict or have its files corrupted at any point.
-//! Each seed is a sequence: `OPENETL_STATE_SEEDS=n` runs n of them, and
-//! `OPENETL_STATE_SEED=s` the one.
+//! over each store, with lanes whose records carry their pending sets up
+//! to shares that vary by seed. Over runs, a seed has a disk cache or not,
+//! which may be small enough to evict or have its files corrupted at any
+//! point. Each seed is a sequence: `OPENETL_STATE_SEEDS=n` runs n of them,
+//! and `OPENETL_STATE_SEED=s` the one.
 
 #![allow(clippy::unwrap_used)]
 
@@ -18,7 +19,8 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use openetl_state::{
     DiskCache, DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, MergeConfig, NEVER,
-    ObjectStorage, OperatorId, Result, RunConfig, RunStores, Snapshot, StateBackend, Stores, Timer,
+    ObjectStorage, OperatorId, PendingLimit, Result, RunConfig, RunStores, Snapshot, StateBackend,
+    Stores, Timer,
 };
 
 const GROUPS: u32 = 16;
@@ -331,6 +333,34 @@ enum Disk {
     Corrupted,
 }
 
+/// What the seeds did with pending sets, so that the comparisons checked
+/// something.
+#[derive(Debug, Default)]
+struct Tally {
+    /// Lanes' barriers whose snapshots carried a pending set, and those
+    /// that committed one, not empty, to the store instead.
+    carried: usize,
+    committed: usize,
+    /// Restores from a record that carries pending sets, and those onto
+    /// another number of lanes.
+    restored: usize,
+    rescaled: usize,
+    /// Restores of an earlier record after a barrier that carried a
+    /// pending set and whose record wasn't written: a kill between the
+    /// barrier and the commit.
+    killed: usize,
+    /// Pending sets of a record checked against its lanes' shares.
+    bounded: usize,
+    /// Early flushes made, by a call or past the threshold; those a call
+    /// made of a lane with a pending set, which goes with them; kills
+    /// between an early flush and the barrier; and discards of an epoch
+    /// whose early flush took a pending set.
+    flushes: u64,
+    flushed_pending: u64,
+    kills_after_flush: u64,
+    discarded_pending: u64,
+}
+
 struct World {
     seed: u64,
     rng: Rng,
@@ -338,10 +368,14 @@ struct World {
     disk: Option<(Arc<DiskCache>, Disk)>,
     /// A lane's changes past which a read flushes them early; 0: never.
     flush_at: usize,
-    /// Early flushes made, by a call or past the bound, and kills between
-    /// one and the barrier.
-    flushes: u64,
-    kills_after_flush: u64,
+    /// What records may carry of the lanes' pending sets.
+    pending: PendingLimit,
+    tally: Tally,
+    /// A barrier carried a pending set, and no record has been written
+    /// since.
+    unrecorded: bool,
+    /// An early flush of the open epoch took a pending set.
+    flushed_pending: bool,
     /// Whether the store holds in memory exactly what it keeps, as the
     /// memory bucket does, and runs don't.
     exact: bool,
@@ -372,9 +406,19 @@ impl World {
             Some(e) => self.records[&e].1.clone(),
             None => Vec::new(),
         };
+        if snapshots.iter().any(|s| !s.pending.is_empty()) {
+            // Each lane of the record's attempt gave one snapshot.
+            self.tally.restored += 1;
+            self.tally.rescaled += usize::from(lanes as usize != snapshots.len());
+        }
+        if self.unrecorded && from.is_some() {
+            self.tally.killed += 1;
+        }
+        self.unrecorded = false;
         self.generation += 1;
         self.epoch = from.map_or(1, |e| e + 1);
-        self.flushes += self.lanes.iter_mut().map(Lane::new_flushes).sum::<u64>();
+        self.tally.flushes += self.lanes.iter_mut().map(Lane::new_flushes).sum::<u64>();
+        self.flushed_pending = false;
         let old = std::mem::take(&mut self.lanes);
         if self.rng.chance(30) {
             self.zombies.extend(old);
@@ -554,6 +598,10 @@ impl World {
                     l.layer.discard();
                     assert_eq!(l.layer.memory().changes, 0, "{ctx}");
                 }
+                if self.flushed_pending {
+                    self.tally.discarded_pending += 1;
+                    self.flushed_pending = false;
+                }
                 self.now = self.last.clone();
             }
             86..=91 => {
@@ -588,14 +636,22 @@ impl World {
         for l in &mut self.lanes {
             if self.rng.chance(60) {
                 let flushes = l.layer.flushes();
+                let pending = l.layer.memory().pending;
                 let wrote = l
                     .layer
                     .flush()
                     .await
                     .unwrap_or_else(|e| panic!("{ctx}: flush: {e}"));
                 if wrote {
-                    assert_eq!(l.layer.memory().changes, 0, "{ctx}");
+                    // The pending set goes in the early run too, under the
+                    // open epoch's changes.
+                    let m = l.layer.memory();
+                    assert_eq!((m.changes, m.pending), (0, 0), "{ctx}");
                     assert_eq!(l.layer.flushes(), flushes + 1, "{ctx}");
+                    if pending > 0 {
+                        self.tally.flushed_pending += 1;
+                        self.flushed_pending = true;
+                    }
                 }
                 any |= wrote;
             }
@@ -604,7 +660,7 @@ impl World {
             let from = self.records.keys().last().copied();
             let lanes = self.rng.pick(&LANES);
             if any {
-                self.kills_after_flush += 1;
+                self.tally.kills_after_flush += 1;
             }
             self.open(lanes, from).await;
         }
@@ -645,12 +701,32 @@ impl World {
         let ctx = self.ctx();
         let mut snapshots = Vec::new();
         for l in &mut self.lanes {
-            self.flushes += l.new_flushes();
+            self.tally.flushes += l.new_flushes();
+            let commits = l.layer.commits();
             let got = l.layer.barrier(self.epoch).await;
-            snapshots.extend(got.unwrap_or_else(|e| panic!("{ctx}: barrier: {e}")));
+            let got = got.unwrap_or_else(|e| panic!("{ctx}: barrier: {e}"));
+            let carried: usize = got.iter().map(|s| s.pending.len()).sum();
+            assert!(
+                carried <= l.layer.pending_share(),
+                "{ctx}: a pending set of {carried} bytes, where the lane's share is {}",
+                l.layer.pending_share()
+            );
+            snapshots.extend(got);
             let memory = l.layer.memory();
             assert_eq!(memory.changes, 0, "{ctx}");
-            if self.exact {
+            assert_eq!(memory.pending == 0, carried == 0, "{ctx}: {memory:?}");
+            let committed = l.layer.commits() - commits;
+            assert!(
+                committed == 0 || carried == 0,
+                "{ctx}: committed and carried"
+            );
+            self.tally.committed += committed as usize;
+            if carried > 0 {
+                self.tally.carried += 1;
+                self.unrecorded = true;
+            }
+            // A pending set may hold deletes of what the store holds.
+            if self.exact && memory.pending == 0 {
                 assert_eq!(
                     memory.store > 0,
                     self.now.holds(l.range),
@@ -658,10 +734,18 @@ impl World {
                 );
             }
         }
+        let carried: usize = snapshots.iter().map(|s| s.pending.len()).sum();
+        assert!(
+            carried <= self.pending.bytes,
+            "{ctx}: {carried} bytes pending"
+        );
+        self.tally.bounded += 1;
+        self.flushed_pending = false;
         self.last = self.now.clone();
         if self.rng.chance(75) {
             self.records
                 .insert(self.epoch, (self.now.clone(), snapshots));
+            self.unrecorded = false;
         }
         self.epoch += 1;
     }
@@ -785,19 +869,23 @@ fn runs(seed: u64, dir: &std::path::Path) -> (RunStores, Option<(Arc<DiskCache>,
     }
 }
 
-/// What a seed did that the model checked.
-#[derive(Default)]
-struct Ran {
-    flushes: u64,
-    kills_after_flush: u64,
+/// What records may carry of the lanes' pending sets, by seed: nothing,
+/// a few entries, or all.
+fn pending(seed: u64) -> PendingLimit {
+    let mut rng = Rng(seed ^ 0x9e1d);
+    PendingLimit {
+        bytes: rng.pick(&[0, 200, 1500, 6000, 1 << 20]),
+        key_groups: GROUPS,
+    }
 }
 
 async fn run(
     seed: u64,
     stores: Arc<dyn Stores>,
     exact: bool,
+    pending: PendingLimit,
     disk: Option<(Arc<DiskCache>, Disk)>,
-) -> Ran {
+) -> Tally {
     let mut rng = Rng(seed ^ 0xf1u64);
     let flush_at = match exact {
         true => 0,
@@ -809,8 +897,10 @@ async fn run(
         stores,
         disk,
         flush_at,
-        flushes: 0,
-        kills_after_flush: 0,
+        pending,
+        tally: Tally::default(),
+        unrecorded: false,
+        flushed_pending: false,
         exact,
         generation: 0,
         epoch: 1,
@@ -832,10 +922,27 @@ async fn run(
         }
     }
     w.sweep(true).await;
-    Ran {
-        flushes: w.flushes + w.lanes.iter_mut().map(Lane::new_flushes).sum::<u64>(),
-        kills_after_flush: w.kills_after_flush,
+    w.tally.flushes += w.lanes.iter_mut().map(Lane::new_flushes).sum::<u64>();
+    w.tally
+}
+
+/// The pending sets went into records, were committed, restored onto other
+/// numbers of lanes, and outlived kills between a barrier and its record;
+/// lanes flushed early, with pending sets among them, and were killed
+/// after.
+fn checked(tally: &Tally) {
+    println!("{tally:?}");
+    if std::env::var("OPENETL_STATE_SEED").is_ok() || seeds().len() < 100 {
+        return;
     }
+    let n = seeds().len();
+    assert!(
+        tally.carried >= 10 * n && tally.committed >= 10 * n,
+        "{tally:?}"
+    );
+    assert!(tally.restored >= n && tally.rescaled >= n / 2, "{tally:?}");
+    assert!(tally.killed >= n / 2, "{tally:?}");
+    assert!(tally.bounded >= 20 * n, "{tally:?}");
 }
 
 fn seeds() -> Vec<u64> {
@@ -854,9 +961,13 @@ fn the_layer_matches_the_model() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
+    let mut tally = Tally::default();
     for seed in seeds() {
-        rt.block_on(run(seed, Arc::new(MemoryBucket::new()), true, None));
+        let limit = pending(seed);
+        let bucket = MemoryBucket::new().with_pending(limit);
+        tally.add(rt.block_on(run(seed, Arc::new(bucket), true, limit, None)));
     }
+    checked(&tally);
 }
 
 #[test]
@@ -864,17 +975,25 @@ fn the_layer_matches_the_model_over_runs() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let (mut merges, mut flushes, mut kills, mut early) = (0, 0, 0, 0);
+    let (mut merges, mut early) = (0, 0);
+    let mut tally = Tally::default();
     let mut by_disk: std::collections::HashMap<&str, u64> = Default::default();
     for seed in seeds() {
         let dir = tempfile::tempdir().unwrap();
+        let limit = pending(seed);
         let (stores, disk) = runs(seed, dir.path());
-        let ran = rt.block_on(run(seed, Arc::new(stores.clone()), false, disk.clone()));
+        let stores = stores.with_pending(limit);
+        let ran = rt.block_on(run(
+            seed,
+            Arc::new(stores.clone()),
+            false,
+            limit,
+            disk.clone(),
+        ));
+        tally.add(ran);
         let c = stores.counts();
         merges += c.merges;
         early += c.early.count;
-        flushes += ran.flushes;
-        kills += ran.kills_after_flush;
         let mut count = |k: &'static str, n: u64| *by_disk.entry(k).or_default() += n;
         match &disk {
             None => {
@@ -894,10 +1013,11 @@ fn the_layer_matches_the_model_over_runs() {
             }
         }
     }
+    checked(&tally);
     let mut by_disk: Vec<_> = by_disk.into_iter().collect();
     by_disk.sort();
     println!(
-        "{} seeds over runs: {merges} merges, {flushes} early flushes ({early} runs), {kills} kills after one; {by_disk:?}",
+        "{} seeds over runs: {merges} merges, {early} early runs; {by_disk:?}",
         seeds().len()
     );
     // A seed may merge nothing, as most of one seed's configs do.
@@ -905,10 +1025,15 @@ fn the_layer_matches_the_model_over_runs() {
         let n = seeds().len() as u64;
         assert!(merges >= n, "{merges} merges");
         assert!(
-            flushes >= n && early >= n,
-            "{flushes} early flushes, {early} runs"
+            tally.flushes >= n && early >= n,
+            "{} early flushes, {early} runs",
+            tally.flushes
         );
-        assert!(kills >= n / 4, "{kills} kills after an early flush");
+        assert!(tally.kills_after_flush >= n / 4, "{tally:?}");
+        assert!(
+            tally.flushed_pending >= n / 4 && tally.discarded_pending >= n / 20,
+            "{tally:?}"
+        );
         for (what, at_least) in [
             ("seeds without a disk cache", n / 10),
             ("disk hits", n * 10),
@@ -918,5 +1043,20 @@ fn the_layer_matches_the_model_over_runs() {
             let got = by_disk.iter().find(|(k, _)| *k == what).map_or(0, |e| e.1);
             assert!(got >= at_least, "{what}: {got}");
         }
+    }
+}
+
+impl Tally {
+    fn add(&mut self, o: Tally) {
+        self.carried += o.carried;
+        self.committed += o.committed;
+        self.restored += o.restored;
+        self.rescaled += o.rescaled;
+        self.killed += o.killed;
+        self.bounded += o.bounded;
+        self.flushes += o.flushes;
+        self.flushed_pending += o.flushed_pending;
+        self.kills_after_flush += o.kills_after_flush;
+        self.discarded_pending += o.discarded_pending;
     }
 }

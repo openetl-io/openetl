@@ -11,7 +11,9 @@
 //! `_EVENTS` (an epoch's), `_KEYS` (the windows' key space), `_LATENCY_MS`
 //! (added to each request), `_CACHE_MB` (the block cache, for all lanes),
 //! `_RETENTION` (the dedupe's, in epochs; 0 keeps ids for good) and
-//! `_RESCALE` (lanes to restore onto, as `3,8`) change its size. `_DROP=0`
+//! `_RESCALE` (lanes to restore onto, as `3,8`) and `_PENDING_KB` (what a
+//! record carries of the lanes' changes, together, as the engine's 1,024
+//! does; 0 writes a run at every barrier) change its size. `_DROP=0`
 //! names every section, and the windows don't move their horizon, as
 //! before dead sections were dropped. `_MERGE=0` merges nothing, and
 //! `_WAIT=0` lets merges land when they end rather than at the next
@@ -27,7 +29,8 @@
 //! answered; probes the filters ruled out; the KiB of changes; write
 //! amplification, written over changed; the lanes' indexes and filters,
 //! and the cache, in MB; windows' accumulators and rows emitted; the
-//! dedupe's repeats; and the sections the lanes' snapshots name.
+//! dedupe's repeats; the sections the lanes' snapshots name; and the KiB of
+//! their snapshots in the record, and of the changes those carry.
 
 #![allow(clippy::unwrap_used)]
 
@@ -42,7 +45,7 @@ use object_store::path::Path;
 use openetl_state::runs::Counts;
 use openetl_state::{
     BoxFuture, DiskCache, KeyGroupRange, KeyRef, Layer, MergeConfig, ObjectStorage, Objects,
-    OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
+    OperatorId, PendingLimit, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 use twox_hash::XxHash3_64;
 
@@ -67,6 +70,7 @@ struct Args {
     merge: bool,
     wait: bool,
     disk_bytes: u64,
+    pending: usize,
 }
 
 fn env(name: &str, default: u64) -> u64 {
@@ -90,6 +94,7 @@ fn args() -> Args {
         merge: env("MERGE", 1) != 0,
         wait: env("WAIT", 1) != 0,
         disk_bytes: env("DISK_MB", 0) << 20,
+        pending: (env("PENDING_KB", 1024) as usize) << 10,
         rescale: rescale.split(',').filter_map(|s| s.parse().ok()).collect(),
     }
 }
@@ -251,6 +256,9 @@ struct LaneOut {
     repeats: u64,
     /// Sections the lane's snapshot names.
     named: usize,
+    /// Bytes of its snapshots, and of the changes they carry.
+    recorded: usize,
+    carried: usize,
 }
 
 fn named(snapshots: &[Snapshot]) -> usize {
@@ -259,6 +267,16 @@ fn named(snapshots: &[Snapshot]) -> usize {
         .flat_map(|s| openetl_state::runs::runs(s).unwrap())
         .map(|r| r.sections.len())
         .sum()
+}
+
+/// What a lane's barrier names and carries.
+async fn barrier(l: &mut Layer, epoch: u64, out: &mut LaneOut) {
+    let t = Instant::now();
+    let snapshots = l.barrier(epoch).await.unwrap();
+    out.barrier = t.elapsed();
+    out.named = named(&snapshots);
+    out.carried = snapshots.iter().map(|s| s.pending.len()).sum();
+    out.recorded = out.carried + snapshots.iter().map(|s| s.data.len()).sum::<usize>();
 }
 
 async fn window_epoch(
@@ -313,9 +331,7 @@ async fn window_epoch(
     if drop {
         l.expire(OP, watermark);
     }
-    let t = Instant::now();
-    out.named = named(&l.barrier(epoch).await.unwrap());
-    out.barrier = t.elapsed();
+    barrier(l, epoch, &mut out).await;
     out
 }
 
@@ -327,9 +343,7 @@ async fn last_value_epoch(l: &mut Layer, events: Vec<Event>, epoch: u64) -> Lane
         v.put_i64(e.value);
         l.put(OP, KeyRef::new(e.group, &e.key), v.freeze());
     }
-    let t = Instant::now();
-    out.named = named(&l.barrier(epoch).await.unwrap());
-    out.barrier = t.elapsed();
+    barrier(l, epoch, &mut out).await;
     out
 }
 
@@ -347,9 +361,7 @@ async fn dedupe_epoch(l: &mut Layer, ids: Vec<Event>, epoch: u64, retention: i64
     }
     let watermark = (epoch as i64 + 1) * EPOCH - DELAY;
     l.expire(OP, watermark);
-    let t = Instant::now();
-    out.named = named(&l.barrier(epoch).await.unwrap());
-    out.barrier = t.elapsed();
+    barrier(l, epoch, &mut out).await;
     out
 }
 
@@ -376,10 +388,15 @@ impl Run {
             }),
             ..Default::default()
         };
+        let pending = PendingLimit {
+            bytes: self.args.pending,
+            key_groups: GROUPS,
+        };
         match disk {
             Some(d) => RunStores::with_disk(Arc::new(slow), config, d.clone(), "op"),
             None => RunStores::new(Arc::new(slow), config),
         }
+        .with_pending(pending)
     }
 
     /// An epoch on every lane at once, and a line of what it cost.
@@ -428,8 +445,10 @@ impl Run {
         let emitted: u64 = outs.iter().map(|o| o.emitted).sum();
         let repeats: u64 = outs.iter().map(|o| o.repeats).sum();
         let named: usize = outs.iter().map(|o| o.named).sum();
+        let carried: usize = outs.iter().map(|o| o.carried).sum();
+        let recorded: usize = outs.iter().map(|o| o.recorded).sum();
         println!(
-            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>4} {:>7.0} {:>6} {:>4} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7} {:>5}",
+            "{label:>9} {epoch:>3} {:>7.0} {:>6.0} {:>4} {:>4} {:>7.0} {:>6} {:>4} {:>4} {:>8.0} {:>6} {:>6} {:>6} {:>6} {:>8} {:>8.0} {:>5.2} {:>6.1} {:>6.1} {:>7} {:>7} {:>5} {:>7.1} {:>8.1}",
             ms(wall),
             ms(barrier),
             c.barrier.count,
@@ -451,6 +470,8 @@ impl Run {
             emitted,
             repeats,
             named,
+            kib(recorded as u64),
+            kib(carried as u64),
         );
         (lanes, c)
     }
@@ -477,7 +498,7 @@ fn amplification(c: &Counts) -> f64 {
 
 fn header() {
     println!(
-        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>4} {:>7} {:>6} {:>4} {:>4} {:>8} {:>6} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5}",
+        "{:>9} {:>3} {:>7} {:>6} {:>4} {:>4} {:>7} {:>6} {:>4} {:>4} {:>8} {:>6} {:>6} {:>6} {:>6} {:>8} {:>8} {:>5} {:>6} {:>6} {:>7} {:>7} {:>5} {:>7} {:>8}",
         "",
         "ep",
         "wall ms",
@@ -500,7 +521,9 @@ fn header() {
         "cch MB",
         "emitted",
         "repeats",
-        "named"
+        "named",
+        "rec KiB",
+        "pend KiB"
     );
 }
 

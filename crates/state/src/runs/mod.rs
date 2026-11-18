@@ -61,11 +61,11 @@ use object_store::{GetOptions, ObjectStore, PutMode, PutOptions};
 use twox_hash::XxHash3_128;
 
 use crate::layout::{self, SectionKind};
-use crate::store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
+use crate::store::{BoxFuture, Change, Horizons, PendingLimit, Snapshot, Store, Stores};
 use crate::{Error, KeyGroupRange, LAYOUT, NEVER, OperatorId, Result};
 
 mod cache;
-mod codec;
+pub(crate) mod codec;
 mod disk;
 mod filter;
 mod format;
@@ -464,6 +464,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone)]
 pub struct RunStores {
     shared: Arc<Shared>,
+    pending: PendingLimit,
 }
 
 impl RunStores {
@@ -499,7 +500,17 @@ impl RunStores {
                 learn_peak: AtomicU64::new(0),
                 merging: AtomicU64::new(0),
             }),
+            pending: PendingLimit::default(),
         }
+    }
+
+    /// The stores, with lanes that carry their pending sets in records
+    /// within `limit`, and write a run only once a lane's passes its share;
+    /// [`RunStores::new`]'s write one at every barrier that changed
+    /// something.
+    pub fn with_pending(mut self, limit: PendingLimit) -> Self {
+        self.pending = limit;
+        self
     }
 
     pub fn counts(&self) -> Counts {
@@ -616,6 +627,7 @@ impl RunStores {
             horizons,
             merging: None,
             early: (0, 0),
+            kept: HashSet::new(),
         };
         for (_, b) in runs {
             if b.sections.is_empty() {
@@ -680,6 +692,10 @@ impl Stores for RunStores {
             .open_store(generation, range, snapshots)
             .map(|s| Box::new(s) as Box<dyn Store>);
         Box::pin(std::future::ready(store))
+    }
+
+    fn pending_share(&self, range: KeyGroupRange) -> usize {
+        self.pending.share(range)
     }
 }
 
@@ -1054,6 +1070,9 @@ struct RunStore {
     merging: Option<Merging>,
     /// The epoch of its last early flush, and that flush's number.
     early: (u64, u32),
+    /// The runs of early flushes of a pending set, which a discard of their
+    /// epoch leaves.
+    kept: HashSet<u64>,
 }
 
 /// A key a lookup asks for, and how far down its sections it got.
@@ -1553,7 +1572,12 @@ impl RunStore {
 
     /// Writes some of open epoch `epoch`'s changes as an early flush's run,
     /// which the lane reads from now on, newest of its sections.
-    async fn flush_early(&mut self, epoch: u64, mut changes: Vec<Change>) -> Result<()> {
+    async fn flush_early(
+        &mut self,
+        epoch: u64,
+        mut changes: Vec<Change>,
+        kept: bool,
+    ) -> Result<()> {
         for (k, _) in &changes {
             if !layout::group_of(k).is_some_and(|g| self.range.contains(g.into())) {
                 return Err(Error::Invalid(format!(
@@ -1584,6 +1608,9 @@ impl RunStore {
         let built = format::build(&changes, &self.shared.config)?;
         let name = self.name(epoch, false, Some(n));
         let p = self.place(name, built, epoch, n, content, 0);
+        if kept {
+            self.kept.insert(p.run.id);
+        }
         let objects = self.shared.objects.as_ref();
         objects.put_new(&p.run.name, p.bytes.clone()).await?;
         let c = self.counters();
@@ -1609,10 +1636,14 @@ impl RunStore {
         Ok(())
     }
 
-    /// Stops reading the early flushes of open epoch `epoch`, which failed.
+    /// Stops reading the early flushes of open epoch `epoch`'s own changes,
+    /// which failed.
     fn forget_early(&mut self, epoch: u64) {
+        let kept = &self.kept;
         for secs in &mut self.sections {
-            secs.retain(|s| !(s.handle.epoch == epoch && s.part != LAST));
+            secs.retain(|s| {
+                !(s.handle.epoch == epoch && s.part != LAST) || kept.contains(&s.run.id)
+            });
         }
         let read: HashSet<u64> = self.sections.iter().flatten().map(|s| s.run.id).collect();
         self.runs.retain(|r| read.contains(&r.id));
@@ -2042,6 +2073,7 @@ impl RunStore {
             range: self.range,
             layout: LAYOUT,
             data: handle::encode_named(&named),
+            pending: Bytes::new(),
         }
     }
 }
@@ -2080,6 +2112,10 @@ impl Store for RunStore {
         self.horizons.clone()
     }
 
+    fn may_hold(&self, key: &[u8]) -> bool {
+        RunStore::may_hold(self, key)
+    }
+
     fn commit<'a>(
         &'a mut self,
         epoch: u64,
@@ -2098,8 +2134,9 @@ impl Store for RunStore {
         epoch: u64,
         changes: Vec<Change>,
         _horizons: &'a Horizons,
+        kept: bool,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(self.flush_early(epoch, changes))
+        Box::pin(self.flush_early(epoch, changes, kept))
     }
 
     fn discard(&mut self, epoch: u64) {
