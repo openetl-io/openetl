@@ -23,8 +23,15 @@ import (
 // start2 opens a two-worker attempt and assigns it layout(2).
 func start2(t *testing.T, opts Options) (*coordinator, []*worker) {
 	t.Helper()
+	return start2Held(t, opts, nil)
+}
+
+// start2Held is start2, worker 0 receiving an End only once hold is closed;
+// nil: at once.
+func start2Held(t *testing.T, opts Options, hold chan struct{}) (*coordinator, []*worker) {
+	t.Helper()
 	c := coordinatorFor(t, testAttemptOf(2), opts)
-	ws := []*worker{joinPipe(t, c, target(0), opts), joinPipe(t, c, target(1), opts)}
+	ws := []*worker{joinHeld(t, c, target(0), opts, hold), joinPipe(t, c, target(1), opts)}
 	if err := c.Assign(t.Context(), layout(2)); err != nil {
 		t.Fatal(err)
 	}
@@ -692,29 +699,52 @@ func TestALostPeerAfterTheFinishIsTheEnginesStopping(t *testing.T) {
 			t.Fatalf("attempt: %v", err)
 		}
 	}
+	// reported fails the test unless w's LostPeer queued its report: it
+	// didn't find the part over already.
+	reported := func(t *testing.T, w *worker) {
+		t.Helper()
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.lost == nil || w.over {
+			t.Fatalf("the worker's part was over (%v) before it reported the lost peer", w.over)
+		}
+	}
 	for name, c := range map[string]struct {
-		lose func(c *coordinator, w *worker)
+		// Worker 0 receives End once lose closes hold.
+		hold bool
+		lose func(t *testing.T, c *coordinator, w *worker, hold chan struct{})
 		// The lost worker's part ends with the PeerLost.
 		failed bool
 	}{
-		"after the finish, before it reaches the worker": {lose: func(c *coordinator, w *worker) {
+		"after the finish, before it reaches the worker": {hold: true, lose: func(t *testing.T, c *coordinator, w *worker, hold chan struct{}) {
 			c.finish(nil)
+			// End waits at the worker's end of the call.
+			synctest.Wait()
 			w.LostPeer(lost())
+			reported(t, w)
+			synctest.Wait()
+			close(hold)
 		}},
-		"after the finish reached the worker": {lose: func(c *coordinator, w *worker) {
+		"after the finish reached the worker": {lose: func(_ *testing.T, c *coordinator, w *worker, _ chan struct{}) {
 			c.finish(nil)
 			synctest.Wait()
 			w.LostPeer(lost())
 		}},
-		"before the finish": {lose: func(_ *coordinator, w *worker) {
+		"before the finish": {lose: func(t *testing.T, _ *coordinator, w *worker, _ chan struct{}) {
 			w.LostPeer(lost())
+			reported(t, w)
 			synctest.Wait()
 		}, failed: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				co, ws := start2(t, Options{PeerLostGrace: 3 * time.Second})
-				c.lose(co, ws[0])
+				// Made in the bubble, so a wait on it is durable.
+				var hold chan struct{}
+				if c.hold {
+					hold = make(chan struct{})
+				}
+				co, ws := start2Held(t, Options{PeerLostGrace: 3 * time.Second}, hold)
+				c.lose(t, co, ws[0], hold)
 				end(t, co, ws)
 				err := ws[0].Err()
 				switch {

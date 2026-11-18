@@ -200,7 +200,9 @@ type Worker interface {
 	LostPeer(err error)
 	// Done is closed once the worker's part in the attempt is over.
 	Done() <-chan struct{}
-	// Err is why: nil once the coordinator ended the attempt as finished.
+	// Err is why: nil once the coordinator ended the attempt as finished,
+	// but for a worker whose PeerLost the coordinator took before that,
+	// which the PeerLost ends.
 	Err() error
 	// Close ends the worker's part, as Fail does if it isn't over, and
 	// waits for its call to end.
