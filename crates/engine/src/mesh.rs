@@ -16,7 +16,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
@@ -85,6 +85,9 @@ pub struct MeshPlan {
     pub timeout: Duration,
     /// What each link queues at most, in bytes.
     pub buffer: u64,
+    /// The links, once started, for tests to watch.
+    #[cfg(test)]
+    pub links: Arc<std::sync::OnceLock<std::sync::Weak<Links>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +211,8 @@ impl MeshPlan {
             identity,
             timeout: PEER_TIMEOUT,
             buffer,
+            #[cfg(test)]
+            links: Default::default(),
         }))
     }
 
@@ -359,6 +364,11 @@ struct Link {
     room: Arc<Semaphore>,
     cap: u32,
     queued: Arc<AtomicU64>,
+    /// The lanes waiting for room on it now.
+    waiting: Arc<AtomicU64>,
+    /// Whether the other engine took the connection.
+    #[cfg(test)]
+    connected: Arc<AtomicBool>,
 }
 
 /// A frame queued on a link, holding its bytes of the link's room.
@@ -374,16 +384,33 @@ struct Item {
 /// What a lane waits for to queue a frame on a link.
 pub enum Room {
     Ready(Reserved),
-    Wait(Arc<Semaphore>, u32),
+    Wait {
+        room: Arc<Semaphore>,
+        n: u32,
+        waiting: Arc<AtomicU64>,
+    },
 }
 
 pub struct Reserved(OwnedSemaphorePermit);
+
+/// Counts a lane among those waiting for room while it lives.
+struct Waiting(Arc<AtomicU64>);
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 impl Room {
     pub async fn wait(self) -> Option<Reserved> {
         match self {
             Room::Ready(r) => Some(r),
-            Room::Wait(room, n) => room.acquire_many_owned(n).await.ok().map(Reserved),
+            Room::Wait { room, n, waiting } => {
+                waiting.fetch_add(1, Ordering::Relaxed);
+                let _waiting = Waiting(waiting);
+                room.acquire_many_owned(n).await.ok().map(Reserved)
+            }
         }
     }
 }
@@ -415,6 +442,8 @@ impl Links {
             let (queue, rx) = mpsc::unbounded_channel();
             let room = Arc::new(Semaphore::new(cap as usize));
             let queued = Arc::new(AtomicU64::new(0));
+            let waiting = Arc::new(AtomicU64::new(0));
+            let connected = Arc::new(AtomicBool::new(false));
             tasks.spawn(link(
                 plan.clone(),
                 connector.clone(),
@@ -422,22 +451,29 @@ impl Links {
                 rx,
                 room.clone(),
                 queued.clone(),
+                connected.clone(),
             ));
             links.push(Some(Link {
                 queue,
                 room,
                 cap,
                 queued,
+                waiting,
+                #[cfg(test)]
+                connected,
             }));
         }
         let me = m.me();
-        Ok(Some(Arc::new(Links {
+        let links = Arc::new(Links {
             first_writer: me.first_writer,
             writers: me.writers,
             engine_of,
             engine_of_lane,
             links,
-        })))
+        });
+        #[cfg(test)]
+        let _ = m.links.set(Arc::downgrade(&links));
+        Ok(Some(links))
     }
 
     /// The engine's own index of the attempt's writer lane `w`, if it's
@@ -464,7 +500,11 @@ impl Links {
         let n = u32::try_from(bytes).unwrap_or(u32::MAX).clamp(1, link.cap);
         match link.room.clone().try_acquire_many_owned(n) {
             Ok(p) => Ok(Room::Ready(Reserved(p))),
-            Err(TryAcquireError::NoPermits) => Ok(Room::Wait(link.room.clone(), n)),
+            Err(TryAcquireError::NoPermits) => Ok(Room::Wait {
+                room: link.room.clone(),
+                n,
+                waiting: link.waiting.clone(),
+            }),
             Err(TryAcquireError::Closed) => Err(JobError::stopped("the link stopped")),
         }
     }
@@ -503,6 +543,27 @@ impl Links {
         self.links
             .iter()
             .map(|l| l.as_ref().map_or(0, |l| l.queued.load(Ordering::Relaxed)))
+            .collect()
+    }
+
+    /// Whether each link's connection is up, by engine; this engine's is.
+    #[cfg(test)]
+    pub fn connected(&self) -> Vec<bool> {
+        self.links
+            .iter()
+            .map(|l| {
+                l.as_ref()
+                    .is_none_or(|l| l.connected.load(Ordering::Relaxed))
+            })
+            .collect()
+    }
+
+    /// The lanes waiting for room on each link now, by engine.
+    #[cfg(test)]
+    pub fn waiting(&self) -> Vec<u64> {
+        self.links
+            .iter()
+            .map(|l| l.as_ref().map_or(0, |l| l.waiting.load(Ordering::Relaxed)))
             .collect()
     }
 }
@@ -800,6 +861,7 @@ async fn link(
     rx: mpsc::UnboundedReceiver<Item>,
     room: Arc<Semaphore>,
     queued: Arc<AtomicU64>,
+    connected: Arc<AtomicBool>,
 ) -> Result<(), JobError> {
     let res = async {
         let m = plan
@@ -807,6 +869,7 @@ async fn link(
             .as_ref()
             .ok_or_else(|| JobError::internal("a link without a mesh"))?;
         let c = dial(&plan, m, &connector, to).await?;
+        connected.store(true, Ordering::Relaxed);
         send(c, rx, &queued).await.map_err(|e| {
             JobError::peer_lost(
                 to,
