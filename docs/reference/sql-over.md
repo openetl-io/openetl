@@ -51,6 +51,7 @@ A frame ends at the current row:
 | `ORDER BY` alone, or `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` | Every row of the partition up to the current row's time, its peers included |
 | `ROWS UNBOUNDED PRECEDING` | Every row of the partition up to the current row |
 | `ROWS BETWEEN N PRECEDING AND CURRENT ROW`, or `ROWS N PRECEDING` | The `N` rows before the current row, and the current row. `ROWS BETWEEN CURRENT ROW AND CURRENT ROW` is the current row. |
+| `RANGE BETWEEN CURRENT ROW AND CURRENT ROW` | The current row and its peers: the partition's rows at the current row's time |
 | `RANGE BETWEEN INTERVAL PRECEDING AND CURRENT ROW` | The rows whose time is at most `INTERVAL` before the current row's, up to the current row's time, its peers included. `INTERVAL` is a constant of days, hours, minutes, seconds or smaller, in whole microseconds, such as `INTERVAL '1 hour'`. Months are refused. |
 
 `GROUPS` frames, frames that end before or after the current row, and frames that start after it are refused.
@@ -103,7 +104,7 @@ A row waits until the stream's watermark passes its event time, so every row of 
 - A row waits in state until it is written, with all of its columns.
 - The state is kept as a group window's is, in the same files, checkpoints and retention ([State](./sql-windows.md#state)). The next attempt restores it on any number of lanes and workers.
 - With `resources.workers` above 1, the exchange sends each row to the worker whose lane owns its key group, and that worker writes the row ([Group windows on workers](../pipelines/workers.md#group-windows-on-workers)).
-- To build the state again from the stream, reset the streams that the statement reads: `openetl reset --stream STREAM NAME`.
+- To build the state again from the stream, reset the streams that the statement reads. A reset reads the stream again for every statement that reads it, so an appended output gets those rows twice. Read [Build the state again](../pipelines/over.md#build-the-state-again) first, then run `openetl reset --stream STREAM PIPELINE`.
 
 ### Changing an OVER statement
 
