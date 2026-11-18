@@ -97,6 +97,8 @@ pub struct Plan {
     /// probe of it, not as they are.
     #[cfg(test)]
     pub probe: Option<crate::stage::Probe>,
+    #[cfg(test)]
+    pub lanes: crate::dataflow::Lanes,
 }
 
 /// A job's state: where its stateful operators keep it, if it has any,
@@ -798,6 +800,8 @@ impl Plan {
             quarantine,
             #[cfg(test)]
             probe: None,
+            #[cfg(test)]
+            lanes: Default::default(),
         };
         // Version 0 of every stream is its restored schema.
         if let Some(r) = &plan.remote {
