@@ -17,6 +17,8 @@ type WorkerJob struct {
 	Caps    destination.Capabilities
 	// The engine writes the destination's data.
 	EngineWritten bool
+	// A stream the destination gets can hold columns or cells.
+	Holds bool
 }
 
 // OnePod says why a job that asks for workers runs on one pod; empty if it
@@ -24,7 +26,9 @@ type WorkerJob struct {
 // on one pod. A SQL transform runs on workers, a group window's too, whose
 // rows the workers' engines exchange by key group to the keyed lanes that
 // keep its state; and so do holds: the attempt's coordinator owns each
-// stream's schema and what it holds.
+// stream's schema and what it holds. But not holds into a destination whose
+// writer lanes commit on their own: a redo of a lost writer lane's part of
+// an epoch doesn't hold what the epoch held.
 func OnePod(j WorkerJob) string {
 	caps := j.Caps
 	switch {
@@ -40,9 +44,13 @@ func OnePod(j WorkerJob) string {
 		return "a destination that loads staged epochs runs on one pod"
 	case j.EngineWritten:
 		return "a destination the engine writes runs on one pod"
+	case caps.LaneCommits && j.Holds:
+		return whyHeldLaneCommits
 	}
 	return ""
 }
+
+const whyHeldLaneCommits = "a stream that can hold columns runs on one pod into a destination whose writer lanes commit on their own"
 
 // Why an attempt on workers reads all of a stream's splits on one worker.
 const (
@@ -68,8 +76,8 @@ func OneWorker(mode destination.WriteMode, read apiv1.SyncMode) string {
 // Workers plans a job's workers: how many each attempt runs on (0: one pod),
 // why it runs on one pod although its spec asks for more, and a warning for
 // each stream an attempt reads on one worker. Without a catalog it can't
-// tell which streams one worker reads, nor with a SQL transform without
-// the statements' plan, a.
+// tell which streams one worker reads or which hold, nor with a SQL
+// transform without the statements' plan, a.
 func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capabilities, engineWritten bool, a *sqlplan.Answer) (int, string, []*apiv1.PlanWarning) {
 	asked := int(spec.GetResources().GetWorkers())
 	if asked <= 1 {
@@ -96,10 +104,15 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 				continue
 			}
 		}
-		whys[name] = OneWorker(StreamMode(spec, caps, read, keyed), read)
+		mode := StreamMode(spec, caps, read, keyed)
+		whys[name] = OneWorker(mode, read)
+		j.Holds = j.Holds || Holds(caps, mode, keyed)
 	}
 	if sql {
 		outs, _ := SQLOutputs(spec, caps, a, inputs)
+		for _, o := range outs {
+			j.Holds = j.Holds || Holds(caps, o.Mode, len(o.PrimaryKey) > 0)
+		}
 		for i, st := range a.Statements {
 			if len(st.Inputs) != 1 || whys[st.Inputs[0]] != "" {
 				continue
@@ -110,6 +123,9 @@ func Workers(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.Capa
 				}
 			}
 		}
+	}
+	if why := OnePod(j); why != "" {
+		return 0, why, nil
 	}
 	var oneWorker []*apiv1.PlanWarning
 	for _, s := range selected(spec, cat) {

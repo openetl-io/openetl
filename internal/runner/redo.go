@@ -356,6 +356,15 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 		return errs.New(errs.CheckpointCorrupt, "runner: writer lane %d's part of epoch %d is redone from the state its SQL had at the epoch's start, and the checkpoint before it, %d-g%d, can't be read",
 			i, rec.Epoch, rec.Previous.Epoch, rec.Previous.Generation)
 	}
+	// A release in the epoch can leave rec holding nothing: only the record
+	// before says the epoch held.
+	if before == nil && rec.Previous != nil && slices.ContainsFunc(j.sinkStreams(), j.holdsOn) {
+		return errs.New(errs.CheckpointCorrupt, "runner: writer lane %d's part of epoch %d is redone only if the checkpoint before it, %d-g%d, says the streams held nothing at the epoch's start, and it can't be read",
+			i, rec.Epoch, rec.Previous.Epoch, rec.Previous.Generation)
+	}
+	if name, ok := heldIn(rec, before); ok {
+		return errs.New(errs.Internal, "runner: %q held columns or cells in epoch %d, and a redo of writer lane %d's part doesn't hold what the epoch held: a job whose streams hold runs on one pod into a destination whose writer lanes commit on their own", name, rec.Epoch, i)
+	}
 	part, err := j.redoReads(rec, i)
 	if err != nil {
 		return err
@@ -454,6 +463,29 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
+}
+
+// heldIn names a stream or output that holds at rec or at before, the
+// record before it, if one does. A redo plans without holds: an epoch's
+// record doesn't say where in the epoch a hold started, or which held
+// values a release patched in, so a redo can't hold what the epoch held.
+func heldIn(rec, before *checkpoint.Record) (string, bool) {
+	for _, r := range []*checkpoint.Record{rec, before} {
+		if r == nil {
+			continue
+		}
+		for _, name := range slices.Sorted(maps.Keys(r.Streams)) {
+			if r.Streams[name].Holds != nil {
+				return name, true
+			}
+		}
+		for _, name := range slices.Sorted(maps.Keys(r.Outputs)) {
+			if r.Outputs[name].Holds != nil {
+				return name, true
+			}
+		}
+	}
+	return "", false
 }
 
 // joinLanes sends a redo dataflow's frames from its writer lanes, one a
