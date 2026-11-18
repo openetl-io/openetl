@@ -50,11 +50,12 @@ If a statement keeps state, **At the last checkpoint** shows what it did in the 
 - **Written**: the rows it wrote to its output in the epoch, as new rows, updates and deletes. For a dedupe, also the repeats it dropped, if any.
 - **Late**: the late rows that came after their window had closed and its allowed lateness had passed, which OpenETL quarantined with the code `late`. Late rows that still went into their window are not in this count. [Quarantined rows](./held-data.md#quarantined-rows) shows them under the output.
 - **State** shows memory usage and the state kept by the checkpoint. **stored** counts files that hold state still in use. This count reaches zero after every window closes and its allowed lateness passes. **in the checkpoint** counts recent changes held in the checkpoint record before they move to a file. The pipeline can keep up to 1 MiB of these changes in the record.
-- **Requests**: its requests to the data plane's storage in the epoch, with their bytes.
+- **Requests**: its requests to the data plane's storage in the epoch, with their bytes, and the reads that the runner's disk cache answered instead.
   - **Writes** write its state at the checkpoint. The statement runs in parallel lanes, and each lane writes nothing while the checkpoint holds that lane's changes. So one statement can show both **Writes** and state **in the checkpoint**.
   - **Reads** read the state that it needed.
   - **Restores** open the state that a checkpoint names after a restart. They also read that state once, whole, to find what is still in use.
   - **Merges** count the files of state that the checkpoint wrote to merge other files, and the reads of the files that they merge.
+  - **From disk** counts the reads of state that the runner's disk cache answered. They are not requests to the data plane's storage.
 
   A read, a restore or a merge's read made near the checkpoint can count in the next epoch instead.
 

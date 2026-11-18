@@ -13,15 +13,22 @@
 //! restore opens what the record names, by each lane's own range of key
 //! groups, its part of the pending sets too, so state moves to any number
 //! of lanes, and reads no run until a lane needs it.
+//!
+//! With a scratch directory, the job's operators keep what they read of
+//! their runs, and the runs they write, in a disk cache there, within half
+//! of the job's scratch. Under memory pressure a lane flushes its pending
+//! set and its epoch's changes early, as a run its next record names; a
+//! job whose state still doesn't fit fails with RESOURCE_EXHAUSTED.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bytes::Bytes;
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_proto::engine::v1::{KeyGroupRange as ProtoRange, StateSnapshot};
 use openetl_state::runs::{MergeConfig, ObjectStorage, RunConfig, RunStores, runs};
-use openetl_state::{Error as StateError, KeyGroupRange, PendingLimit, Snapshot};
+use openetl_state::{DiskCache, Error as StateError, KeyGroupRange, PendingLimit, Snapshot};
 
 use crate::error::JobError;
 use crate::store::Location;
@@ -43,6 +50,28 @@ const MAX_CACHE: usize = 64 << 20;
 pub const PENDING_BYTES: usize = 1 << 20;
 pub const PENDING_SHARE: u64 = 64;
 
+/// The share of the job's scratch its state's disk cache takes.
+const DISK_SHARE: u64 = 2;
+/// The share of the job's memory its lanes' open epochs of changes may
+/// hold together: each lane flushes its own early past its part of it.
+const CHANGES_SHARE: u64 = 8;
+/// The least a lane's part is.
+const MIN_CHANGES: usize = 64 << 10;
+/// The share of the job's memory its state may hold in all, block caches
+/// and all, while the engine is near its memory limit, before the job
+/// fails.
+const STATE_SHARE: u64 = 2;
+/// A lane flushes early near the memory limit only once its changes hold
+/// this much, so it doesn't write a run per batch.
+pub const MIN_EARLY: usize = 256 << 10;
+
+/// The engine's scratch: a directory of its own on local disk, and what
+/// the job may keep there.
+#[derive(Clone, Debug)]
+pub struct Scratch {
+    pub dir: PathBuf,
+    pub bytes: u64,
+}
 /// A job's state: where its operators' runs are, and whether it writes
 /// them.
 pub struct JobState {
@@ -53,6 +82,18 @@ pub struct JobState {
     pending: PendingLimit,
     /// Each operator's, which its lanes share with their block cache.
     stores: Mutex<HashMap<String, RunStores>>,
+    operators: usize,
+    /// The job's memory; 0 for no limit.
+    memory: u64,
+    disk: Option<Arc<DiskCache>>,
+    /// What each operator's lanes hold in memory, by operator and lane.
+    held: Mutex<HashMap<(String, usize), usize>>,
+    /// A test's: the engine is near its memory limit whatever it holds.
+    #[cfg(test)]
+    pub pressed: std::sync::atomic::AtomicBool,
+    /// The most [`JobState::hold`] counted.
+    #[cfg(test)]
+    pub peak: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for JobState {
@@ -69,7 +110,8 @@ impl JobState {
     /// operators in a job of `memory` bytes, 0 for no limit, of a pipeline
     /// of `key_groups`, whose records carry at most `pending` bytes of
     /// their pending sets, or `None` for [`PENDING_BYTES`] or the job's
-    /// share.
+    /// share, with its disk cache in `scratch`, if any. A scratch directory
+    /// that can't be made leaves the cache off.
     pub fn open(
         url: &str,
         read_only: bool,
@@ -77,8 +119,23 @@ impl JobState {
         memory: u64,
         key_groups: u32,
         pending: Option<u64>,
+        scratch: Option<&Scratch>,
     ) -> Result<Self, JobError> {
         let location = Location::open(url, "state URL")?;
+        let disk =
+            scratch.filter(|s| s.bytes / DISK_SHARE > 0).and_then(|s| {
+                match DiskCache::open(&s.dir.join("state"), s.bytes / DISK_SHARE) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        tracing::warn!(
+                            dir = %s.dir.display(),
+                            error = %e,
+                            "the state's disk cache is off: its directory can't be made"
+                        );
+                        None
+                    }
+                }
+            });
         let cache = match memory {
             0 => MAX_CACHE,
             m => usize::try_from(m / CACHE_SHARE / operators.max(1) as u64)
@@ -108,7 +165,96 @@ impl JobState {
                 ..RunConfig::default()
             },
             stores: Mutex::new(HashMap::new()),
+            operators: operators.max(1),
+            memory,
+            disk,
+            held: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            pressed: Default::default(),
+            #[cfg(test)]
+            peak: Default::default(),
         })
+    }
+
+    /// Whether the engine is near its memory limit.
+    pub fn pressure(&self) -> bool {
+        #[cfg(test)]
+        if self.pressed.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
+        crate::memory::pressure()
+    }
+
+    /// The bytes of a lane's open epoch of changes past which it flushes
+    /// them early, of `lanes` keyed lanes in the engine: its part of the
+    /// job's memory. 0 for never: with no limit, or in a job that writes
+    /// nothing.
+    pub fn flush_at(&self, lanes: usize) -> usize {
+        if self.read_only || self.memory == 0 {
+            return 0;
+        }
+        let part = self.memory / CHANGES_SHARE / (self.operators * lanes.max(1)) as u64;
+        usize::try_from(part).unwrap_or(usize::MAX).max(MIN_CHANGES)
+    }
+
+    /// Notes that `operator`'s lane `lane` holds `bytes` in memory, and
+    /// gives what the job's state holds in all, its block caches with it.
+    pub fn hold(&self, operator: &str, lane: usize, bytes: usize) -> u64 {
+        self.count(Some((operator, lane, bytes)), None)
+    }
+
+    /// What `operator`'s lane `lane` holds counts for the job's state while
+    /// the handle lives: dropped, as the lane ends however it ends, the lane
+    /// no longer counts.
+    pub fn lane(self: &Arc<Self>, operator: &str, lane: usize) -> LaneState {
+        LaneState {
+            job: self.clone(),
+            operator: operator.to_owned(),
+            lane,
+        }
+    }
+
+    /// Sets a lane's count, or forgets one, and gives the job's.
+    fn count(&self, set: Option<(&str, usize, usize)>, forget: Option<(&str, usize)>) -> u64 {
+        let lanes: usize = {
+            let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((operator, lane, bytes)) = set {
+                held.insert((operator.to_owned(), lane), bytes);
+            }
+            if let Some((operator, lane)) = forget {
+                held.remove(&(operator.to_owned(), lane));
+            }
+            held.values().sum()
+        };
+        let caches: usize = self
+            .stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .map(RunStores::cache_bytes)
+            .sum();
+        let all = (lanes + caches) as u64;
+        crate::memory::set_state(all);
+        #[cfg(test)]
+        self.peak
+            .fetch_max(all, std::sync::atomic::Ordering::Relaxed);
+        all
+    }
+
+    /// What the job's state may hold in memory, in all, near the engine's
+    /// memory limit; 0 for no limit.
+    pub fn budget(&self) -> u64 {
+        self.memory / STATE_SHARE
+    }
+
+    /// The job's memory; 0 for no limit.
+    pub fn memory(&self) -> u64 {
+        self.memory
+    }
+
+    #[cfg(test)]
+    pub fn disk(&self) -> Option<&Arc<DiskCache>> {
+        self.disk.as_ref()
     }
 
     /// The job's stateful operators read their restored state and write
@@ -124,8 +270,17 @@ impl JobState {
             .entry(operator.to_owned())
             .or_insert_with(|| {
                 let prefix = self.location.prefix.clone().join(dir(operator));
-                let objects = ObjectStorage::new(self.location.store.clone(), prefix);
-                RunStores::new(Arc::new(objects), self.config.clone()).with_pending(self.pending)
+                let objects = Arc::new(ObjectStorage::new(self.location.store.clone(), prefix));
+                match &self.disk {
+                    Some(d) => RunStores::with_disk(
+                        objects,
+                        self.config.clone(),
+                        d.clone(),
+                        &dir(operator),
+                    ),
+                    None => RunStores::new(objects, self.config.clone()),
+                }
+                .with_pending(self.pending)
             })
             .clone()
     }
@@ -134,6 +289,27 @@ impl JobState {
     #[cfg(test)]
     pub fn pending(&self) -> PendingLimit {
         self.pending
+    }
+}
+
+/// A keyed lane's part of what the job's state holds: [`JobState::lane`].
+pub struct LaneState {
+    job: Arc<JobState>,
+    operator: String,
+    lane: usize,
+}
+
+impl LaneState {
+    /// Notes that the lane holds `bytes`, and gives what the job's state
+    /// holds in all.
+    pub fn hold(&self, bytes: usize) -> u64 {
+        self.job.hold(&self.operator, self.lane, bytes)
+    }
+}
+
+impl Drop for LaneState {
+    fn drop(&mut self) {
+        self.job.count(None, Some((&self.operator, self.lane)));
     }
 }
 
@@ -262,7 +438,7 @@ mod tests {
         let range = KeyGroupRange::new(0, 15);
         // Records carry none of the lanes' changes, so they write runs, and
         // merge them.
-        let state = JobState::open(&url, false, 1, 0, 16, Some(0)).unwrap();
+        let state = JobState::open(&url, false, 1, 0, 16, Some(0), None).unwrap();
         let stores = state.stores("window-1");
         let mut lane = Layer::open(&stores, 1, 1, range, &[]).await.unwrap();
         let key = |i: u32| format!("key-{i}").into_bytes();
@@ -284,7 +460,7 @@ mod tests {
             .flat_map(|s| named("window-1", s).unwrap().runs)
             .collect();
         assert!(names.iter().any(|n| n.ends_with(".merge.run")), "{names:?}");
-        let again = JobState::open(&url, false, 1, 0, 16, None).unwrap();
+        let again = JobState::open(&url, false, 1, 0, 16, None, None).unwrap();
         let back = again.stores("window-1");
         let mut lane = Layer::open(&back, 2, epoch, range, &snapshots)
             .await
@@ -322,7 +498,7 @@ mod tests {
             (1, 0, Some(0), 0),
         ] {
             use openetl_state::Stores;
-            let state = JobState::open(&url, false, operators, memory, 256, asked).unwrap();
+            let state = JobState::open(&url, false, operators, memory, 256, asked, None).unwrap();
             let limit = state.pending();
             assert_eq!(limit.bytes, total / operators, "{operators}, {memory}");
             assert_eq!(limit.key_groups, 256);
@@ -336,6 +512,24 @@ mod tests {
                 assert!(sum + lanes as usize >= limit.bytes, "{sum}");
             }
         }
+    }
+
+    /// A lane that ends, holding state, stops counting toward the job's,
+    /// while one that goes on still counts.
+    #[test]
+    fn a_lane_that_ends_stops_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let state = Arc::new(JobState::open(&url, false, 1, 64 << 20, 16, None, None).unwrap());
+        let (a, b) = (state.lane("window-1", 0), state.lane("window-1", 1));
+        a.hold(300 << 20);
+        assert_eq!(b.hold(260 << 20), 560 << 20);
+        drop(a);
+        assert_eq!(b.hold(260 << 20), 260 << 20);
+        let c = state.lane("window-2", 0);
+        c.hold(5);
+        drop((b, c));
+        assert_eq!(state.hold("probe", 9, 0), 0);
     }
 
     #[test]

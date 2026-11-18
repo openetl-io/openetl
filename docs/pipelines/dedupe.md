@@ -140,7 +140,7 @@ The plan refuses a first-row dedupe over a stream read with `incremental` by ano
 
 ## Where the state is kept
 
-A first-row dedupe keeps each kept key with its first row's time, and the rows that wait for the watermark. A latest-row dedupe keeps each key's latest time and record ID. The state is kept where a group window's is ([Where the state is kept](./windows.md#where-the-state-is-kept)), with the same checkpoints, files and retention.
+A first-row dedupe keeps each kept key with its first row's time, and the rows that wait for the watermark. A latest-row dedupe keeps each key's latest time, record ID and a hash of its values. The state is kept where a group window's is ([Where the state is kept](./windows.md#where-the-state-is-kept)), with the same checkpoints, files and retention. It also uses the same disk cache, and the lanes write it to files early if it passes their part of the job's memory. So an `unbounded` retention's keys, or many keys within a long one, can outgrow the job's memory. If the state still does not fit, the run fails with `RESOURCE_EXHAUSTED`, and the message says to run the pipeline with a larger `resources.size`.
 
 On [workers](./workers.md#group-windows-on-workers), a dedupe sends each row to the worker that owns its key's key group, as `OVER` does. That worker keeps the key's state and writes its rows.
 

@@ -30,6 +30,7 @@ import (
 
 	enginev1 "github.com/openetl-io/openetl/gen/openetl/engine/v1"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/logging"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 )
@@ -49,6 +50,14 @@ type Options struct {
 	// The job's size, which sets each engine's threads and memory limit. Zero:
 	// one thread per core and no limit.
 	Size resources.Size
+	// What each engine may keep on local disk, in bytes, in a directory of
+	// its own in ScratchDir that goes when it stops: half of it for its
+	// state's disk cache. Zero, or no ScratchDir: none, and no disk cache.
+	Scratch int64
+	// Where engines' scratch directories are: the runner's own, which no
+	// other user may write. An engine's directory left by a runner that died
+	// goes when the next engine starts.
+	ScratchDir string
 	// Batches reach the sink as they came, without the engine's coercion,
 	// naming or metadata columns, and rows fail the job. For measuring the
 	// boundary.
@@ -70,6 +79,10 @@ const (
 	edgeSocketBuffer = 1 << 20
 	// The engine's exit code on reaching its memory limit, as Limits says.
 	exitOverLimit = 75
+	// The file in an engine's scratch directory that its runner holds
+	// locked while the engine may run, so that no other runner's sweep
+	// removes it.
+	dirLock = "lock"
 )
 
 func (o Options) binary() (string, error) {
@@ -87,16 +100,20 @@ func (o Options) binary() (string, error) {
 
 // process is one running engine.
 type process struct {
-	cmd    *exec.Cmd
-	dir    string
-	data   string
-	stdin  io.WriteCloser
-	conn   *grpc.ClientConn
-	client enginev1.EngineServiceClient
-	log    *slog.Logger
-	peak   func(int64)
-	meter  *resources.Meter
-	size   resources.Size
+	cmd *exec.Cmd
+	dir string
+	// The engine's scratch directory, and the lock its runner holds on it;
+	// empty and nil for none.
+	scratch string
+	lock    *os.File
+	data    string
+	stdin   io.WriteCloser
+	conn    *grpc.ClientConn
+	client  enginev1.EngineServiceClient
+	log     *slog.Logger
+	peak    func(int64)
+	meter   *resources.Meter
+	size    resources.Size
 	// Closed once the process has exited and its output is drained.
 	exited chan struct{}
 	killed atomic.Bool
@@ -113,8 +130,12 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	}
 	control := filepath.Join(dir, "control.sock")
 	p := &process{dir: dir, data: filepath.Join(dir, "data.sock"), peak: opts.PeakMemory, meter: opts.Meter, size: opts.Size, exited: make(chan struct{})}
+	if p.scratch, p.lock, err = prepareScratch(opts); err != nil {
+		p.removeDir()
+		return nil, errs.Wrap(errs.Internal, err, "engineclient: make the engine's scratch directory")
+	}
 	if len(control) > maxSocketPath {
-		_ = os.RemoveAll(dir)
+		p.removeDir()
 		return nil, errs.New(errs.ConfigInvalid, "engineclient: socket path %s is too long; set a shorter TMPDIR", control)
 	}
 
@@ -134,12 +155,12 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	stdout, err2 := p.cmd.StdoutPipe()
 	stderr, err3 := p.cmd.StderrPipe()
 	if err := errors.Join(err1, err2, err3); err != nil {
-		_ = os.RemoveAll(dir)
+		p.removeDir()
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: pipes")
 	}
 	p.stdin = stdin
 	if err := p.cmd.Start(); err != nil {
-		_ = os.RemoveAll(dir)
+		p.removeDir()
 		return nil, errs.Wrap(errs.Internal, err, "engineclient: start "+bin)
 	}
 	p.log = log.With("component", "engine", "pid", p.cmd.Process.Pid)
@@ -176,7 +197,7 @@ func start(ctx context.Context, opts Options) (*process, error) {
 	select {
 	case <-ready:
 	case <-p.exited:
-		_ = os.RemoveAll(dir)
+		p.removeDir()
 		return nil, p.exitError()
 	case <-t.C:
 		p.close()
@@ -243,13 +264,136 @@ func (p *process) close() {
 		<-p.exited
 	}
 	t.Stop()
-	_ = os.RemoveAll(p.dir)
+	p.removeDir()
 	if n := resources.ExitPeak(p.cmd.ProcessState, hwm); n > 0 {
 		enginePeak.Record(context.Background(), n)
 		if p.peak != nil {
 			p.peak(n)
 		}
 	}
+}
+
+// removeDir removes the engine's directories, and then lets go of its
+// scratch's lock.
+func (p *process) removeDir() {
+	_ = os.RemoveAll(p.dir)
+	if p.scratch != "" {
+		_ = os.RemoveAll(p.scratch)
+		_ = p.lock.Close()
+	}
+}
+
+// limits are what the engine may use: its memory, and its scratch. Nil for
+// neither.
+func (p *process) limits(o Options) *enginev1.Limits {
+	var l enginev1.Limits
+	if o.Size != (resources.Size{}) {
+		l.MemoryBytes = ints.Uint64(o.Size.EngineMemory())
+	}
+	if p.scratch != "" {
+		l.ScratchDir, l.ScratchBytes = p.scratch, ints.Uint64(o.Scratch)
+	}
+	if l.MemoryBytes == 0 && l.ScratchDir == "" {
+		return nil
+	}
+	return &l
+}
+
+// prepareScratch makes an engine's scratch directory in o.ScratchDir, if
+// it has scratch; with none, it only removes what engines of runners that
+// died left there, as after --scratch was turned to 0.
+func prepareScratch(o Options) (string, *os.File, error) {
+	switch {
+	case o.ScratchDir == "":
+		return "", nil, nil
+	case o.Scratch <= 0:
+		if parent, err := filepath.Abs(o.ScratchDir); err == nil {
+			sweep(parent)
+		}
+		return "", nil, nil
+	}
+	return makeScratch(o.ScratchDir)
+}
+
+// makeScratch makes an engine's scratch directory in parent, after
+// removing those that engines of runners that died left there, and locks
+// it for as long as the file it gives is open.
+func makeScratch(parent string) (string, *os.File, error) {
+	parent, err := filepath.Abs(parent)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", nil, err
+	}
+	sweep(parent)
+	dir, err := os.MkdirTemp(parent, "oe-")
+	if err != nil {
+		return "", nil, err
+	}
+	lock, err := lockDir(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, err
+	}
+	return dir, lock, nil
+}
+
+// lockDir locks a new engine directory for as long as the file it gives is
+// open: the lock is taken before the file has its name, so a sweep never
+// finds it unlocked.
+func lockDir(dir string) (*os.File, error) {
+	f, err := os.CreateTemp(dir, dirLock+".")
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := os.Rename(f.Name(), filepath.Join(dir, dirLock)); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// sweep removes the engine directories in parent whose lock no process
+// holds: those engines of runners that died left. One being made has no
+// lock yet, and stays. Only directories are looked in, and a lock that
+// isn't a regular file is left alone; nothing it opens can block.
+func sweep(parent string) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "oe-") {
+			continue
+		}
+		d := filepath.Join(parent, e.Name())
+		if unlocked(d) {
+			_ = os.RemoveAll(d)
+		}
+	}
+}
+
+// unlocked is whether d's lock is a regular file that no process holds.
+func unlocked(d string) bool {
+	root, err := os.OpenRoot(d)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.OpenFile(dirLock, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil
 }
 
 func (p *process) kill() {
@@ -273,7 +417,7 @@ func (p *process) waitExit(d time.Duration) error {
 func (p *process) exitError() error {
 	st := p.cmd.ProcessState
 	if st.ExitCode() == exitOverLimit {
-		return errs.New(errs.ResourceExhausted, "engineclient: the engine reached its memory limit of %d MiB", p.size.EngineMemory()/resources.MiB)
+		return errs.New(errs.ResourceExhausted, "engineclient: the engine reached its memory limit of %d MiB; run the pipeline with a larger resources.size", p.size.EngineMemory()/resources.MiB)
 	}
 	if ws, ok := st.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL && !p.killed.Load() {
 		return errs.New(errs.ResourceExhausted, "engineclient: the engine was killed, likely for running out of memory")

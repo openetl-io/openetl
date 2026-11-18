@@ -407,6 +407,14 @@ impl Plan {
                 req.limits.as_ref().map_or(0, |l| l.memory_bytes),
                 key_groups,
                 req.state_pending_bytes,
+                req.limits
+                    .as_ref()
+                    .filter(|l| !l.scratch_dir.is_empty())
+                    .map(|l| crate::state::Scratch {
+                        dir: l.scratch_dir.clone().into(),
+                        bytes: l.scratch_bytes,
+                    })
+                    .as_ref(),
             )?)),
         };
         let sinks = match transform {

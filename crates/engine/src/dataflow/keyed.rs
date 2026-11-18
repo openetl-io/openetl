@@ -633,6 +633,10 @@ impl Op {
 struct Keyed {
     statement: usize,
     output: usize,
+    /// Its operator's ID.
+    id: String,
+    /// What it holds as the job's state; it stops counting once dropped.
+    held: Option<crate::state::LaneState>,
     op: Op,
     layer: Layer,
     ls: LaneStream,
@@ -752,6 +756,7 @@ pub(super) async fn run(
             JobError::new(err.code, cant_open(err.message))
         })?;
         op.open(&mut layer);
+        layer.set_flush_at(state.flush_at(plan.layout.lanes().len()));
         let event_time = t.inputs[st.input].event_time.as_ref();
         let floor = event_time.map_or(watermark::NONE, |e| e.floor);
         let closes_at = event_time
@@ -772,6 +777,8 @@ pub(super) async fn run(
         let mut w = Keyed {
             statement: i,
             output,
+            id: id.clone(),
+            held: Some(state.lane(id, lane.lane)),
             op,
             layer,
             ls,
@@ -996,6 +1003,7 @@ impl Keyed {
             }
         };
         let out = self.op.rows(&mut self.layer, &input, ids.as_ref()).await?;
+        self.relieve(lane).await?;
         self.counts.late += out
             .rejected
             .iter()
@@ -1021,6 +1029,7 @@ impl Keyed {
         self.wm = wm;
         loop {
             let (out, more) = self.op.advance(&mut self.layer, wm).await?;
+            self.relieve(lane).await?;
             self.give(lane, out).await?;
             if !more {
                 break;
@@ -1028,6 +1037,62 @@ impl Keyed {
         }
         let s = self.output;
         lane.all(s, || super::Out::Watermark(s, wm)).await
+    }
+
+    /// Near the engine's memory limit, flushes the epoch's changes early, if
+    /// they're enough to be worth a run, and counts what the state holds:
+    /// if, flushed, it's still more than the job lets it hold, the job
+    /// fails, saying what to raise, rather than reach the limit. A lane
+    /// past its part of the memory flushes as it next reads.
+    async fn relieve(&mut self, lane: &Lane) -> Result<(), JobError> {
+        let flow = lane.flow.clone();
+        let Some(state) = &flow.plan.state.job else {
+            return Ok(());
+        };
+        if state.pressure()
+            && !state.read_only()
+            && self.layer.memory().changes + self.layer.memory().pending >= crate::state::MIN_EARLY
+        {
+            self.layer.flush().await.map_err(|e| {
+                crate::state::state_error(&format!("operator {}'s state", self.id), &e)
+            })?;
+        }
+        let held = self.count();
+        let budget = state.budget();
+        // As it is now: the flush took a while, and other lanes may have
+        // released memory meanwhile.
+        if budget == 0 || held <= budget || !state.pressure() {
+            return Ok(());
+        }
+        let (at, output) = flow.plan.transform.as_ref().map_or_else(
+            || (String::new(), String::new()),
+            |t| {
+                let st = &t.sql.statements[self.statement];
+                (st.at.to_string(), st.output.clone())
+            },
+        );
+        let what = match self.op {
+            Op::Window(_) => "group window",
+            Op::Over(_) => "OVER statement",
+            Op::Dedupe(_) => "dedupe",
+        };
+        Err(JobError::new(
+            ErrorCode::ResourceExhausted,
+            format!(
+                "transform.sql {at}: the {what} writing {output} keeps more state in memory than the job's size allows: its lanes and caches hold {} MiB, past the {} MiB, half of the job's {} MiB, that state may hold, with the engine near its memory limit. Run the pipeline with a larger resources.size",
+                held >> 20,
+                budget >> 20,
+                state.memory() >> 20
+            ),
+        ))
+    }
+
+    /// Counts what the lane's state holds now as the job's, and gives the
+    /// job's.
+    fn count(&self) -> u64 {
+        self.held
+            .as_ref()
+            .map_or(0, |h| h.hold(self.layer.memory().total()))
     }
 
     /// Quarantines rows of a batch of the input as the output's.
@@ -1290,6 +1355,7 @@ impl Keyed {
             self.layer.discard();
             self.counts = Counts::default();
             self.op.take_counts();
+            self.count();
         } else {
             let memory = self.layer.memory().total();
             let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
@@ -1298,6 +1364,9 @@ impl Keyed {
                     &err,
                 )
             })?;
+            // The barrier released the epoch's changes and the sections
+            // that died.
+            self.count();
             let named = snapshots
                 .iter()
                 .map(|sn| crate::state::named(&id, sn))

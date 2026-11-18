@@ -257,6 +257,38 @@ func TestPruneAgreesWithMerges(t *testing.T) {
 	}
 }
 
+func early(op string, g, n uint64, part int) string {
+	return fmt.Sprintf("%s/g%d/e%d/kg0-255.early%d.run", op, g, n, part)
+}
+
+// An early flush's run counts once the record of its epoch names it with
+// the barrier's run. One whose epoch failed is an orphan: kept while it may
+// yet be named, of the session's generation and an epoch after its newest
+// record's, and deleted by a later attempt.
+func TestPruneAgreesWithEarlyFlushes(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	l := newLog(store)
+	a := claim(t, l, "a")
+	e1, r1 := run(t, store, early("w", 1, 1, 1)), run(t, store, lane("w", 1, 1))
+	rec := commitNaming(t, a, 1, e1, r1)
+	// Epoch 2 flushes early, and its record never lands.
+	e2 := run(t, store, early("w", 1, 2, 1))
+	if _, err := a.Prune(t.Context(), rec, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runs(t, store), slices.Sorted(slices.Values([]string{e1, r1, e2})); !slices.Equal(got, want) {
+		t.Fatalf("after epoch 1, state %v, want %v", got, want)
+	}
+	b := claim(t, l, "b")
+	rec = commitNaming(t, b, 2, e1, r1)
+	if _, err := b.Prune(t.Context(), rec, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := runs(t, store), slices.Sorted(slices.Values([]string{e1, r1})); !slices.Equal(got, want) {
+		t.Fatalf("after the next attempt's epoch 2, state %v, want %v; %s is an orphan", got, want, e2)
+	}
+}
+
 // A lane's changes since its last run ride in the record, which keeps them
 // as they came and restores them, and they name no object: retention keeps
 // the runs a kept record names beside them, and deletes a run once the

@@ -103,6 +103,7 @@ A row waits until the stream's watermark passes its event time, so every row of 
 - An unbounded frame keeps an accumulator, and `first_value` the first row's value. A `ROWS N PRECEDING` frame keeps `N` rows' values, a `RANGE` frame the values within its interval of the latest time, and `lag(X, N)` `N` rows' values.
 - A row waits in state until it is written, with all of its columns.
 - The state is kept as a group window's is, in the same files, checkpoints and retention ([State](./sql-windows.md#state)). The next attempt restores it on any number of lanes and workers.
+- Its lanes write their changes to files early, keep what they read in the disk cache, and count against the job's memory as a group window's do. If the state does not fit, the run fails with `RESOURCE_EXHAUSTED`: `the OVER statement writing OUTPUT keeps more state in memory than the job's size allows`. Run the pipeline with a larger `resources.size`.
 - With `resources.workers` above 1, the exchange sends each row to the worker whose lane owns its key group, and that worker writes the row ([Group windows on workers](../pipelines/workers.md#group-windows-on-workers)).
 - To build the state again from the stream, reset the streams that the statement reads. A reset reads the stream again for every statement that reads it, so an appended output gets those rows twice. Read [Build the state again](../pipelines/over.md#build-the-state-again) first, then run `openetl reset --stream STREAM PIPELINE`.
 
@@ -195,7 +196,8 @@ The engine exchanges the stream's rows by the key groups of the `PARTITION BY` c
 
 - A first-row dedupe keeps each kept key with its first row's time, and each row of a key not kept until the watermark passes it, with all of its columns. With a retention, the state of a key is dropped once the key is forgotten.
 - A latest-row dedupe keeps each key's latest time, record ID and hash of values, and whether the output has the key's row.
-- The state is kept as a group window's is ([State](./sql-windows.md#state)). The next attempt restores it on any number of lanes and workers.
+- The state is kept as a group window's is, in the same files, checkpoints and retention ([State](./sql-windows.md#state)). The next attempt restores it on any number of lanes and workers.
+- Its lanes write their changes to files early, the kept keys and the waiting rows among them, keep what they read in the disk cache, and count against the job's memory as a group window's do. If the state does not fit, the run fails with `RESOURCE_EXHAUSTED`: `the dedupe writing OUTPUT keeps more state in memory than the job's size allows`. Run the pipeline with a larger `resources.size`.
 
 ### Changing a dedupe
 

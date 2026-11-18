@@ -24,7 +24,6 @@ import (
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
-	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -87,9 +86,7 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	}
 	req.Passthrough = d.Options.Passthrough
 	req.StatePendingBytes = d.Options.StatePendingBytes
-	if s := d.Options.Size; s != (resources.Size{}) {
-		req.Limits = &enginev1.Limits{MemoryBytes: ints.Uint64(s.EngineMemory())}
-	}
+	req.Limits = p.limits(d.Options)
 	if _, err := p.client.StartJob(ctx, req); err != nil {
 		return p.explain(ctx, err)
 	}

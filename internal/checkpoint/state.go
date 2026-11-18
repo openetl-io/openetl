@@ -80,7 +80,8 @@ func (l *Log) namedState(ctx context.Context, r *Record, keep int) (map[string]b
 }
 
 // parseStateKey is the generation and epoch of a run's name below StateDir:
-// {dir}/g{g}/e{N}/kg{first}-{last}.run, or a merge's, ….merge.run.
+// {dir}/g{g}/e{N}/kg{first}-{last}.run, an early flush's, ….earlyN.run,
+// or a merge's, ….merge.run.
 func parseStateKey(rel string) (gen, epoch uint64, ok bool) {
 	parts := strings.Split(rel, "/")
 	if len(parts) < 4 || !strings.HasPrefix(parts[len(parts)-1], "kg") || !strings.HasSuffix(parts[len(parts)-1], ".run") {

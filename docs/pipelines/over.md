@@ -82,7 +82,7 @@ The plan refuses `OVER` over a stream read with `incremental` by another cursor.
 
 ## Where the state is kept
 
-`OVER` keeps the rows that wait for the watermark, and each partition's frame: the accumulator of an unbounded frame, and the rows that a bounded frame or `lag` can still reach. The state is kept where a group window's is ([Where the state is kept](./windows.md#where-the-state-is-kept)), with the same checkpoints, files and retention. A `ROWS BETWEEN 1000 PRECEDING AND CURRENT ROW` frame keeps up to 1,000 rows' values for each partition. A stream read in another order than its event time, such as with `full_refresh`, keeps every row that it reads until the read ends.
+`OVER` keeps the rows that wait for the watermark, and each partition's frame: the accumulator of an unbounded frame, and the rows that a bounded frame or `lag` can still reach. The state is kept where a group window's is ([Where the state is kept](./windows.md#where-the-state-is-kept)), with the same checkpoints, files and retention. It also uses the same disk cache, and the lanes write it to files early if it passes their part of the job's memory. A `ROWS BETWEEN 1000 PRECEDING AND CURRENT ROW` frame keeps up to 1,000 rows' values for each partition. A stream read in another order than its event time, such as with `full_refresh`, keeps every row that it reads until the read ends.
 
 On [workers](./workers.md#group-windows-on-workers), `OVER` sends each row to the worker that owns its partition's key group, as a group window does. That worker keeps the partition's state and writes its rows.
 

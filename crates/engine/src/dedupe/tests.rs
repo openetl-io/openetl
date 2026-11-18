@@ -115,6 +115,11 @@ struct Run {
     repeats: u64,
     kept: u64,
     forgot: u64,
+    /// The bytes of a lane's changes past which it flushes them early; 0
+    /// for never.
+    flush_at: usize,
+    /// The early flushes of the lanes before a restore.
+    flushes: u64,
 }
 
 impl Run {
@@ -151,7 +156,22 @@ impl Run {
             repeats: 0,
             kept: 0,
             forgot: 0,
+            flush_at: 0,
+            flushes: 0,
         }
+    }
+
+    /// Has each lane flush its changes early past `bytes`.
+    fn flush_at(&mut self, bytes: usize) {
+        self.flush_at = bytes;
+        for l in &mut self.layers {
+            l.set_flush_at(bytes);
+        }
+    }
+
+    /// The early flushes its lanes made, and those before its restores.
+    fn flushes(&self) -> u64 {
+        self.flushes + self.layers.iter().map(Layer::flushes).sum::<u64>()
     }
 
     /// Another attempt restores `snapshots` on `lanes` lanes, with
@@ -167,6 +187,8 @@ impl Run {
     ) -> Run {
         let watermark = self.ops[0].base.watermark;
         let mut run = Run::new(self.sql, retention, bucket, at, lanes, snapshots).await;
+        run.flush_at(self.flush_at);
+        run.flushes = self.flushes();
         run.out = self.out;
         (run.late, run.rejected) = (self.late, self.rejected);
         (run.repeats, run.kept, run.forgot) = (self.repeats, self.kept, self.forgot);
@@ -598,6 +620,7 @@ fn rows(seed: u64, n: usize) -> Vec<Row> {
 
 /// Any arrival order within the watermark's bound, any cut into batches,
 /// barriers whose records carry only pending sets or runs beside them,
+/// early flushes of the set and the waiting rows before barriers,
 /// and restores onto another number of lanes anywhere, write what the
 /// rows give worked out apart: a first-row dedupe, unbounded or with a
 /// retention, each key's first rows, and a latest-row dedupe, with a filter
@@ -612,6 +635,7 @@ async fn what_is_written_doesnt_depend_on_order_barriers_or_lanes() {
         (LATEST_SMALL, None),
     ];
     let (mut compared, mut restores, mut only_pending, mut beside_runs) = (0, 0, 0, 0);
+    let (mut flushes, mut early_beside_pending) = (0, 0);
     let input = rows(7, 300);
     for (sql, retention) in cases {
         for seed in 0..8u64 {
@@ -634,6 +658,12 @@ async fn what_is_written_doesnt_depend_on_order_barriers_or_lanes() {
             });
             let mut lanes = 1 + u32::try_from(next(&mut s) % 4).unwrap();
             let mut run = Run::new(sql, retention, &stores, (1, 1), lanes, &[]).await;
+            // Half the seeds flush a lane's changes early past a KiB, the
+            // set's entries and waiting rows among them, beside pending
+            // sets that the record carries or that pass its share.
+            if seed % 4 >= 2 {
+                run.flush_at(1 << 10);
+            }
             let (mut epoch, mut generation, mut at) = (1, 1, 0);
             while at < shuffled.len() {
                 let n = 1 + usize::try_from(next(&mut s) % 40).unwrap();
@@ -655,6 +685,13 @@ async fn what_is_written_doesnt_depend_on_order_barriers_or_lanes() {
                         (true, true) => beside_runs += 1,
                         _ => {}
                     }
+                    let early = snaps.iter().any(|sn| {
+                        openetl_state::runs::runs(sn)
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|r| r.name.contains(".early"))
+                    });
+                    early_beside_pending += u32::from(early && pending);
                     epoch += 1;
                     if next(&mut s).is_multiple_of(2) {
                         // The attempt dies after the record; another
@@ -670,6 +707,7 @@ async fn what_is_written_doesnt_depend_on_order_barriers_or_lanes() {
             }
             run.advance(i64::MAX).await;
             assert_eq!(run.rejected, 0, "{sql}, seed {seed}");
+            flushes += run.flushes();
             match sql {
                 LATEST | LATEST_SMALL => {
                     let passes: fn(i64) -> bool = match sql {
@@ -705,5 +743,9 @@ async fn what_is_written_doesnt_depend_on_order_barriers_or_lanes() {
     assert!(
         only_pending > 0 && beside_runs > 0,
         "{only_pending} records with only pending sets, {beside_runs} with runs beside them"
+    );
+    assert!(
+        flushes > 0 && early_beside_pending > 0,
+        "{flushes} early flushes, {early_beside_pending} records with early runs beside pending sets"
     );
 }

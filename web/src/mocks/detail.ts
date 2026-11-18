@@ -192,6 +192,7 @@ function windowStats(i: number, commit?: { seconds: bigint; nanos: number }) {
       restoreRequests: { count: i === 0 ? 28n : 0n, bytes: i === 0 ? 57_344n : 0n },
       mergeWriteRequests: { count: 1n, bytes: 262_144n },
       mergeReadRequests: { count: 3n, bytes: 393_216n },
+      diskReads: { count: 212n, bytes: 868_352n },
     },
   ];
 }
