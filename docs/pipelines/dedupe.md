@@ -59,7 +59,7 @@ A row of a key that the dedupe has not kept waits until the watermark passes its
 
 A row of a key that the dedupe keeps, with a time less than the retention after the key's first row, is a repeat. The dedupe drops it as it comes, and does not keep it in state.
 
-A row with a time at or after the key's first row's time plus the retention is not a repeat, even while the key is still kept. It waits for the watermark as a row of a new key does. It is written once the watermark passes its time, as the key's next first row. By then the watermark has passed the end of the retention, so the key is forgotten. For example, with `retention: 10s`, a key whose first row is at 12:00:25 and the watermark at 12:00:30:
+A row with a time at or after the key's first row's time plus the retention is not a repeat, even while the key is still kept. It waits for the watermark as a row of a new key does. By the time the watermark passes its time, the watermark has passed the end of the retention, so the key is forgotten. The earliest such row is then written, as the key's next first row. Each later one is a repeat if its time is less than the retention after that row. For example, with `retention: 10s`, a key whose first row is at 12:00:25 and the watermark at 12:00:30:
 
 | A row of the key at | What the dedupe does |
 |---|---|
@@ -107,11 +107,11 @@ SELECT customer_id, email, plan, updated_at FROM (
 WHERE rn = 1 AND plan <> 'free';
 ```
 
-If a customer's latest row has `plan = 'free'`, and the output has the customer's row, the dedupe writes a delete of the customer's key. The delete has the key's columns, and nulls in the others. `destination.deletes` says how the destination applies it. If the filter cannot evaluate a row, the engine quarantines it with the code `statement`, and the output keeps the row it had.
+If a customer's latest row has `plan = 'free'`, and the output has the customer's row, the dedupe writes a delete of the customer's key. The delete has the key's columns, and nulls in the others, or their type's zero where a column cannot be null. `destination.deletes` says how the destination applies it. If the filter cannot evaluate a row, the engine quarantines it with the code `statement`, and the output keeps the row it had.
 
 ## Rows with the same time
 
-Rows of one key with the same event time go by their record IDs (`_openetl_id`), and rows with one ID by their values. A first-row dedupe keeps the least, and a latest-row dedupe the greatest. The order depends only on the rows, not on the order in which they arrive. So a retry, or a read of the rows again, keeps the same row. If the order of such rows matters to you, give them event times that differ.
+Rows of one key with the same event time go by their record IDs (`_openetl_id`). A first-row dedupe keeps the least, and of rows with one ID, the least by their values. A latest-row dedupe keeps the greatest, and of rows with one ID, the greatest by a 64-bit hash of their values, which is not the order of the values. The order depends only on the rows, not on the order in which they arrive. So a retry, or a read of the rows again, keeps the same row. If the order of such rows matters to you, give them event times that differ.
 
 ## The output
 
