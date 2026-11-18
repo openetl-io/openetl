@@ -49,6 +49,45 @@ func TestAdvertise(t *testing.T) {
 	}
 }
 
+// A free port taken for a worker's engine stays held until it's released,
+// so the next worker on the machine can't be given it as well: two engines
+// told one address, one of which reaches itself as the other. Once
+// released, the engine binds it.
+func TestExchangeAddressesHoldAFreePort(t *testing.T) {
+	listen, advertise, held, err := ExchangeAddresses(t.Context(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held == nil || listen != advertise || !strings.HasPrefix(listen, "127.0.0.1:") {
+		t.Fatalf("listen %q, advertise %q, held %v", listen, advertise, held)
+	}
+	lc := net.ListenConfig{}
+	if l, err := lc.Listen(t.Context(), "tcp", listen); err == nil {
+		_ = l.Close()
+		t.Fatalf("%s is free while it's held", listen)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	l, err := lc.Listen(t.Context(), "tcp", listen)
+	if err != nil {
+		t.Fatalf("%s once released: %v", listen, err)
+	}
+	_ = l.Close()
+
+	// A port given holds nothing.
+	for _, c := range []struct{ listen, advertise, wantListen, wantAdvertise string }{
+		{":7720", "", ":7720", ":7720"},
+		{":7720", "10.0.0.7", ":7720", "10.0.0.7:7720"},
+		{"127.0.0.1:7720", "10.0.0.7:7721", "127.0.0.1:7720", "10.0.0.7:7721"},
+	} {
+		listen, advertise, held, err := ExchangeAddresses(t.Context(), c.listen, c.advertise)
+		if err != nil || held != nil || listen != c.wantListen || advertise != c.wantAdvertise {
+			t.Errorf("%q, %q: got %q, %q, held %v, %v", c.listen, c.advertise, listen, advertise, held, err)
+		}
+	}
+}
+
 type joined struct {
 	w   Worker
 	err error
