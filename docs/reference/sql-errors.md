@@ -111,17 +111,27 @@ The plan also has a problem where a group window's stream is read in a way that 
 | A frame that does not end at the current row | `OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW` |
 | A frame that starts after the current row | `a frame starts before the current row, or at it` |
 | `GROUPS` | `GROUPS frames aren't supported: write ROWS or RANGE` |
+| A `RANGE` offset that is a number, such as `RANGE BETWEEN 5 PRECEDING AND CURRENT ROW`, on a function other than `lag` or `ROW_NUMBER()` | `a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'` |
 | A `RANGE` offset in months | `a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies` |
+| A `RANGE` offset in parts of a microsecond | `a RANGE frame's offset is whole microseconds` |
+| A negative `RANGE` offset, or one that does not fit a 64-bit count of the event time's unit: about 292,000 years of microseconds, or about 292 years of nanoseconds | `a RANGE frame's offset is zero or more, and under 290,000 years` |
+| An event time that is not a timestamp, such as a number | `OVER goes by a timestamp, not Int64`, with the column's type |
 | `lead` | `lead reads rows after the current one, and OVER's frames end at the current row: lag reads the rows before it` |
 | Another function, such as `last_value` | `last_value isn't a function OVER takes: OVER takes sum, count, min, max, avg, lag and first_value, and ROW_NUMBER() … = 1 to deduplicate` |
-| `rank`, `dense_rank`, and `ROW_NUMBER()` compared otherwise than `= 1` | `rank(): transforms don't run updating statements yet (tier 5)` |
+| `rank` | `rank(): transforms don't run updating statements yet (tier 5)` |
+| `dense_rank` | `dense_rank(): transforms don't run updating statements yet (tier 5)` |
+| `ROW_NUMBER()` compared otherwise than `= 1` | `ROW_NUMBER() compared other than = 1, as in a top-N: transforms don't run updating statements yet (tier 5)` |
 | Two `PARTITION BY` or `ORDER BY` in a statement | `a statement's OVER clauses have one PARTITION BY and ORDER BY, by which one operator keeps their state: compute the others in a statement of their own` |
 | A computed `PARTITION BY` column | `OVER partitions by columns of orders, renamed or not: lower(orders.region) is computed` |
+| A `PARTITION BY` that is not deterministic | `random() isn't deterministic, so it can't feed a window's partition` |
 | `PARTITION BY` a list or a struct | `OVER can't partition by tags, of type List(Utf8)` |
 | `DISTINCT` in `count`, `sum` or `avg` | `count(DISTINCT …) isn't supported over a frame` |
 | `IGNORE NULLS` | `first_value(…) IGNORE NULLS isn't supported` |
 | `FILTER` on `lag` or `first_value` | `lag takes no FILTER, which is for aggregates` |
 | `lag`'s offset other than a constant of 1 or more | `lag's offset is a constant whole number, 1 or more` |
+| `lag`'s default other than a constant | `lag's default is a constant, of the value's type` |
+| `sum` or `avg` of a value that is not a number | `there's no sum(Utf8): CAST the argument to a type it takes`, with the function and the value's type |
+| `min`, `max`, `first_value` or `lag` of a list, a struct or a map | `first_value takes a number, text, binary, a boolean, a date, a time, a timestamp or a UUID, not List(Utf8)`, with the function and the value's type |
 | `OVER` over a changelog stream | `cdc is a changelog, and OVER reads appended rows: transforms don't run updating statements yet (tier 5)` |
 | `OVER` and a group window in one statement | `a statement groups by a window or computes OVER, not both: compute OVER in a statement of its own` |
 | `OVER` in a view | `a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view` |

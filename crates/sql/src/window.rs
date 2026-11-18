@@ -761,7 +761,7 @@ fn aggregate(
             check(
                 &a,
                 groupable,
-                "a number, text, binary, a boolean, a date, a time or a timestamp",
+                "a number, text, binary, a boolean, a date, a time, a timestamp or a UUID",
             )?;
             let kind = match name.as_str() {
                 "min" => AggregateKind::Min,
@@ -774,7 +774,7 @@ fn aggregate(
             check(
                 &a,
                 groupable,
-                "a number, text, binary, a boolean, a date, a time or a timestamp",
+                "a number, text, binary, a boolean, a date, a time, a timestamp or a UUID",
             )?;
             (AggregateKind::ApproxDistinct, Some(a))
         }

@@ -249,4 +249,4 @@ GROUP BY region, session
 query error
 SELECT window_start, max(items) AS most FROM baskets GROUP BY tumble(ts, INTERVAL '1 hour')
 ----
-unsupported 1:1 max takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)
+unsupported 1:1 max takes a number, text, binary, a boolean, a date, a time, a timestamp or a UUID, not List(Utf8)
