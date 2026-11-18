@@ -151,3 +151,133 @@ func TestReadSplitsStopsAtTheFirstError(t *testing.T) {
 		t.Fatalf("err %v, want boom", err)
 	}
 }
+
+// A continuous read reads every split of a stream that follows its source,
+// and those they add, however few lanes it has: none of them ends to free
+// one.
+func TestReadSplitsReadsEveryFollowedSplitOfAContinuousRead(t *testing.T) {
+	for name, mode := range map[string]source.SyncMode{"stream": source.Stream, "cdc": source.CDC, "unset": 0} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			req := source.ReadRequest{Continuous: true, Lanes: 2, Streams: []source.ConfiguredStream{
+				{Name: "s", SyncMode: mode, Splits: []source.Split{{ID: "0"}, {ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}}},
+			}}
+			want := 6
+			var mu sync.Mutex
+			started := map[string]bool{}
+			all := make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				done <- source.ReadSplits(ctx, req, &splitLog{state: map[string][]byte{}}, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+					var added []source.Split
+					if sp.ID == "4" {
+						added = []source.Split{{ID: "4a"}}
+					}
+					if err := e.ResumePoint([]byte(sp.ID), added...); err != nil {
+						return err
+					}
+					mu.Lock()
+					started[sp.ID] = true
+					if len(started) == want {
+						close(all)
+					}
+					mu.Unlock()
+					<-ctx.Done()
+					return ctx.Err()
+				})
+			}()
+			select {
+			case <-all:
+			case err := <-done:
+				t.Fatalf("ReadSplits returned %v before reading every split", err)
+			case <-time.After(10 * time.Second):
+				mu.Lock()
+				defer mu.Unlock()
+				t.Fatalf("within 10s, %d of %d splits were read: %v", len(started), want, started)
+			}
+			cancel()
+			if err := <-done; !errors.Is(err, context.Canceled) {
+				t.Fatalf("err %v, want context.Canceled", err)
+			}
+		})
+	}
+}
+
+// Splits that end take turns on the lanes, with those they add: a bounded
+// read's, whatever their streams' modes, and a continuous read's of streams
+// read with FullRefresh or Incremental, beside followed splits, which take
+// no lane.
+func TestReadSplitsReadsSplitsThatEndOnTheLanes(t *testing.T) {
+	splits := []source.Split{{ID: "0"}, {ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}}
+	for name, tc := range map[string]struct {
+		continuous bool
+		mode       source.SyncMode
+	}{
+		"bounded stream":         {mode: source.Stream},
+		"bounded cdc":            {mode: source.CDC},
+		"continuous incremental": {continuous: true, mode: source.Incremental},
+		"continuous full":        {continuous: true, mode: source.FullRefresh},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			req := source.ReadRequest{Continuous: tc.continuous, Lanes: 2, Streams: []source.ConfiguredStream{{Name: "b", SyncMode: tc.mode, Splits: splits}}}
+			if tc.continuous {
+				req.Streams = append(req.Streams, source.ConfiguredStream{Name: "f", SyncMode: source.Stream, Splits: splits})
+			}
+			var mu sync.Mutex
+			reading, most, read, following := 0, 0, 0, 0
+			var once sync.Once
+			ended := make(chan struct{})
+			check := func() {
+				if read == 2*len(splits) && (!tc.continuous || following == len(splits)) {
+					once.Do(func() { close(ended) })
+				}
+			}
+			res := make(chan error, 1)
+			go func() {
+				res <- source.ReadSplits(ctx, req, &splitLog{state: map[string][]byte{}}, func(ctx context.Context, cs source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+					mu.Lock()
+					if cs.Name == "f" {
+						following++
+						check()
+						mu.Unlock()
+						<-ctx.Done()
+						return ctx.Err()
+					}
+					reading++
+					most = max(most, reading)
+					mu.Unlock()
+					time.Sleep(5 * time.Millisecond)
+					var added []source.Split
+					if len(sp.ID) == 1 {
+						added = []source.Split{{ID: sp.ID + "+"}}
+					}
+					mu.Lock()
+					reading--
+					read++
+					check()
+					mu.Unlock()
+					return e.Complete(nil, added...)
+				})
+			}()
+			select {
+			case <-ended:
+			case <-time.After(10 * time.Second):
+				mu.Lock()
+				defer mu.Unlock()
+				t.Fatalf("within 10s, %d splits that end were read, and %d followed splits started", read, following)
+			}
+			if tc.continuous {
+				cancel()
+			}
+			if err := <-res; tc.continuous && !errors.Is(err, context.Canceled) || !tc.continuous && err != nil {
+				t.Fatalf("err %v", err)
+			}
+			if most > 2 {
+				t.Errorf("%d splits that end were read at a time, want at most 2", most)
+			}
+		})
+	}
+}

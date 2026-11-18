@@ -110,6 +110,7 @@ func (r *sourceRun) checks() []Check {
 		Check{"read/complete-at", r.checkCompleteAt},
 		Check{"read/committed", r.checkCommitted},
 		Check{"read/continuous", r.checkContinuous},
+		Check{"read/continuous-splits", r.checkContinuousSplits},
 	)
 }
 
