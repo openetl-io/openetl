@@ -29,11 +29,15 @@ Use `make sim SEEDS=10000` to run more seeds. Use `go test ./test/sim -run 'Test
 
 [`test/e2e`](../../test/e2e) runs the whole stack against Compose services and official connectors. Tests run one at a time.
 
+`TestRunningTotalFromKafkaMatchesDuckDB` runs `OVER` over a bounded Kafka topic, on one pod and on two workers. DuckDB's CLI runs the same query over the same records, written as CSV, and the output must match it row for row. The test finds the CLI through `OPENETL_DUCKDB` or the `PATH`, and skips without it, except on CI. `TestDedupesThroughAKilledEngine` runs a first-row dedupe with a retention and a latest-row dedupe from Kafka into Postgres, and kills the engine once a checkpoint holds their state. Each key's first rows must be written once each within the retention, and again after it.
+
 ### Chaos tests
 
 The chaos suite in `test/e2e` runs randomized pipelines under failures. It kills runners, engines and connectors. It also interrupts API access and injects object-storage failures. The suite checks that each row is written once.
 
 Some runs use group windows over Kafka, on one pod or several workers. These runs kill a worker or the coordinator. Records arrive in event-time order within each partition, so these cases have no late records. The suite compares each window's row with a window model.
+
+`TestChaosDedupe` and `TestChaosOver` run the same faults with a first-row dedupe and with `OVER`. A dedupe's run compares each key's first rows with a model of the retention. An `OVER` run compares each record's row, by its partition and offset, with its key's running count and sum, peers included. `TestChaosChecks` plants a lost and a changed row in each of their outputs, and fails unless the check finds it.
 
 ### Event-time property tests
 

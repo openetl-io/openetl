@@ -206,3 +206,133 @@ CREATE VIEW numbered AS SELECT *, row_number() OVER (PARTITION BY id ORDER BY cr
 INSERT INTO x SELECT * FROM numbered WHERE rn = 1
 ----
 error unsupported 1:35 a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view
+
+# ROW_NUMBER() takes no argument, FILTER or DISTINCT: an argument, with
+# DISTINCT or without, has no row_number to bind to, and FILTER is refused
+# as on lag.
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY row_number(id) OVER (PARTITION BY id ORDER BY created_at) = 1
+----
+error bind 1:1 there's no row_number(Int64): CAST the argument to a type it takes
+
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY row_number() FILTER (WHERE amount > 0) OVER (PARTITION BY id ORDER BY created_at) = 1
+----
+error unsupported 2:9 row_number takes no FILTER, which is for aggregates
+
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY row_number(DISTINCT id) OVER (PARTITION BY id ORDER BY created_at) = 1
+----
+error bind 1:1 there's no row_number(Int64): CAST the argument to a type it takes
+
+# A rank compared = 1 is a later tier's, as ROW_NUMBER() compared
+# otherwise is.
+plan
+INSERT INTO x SELECT id, amount FROM orders
+QUALIFY dense_rank() OVER (PARTITION BY id ORDER BY created_at) = 1
+----
+error later_tier updating 2:9 dense_rank(): transforms don't run updating statements yet (tier 5)
+
+# A dedupe partitions by columns, as OVER does.
+plan
+INSERT INTO x SELECT region, amount FROM orders
+QUALIFY row_number() OVER (PARTITION BY lower(region) ORDER BY created_at) = 1
+----
+error unsupported 2:9 OVER partitions by columns of orders, renamed or not: lower(orders.region) is computed
+
+# The docs' examples, which pin the operators' IDs they show.
+reset
+
+stream events time(created_at)
+  event_id utf8
+  kind utf8
+  amount decimal(12, 2)
+  created_at timestamp
+
+stream profile_changes key(customer_id) time(updated_at)
+  customer_id int64 not null
+  email utf8
+  plan utf8
+  updated_at timestamp
+
+plan
+INSERT INTO events_once
+SELECT event_id, kind, amount, created_at
+FROM events
+QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY created_at) = 1;
+----
+statement 1:1 events_once over
+  inputs events
+  key event_id
+  schema event_id Utf8, kind Utf8, amount Decimal128(12, 2), created_at Timestamp(µs, "UTC")
+  reads events: event_id, kind, amount, created_at
+  dedupe First by created_at on event_id, appends
+  project event_id, kind, amount, created_at
+  need event_id
+  passes event_id -> event_id, kind -> kind, amount -> amount, created_at -> created_at
+  operator dedupe-811f1c1cde3a7c1a
+
+plan
+INSERT INTO latest_profiles
+SELECT customer_id, email, plan, updated_at FROM (
+  SELECT *, row_number() OVER (PARTITION BY customer_id ORDER BY updated_at DESC) AS rn
+  FROM profile_changes
+) AS t
+WHERE rn = 1;
+----
+statement 1:1 latest_profiles over
+  inputs profile_changes
+  key customer_id
+  schema customer_id Int64 not null, email Utf8, plan Utf8, updated_at Timestamp(µs, "UTC")
+  reads profile_changes: customer_id, email, plan, updated_at
+  dedupe Latest by updated_at on customer_id, upserts
+  project customer_id, email, plan, updated_at, rn := UInt64(1)
+  project customer_id, email, plan, updated_at
+  need customer_id
+  passes customer_id -> customer_id, email -> email, plan -> plan, updated_at -> updated_at
+  operator dedupe-efcfcbf11e9e099f
+
+# The end-to-end test's two dedupes over a Kafka topic's own columns.
+stream clicks time(_kafka_timestamp)
+  _kafka_partition int32 not null
+  _kafka_offset int64 not null
+  _kafka_timestamp timestamp not null
+  _kafka_key utf8
+
+plan
+INSERT INTO firsts
+SELECT _kafka_key AS k, _kafka_timestamp AS at, _kafka_partition AS p
+FROM clicks
+QUALIFY row_number() OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) = 1;
+INSERT INTO latest
+SELECT k, at, p FROM (
+  SELECT _kafka_key AS k, _kafka_timestamp AS at, _kafka_partition AS p,
+    row_number() OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp DESC) AS rn
+  FROM clicks
+) AS t
+WHERE rn = 1
+----
+statement 1:1 firsts over
+  inputs clicks
+  key k
+  schema k Utf8, at Timestamp(µs, "UTC") not null, p Int32 not null
+  reads clicks: _kafka_partition, _kafka_timestamp, _kafka_key
+  dedupe First by _kafka_timestamp on _kafka_key, appends
+  project k := clicks._kafka_key, at := clicks._kafka_timestamp, p := clicks._kafka_partition
+  need _kafka_key
+  passes _kafka_partition -> p, _kafka_timestamp -> at, _kafka_key -> k
+  operator dedupe-f455dd00aad99ba4
+statement 5:1 latest over
+  inputs clicks
+  key k
+  schema k Utf8, at Timestamp(µs, "UTC") not null, p Int32 not null
+  reads clicks: _kafka_partition, _kafka_timestamp, _kafka_key
+  dedupe Latest by _kafka_timestamp on _kafka_key, upserts
+  project k := clicks._kafka_key, at := clicks._kafka_timestamp, p := clicks._kafka_partition, rn := UInt64(1)
+  project k, at, p
+  need _kafka_key
+  passes _kafka_partition -> p, _kafka_timestamp -> at, _kafka_key -> k
+  operator dedupe-1d7713df24b41388

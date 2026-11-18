@@ -163,6 +163,52 @@ A changed retention applies to every key that the dedupe keeps, once the new ver
 openetl reset --stream events PIPELINE
 ```
 
+## Try it with Kafka
+
+This walk-through writes each payment of a Kafka topic once, however often a producer sends it within an hour. It writes them to Postgres, continuously. The pipeline is [`examples/kafka-running-total-dedupe.yaml`](../../examples/kafka-running-total-dedupe.yaml). It also has the running count of [Compute running totals with OVER](./over.md#try-it-with-kafka), and that walk-through's first steps make the topics and apply it. Do those steps first.
+
+The record's key is the payment's ID, and the record's timestamp is the stream's `eventTime`. The stream sets the retention to 1 hour:
+
+```yaml
+- name: payments
+  eventTime: _kafka_timestamp
+  dedupe: { retention: 1h }
+```
+
+```sql
+INSERT INTO payments_once
+SELECT _kafka_key AS payment_id, _kafka_partition AS part, _kafka_offset AS payment_offset,
+  _kafka_timestamp AS paid_at
+FROM payments
+QUALIFY row_number() OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) = 1;
+```
+
+1. Send four records, a second apart, of which two repeat a payment:
+
+   ```sh
+   for id in p-1 p-2 p-1 p-1; do echo "$id:{}"; sleep 1; done |
+     kafka-console-producer.sh --bootstrap-server 127.0.0.1:9092 --topic payments \
+       --property parse.key=true --property key.separator=:
+   ```
+
+2. Wait a minute, until the topic's idle partitions move the watermark past the records ([Quiet splits](./windows.md#quiet-splits)).
+3. Read the table:
+
+   ```sh
+   psql "$DSN" -c 'SELECT payment_id, paid_at FROM kafka_sql.payments_once ORDER BY paid_at'
+   ```
+
+   It has two rows: `p-1`, at the time of its first record, and `p-2`. The dedupe dropped the two repeats of `p-1`.
+
+4. Send `p-1` again. It is a repeat for 1 hour of event time after its first record, so the table still has one row of it. A record of `p-1` an hour or more after the first is written again, as the key's next first row.
+
+The keys that the dedupe keeps are in the pipeline's checkpoint. So a repeat that comes after a restart of the pipeline, or after a failure, is dropped too.
+
 ## Watch it
 
-The console's **SQL** tab shows, under **At the last checkpoint**, what the statement did in the last epoch: its watermark, the keys it keeps, the rows it took in and wrote, the repeats it dropped and its late rows. The same numbers are the `openetl.operator.*` metrics ([Monitoring](../self-host/monitoring.md#stateful-operators)): `openetl.operator.rows.repeats` counts the rows a dedupe dropped, and `openetl.operator.windows` the keys it keeps. If `openetl.operator.rows.late` grows, set a longer `watermark.delay`.
+The console's **SQL** tab shows, under **At the last checkpoint**, what the statement did in the last epoch: its watermark, the keys it keeps, the rows it took in and wrote, the repeats it dropped and its late rows. The same numbers are the `openetl.operator.*` metrics ([Monitoring](../self-host/monitoring.md#over-and-dedupe)):
+
+- `openetl.operator.rows.repeats` counts the rows that the dedupe dropped. The rows taken in are the rows written, the repeats, the late rows and the rows that wait for the watermark. A sudden rise in repeats can mean that a producer sends rows again.
+- `openetl.operator.windows` is the keys that the dedupe keeps. With a retention, it levels off at about the keys of one retention. With `unbounded`, or for a latest-row dedupe, it grows with the number of keys, and so does `openetl.operator.state.memory`.
+- `openetl.operator.rows.late` counts late rows that the engine quarantined. If it grows, set a longer `watermark.delay`. A latest-row dedupe has no late rows.
+- `openetl.operator.watermark.lag` is how long a first-row dedupe's rows wait before they are written.

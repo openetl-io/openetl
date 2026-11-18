@@ -109,6 +109,69 @@ Other names for columns, columns that pass through, `QUALIFY` and the order of t
 
 A column that the source adds to the stream keeps the ID too. Rows that waited in state before the change are written with a null in the new column.
 
+## Try it with Kafka
+
+This walk-through gives each page view of a Kafka topic its user's views so far, and the time of the user's view before it. It writes them to Postgres, continuously. The pipeline is [`examples/kafka-running-total-dedupe.yaml`](../../examples/kafka-running-total-dedupe.yaml), which also has the dedupe of [Deduplicate rows with ROW_NUMBER](./dedupe.md#try-it-with-kafka).
+
+Before you start:
+
+- You have a Kafka broker and a Postgres database that the runner can reach, and the Kafka and Postgres connectors are installed. The example uses the development stack's: Kafka at `127.0.0.1:9092`, and the secret `local-postgres-dsn` with the database's DSN. Change the brokers and the secret for your own.
+- The Kafka tools, such as `kafka-topics.sh`, are on your `PATH`. A Kafka container has them in `/opt/kafka/bin`.
+
+The statement reads the record's own columns, which the Kafka source gives every record: `_kafka_key`, `_kafka_partition`, `_kafka_offset` and `_kafka_timestamp`. The key is the user, and the record's timestamp is the stream's `eventTime`:
+
+```sql
+INSERT INTO views_so_far
+SELECT _kafka_key AS user_id, _kafka_partition AS part, _kafka_offset AS view_offset,
+  _kafka_timestamp AS viewed_at,
+  count(*) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS views_so_far,
+  lag(_kafka_timestamp) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS previous_view_at
+FROM page_views;
+```
+
+1. Make the topics, with three partitions each:
+
+   ```sh
+   kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --create --topic page_views --partitions 3
+   kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --create --topic payments --partitions 3
+   ```
+
+2. Plan the pipeline, and check that the `state` section has the statement's `over` operator:
+
+   ```sh
+   openetl plan -f examples/kafka-running-total-dedupe.yaml
+   ```
+
+3. Apply it:
+
+   ```sh
+   openetl apply -f examples/kafka-running-total-dedupe.yaml
+   ```
+
+4. Send five views, each keyed by its user, a second apart. Each record's timestamp is when the producer sends it, so the views have times that differ:
+
+   ```sh
+   for user in alice bob alice alice bob; do echo "$user:{}"; sleep 1; done |
+     kafka-console-producer.sh --bootstrap-server 127.0.0.1:9092 --topic page_views \
+       --property parse.key=true --property key.separator=:
+   ```
+
+5. Wait a minute. A partition that reads no records for 1 minute is idle, and its watermark moves to the current time ([Quiet splits](./windows.md#quiet-splits)). The watermark then passes the views, and the engine writes them.
+6. Read the table:
+
+   ```sh
+   psql "$DSN" -c 'SELECT user_id, viewed_at, views_so_far, previous_view_at FROM kafka_sql.views_so_far ORDER BY user_id, viewed_at'
+   ```
+
+   alice has three rows, with `views_so_far` 1, 2 and 3, and bob has two. Each row's `previous_view_at` is the `viewed_at` of the user's row before it, and null on the user's first row.
+
+Send more views, and each new row's `views_so_far` goes on from the user's last. The running count keeps going through restarts of the pipeline, as its state is in the checkpoint. To build it from the topic's start, reset the stream as [Build the state again](#build-the-state-again) describes.
+
 ## Watch it
 
-The console's **SQL** tab shows, under **At the last checkpoint**, what the statement did in the last epoch: its watermark, the rows it took in and wrote, its late rows and its state's size. The same numbers are the `openetl.operator.*` metrics ([Monitoring](../self-host/monitoring.md#stateful-operators)). If `openetl.operator.rows.late` grows, set a longer `watermark.delay`.
+The console's **SQL** tab shows, under **At the last checkpoint**, what the statement did in the last epoch: its watermark, the rows it took in and wrote, its late rows and its state's size. The same numbers are the `openetl.operator.*` metrics ([Monitoring](../self-host/monitoring.md#over-and-dedupe)):
+
+- `openetl.operator.rows.in` and `openetl.operator.rows.written` grow together. Each row is written once, as an insert, so the rows written trail the rows taken in by the rows that wait for the watermark.
+- `openetl.operator.watermark.lag` is how far the rows that wait are behind the commit. If it grows, a split is behind or quiet, and rows wait longer before they are written.
+- `openetl.operator.rows.late` counts the late rows that the engine quarantined. If it grows, set a longer `watermark.delay`.
+- `openetl.operator.state.memory` grows with the partitions, the bounded frames and the rows that wait. `openetl.operator.windows` is 0 for `OVER`.

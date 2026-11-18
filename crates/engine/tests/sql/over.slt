@@ -356,6 +356,72 @@ FROM orders
 8 4.25 44.496667
 9 1.5 23.375
 
+# RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, written out, is the
+# frame ORDER BY alone gives; mean is avg.
+query IRR
+SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY ts RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total,
+  mean(qty) OVER (PARTITION BY region ORDER BY ts) AS m
+FROM orders
+----
+1 120 3
+10 1002.01 12
+2 133.49 2
+3 46.75 3.5
+4 1002.01 12
+5 140.5 2.6
+6 46.75 3.5
+7 140.49 3.25
+8 133.49 2
+9 46.75 3.5
+
+# lag with an offset and no default, and lag with a frame, which it
+# doesn't take: the row before, all the same.
+onlyif openetl
+query IRI
+SELECT id, lag(amount, 2) OVER (PARTITION BY region ORDER BY ts) AS two_before,
+  lag(qty) OVER (PARTITION BY region ORDER BY ts ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS before
+FROM orders
+----
+1 NULL NULL
+10 NULL 12
+2 NULL 3
+3 NULL NULL
+4 NULL NULL
+5 3.5 7
+6 45.5 5
+7 9.99 2
+8 120 1
+9 NULL 2
+
+onlyif duckdb
+query IRI
+SELECT id, lag(amount, 2) OVER (PARTITION BY region ORDER BY ts, rowid) AS two_before,
+  lag(qty) OVER (PARTITION BY region ORDER BY ts, rowid ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS before
+FROM orders
+----
+1 NULL NULL
+10 NULL 12
+2 NULL 3
+3 NULL NULL
+4 NULL NULL
+5 3.5 7
+6 45.5 5
+7 9.99 2
+8 120 1
+9 NULL 2
+
+# A row a function can't evaluate, as 100 / (qty - 3) where qty is 3, is
+# quarantined, with no place in any frame. A lane quarantines it as it
+# leaves, which these suites show as the record's error. DuckDB divides by
+# zero to NULL.
+query error
+SELECT id, count(*) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS n,
+  sum(100 / (qty - 3)) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS s
+FROM orders
+----
+OVER couldn't give rows: transform.sql 2:1, writing slt_result: Divide by zero error
+
+
 statement ok
 CREATE TABLE baskets (id BIGINT NOT NULL, region TEXT, items TEXT[], ts TIMESTAMPTZ NOT NULL, PRIMARY KEY (id))
 
@@ -416,3 +482,92 @@ query error
 SELECT id, max(items) OVER (PARTITION BY region ORDER BY ts) AS most FROM baskets
 ----
 unsupported 1:12 max takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)
+
+
+statement ok
+CREATE TABLE kinds (id BIGINT NOT NULL, grp TEXT, ok BOOLEAN, day DATE, tm TIME, bin BLOB, stamp TIMESTAMP, ts TIMESTAMPTZ NOT NULL, PRIMARY KEY (id))
+
+onlyif openetl
+statement ok
+ALTER TABLE kinds SET EVENT TIME ts
+
+statement ok
+INSERT INTO kinds VALUES (1, 'a', true, '2024-02-29', '12:00:00', 'b', '2024-02-29 12:00:00', '2024-01-01 00:00:02+00:00'), (2, 'a', false, '1999-12-31', '23:59:59.5', 'ab', '1970-01-01 00:00:00', '2024-01-01 00:00:01+00:00'), (3, 'a', NULL, '2038-01-19', NULL, '', '2026-11-14 08:00:00', '2024-01-01 00:00:03+00:00'), (4, 'b', true, NULL, '00:00:00', NULL, NULL, '2024-01-01 00:00:01+00:00'), (5, 'a', true, '1970-01-01', '06:30:00', 'c', '2024-02-29 12:30:45.123456', '2024-01-01 00:00:03+00:00'), (6, 'b', false, '2000-02-29', '18:00:00', 'a', '1999-12-31 23:59:59', '2024-01-01 00:00:02+00:00')
+
+# min and max of a boolean, a date, a time, binary and a timestamp.
+query ITTTTTT
+SELECT id, min(ok) OVER (PARTITION BY grp ORDER BY ts) AS lo_ok,
+  max(ok) OVER (PARTITION BY grp ORDER BY ts) AS hi_ok,
+  min(day) OVER (PARTITION BY grp ORDER BY ts) AS lo_day,
+  max(tm) OVER (PARTITION BY grp ORDER BY ts) AS hi_tm,
+  min(bin) OVER (PARTITION BY grp ORDER BY ts) AS lo_bin,
+  max(stamp) OVER (PARTITION BY grp ORDER BY ts) AS hi_stamp
+FROM kinds
+----
+1 false true 1999-12-31 23:59:59.500 6162 2024-02-29 12:00:00
+2 false false 1999-12-31 23:59:59.500 6162 1970-01-01 00:00:00
+3 false true 1970-01-01 23:59:59.500 (empty) 2026-11-14 08:00:00
+4 true true NULL 00:00:00 NULL NULL
+5 false true 1970-01-01 23:59:59.500 (empty) 2026-11-14 08:00:00
+6 false true 2000-02-29 18:00:00 61 1999-12-31 23:59:59
+
+# first_value and lag of the same types.
+onlyif openetl
+query ITTTTT
+SELECT id, first_value(day) OVER (PARTITION BY grp ORDER BY ts) AS d,
+  first_value(bin) OVER (PARTITION BY grp ORDER BY ts ROWS 1 PRECEDING) AS b,
+  lag(tm) OVER (PARTITION BY grp ORDER BY ts) AS t,
+  lag(ok, 1, false) OVER (PARTITION BY grp ORDER BY ts) AS o,
+  lag(stamp) OVER (PARTITION BY grp ORDER BY ts) AS s
+FROM kinds
+----
+1 1999-12-31 6162 23:59:59.500 false 1970-01-01 00:00:00
+2 1999-12-31 6162 NULL false NULL
+3 1999-12-31 62 12:00:00 true 2024-02-29 12:00:00
+4 NULL NULL NULL false NULL
+5 1999-12-31 (empty) NULL NULL 2026-11-14 08:00:00
+6 NULL NULL 00:00:00 true NULL
+
+onlyif duckdb
+query ITTTTT
+SELECT id, first_value(day) OVER (PARTITION BY grp ORDER BY ts, rowid) AS d,
+  first_value(bin) OVER (PARTITION BY grp ORDER BY ts, rowid ROWS 1 PRECEDING) AS b,
+  lag(tm) OVER (PARTITION BY grp ORDER BY ts, rowid) AS t,
+  lag(ok, 1, false) OVER (PARTITION BY grp ORDER BY ts, rowid) AS o,
+  lag(stamp) OVER (PARTITION BY grp ORDER BY ts, rowid) AS s
+FROM kinds
+----
+1 1999-12-31 6162 23:59:59.500 false 1970-01-01 00:00:00
+2 1999-12-31 6162 NULL false NULL
+3 1999-12-31 62 12:00:00 true 2024-02-29 12:00:00
+4 NULL NULL NULL false NULL
+5 1999-12-31 (empty) NULL NULL 2026-11-14 08:00:00
+6 NULL NULL 00:00:00 true NULL
+
+statement ok
+CREATE TABLE totals (id BIGINT NOT NULL, k TEXT, n BIGINT, ts TIMESTAMPTZ, PRIMARY KEY (id))
+
+onlyif openetl
+statement ok
+ALTER TABLE totals SET EVENT TIME ts
+
+statement ok
+INSERT INTO totals VALUES (1, 'a', 1, '2024-01-01 00:00:01+00:00'), (2, 'a', 2, NULL), (3, 'a', 3, '2024-01-01 00:00:02+00:00'), (4, 'b', 9223372036854775807, '2024-01-01 00:00:01+00:00'), (5, 'b', 1, '2024-01-01 00:00:02+00:00'), (6, 'b', -10, '2024-01-01 00:00:03+00:00')
+
+# A row whose event time is null is quarantined: it has no place in the
+# order. DuckDB puts it last, so this is ours alone.
+onlyif openetl
+query II
+SELECT id, sum(n) OVER (PARTITION BY k ORDER BY ts) AS s FROM totals WHERE k = 'a'
+----
+1 1
+3 4
+quarantined row 2
+
+# A sum past BIGINT's range can't be given, though the row counts in its
+# partition's frames. A lane quarantines it as it leaves, which these
+# suites show as the record's error. DuckDB sums BIGINTs to a HUGEINT.
+query error
+SELECT id, sum(n) OVER (PARTITION BY k ORDER BY ts) AS s FROM totals WHERE k = 'b'
+----
+OVER couldn't give rows: transform.sql 2:1, writing slt_result: sum overflows BIGINT: CAST its argument AS DECIMAL(38, 0)

@@ -88,7 +88,20 @@ Read the complete error in the failing sync's log rather than only the shortened
 | Schema errors, held columns or quarantined values | Read [Holds and quarantine](./holds-and-quarantine.md) to tell them apart. For a hold, follow [Handle schema changes and holds](./schema-changes.md). |
 | A dbt or Spark post-sync step fails | Fix that step. The sync can fail after its copied data has committed; inspect the step's log and [integration setup](../integrate/index.md). |
 
+For a `SCHEMA_DRIFT` or `RESOURCE_EXHAUSTED` from a group window, `OVER` or a dedupe, see [A stateful SQL statement fails or quarantines rows](#a-stateful-sql-statement-fails-or-quarantines-rows).
+
 For a continuous pipeline, repeated failures without a commit can open a **Crash loop** incident. Investigate its attempts' errors and runner health before resuming. Closing an incident by hand does not repair the failure or resume a paused pipeline.
+
+## A stateful SQL statement fails or quarantines rows
+
+A group window, an `OVER` statement and a dedupe keep state between rows ([Aggregate by windows of time](./windows.md), [Compute running totals with OVER](./over.md), [Deduplicate rows with ROW_NUMBER](./dedupe.md)). Find your case:
+
+| What you see | What it means | What to do |
+|---|---|---|
+| Rows quarantined with the code `late`, and `openetl.operator.rows.late` grows | A row came after the watermark had passed its event time. `OVER` had already written the rows after it, and a first-row dedupe may have written a later row of the key. A group window's row came after the window's lateness. | Set a longer `watermark.delay` on the stream, so rows wait longer for rows that come out of order. For a group window, a longer `watermark.lateness` also works. List the rows with `openetl quarantine --stream OUTPUT PIPELINE`. |
+| A plan problem that ends `sets no dedupe.retention, how long it remembers a key` | A first-row dedupe needs its stream's `dedupe.retention`, which has no default. | Set `source.streams[].dedupe.retention` to a duration longer than the time over which the source can repeat a row, such as `24h`, or to `unbounded`. [Set the retention](./dedupe.md#set-the-retention) explains the choice. |
+| The sync fails with `SCHEMA_DRIFT` and `rows kept in state can't be read as the statement reads them now: column COLUMN changed from TYPE to TYPE` | A column of the stream changed its type, and rows that wait in the state of `OVER` or a dedupe cannot be cast to the new type, such as text that is not a number into an integer. | Change the column back in the source, or reset the stream that the statement reads to start its state again: `openetl reset --stream STREAM PIPELINE`. A reset reads the stream again, so read [Build the state again](./over.md#build-the-state-again) first. |
+| The run fails with `RESOURCE_EXHAUSTED` and `keeps more state in memory than the job's size allows` | The state of the job's statements holds more than half of the job's memory while the engine nears its limit. | Run the pipeline with a larger `resources.size`, or on more workers. For a dedupe, set a shorter `dedupe.retention` than `unbounded`. For `OVER`, a shorter `ROWS` or `RANGE` frame keeps fewer rows. A stream read with `full_refresh` keeps each row that it reads until the read ends, so read it with `incremental` by its event time where the source can. |
 
 ## The pipeline runs but data is stale
 

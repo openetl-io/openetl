@@ -107,21 +107,31 @@ The plan also has a problem where a group window's stream is read in a way that 
 | `ROW_NUMBER()` without `PARTITION BY` | `ROW_NUMBER() … = 1 keeps a row for each key of its PARTITION BY: partition by the columns that identify a row` |
 | A dedupe that doesn't select a `PARTITION BY` column | `a deduplicated output keeps its PARTITION BY columns, which are its primary key: select customer` |
 | `ROW_NUMBER()` and another function `OVER` in a statement | `ROW_NUMBER() … = 1 deduplicates on its own: compute other functions OVER in a statement of their own` |
-| `ROW_NUMBER()` with an argument, `FILTER` or `DISTINCT` | `ROW_NUMBER() takes nothing but OVER (…)` |
+| `ROW_NUMBER()` with an argument, or `DISTINCT` | `there's no row_number(Int64): CAST the argument to a type it takes`, with the argument's type |
+| `ROW_NUMBER()` with `FILTER` | `row_number takes no FILTER, which is for aggregates` |
 | A frame that does not end at the current row | `OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW` |
 | A frame that starts after the current row | `a frame starts before the current row, or at it` |
 | `GROUPS` | `GROUPS frames aren't supported: write ROWS or RANGE` |
-| A `RANGE` offset in months | `a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies` |
+| A `RANGE` offset in months, or a number, such as `RANGE BETWEEN 5 PRECEDING AND CURRENT ROW` | `a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies` |
+| A `RANGE` offset in parts of a microsecond | `a RANGE frame's offset is whole microseconds` |
+| A negative `RANGE` offset, or one of 290,000 years or more | `a RANGE frame's offset is zero or more, and under 290,000 years` |
+| An event time that is not a timestamp, such as a number | `OVER goes by a timestamp, not Int64`, with the column's type |
 | `lead` | `lead reads rows after the current one, and OVER's frames end at the current row: lag reads the rows before it` |
 | Another function, such as `last_value` | `last_value isn't a function OVER takes: OVER takes sum, count, min, max, avg, lag and first_value, and ROW_NUMBER() … = 1 to deduplicate` |
-| `rank`, `dense_rank`, and `ROW_NUMBER()` compared otherwise than `= 1` | `rank(): transforms don't run updating statements yet (tier 5)` |
+| `rank` | `rank(): transforms don't run updating statements yet (tier 5)` |
+| `dense_rank` | `dense_rank(): transforms don't run updating statements yet (tier 5)` |
+| `ROW_NUMBER()` compared otherwise than `= 1` | `ROW_NUMBER() compared other than = 1, as in a top-N: transforms don't run updating statements yet (tier 5)` |
 | Two `PARTITION BY` or `ORDER BY` in a statement | `a statement's OVER clauses have one PARTITION BY and ORDER BY, by which one operator keeps their state: compute the others in a statement of their own` |
 | A computed `PARTITION BY` column | `OVER partitions by columns of orders, renamed or not: lower(orders.region) is computed` |
+| A `PARTITION BY` that is not deterministic | `random() isn't deterministic, so it can't feed a window's partition` |
 | `PARTITION BY` a list or a struct | `OVER can't partition by tags, of type List(Utf8)` |
 | `DISTINCT` in `count`, `sum` or `avg` | `count(DISTINCT …) isn't supported over a frame` |
 | `IGNORE NULLS` | `first_value(…) IGNORE NULLS isn't supported` |
 | `FILTER` on `lag` or `first_value` | `lag takes no FILTER, which is for aggregates` |
 | `lag`'s offset other than a constant of 1 or more | `lag's offset is a constant whole number, 1 or more` |
+| `lag`'s default other than a constant | `lag's default is a constant, of the value's type` |
+| `sum` or `avg` of a value that is not a number | `there's no sum(Utf8): CAST the argument to a type it takes`, with the function and the value's type |
+| `min`, `max` or `first_value` of a list, a struct or a map | `first_value takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)`, with the function and the value's type |
 | `OVER` over a changelog stream | `cdc is a changelog, and OVER reads appended rows: transforms don't run updating statements yet (tier 5)` |
 | `OVER` and a group window in one statement | `a statement groups by a window or computes OVER, not both: compute OVER in a statement of its own` |
 | `OVER` in a view | `a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view` |

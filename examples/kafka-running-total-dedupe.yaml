@@ -1,0 +1,69 @@
+# Two Kafka topics into the compose Postgres, continuously, through SQL:
+# each page view with its user's views so far and the time of the user's
+# view before it, and each payment once, however often a producer sends
+# it within an hour. With `make deps-up` and `make dev` running, and the
+# local-postgres-dsn secret set as faker-to-postgres.yaml says, make the
+# topics and apply:
+#
+#   for t in page_views payments; do
+#     docker compose -f deploy/compose/dev.yml exec kafka /opt/kafka/bin/kafka-topics.sh \
+#       --bootstrap-server localhost:9092 --create --topic $t --partitions 3
+#   done
+#   go run ./cmd/openetl apply -f examples/kafka-running-total-dedupe.yaml
+#
+# Then send records, keyed by the user and by the payment, and read the
+# tables in the kafka_sql schema, as docs/pipelines/over.md and
+# docs/pipelines/dedupe.md show.
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: local-kafka
+spec:
+  connector: kafka
+  config:
+    brokers: ["127.0.0.1:9092"]
+    topics: [page_views, payments]
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: local-postgres-kafka
+spec:
+  connector: postgres
+  config:
+    dsn: { secret: local-postgres-dsn }
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: kafka-running-total-dedupe
+spec:
+  mode: continuous
+  source:
+    ref: local-kafka
+    streams:
+      - name: page_views
+        eventTime: _kafka_timestamp
+      - name: payments
+        eventTime: _kafka_timestamp
+        dedupe: { retention: 1h }
+  destination:
+    ref: local-postgres-kafka
+    namespace: kafka_sql
+  delivery:
+    commit: { interval: 5s }
+  transform:
+    passthrough: none
+    sql: |
+      INSERT INTO views_so_far
+      SELECT _kafka_key AS user_id, _kafka_partition AS part, _kafka_offset AS view_offset,
+        _kafka_timestamp AS viewed_at,
+        count(*) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS views_so_far,
+        lag(_kafka_timestamp) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS previous_view_at
+      FROM page_views;
+
+      INSERT INTO payments_once
+      SELECT _kafka_key AS payment_id, _kafka_partition AS part, _kafka_offset AS payment_offset,
+        _kafka_timestamp AS paid_at
+      FROM payments
+      QUALIFY row_number() OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) = 1;
