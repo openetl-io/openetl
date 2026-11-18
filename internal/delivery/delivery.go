@@ -178,8 +178,8 @@ func PlanStream(caps destination.Capabilities, s Stream, require Level) Plan {
 	switch {
 	case caps.Class == destination.DeliverAndAck:
 		p.Collapse, p.Why = false, "the destination delivers and acknowledges"
-	// A dedupe promises one row a key, and each full read starts with no
-	// keys kept, whatever the replay.
+	// Each full read starts a dedupe with no keys kept, so every sync writes
+	// the rows it keeps again, whatever the replay.
 	case s.Deduped && s.Refreshed && s.Mode == destination.Overwrite:
 		p.Collapse, p.Level = false, ExactlyOnce
 		p.Why = "a dedupe's output read with full_refresh, overwritten with each sync's read, in which it drops every repeat"

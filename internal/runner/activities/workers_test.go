@@ -306,10 +306,17 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 // lines.
 func timedSQLOnWorkers(t *testing.T, sql, output string, dedupe *apiv1.Dedupe) string {
 	t.Helper()
+	d := &apiv1.Delivery{Commit: &apiv1.Commit{MaxBytes: 16 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE}}
+	if dedupe != nil {
+		// events is read only with full_refresh, and lanes only appends, so
+		// a dedupe's output is at least once: the next sync writes every key
+		// again. This one sync writes each once.
+		d.Require = apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE
+	}
 	res, api, _, out, err := onWorkerProcesses(t, &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}}, &apiv1.PipelineSpec{
 		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at", Dedupe: dedupe}}},
 		Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
-		Delivery:  &apiv1.Delivery{Commit: &apiv1.Commit{MaxBytes: 16 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE}},
+		Delivery:  d,
 	})
 	if onePod := (*worker.OnePod)(nil); errors.As(err, &onePod) {
 		t.Fatalf("the job was placed again on one pod: %s", onePod.Why)
