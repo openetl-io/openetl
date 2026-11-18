@@ -924,6 +924,7 @@ fn parse_snapshots(text: &str) -> Vec<Snapshot> {
                 range: KeyGroupRange::new(f[0].parse().unwrap(), f[1].parse().unwrap()),
                 layout: f[2].parse().unwrap(),
                 data: Bytes::from(data),
+                pending: Bytes::new(),
             }
         })
         .collect()

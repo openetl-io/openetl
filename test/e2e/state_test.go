@@ -46,11 +46,21 @@ func stateRuns(rec *checkpoint.Record) []string {
 	return out
 }
 
+// holdsState says whether the record holds state: runs it names, or the
+// lanes' changes since their last runs, which it carries itself.
+func holdsState(rec *checkpoint.Record) bool {
+	if rec == nil {
+		return false
+	}
+	return slices.ContainsFunc(rec.Snapshots, func(s checkpoint.Snapshot) bool { return len(s.Runs) > 0 || len(s.Pending) > 0 })
+}
+
 // A continuous windowed count from Kafka into Postgres keeps its state
 // through the engine's death in the middle of a minute, once a checkpoint
-// names the minute's state: the next attempt restores the windows from the
-// runs its checkpoint names, and the minute's row counts each of its
-// records once, those read before the death and those after.
+// holds the minute's state, which is small enough that the record carries
+// it: the next attempt restores the windows from its checkpoint, and the
+// minute's row counts each of its records once, those read before the
+// death and those after.
 func TestWindowStateOutlivesTheEngine(t *testing.T) {
 	r := startRunner(t)
 	name := unique("window-state")
@@ -89,11 +99,11 @@ func TestWindowStateOutlivesTheEngine(t *testing.T) {
 	})
 
 	// Fed a pair a second of the minute, up to 40 seconds of it, until a
-	// checkpoint names the minute's state; then the runner's engine dies,
+	// checkpoint holds the minute's state; then the runner's engine dies,
 	// with the minute open, as nothing reaches its end yet.
 	var killed *checkpoint.Record
-	eventually(t, 90*time.Second, "a checkpoint that names state", func() bool {
-		if killed = latestRecord(t, name); len(stateRuns(killed)) > 0 {
+	eventually(t, 90*time.Second, "a checkpoint that holds state", func() bool {
+		if killed = latestRecord(t, name); holdsState(killed) {
 			return true
 		}
 		if fed < 40 {
@@ -134,13 +144,13 @@ func TestWindowStateOutlivesTheEngine(t *testing.T) {
 
 	// A later attempt restored the minute's state, which its counts show.
 	// Closed, the minute's state is dead: the latest record names none of
-	// the runs that held it, and names key c's open minute.
+	// the runs that held it, and holds key c's open minute.
 	rec := latestRecord(t, name)
 	if rec.Generation <= killed.Generation {
 		t.Fatalf("the latest record is of generation %d, the killed attempt's %d", rec.Generation, killed.Generation)
 	}
 	before, after := stateRuns(killed), stateRuns(rec)
-	if len(after) == 0 || slices.ContainsFunc(after, func(r string) bool { return slices.Contains(before, r) }) {
-		t.Errorf("generation %d's record names %v, with the closed minute's %v", rec.Generation, after, before)
+	if !holdsState(rec) || slices.ContainsFunc(after, func(r string) bool { return slices.Contains(before, r) }) {
+		t.Errorf("generation %d's record names %v and holds state %t, with the closed minute's %v", rec.Generation, after, holdsState(rec), before)
 	}
 }

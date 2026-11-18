@@ -17,18 +17,26 @@ use bytes::Bytes;
 
 use crate::layer::ENTRY_OVERHEAD;
 use crate::layout;
-use crate::store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
+use crate::store::{BoxFuture, Change, Horizons, PendingLimit, Snapshot, Store, Stores};
 use crate::{Error, KeyGroupRange, LAYOUT, NEVER, Result};
 
 /// Versions by name, shared by every handle of the bucket.
 #[derive(Clone, Default)]
 pub struct MemoryBucket {
     versions: Arc<Mutex<HashMap<String, Arc<Version>>>>,
+    pending: PendingLimit,
 }
 
 impl MemoryBucket {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The bucket, with lanes that carry their pending sets in records
+    /// within `limit`; [`MemoryBucket::new`]'s commit at every barrier.
+    pub fn with_pending(mut self, limit: PendingLimit) -> Self {
+        self.pending = limit;
+        self
     }
 
     /// How many versions it holds.
@@ -117,6 +125,10 @@ impl Stores for MemoryBucket {
             .open_store(generation, range, snapshots)
             .map(|s| Box::new(s) as Box<dyn Store>);
         Box::pin(std::future::ready(store))
+    }
+
+    fn pending_share(&self, range: KeyGroupRange) -> usize {
+        self.pending.share(range)
     }
 }
 
@@ -299,6 +311,7 @@ impl MemoryStore {
             range: self.range,
             layout: LAYOUT,
             data: Bytes::from(name),
+            pending: Bytes::new(),
         }])
     }
 }
@@ -340,6 +353,12 @@ impl Store for MemoryStore {
 
     fn horizons(&self) -> Horizons {
         self.horizons.clone()
+    }
+
+    fn may_hold(&self, key: &[u8]) -> bool {
+        self.index(key)
+            .and_then(|i| self.groups.get(i))
+            .is_some_and(|g| g.map.contains_key(key))
     }
 
     fn commit<'a>(

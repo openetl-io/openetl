@@ -53,6 +53,10 @@ type Options struct {
 	// naming or metadata columns, and rows fail the job. For measuring the
 	// boundary.
 	Passthrough bool
+	// What an epoch's records carry at most of stateful operators' changes
+	// since their last runs, in bytes; 0 writes a run at every barrier that
+	// changed something. Nil: the engine's default. For tests of runs.
+	StatePendingBytes *uint64
 }
 
 const (

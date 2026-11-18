@@ -122,7 +122,7 @@ spec:
 ```
 
 - The source `app-db` offers each table of `app`'s `public` schema as a stream.
-- The destination `warehouse` writes each stream into a table of the same name in its `app` schema, which it creates if it's missing.
+- The destination `warehouse` writes each stream into a table of the same name in its `app` schema, which it creates if it is missing.
 
 The [Postgres connector's page](https://github.com/openetl-io/openetl-connectors/blob/main/postgres/README.md) lists all configuration fields. Apply the file. OpenETL stores both documents and asks a runner to connect to each. It does not start a sync:
 
@@ -140,7 +140,7 @@ This stores the source and destination. It does not start a sync because no pipe
 
 ## 4. Check both connections
 
-The apply has already asked a runner to connect to each database, and says so with `checked`, or with a warning if one can't. What's applied stands either way. To ask again, which is how you confirm a fix:
+The apply has already asked a runner to connect to each database, and says so with `checked`, or with a warning if one cannot. What is applied stands either way. To ask again, which is how you confirm a fix:
 
 ```sh
 openetl check source app-db
@@ -221,7 +221,7 @@ spec:
 ```
 
 - `schedule` starts a sync every hour. [Schedules](./schedules.md) covers cron expressions and time zones.
-- `streams` lists the tables to copy, so `countries` isn't copied. Without `streams`, the pipeline copies every stream the source offers.
+- `streams` lists the tables to copy, so `countries` is not copied. Without `streams`, the pipeline copies every stream the source offers.
 - `customers` is read whole on every sync (`full_refresh`).
 - `orders` uses `incremental` reads with the `updated_at` cursor. Each sync reads values at or above the highest cursor value from the previous sync. Your application must set `updated_at` on every change. Null cursor values and deleted rows are not read. To capture deletes, use `cdc` as described in the Postgres connector documentation.
 - `write: merge` keeps one row per primary key in the destination, the latest version of the source's row.
@@ -257,7 +257,7 @@ workspaces/default/pipelines/app-db-to-warehouse (version 1e56f1b4d3be)
     orders     split by id -> writer, needs id
 ```
 
-The plan leaves the source and destination unchanged and creates the pipeline. It lists each stream's write mode, [delivery guarantee](./delivery.md) and reason. The `partitioning` section shows that the source splits both tables by their primary key, so no rows move between lanes on the way to the destination. [Partitioning in the plan](./index.md#partitioning-in-the-plan) explains it. A guarantee below `delivery.require` appears under `problems`. Such a problem prevents `openetl apply` from applying the file.
+The plan leaves the source and destination unchanged and creates the pipeline. It lists each stream's write mode, [delivery guarantee](./delivery.md) and reason. The `partitioning` section shows that the source splits both tables by their primary key, so no rows move between lanes on the way to the destination. [Partitioning in the plan](./plan-and-apply.md#partitioning-in-the-plan) explains it. A guarantee below `delivery.require` appears under `problems`. Such a problem prevents `openetl apply` from applying the file.
 
 ## 8. Apply
 
@@ -349,7 +349,7 @@ openetl sync app-db-to-warehouse
 started a sync of workspaces/default/pipelines/app-db-to-warehouse
 ```
 
-Once it's done, list the syncs again:
+Once it is done, list the syncs again:
 
 ```sh
 openetl syncs app-db-to-warehouse

@@ -51,11 +51,11 @@ use object_store::{GetOptions, ObjectStore, PutMode, PutOptions};
 use twox_hash::XxHash3_128;
 
 use crate::layout::{self, SectionKind};
-use crate::store::{BoxFuture, Change, Horizons, Snapshot, Store, Stores};
+use crate::store::{BoxFuture, Change, Horizons, PendingLimit, Snapshot, Store, Stores};
 use crate::{Error, KeyGroupRange, LAYOUT, NEVER, OperatorId, Result};
 
 mod cache;
-mod codec;
+pub(crate) mod codec;
 mod filter;
 mod format;
 mod handle;
@@ -409,6 +409,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone)]
 pub struct RunStores {
     shared: Arc<Shared>,
+    pending: PendingLimit,
 }
 
 impl RunStores {
@@ -424,7 +425,17 @@ impl RunStores {
                 learn_peak: AtomicU64::new(0),
                 merging: AtomicU64::new(0),
             }),
+            pending: PendingLimit::default(),
         }
+    }
+
+    /// The stores, with lanes that carry their pending sets in records
+    /// within `limit`, and write a run only once a lane's passes its share;
+    /// [`RunStores::new`]'s write one at every barrier that changed
+    /// something.
+    pub fn with_pending(mut self, limit: PendingLimit) -> Self {
+        self.pending = limit;
+        self
     }
 
     pub fn counts(&self) -> Counts {
@@ -600,6 +611,10 @@ impl Stores for RunStores {
             .open_store(generation, range, snapshots)
             .map(|s| Box::new(s) as Box<dyn Store>);
         Box::pin(std::future::ready(store))
+    }
+
+    fn pending_share(&self, range: KeyGroupRange) -> usize {
+        self.pending.share(range)
     }
 }
 
@@ -1824,6 +1839,7 @@ impl RunStore {
             range: self.range,
             layout: LAYOUT,
             data: handle::encode_named(&named),
+            pending: Bytes::new(),
         }
     }
 }
@@ -1860,6 +1876,10 @@ impl Store for RunStore {
 
     fn horizons(&self) -> Horizons {
         self.horizons.clone()
+    }
+
+    fn may_hold(&self, key: &[u8]) -> bool {
+        RunStore::may_hold(self, key)
     }
 
     fn commit<'a>(

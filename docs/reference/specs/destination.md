@@ -3,7 +3,7 @@ title: Destination
 description: Every field of a Destination document, which names the connector a pipeline writes with and holds its config.
 ---
 
-A `Destination` is a system pipelines write to: a connector, and that connector's config. Pipelines name it in `destination.ref`. [Pipelines as code](../../pipelines/index.md#the-documents) shows how the documents fit together.
+A `Destination` is a system pipelines write to: a connector, and that connector's config. Pipelines name it in `destination.ref`. [Pipelines as code](../../pipelines/define-pipeline.md#the-documents) shows how the documents fit together.
 
 The **Required** column applies within the containing object or list entry. Optional objects may be omitted; when you include one, its required children must be set. Conditional requirements are stated in the table. **Default** describes what omission means.
 
@@ -28,7 +28,7 @@ spec:
 | `metadata.workspace` | name | No | The workspace `openetl apply --workspace` names, `default` unless it says | The workspace it belongs to |
 | `spec` | object | Yes | — | The fields below |
 
-A field the document doesn't have is refused.
+A field the document does not have is refused.
 
 ## spec
 

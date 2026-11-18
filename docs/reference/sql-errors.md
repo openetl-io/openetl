@@ -1,0 +1,112 @@
+---
+title: SQL restrictions and errors
+description: Look up refused SQL statements, clauses, names and stream operations.
+---
+
+Use this reference when a SQL transform fails to plan or evaluate.
+
+## What's refused
+
+The engine plans the statements when `openetl plan` or `openetl apply` checks a pipeline, and again when each sync or continuous job starts. A statement it refuses is a problem in the plan, written as `transform.sql:LINE:COLUMN: MESSAGE`, and `openetl apply` refuses the pipeline:
+
+```text
+  problems:
+    transform.sql:16:18: there's no column mail; there are id, email, name, country, updated_at
+```
+
+If a sync or a continuous pipeline's job starts with statements that the engine refuses, it fails with `CONFIG_INVALID`, and its error has the same messages.
+
+### Statements of other kinds
+
+These are refused, each at the place it is written. The message says what was found.
+
+| What | Message |
+|---|---|
+| `OVER`, in the `SELECT` list or in `QUALIFY`, with window functions such as `sum()`, `lag()` or `row_number()` | `OVER: transforms don't run window functions yet (tier 3)`. That is the message for a statement tier 3 takes. One it does not take gives a message that says why, at the place it is written: a window function, frame or `OVER` clause outside tier 3, a stream with no event time, or `row_number()` that is not compared with `= 1`. For example, `rank(): transforms don't run updating statements yet (tier 5)` |
+| A window function without `OVER` | `rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)` |
+| `JOIN` | `a join: transforms don't run joins yet (tier 4)` |
+| Two relations in `FROM` | `reading two relations: transforms don't run joins yet (tier 4)` |
+| A subquery in an expression, such as `IN (SELECT …)` or `EXISTS (…)` | `a subquery: transforms don't run joins yet (tier 4)` |
+| `GROUP BY` without a window | `GROUP BY without a window: transforms don't run updating statements yet (tier 5)` |
+| An aggregate, such as `count(*)` or `sum(x)`, without a window | `an aggregate without a window: transforms don't run updating statements yet (tier 5)` |
+| `HAVING` without a window | `HAVING without a window: transforms don't run updating statements yet (tier 5)` |
+| `DISTINCT`, `DISTINCT ON` | `DISTINCT: transforms don't run updating statements yet (tier 5)` |
+| A function that is not in [the list](./sql-functions.md#functions), such as a user-defined function | `my_udf isn't a function transforms can call` |
+
+A view of one of these kinds is refused too, where the view is defined.
+
+### Clauses and statements
+
+| What | Message |
+|---|---|
+| `ORDER BY` | `a stream has no order, so ORDER BY is refused` |
+| `LIMIT`, `OFFSET` | `a stream has no end, so LIMIT and OFFSET are refused` |
+| `FETCH` | `a stream has no end, so FETCH is refused` |
+| `UNION`, `INTERSECT`, `EXCEPT` | `UNION, INTERSECT and EXCEPT aren't supported` |
+| `WITH` | `WITH isn't supported: name the query with CREATE VIEW, before the statements that read it` |
+| `SELECT` without `FROM` | `a SELECT reads a stream or a view: it needs a FROM` |
+| `VALUES` | `a statement reads a stream or a view, not VALUES` |
+| `UNNEST` in `FROM` | `UNNEST goes in the SELECT list: SELECT unnest(list) AS item FROM …` |
+| `INSERT INTO x (a, b) …` | `INSERT INTO takes an output's name and a SELECT, without a list of columns: the SELECT names the output's columns` |
+| A computed column without `AS` | `name this column: lower(region) AS name` |
+| A `SELECT` on its own | `a SELECT on its own writes nothing: write INSERT INTO output SELECT …, or name it with CREATE VIEW` |
+| Other statements, such as `UPDATE`, `DELETE` or `CREATE TABLE` | `a transform's statements are INSERT INTO … SELECT and CREATE VIEW … AS SELECT, not DELETE FROM` |
+| No `INSERT INTO` | `a transform writes at least one output, with INSERT INTO … SELECT` |
+| A view more than 32 views deep | `view v32 is 33 views deep, counting each view it reads through: views go at most 32 deep; read a view nearer the stream, or merge views into one` |
+
+### Names and columns
+
+| What | Message |
+|---|---|
+| A stream or view that is not there | `there's no stream or view nope` |
+| `FROM` an output | `cleaned is an output, and FROM reads a source's stream or a view: name the SELECT that writes it with CREATE VIEW, and read that` |
+| Two statements that write one output | `x is written by an earlier statement: one statement writes each output` |
+| A view read before it is defined | `view later is defined after this statement: define a view before the statements that read it` |
+| A column that is not there | `there's no column nope; there are id, region, amount, created_at` |
+| A quoted column in another case | `there's no column "employee_id": a quoted name matches exactly, so write "EMPLOYEE_ID", or the name unquoted` |
+| A name that fits two columns or streams | `id fits the columns "id" and "ID", which differ only by case: quote the name to pick one` |
+| A column name used twice | `there's already a column id: give this one another name with AS` |
+| Types that do not combine | `expressions have incompatible types (has type Utf8; has type Int64)` |
+| A type an output cannot hold | `column nothing is Null, which an output can't hold: CAST it to a type it can` |
+
+### Group windows
+
+| What | Message |
+|---|---|
+| A stream without an event time | `orders has no event time, which a group window goes by: set eventTime on the stream in source.streams` |
+| A window over another column | `tumble goes by the event time of logins, at: write tumble("at", …)` |
+| A window outside `GROUP BY` | `tumble is a group window, which goes in GROUP BY: select window_start and window_end for its bounds` |
+| `window_start` or `window_end` in `WHERE` | `window_start is a window's bound, and WHERE runs before rows are grouped: compare it in HAVING` |
+| Two windows | `a group window groups by one window: tumble, hop or session` |
+| `ROLLUP`, `CUBE`, `GROUPING SETS` | `a group window groups by its window and columns, without ROLLUP, CUBE or GROUPING SETS` |
+| A computed group key | `a group window groups by columns of orders, renamed or not, beside its window: lower(orders.region) is computed` |
+| A group key of a list or a struct | `a group window can't group by tags, of type List(Utf8)` |
+| A size in months | `tumble's sizes are in days, hours, minutes or seconds, as a month's length varies` |
+| A size of zero or less | `tumble's sizes are more than zero, and under 290,000 years` |
+| A hop's slide larger than its size | `hop's slide is at most its size, so every row is in a window: hop(time, slide, size)` |
+| A hop with more than 1,000 windows a row | `hop puts each row in at most 1000 windows: its size over its slide is more` |
+| An aggregate it does not run, such as `stddev` | `stddev isn't an aggregate transforms run: a group window takes count, sum, min, max, avg, approx_distinct, median and percentile_cont` |
+| `DISTINCT` in an aggregate | `count(DISTINCT …) isn't supported: approx_distinct(x) estimates how many distinct values x has` |
+| An output without `window_start` | `a group window's output keeps window_start, which with its group keys is its primary key: select window_start` |
+| An output without a group key | `a group window's output keeps its group keys, which with window_start are its primary key: select region` |
+| The window itself in the `SELECT` list | `select a window's bounds as window_start and window_end, not the window` |
+| A group window in a view | `a view is row-wise, so it can't group by a window: group in the INSERT INTO … SELECT that reads the view` |
+| A group window in a subquery | `a group window is in the statement's own SELECT, not in a subquery's` |
+| A group window over a changelog stream | `changes is a changelog, and a group window groups appended rows: transforms don't run updating statements yet (tier 5)` |
+
+The plan also has a problem where a group window's stream is read in a way that the window cannot take ([Reads](./sql-windows.md#reads)), and where a stream sets `watermark.lateness` and the window's output is not merged.
+
+### Changelog streams
+
+| What | Message |
+|---|---|
+| A statement that drops a key column | `cdc is a changelog, so what reads it keeps its key (id) unchanged, renamed or not; this drops it` |
+| A statement that changes a key column, such as `id + 1` or a cast | `… keeps its key (id) unchanged, renamed or not; this changes it` |
+| `unnest` | `… keeps its key (id) unchanged, renamed or not; this multiplies the rows of it` |
+| `WHERE` on a changelog stream without a primary key | `log is a changelog without a primary key, so WHERE is refused, as a row that fails it has no key to delete it by: give the stream a primary key at its source, or read it with full_refresh or incremental in a scheduled pipeline` |
+
+### When rows run
+
+A statement that plans can still fail on a row. Examples are a cast of a value that does not convert, and an integer divided by zero. The engine quarantines such a row, and writes the rest of the batch. The [Pipeline reference](./specs/pipeline.md#statements-that-run) says where quarantined rows go, and what a change to a stream's schema does to the statements that read it. [Quarantine files](./quarantine-files.md) gives the format of their lines, and the code of each failure.
+
+The settings that streams can and cannot have beside `transform.sql` are in the [Pipeline reference](./specs/pipeline.md#transforms).

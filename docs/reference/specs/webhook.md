@@ -3,7 +3,7 @@ title: Webhook
 description: Every field of a Webhook document, including required signing secrets and optional pipeline filters.
 ---
 
-A `Webhook` sends selected platform events to your HTTP endpoint. It belongs to a workspace. [Events and webhooks](../../integrate/index.md#events-and-webhooks) covers resource setup. [Receive and verify webhooks](../../integrate/webhooks.md) covers signatures, retries and key rotation.
+A `Webhook` sends selected platform events to your HTTP endpoint. It belongs to a workspace. [Events and webhooks](../../integrate/webhooks.md#events-and-webhooks) covers resource setup. [Receive and verify webhooks](../../integrate/webhooks.md) covers signatures, retries and key rotation.
 
 ## The document
 
@@ -15,7 +15,7 @@ A `Webhook` sends selected platform events to your HTTP endpoint. It belongs to 
 | `metadata.workspace` | name | No | The CLI's `--workspace`, otherwise `default` | The workspace the resource belongs to |
 | `spec` | object | Yes | — | The fields below |
 
-Fields that aren't listed are refused. **Required** applies within the containing object; an optional object may be omitted, but its required children must be set when you include it. **Default** describes what omission means.
+Fields that are not listed are refused. **Required** applies within the containing object; an optional object may be omitted, but its required children must be set when you include it. **Default** describes what omission means.
 
 ## spec
 

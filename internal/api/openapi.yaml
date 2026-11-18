@@ -5042,6 +5042,11 @@ components:
                          the epoch next to it, as a read can.
                 mergeReadRequests:
                     $ref: '#/components/schemas/StateRequests'
+                checkpointBytes:
+                    type: string
+                    description: |-
+                        The bytes of its state that the checkpoint record itself carries: what
+                         its lanes changed since each last wrote its state to object storage.
             description: |-
                 OperatorStats is what a stateful operator of a SQL transform did in an
                  epoch, on every lane of every worker, and held at the epoch's barrier.
