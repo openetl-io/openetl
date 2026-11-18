@@ -829,8 +829,12 @@ func TestALateWorkerHoldsByTheRecordedSchema(t *testing.T) {
 		switch {
 		case (chunk == 2 || split == 1 && chunk == 1) && (!isHeld || r.cols["x"] != "null"):
 			t.Errorf("row %d of split %d's chunk %d isn't held: %v", id, split, chunk, r.cols)
-		case chunk == 0 && r.cols["x"] != strconv.FormatInt(id, 10):
-			t.Errorf("row %d of split %d's chunk 0: %v", id, split, r.cols)
+		// Split 0's chunk 0 comes before any hold; the other rows with x
+		// as an integer may come after it.
+		case split == 0 && chunk == 0 && isHeld,
+			!isHeld && r.cols["x"] != strconv.FormatInt(id, 10),
+			isHeld && r.cols["x"] != "null":
+			t.Errorf("row %d of split %d's chunk %d: %v", id, split, chunk, r.cols)
 		}
 		if isHeld {
 			held++
