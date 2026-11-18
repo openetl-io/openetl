@@ -499,14 +499,40 @@ func joinLanes(ctx context.Context, from <-chan Frame, to chan<- Frame, keeps []
 }
 
 // replay reads each of reads again, as many at once as the job has lanes,
-// and sends what each emits up to its position on lane 0 of out.
+// and sends what each emits up to its position on lane 0 of out. Those of
+// streams read with CDC are read one after another, as the source reads
+// their changes from one log, which one read holds.
 func (j *Job) replay(ctx context.Context, n uint64, reads []redoRead, out chan<- Frame) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(j.lanes())
+	var changes, others []redoRead
 	for _, r := range reads {
+		if j.readsChanges(r.stream) {
+			changes = append(changes, r)
+		} else {
+			others = append(others, r)
+		}
+	}
+	if len(changes) > 0 {
+		g.Go(func() error {
+			for _, r := range changes {
+				if err := j.replaySplit(gctx, n, r, out); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+	for _, r := range others {
 		g.Go(func() error { return j.replaySplit(gctx, n, r, out) })
 	}
 	return g.Wait()
+}
+
+// readsChanges says whether the job reads stream with CDC.
+func (j *Job) readsChanges(stream string) bool {
+	k := slices.IndexFunc(j.Streams, func(s Stream) bool { return s.Name == stream })
+	return k >= 0 && j.Streams[k].Read == source.CDC
 }
 
 // replaySplit reads one split again from where its part of epoch n began,
@@ -704,9 +730,12 @@ func (s redoSplit) Complete(next []byte, _ ...source.Split) error {
 	return nil
 }
 
-// settleGroups spreads rec's committables over n workers, those that hold
-// rows of one split on one worker, which reads it again for each in turn.
-func settleGroups(rec *checkpoint.Record, n int) [][]uint32 {
+// settleGroups spreads rec's committables over n workers. Those that hold
+// rows of one split go on one worker, which reads it again for each in
+// turn, and so do all those that hold rows of a stream that changes says
+// is read with CDC: the source reads their changes from one log, which one
+// read holds.
+func settleGroups(rec *checkpoint.Record, n int, changes func(stream string) bool) [][]uint32 {
 	parent := make([]int, len(rec.Committables))
 	for i := range parent {
 		parent[i] = i
@@ -719,8 +748,15 @@ func settleGroups(rec *checkpoint.Record, n int) [][]uint32 {
 		return parent[i]
 	}
 	first := map[checkpoint.SplitRef]int{}
+	cdc := -1
 	for i, c := range rec.Coverage {
 		for _, s := range c.Splits {
+			if changes(s.Stream) {
+				if cdc < 0 {
+					cdc = i
+				}
+				parent[find(i)] = find(cdc)
+			}
 			ref := checkpoint.SplitRef{Stream: s.Stream, ID: s.ID}
 			if j, ok := first[ref]; ok {
 				parent[find(i)] = find(j)
