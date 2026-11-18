@@ -356,6 +356,12 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 		return errs.New(errs.CheckpointCorrupt, "runner: writer lane %d's part of epoch %d is redone from the state its SQL had at the epoch's start, and the checkpoint before it, %d-g%d, can't be read",
 			i, rec.Epoch, rec.Previous.Epoch, rec.Previous.Generation)
 	}
+	// A release in the epoch can leave rec holding nothing: only the record
+	// before says the epoch held.
+	if before == nil && rec.Previous != nil && slices.ContainsFunc(j.sinkStreams(), j.holdsOn) {
+		return errs.New(errs.CheckpointCorrupt, "runner: writer lane %d's part of epoch %d is redone only if the checkpoint before it, %d-g%d, says the streams held nothing at the epoch's start, and it can't be read",
+			i, rec.Epoch, rec.Previous.Epoch, rec.Previous.Generation)
+	}
 	if name, ok := heldIn(rec, before); ok {
 		return errs.New(errs.Internal, "runner: %q held columns or cells in epoch %d, and a redo of writer lane %d's part doesn't hold what the epoch held: a job whose streams hold runs on one pod into a destination whose writer lanes commit on their own", name, rec.Epoch, i)
 	}

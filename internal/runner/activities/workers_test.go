@@ -501,10 +501,12 @@ func timedCounts() map[int64]int {
 	return out
 }
 
-// A Spark or Flink transform's attempt placed on workers goes back to one
-// pod before its transform is set up: this runner, which can run neither,
-// would fail at that setup.
-func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
+// placedOnWorkers runs a sync attempt of pipeline placed on 2 workers,
+// from faker into the destination connector this test binary serves as
+// as, named dest, which writes nothing: it gives the API the attempt ran
+// against, and how the attempt ended.
+func placedOnWorkers(t *testing.T, as, dest string, pipeline *apiv1.PipelineSpec) (*workersAPI, error) {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -516,8 +518,8 @@ func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	script := fmt.Sprintf("#!/bin/sh\n%s=connector exec %q -test.run='^$'\n", processEnv, exe)
-	if err := os.WriteFile(filepath.Join(connectors, "destination-lanes"), []byte(script), 0o700); err != nil {
+	script := fmt.Sprintf("#!/bin/sh\n%s=%s exec %q -test.run='^$'\n", processEnv, as, exe)
+	if err := os.WriteFile(filepath.Join(connectors, "destination-"+dest), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	dst, err := structpb.NewStruct(map[string]any{"dir": filepath.Join(dir, "out")})
@@ -528,26 +530,34 @@ func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	api := &workersAPI{spec: &dataplanev1.GetSyncSpecResponse{
+		OrgId: "org", PipelineId: "p", Version: "v1",
+		Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: &structpb.Struct{}},
+		Destination: &apiv1.ConnectorConfig{Connector: dest, Config: dst},
+		Pipeline:    pipeline,
+	}}
+	mux := http.NewServeMux()
+	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	s := &Sync{
+		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), Checkpoints: checkpoints, Storage: store,
+		Connectors: connectorhost.Env{Connectors: connectors},
+	}
+	wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: 2, Size: resources.S, Received: time.Now()}, nil)
+	_, err = s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
+	return api, err
+}
+
+// A Spark or Flink transform's attempt placed on workers goes back to one
+// pod before its transform is set up: this runner, which can run neither,
+// would fail at that setup.
+func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
 	for name, tr := range map[string]*apiv1.Transform{
 		"spark": {Engine: &apiv1.Transform_Spark{Spark: &apiv1.SparkTransform{Cluster: "c"}}},
 		"flink": {Engine: &apiv1.Transform_Flink{Flink: &apiv1.FlinkTransform{Cluster: "c"}}},
 	} {
-		api := &workersAPI{spec: &dataplanev1.GetSyncSpecResponse{
-			OrgId: "org", PipelineId: "p", Version: "v1",
-			Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: &structpb.Struct{}},
-			Destination: &apiv1.ConnectorConfig{Connector: "lanes", Config: dst},
-			Pipeline:    &apiv1.PipelineSpec{Transform: tr},
-		}}
-		mux := http.NewServeMux()
-		mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
-		srv := httptest.NewServer(mux)
-		s := &Sync{
-			API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), Checkpoints: checkpoints, Storage: store,
-			Connectors: connectorhost.Env{Connectors: connectors},
-		}
-		wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: 2, Size: resources.S, Received: time.Now()}, nil)
-		_, err := s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
-		srv.Close()
+		_, err := placedOnWorkers(t, "connector", "lanes", &apiv1.PipelineSpec{Transform: tr})
 		var onePod *worker.OnePod
 		if !errors.As(err, &onePod) || onePod.Why != "a Spark or Flink transform runs on one pod" {
 			t.Errorf("%s: %v", name, err)
@@ -574,45 +584,7 @@ var heldLaneCommits = sdk.Connector{
 // opened: a redo of a lost writer lane's part of an epoch doesn't hold what
 // the epoch held.
 func TestHoldsIntoLaneCommitsGoToOnePod(t *testing.T) {
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	connectors, store := filepath.Join(dir, "connectors"), filepath.Join(dir, "store")
-	for _, d := range []string{connectors, store} {
-		if err := os.MkdirAll(d, 0o750); err != nil {
-			t.Fatal(err)
-		}
-	}
-	script := fmt.Sprintf("#!/bin/sh\n%s=heldlanes exec %q -test.run='^$'\n", processEnv, exe)
-	if err := os.WriteFile(filepath.Join(connectors, "destination-heldlanes"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	dst, err := structpb.NewStruct(map[string]any{"dir": filepath.Join(dir, "out")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoints, err := checkpoint.NewFSStore(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	api := &workersAPI{spec: &dataplanev1.GetSyncSpecResponse{
-		OrgId: "org", PipelineId: "p", Version: "v1",
-		Source:      &apiv1.ConnectorConfig{Connector: "faker", Config: &structpb.Struct{}},
-		Destination: &apiv1.ConnectorConfig{Connector: "heldlanes", Config: dst},
-		Pipeline:    &apiv1.PipelineSpec{},
-	}}
-	mux := http.NewServeMux()
-	mux.Handle(dataplanev1connect.NewDataPlaneServiceHandler(api))
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-	s := &Sync{
-		API: dataplanev1connect.NewDataPlaneServiceClient(srv.Client(), srv.URL), Checkpoints: checkpoints, Storage: store,
-		Connectors: connectorhost.Env{Connectors: connectors},
-	}
-	wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: 2, Size: resources.S, Received: time.Now()}, nil)
-	_, err = s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
+	api, err := placedOnWorkers(t, "heldlanes", "heldlanes", &apiv1.PipelineSpec{})
 	var onePod *worker.OnePod
 	if !errors.As(err, &onePod) || onePod.Why != "a stream that can hold columns runs on one pod into a destination whose writer lanes commit on their own" {
 		t.Fatalf("on 2 workers: %v", err)

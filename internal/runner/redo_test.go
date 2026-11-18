@@ -648,14 +648,9 @@ func TestARedoOfAnEpochThatHeldIsRefused(t *testing.T) {
 		t.Run(fmt.Sprintf("workers=%d", n), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 			defer cancel()
-			s := newTxnStore(t)
-			p := txnPool(t, s, ranges(6, 100, 5))
-			store := checkpoint.NewMemStore()
-			p.log = checkpoint.NewLog(store, "org", "p")
-			p.change = func(j *runner.Job) { j.Streams[0].PrimaryKey = []string{"id"} }
-			head := p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+			s, p, store, head := loseKeyed(t)
 			// As a record of an epoch that held x would have it.
-			key := fmt.Sprintf("org/p/_checkpoints/%020d-g%020d.json", head.Epoch, head.Generation)
+			key := recordKey(head.Ref())
 			b, v, err := store.Get(ctx, key)
 			if err != nil {
 				t.Fatal(err)
@@ -677,12 +672,57 @@ func TestARedoOfAnEpochThatHeldIsRefused(t *testing.T) {
 			if errs.CodeOf(err) != errs.Internal || !strings.Contains(fmt.Sprint(err), `"s" held columns or cells in epoch`) {
 				t.Fatalf("the attempt ended with %v (%s)", err, errs.CodeOf(err))
 			}
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			if s.marked[laneMark{head.Generation, head.Epoch, 0}] {
-				t.Error("lane 0 was committed")
-			}
+			lane0Uncommitted(t, s, head)
 		})
+	}
+}
+
+// A release in an epoch can leave its record holding nothing, so where the
+// streams can hold, an epoch whose checkpoint before can't be read isn't
+// redone. The job runs on one pod, as one whose streams hold does.
+func TestARedoWithoutTheRecordBeforeIsRefusedWhereStreamsHold(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	s, p, store, head := loseKeyed(t)
+	if head.Previous == nil {
+		t.Fatalf("epoch %d is the log's first", head.Epoch)
+	}
+	if err := store.Delete(ctx, recordKey(*head.Previous)); err != nil {
+		t.Fatal(err)
+	}
+	j := p.job("a2", p.source(), holdingTxnDest{txnDest{s: s}})
+	j.HeldURL, j.Streams[0].Holds = "file:///held", &runner.StreamHolds{}
+	_, err := runner.RunAttempt(ctx, j)
+	if errs.CodeOf(err) != errs.CheckpointCorrupt || !strings.Contains(fmt.Sprint(err), "says the streams held nothing at the epoch's start") {
+		t.Fatalf("the attempt ended with %v (%s)", err, errs.CodeOf(err))
+	}
+	lane0Uncommitted(t, s, head)
+}
+
+// loseKeyed loses lane 0's commit of an epoch of a keyed stream on 3
+// workers, as lose does, in a log in store, and returns the record HEAD is
+// left at.
+func loseKeyed(t *testing.T) (*txnStore, *pool, checkpoint.Store, *checkpoint.Record) {
+	t.Helper()
+	s := newTxnStore(t)
+	p := txnPool(t, s, ranges(6, 100, 5))
+	store := checkpoint.NewMemStore()
+	p.log = checkpoint.NewLog(store, "org", "p")
+	p.change = func(j *runner.Job) { j.Streams[0].PrimaryKey = []string{"id"} }
+	return s, p, store, p.lose(t, s, 3, failing(s, 1, 0, []int{0}, func() { p.kill("a1", 0) }))
+}
+
+// recordKey is where pipeline p of org's log keeps the record ref.
+func recordKey(ref checkpoint.RecordRef) string {
+	return fmt.Sprintf("org/p/_checkpoints/%020d-g%020d.json", ref.Epoch, ref.Generation)
+}
+
+func lane0Uncommitted(t *testing.T, s *txnStore, head *checkpoint.Record) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.marked[laneMark{head.Generation, head.Epoch, 0}] {
+		t.Error("lane 0 was committed")
 	}
 }
 
