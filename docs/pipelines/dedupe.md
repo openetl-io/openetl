@@ -10,6 +10,7 @@ A dedupe keeps one row for each key of a stream. It is a SQL statement with `ROW
 - You can write a SQL transform, as [Write a SQL transform](./sql-transforms.md) shows.
 - The stream has a column that holds the time of each row, such as `created_at`, and you set it as the stream's `eventTime`. [Event time and watermarks](./windows.md#event-time-and-watermarks) explains event time and the watermark.
 - The columns in `PARTITION BY` identify a row, such as an event ID or a customer ID.
+- A first-row dedupe with a retention gets the guarantee `exactly_once_within` over a stream that can repeat rows and is not read with `full_refresh`, into a destination that stages and applies or writes each commit in a transaction, and not merged into a destination that stages and applies. The default `delivery.require` refuses that guarantee. [The output](#the-output) lists the guarantee for each case. The first example sets `delivery.require` for it. [Accept a dedupe's retention](./delivery.md#accept-a-dedupes-retention) explains the choices.
 
 ## Keep each key's first row
 
@@ -23,6 +24,8 @@ source:
       eventTime: created_at
       watermark: { delay: 30s }
       dedupe: { retention: 24h }
+delivery:
+  require: exactly_once_within
 ```
 
 ```sql
@@ -36,6 +39,7 @@ QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY created_at) = 1;
 - `ORDER BY` is the stream's `eventTime` column, and nothing else. Ascending order keeps the first row.
 - Compare the number `= 1` in `QUALIFY`, or in the `WHERE` of a `SELECT` that reads it.
 - `dedupe.retention` is how long, in event time, the dedupe remembers a key after its first row. It is required, and has no default.
+- `delivery.require: exactly_once_within` accepts that a key is written again by a row at or after its first row's time plus the retention. Without it, the plan refuses the pipeline if the source can repeat rows.
 
 ### Set the retention
 
@@ -43,8 +47,8 @@ Set `source.streams[].dedupe.retention` to one of these:
 
 | Retention | What the dedupe does | What the plan reports |
 |---|---|---|
-| A duration, such as `24h` | It forgets a key once the watermark passes the key's first row's time plus the retention. The key's next row is then written again, as a new first row. | Exactly once within the retention, which it names |
-| `unbounded` | It remembers every key. Its state grows with the number of keys. | `exactly_once`, and that the state grows with the number of keys |
+| A duration, such as `24h` | It forgets a key once the watermark passes the key's first row's time plus the retention. The key's next row is then written again, as a new first row. | `exactly_once_within`, with the retention in its reason, over a stream that can repeat rows and is not read with `full_refresh`, into a destination that stages and applies or writes each commit in a transaction, unless the output is merged into a destination that stages and applies. The default `delivery.require` refuses it. [The output](#the-output) has the other cases. |
+| `unbounded` | It remembers every key. Its state grows with the number of keys. | `exactly_once`, and that the state grows with the number of keys, over a stream that is not read with `full_refresh`, into a destination that stages and applies or writes each commit in a transaction. [The output](#the-output) has the other cases. |
 
 Choose a duration that is longer than the time over which the source can repeat a row. A queue that redelivers a message within an hour needs at least `1h`. If the plan finds a first-row dedupe over a stream that sets no retention, it has a problem, and `openetl apply` refuses the pipeline:
 
@@ -120,20 +124,33 @@ Rows of one key with the same event time go by their record IDs (`_openetl_id`).
 | First row | Each key's first row, once for each retention, as an insert | Append, merge, or overwrite with `full_refresh` | The input row's | Its event time |
 | Latest row | Each key's latest row, as an insert, then updates, and a delete where a filter drops it | Merge | The input row's | Its event time |
 
-The dedupe drops a row that the source repeats after a failure, as it drops any repeat. So the plan reports its output as written exactly once, also over a source that repeats rows, and names the retention. This applies to a destination that stages and applies, or that writes each commit in a transaction:
+The dedupe drops a row that the source repeats after a failure, as it drops any repeat. Into a destination that delivers and acknowledges, the output is `at_least_once`. Into a destination that stages and applies or writes each commit in a transaction, the plan reports the output's guarantee from the read, the retention and the write mode:
+
+- **A stream read with `full_refresh`.** Each full read starts with no keys kept, so every sync writes every key again. This applies to every dedupe, whatever its retention and whatever the stream's replay. Overwritten, the output is `exactly_once`. Merged into a destination that stages and applies, it is `effectively_once`. Otherwise, appended included, it is `at_least_once`.
+- **Another read of a stream that can repeat rows, with a duration.** The guarantee is `exactly_once_within`, and the reason names the retention. A row of a key at or after its first row's time plus the retention can be written as the key's next first row. If the output is written with `merge` into a destination that stages and applies, it is `effectively_once`, as such a row updates its key's row.
+- **Another read of a stream that can repeat rows, with `unbounded`, or a latest-row dedupe.** The guarantee is `exactly_once`.
+
+The default `delivery.require`, `exactly_once`, refuses `exactly_once_within`, and the plan has a problem:
+
+```text
+  problems:
+    delivery.require: stream "events_once" gets exactly_once_within (a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again), below exactly_once: to accept that a key is written again by a row 24h0m0s or more of event time after its first row, set delivery.require: exactly_once_within; to remember every key from then on, set source.streams[events].dedupe.retention: unbounded (a key already forgotten stays forgotten)
+```
+
+To accept the retention, set `require: exactly_once_within`, as [Accept a dedupe's retention](./delivery.md#accept-a-dedupes-retention) shows. The plan then reports:
 
 ```text
   streams:
-    events_once  append  exactly_once  exactly once within 24h0m0s of event time: a dedupe's output over superset inputs, which remembers a key 24h0m0s from its first row and writes a repeat after that again
+    events_once  append  exactly_once_within  a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again
 ```
 
-[The plan's reasons](./delivery.md#the-plans-reasons) lists the guarantees and their reasons.
+A stream that its source replays exactly, which `openetl discover` shows as `exact`, returns after a restore exactly the records after the saved position. Over such a stream, unless it is read with `full_refresh`, into a destination that stages and applies or writes each commit in a transaction, the output is `exactly_once` whatever the retention, and the default `require` accepts it. The topic in [Try it with Kafka](#try-it-with-kafka) is an example. [The plan's reasons](./delivery.md#the-plans-reasons) lists the guarantees and their reasons.
 
 ## Across syncs
 
 A scheduled pipeline keeps the dedupe's state in its checkpoint between syncs:
 
-- **`full_refresh`.** Each sync reads the whole stream, and a first-row dedupe writes every key's first row at the end of the read. The next sync starts again from the whole stream, with no keys kept.
+- **`full_refresh`.** Each sync reads the whole stream, and a first-row dedupe writes every key's first row at the end of the read. The next sync starts again from the whole stream, with no keys kept. So an appended output gets every key's rows again in each sync.
 - **`incremental` by the event time, or `stream`.** The kept keys go on in the next sync, so a key written in one sync is a repeat in the next.
 
 The plan refuses a first-row dedupe over a stream read with `incremental` by another cursor: each sync would start its keys again, and write each key's first row again. A latest-row dedupe takes any read, as it compares each row with its key's latest. A stream read with `cdc` is refused, as it is for `OVER`.
@@ -149,7 +166,7 @@ On [workers](./workers.md#group-windows-on-workers), a dedupe sends each row to 
 A dedupe keeps its state under an ID that the plan shows, in the `state` section of `transform.sql`:
 
 ```text
-    1:1  events_once  dedupe-811f1c1cde3a7c1a  new  dedupe first by created_at on event_id; remembers a key 24h0m0s of event time from its first row: exactly once within 24h0m0s of event time; starts empty
+    1:1  events_once  dedupe-811f1c1cde3a7c1a  new  dedupe first by created_at on event_id; remembers a key 24h0m0s of event time from its first row: exactly_once_within 24h0m0s of event time; starts empty
 ```
 
 Other names for columns, columns that pass through, filters after the dedupe and the retention keep the ID. Another `PARTITION BY`, order, event-time column or filter before the dedupe gives a new ID, and the new dedupe's state starts empty: a first-row dedupe writes each key's next row again. [Changing a dedupe](../reference/sql-over.md#changing-a-dedupe) lists the edits.

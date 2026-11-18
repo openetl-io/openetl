@@ -785,6 +785,8 @@ func (SchemaPolicy) EnumDescriptor() ([]byte, []int) {
 	return file_openetl_api_v1_pipeline_proto_rawDescGZIP(), []int{13}
 }
 
+// From lowest to highest: at least once, exactly once within, effectively
+// once, exactly once.
 type DeliveryLevel int32
 
 const (
@@ -792,6 +794,10 @@ const (
 	DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE    DeliveryLevel = 1
 	DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE DeliveryLevel = 2
 	DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE     DeliveryLevel = 3
+	// A first-row dedupe's output with a retention: a row of a key less than
+	// the retention, in event time, after the key's first row isn't written,
+	// and one at or after it can be written as the key's next first row.
+	DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN DeliveryLevel = 4
 )
 
 // Enum value maps for DeliveryLevel.
@@ -801,12 +807,14 @@ var (
 		1: "DELIVERY_LEVEL_AT_LEAST_ONCE",
 		2: "DELIVERY_LEVEL_EFFECTIVELY_ONCE",
 		3: "DELIVERY_LEVEL_EXACTLY_ONCE",
+		4: "DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN",
 	}
 	DeliveryLevel_value = map[string]int32{
-		"DELIVERY_LEVEL_UNSPECIFIED":      0,
-		"DELIVERY_LEVEL_AT_LEAST_ONCE":    1,
-		"DELIVERY_LEVEL_EFFECTIVELY_ONCE": 2,
-		"DELIVERY_LEVEL_EXACTLY_ONCE":     3,
+		"DELIVERY_LEVEL_UNSPECIFIED":         0,
+		"DELIVERY_LEVEL_AT_LEAST_ONCE":       1,
+		"DELIVERY_LEVEL_EFFECTIVELY_ONCE":    2,
+		"DELIVERY_LEVEL_EXACTLY_ONCE":        3,
+		"DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN": 4,
 	}
 )
 
@@ -9689,12 +9697,13 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x17SCHEMA_POLICY_ALLOW_ALL\x10\x01\x12\x1f\n" +
 	"\x1bSCHEMA_POLICY_ALLOW_COLUMNS\x10\x02\x12\x17\n" +
 	"\x13SCHEMA_POLICY_BLOCK\x10\x03\x12\x1c\n" +
-	"\x18SCHEMA_POLICY_IGNORE_NEW\x10\x04*\x97\x01\n" +
+	"\x18SCHEMA_POLICY_IGNORE_NEW\x10\x04*\xbf\x01\n" +
 	"\rDeliveryLevel\x12\x1e\n" +
 	"\x1aDELIVERY_LEVEL_UNSPECIFIED\x10\x00\x12 \n" +
 	"\x1cDELIVERY_LEVEL_AT_LEAST_ONCE\x10\x01\x12#\n" +
 	"\x1fDELIVERY_LEVEL_EFFECTIVELY_ONCE\x10\x02\x12\x1f\n" +
-	"\x1bDELIVERY_LEVEL_EXACTLY_ONCE\x10\x03*_\n" +
+	"\x1bDELIVERY_LEVEL_EXACTLY_ONCE\x10\x03\x12&\n" +
+	"\"DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN\x10\x04*_\n" +
 	"\vCommitScope\x12\x1c\n" +
 	"\x18COMMIT_SCOPE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15COMMIT_SCOPE_PIPELINE\x10\x01\x12\x17\n" +

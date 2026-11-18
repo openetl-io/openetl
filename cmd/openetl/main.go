@@ -607,7 +607,7 @@ func dedupeText(op *apiv1.OperatorPlan) string {
 		return what + "; its stream sets no dedupe.retention"
 	case op.GetRetention() != nil:
 		r := op.GetRetention().AsDuration().String()
-		return what + "; remembers a key " + r + " of event time from its first row: exactly once within " + r + " of event time"
+		return what + "; remembers a key " + r + " of event time from its first row: exactly_once_within " + r + " of event time"
 	}
 	return what + "; remembers every key: exactly_once, and its state grows with the number of keys"
 }
