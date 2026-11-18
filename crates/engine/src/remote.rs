@@ -4,11 +4,11 @@
 //! it holds whole, and each stream a transform reads. A lane that changes a
 //! stream's schema proposes it from the owner's version its engine follows,
 //! one proposal of a stream at a time, and waits for a newer version; its
-//! engine then shapes by the newest. Once the owner has sealed a stream
-//! after an epoch, every engine shapes its rows of later epochs under the
-//! schema policy, whether or not its own lanes have had rows. Once the call
-//! fails, every proposal waiting and every lane that shapes next fails the
-//! job with why.
+//! engine then shapes by the newest. Once the owner has recorded an epoch
+//! whose schema has the stream's columns, its versions are sealed: every
+//! engine shapes by them under the schema policy, whether or not its own
+//! lanes have had rows. Once the call fails, every proposal waiting and
+//! every lane that shapes next fails the job with why.
 
 use std::sync::{Arc, Mutex};
 
@@ -37,9 +37,9 @@ pub struct Owned {
     pub schema: Option<SchemaRef>,
     /// The columns one of the destination's streams holds whole.
     pub holding: Vec<ColumnHold>,
-    /// SchemasRequest.sealed_after: the epoch after which every lane shapes
-    /// by the version under the schema policy; 0 for none.
-    pub sealed_after: u64,
+    /// The schema policy applies to the version, as SchemasRequest.sealed
+    /// says.
+    pub sealed: bool,
 }
 
 /// What a change to one of the destination's streams holds, beside its
@@ -162,7 +162,7 @@ impl Remote {
                 version: u.version,
                 schema: Some(schema),
                 holding: u.holding.clone(),
-                sealed_after: u.sealed_after,
+                sealed: u.sealed,
             };
             s.newest.send_replace(u.version);
         }
@@ -192,13 +192,12 @@ impl RemoteStream {
 
     /// Proposes schema, made from version base, unless the owner has moved
     /// on from it since, and returns once the owner has a newer version, or
-    /// the Schemas call fails. `epoch` is SchemasResponse.epoch.
+    /// the Schemas call fails.
     pub async fn propose(
         &self,
         base: u64,
         schema: &SchemaRef,
         holding: Holding,
-        epoch: u64,
     ) -> Result<(), JobError> {
         let _turn = self.turn.lock().await;
         self.check()?;
@@ -214,7 +213,6 @@ impl RemoteStream {
             input: self.input,
             holding: holding.columns,
             delivered: holding.delivered,
-            epoch,
         };
         self.proposals
             .send(Ok(proposal))
@@ -268,7 +266,7 @@ mod tests {
             tokio::spawn(async move {
                 r.stream(1)
                     .unwrap()
-                    .propose(0, &s, Holding::default(), 0)
+                    .propose(0, &s, Holding::default())
                     .await
             })
         };
@@ -293,28 +291,27 @@ mod tests {
         );
         r.stream(1)
             .unwrap()
-            .propose(0, &s, Holding::default(), 0)
+            .propose(0, &s, Holding::default())
             .await
             .unwrap();
         assert!(proposals.try_recv().is_err());
         assert!(r.update(&update(2, 1, &s)).is_err());
     }
 
-    // A version says after which epoch the owner has sealed the stream.
+    // A version says whether the owner has sealed it.
     #[test]
     fn a_version_carries_its_seal() {
         let r = Remote::new(1, 0);
         let s = schema(&["a"]);
         let stream = r.stream(0).unwrap();
         r.update(&update(0, 1, &s)).unwrap();
-        assert_eq!(stream.latest().sealed_after, 0);
+        assert!(!stream.latest().sealed);
         r.update(&SchemasRequest {
-            sealed_after: 3,
+            sealed: true,
             ..update(0, 2, &s)
         })
         .unwrap();
-        let latest = stream.latest();
-        assert_eq!((latest.version, latest.sealed_after), (2, 3));
+        assert_eq!((stream.latest().version, stream.latest().sealed), (2, true));
     }
 
     // A stream a transform reads has versions of its own, apart from the
@@ -326,12 +323,9 @@ mod tests {
         let s = schema(&["a"]);
         let waiting = {
             let (r, s) = (r.clone(), s.clone());
-            tokio::spawn(async move {
-                r.input(0)
-                    .unwrap()
-                    .propose(0, &s, Holding::default(), 0)
-                    .await
-            })
+            tokio::spawn(
+                async move { r.input(0).unwrap().propose(0, &s, Holding::default()).await },
+            )
         };
         let p = proposals.recv().await.unwrap().unwrap();
         assert_eq!((p.stream, p.input), (0, true));
@@ -357,7 +351,7 @@ mod tests {
             tokio::spawn(async move {
                 r.stream(0)
                     .unwrap()
-                    .propose(0, &s, Holding::default(), 0)
+                    .propose(0, &s, Holding::default())
                     .await
             })
         };
@@ -370,7 +364,7 @@ mod tests {
         let err = r
             .stream(0)
             .unwrap()
-            .propose(0, &s, Holding::default(), 0)
+            .propose(0, &s, Holding::default())
             .await
             .unwrap_err();
         assert_eq!(err.message, "the owner is gone");

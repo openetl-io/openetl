@@ -268,7 +268,7 @@ func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, 
 			for _, c := range p.GetHolding() {
 				holding = append(holding, attempt.ColumnHoldOf(c))
 			}
-			prop := runner.SchemaProposal{Stream: name, Input: p.GetInput(), Base: p.GetBase(), Schema: p.GetArrowSchema(), Holding: holding, Delivered: p.GetDelivered(), Epoch: p.GetEpoch()}
+			prop := runner.SchemaProposal{Stream: name, Input: p.GetInput(), Base: p.GetBase(), Schema: p.GetArrowSchema(), Holding: holding, Delivered: p.GetDelivered()}
 			if err := owner.Propose(prop); err != nil {
 				failed <- fmt.Errorf("engineclient: proposing a schema of %s: %w", name, err)
 				return
@@ -287,7 +287,7 @@ func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, 
 				if !ok {
 					continue
 				}
-				req := &enginev1.SchemasRequest{Stream: i, Input: u.Input, Version: u.Version, ArrowSchema: u.Schema, SealedAfter: u.SealedAfter}
+				req := &enginev1.SchemasRequest{Stream: i, Input: u.Input, Version: u.Version, ArrowSchema: u.Schema, Sealed: u.Sealed}
 				for _, c := range u.Holding {
 					req.Holding = append(req.Holding, attempt.ColumnHold(c))
 				}

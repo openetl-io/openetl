@@ -890,10 +890,9 @@ func TestOneSchemaOwnerAcrossWorkers(t *testing.T) {
 // has one owner, and records the schema of s each worker's plan restored,
 // by attempt. The worker with the attempt's later lanes runs ahead. In
 // attempt a1, before its share of epoch 1 goes, it proposes s's first
-// columns as a change made without the policy in epoch 2, and its share
-// waits for the owner to take it; it then fails at its share of epoch 2,
-// once epoch 1 is committed. In later attempts, it proposes them in the
-// attempt's first epoch, before its share of it.
+// columns, as a lane past barrier 1 would, and its share waits for the
+// owner to take them; it then fails at its share of epoch 2, once epoch 1
+// is committed.
 type aheadFlow struct {
 	mu       *sync.Mutex
 	restored map[string][][]byte
@@ -906,9 +905,9 @@ func (f aheadFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	f.restored[plan.Owner] = append(f.restored[plan.Owner], plan.Schemas["s"])
 	f.mu.Unlock()
 	ahead := plan.FirstLane > 0
-	propose := func(epoch uint64) error {
+	propose := func() error {
 		o := plan.SchemaOwner
-		if err := o.Propose(runner.SchemaProposal{Stream: "s", Schema: xSchema(arrow.PrimitiveTypes.Int64), Epoch: epoch}); err != nil {
+		if err := o.Propose(runner.SchemaProposal{Stream: "s", Schema: xSchema(arrow.PrimitiveTypes.Int64)}); err != nil {
 			return err
 		}
 		for {
@@ -926,27 +925,20 @@ func (f aheadFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	done := make(chan error, 1)
 	go func() { done <- runner.Passthrough{Convert: idRows}.Run(ctx, plan, in, mid) }()
 	defer close(out)
-	first := true
 	for fr := range mid {
-		if fr.Kind == runner.FrameReady && ahead {
-			switch {
-			case plan.Owner == "a1" && fr.Epoch == 1:
-				if err := propose(2); err != nil {
+		if fr.Kind == runner.FrameReady && ahead && plan.Owner == "a1" {
+			if fr.Epoch == 1 {
+				if err := propose(); err != nil {
 					return err
 				}
-			case plan.Owner == "a1":
+			} else {
 				select {
 				case <-f.committed:
 				case <-ctx.Done():
 					return ctx.Err()
 				}
 				return errors.New("the worker that ran ahead is lost")
-			case first:
-				if err := propose(fr.Epoch); err != nil {
-					return err
-				}
 			}
-			first = false
 		}
 		select {
 		case out <- fr:
@@ -957,13 +949,14 @@ func (f aheadFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 	return <-done
 }
 
-// A change of a later epoch than the one whose shares the coordinator
-// merges stays out of that epoch's record. A worker whose lane runs ahead
-// proposes s's first columns in epoch 2 before its share of epoch 1 goes,
-// and the record of epoch 1 has no schema of s, so an attempt restored from
-// it starts s with none, as it starts a stream whose first columns come
-// later. The record of the epoch whose change it is has them.
-func TestARecordHasNoChangeOfALaterEpoch(t *testing.T) {
+// A change the owner takes before it merges the first epoch with columns is
+// part of the stream's first schema, whatever epoch's rows made it: the
+// protocol's one exception. A worker whose lane runs ahead proposes s's
+// first columns before its share of epoch 1 goes, and the record of epoch 1
+// has them. So an attempt restored from it starts s with them, on every
+// worker, as the lanes after epoch 1 shaped by them, and its records keep
+// them.
+func TestAChangeBeforeTheFirstMergeIsTheFirstSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	committed := make(chan struct{})
@@ -985,7 +978,8 @@ func TestARecordHasNoChangeOfALaterEpoch(t *testing.T) {
 		t.Fatal("the attempt went on without the worker that ran ahead")
 	}
 	p.wait("a1")
-	if head := p.head(); head.Epoch != 1 || len(head.Streams["s"].Schema) != 0 {
+	x := xSchema(arrow.PrimitiveTypes.Int64)
+	if head := p.head(); head.Epoch != 1 || !slices.Equal(head.Streams["s"].Schema, x) {
 		t.Fatalf("HEAD is epoch %d, with s's schema %q", head.Epoch, head.Streams["s"].Schema)
 	}
 	var mu sync.Mutex
@@ -1003,13 +997,13 @@ func TestARecordHasNoChangeOfALaterEpoch(t *testing.T) {
 	flow.mu.Lock()
 	restored := flow.restored["a2"]
 	flow.mu.Unlock()
-	if len(restored) != 2 || slices.ContainsFunc(restored, func(s []byte) bool { return len(s) > 0 }) {
+	if len(restored) != 2 || slices.ContainsFunc(restored, func(s []byte) bool { return !slices.Equal(s, x) }) {
 		t.Errorf("the second attempt's workers restored s's schema as %q", restored)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !slices.Equal(recorded[2], xSchema(arrow.PrimitiveTypes.Int64)) {
-		t.Errorf("epoch 2's record has s's schema %q", recorded[2])
+	if len(recorded) == 0 || slices.ContainsFunc(slices.Collect(maps.Values(recorded)), func(s []byte) bool { return !slices.Equal(s, x) }) {
+		t.Errorf("the second attempt's records have s's schemas %v", recorded)
 	}
 	p.store.check(t, 60)
 }

@@ -830,21 +830,22 @@ message SchemasRequest {
   // One of the destination's streams that holds: the columns it holds
   // whole, as StreamHolds.holding.
   repeated ColumnHold holding = 5;
-  // One of the destination's streams that the owner has sealed: the first
-  // epoch with the stream's columns. A lane shapes its rows of every later
-  // epoch by the version under the schema policy, whether or not the
-  // engine's lanes have had rows of the stream, and its rows of that epoch
-  // or an earlier one without it. The owner can seal a stream before it has
-  // taken any epoch's shares, as it does when a lane proposes a change made
-  // without the policy in a later epoch. 0: the owner hasn't sealed it, and
-  // the policy applies once the engine's lanes have passed a barrier with
-  // the stream's columns, or from the start where the job restored them.
-  uint64 sealed_after = 6;
+  // One of the destination's streams that the owner has sealed: every lane
+  // of the engine shapes by this version and every later one under the
+  // schema policy, whether or not the engine's lanes have had rows of the
+  // stream. The owner seals a stream in a version of its own, with the same
+  // schema, as it takes the shares of the first epoch at which the stream
+  // has columns. Unset: the policy applies once the engine's lanes have
+  // passed a barrier with the stream's columns, or from the start where the
+  // job restored them.
+  bool sealed = 6;
 }
 
 // SchemasResponse proposes a lane's change to a stream's schema, or to what
 // it holds, made from the owner's version base. The engine sends one
-// proposal of a stream at a time, and waits for a newer version.
+// proposal of a stream at a time, and waits for a newer version. The owner
+// takes the change only if base is its newest version, and otherwise
+// answers with that version, which the lane shapes its batch again by.
 message SchemasResponse {
   // As SchemasRequest's.
   uint32 stream = 1;
@@ -855,10 +856,4 @@ message SchemasResponse {
   // Where columns are held whole, the schema the destination gets, as
   // EpochReady.delivered; empty where it's arrow_schema.
   bytes delivered = 6;
-  // One of the destination's streams whose lane made the change without the
-  // schema policy: the epoch of the rows that made it. 0: the lane made it
-  // under the policy. The owner takes such a change unless it has taken one
-  // of an earlier epoch; then it seals the stream after that epoch, and the
-  // lane shapes its batch again by the sealed version.
-  uint64 epoch = 7;
 }

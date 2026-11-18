@@ -282,10 +282,6 @@ type SchemaProposal struct {
 	// that's Schema.
 	Holding   []checkpoint.ColumnHold
 	Delivered []byte
-	// One of the destination's streams whose change a lane made without the
-	// schema policy: the epoch of the rows that made it; 0 for one made
-	// under the policy.
-	Epoch uint64
 }
 
 type SchemaUpdate struct {
@@ -295,10 +291,10 @@ type SchemaUpdate struct {
 	// An Arrow IPC stream holding only the schema.
 	Schema  []byte
 	Holding []checkpoint.ColumnHold
-	// One of the destination's streams that the coordinator has sealed: the
-	// epoch after which every worker shapes its rows under the schema
-	// policy, whether or not its lanes have had rows; 0 for none.
-	SealedAfter uint64
+	// One of the destination's streams whose columns the coordinator has
+	// recorded: the schema policy applies to the version on every worker,
+	// whether or not its lanes have had rows.
+	Sealed bool
 }
 
 func (p Plan) lanes() int       { return max(p.Lanes, 1) }
