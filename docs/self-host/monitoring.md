@@ -75,7 +75,7 @@ The same metrics describe `OVER` and dedupe, with these meanings:
 | Instrument | `OVER` | First-row dedupe | Latest-row dedupe |
 |---|---|---|---|
 | `openetl.operator.rows.in` | Rows of the stream | Rows of the stream | Rows of the stream |
-| `openetl.operator.rows.written` | One insert for each row, once the watermark passes its time, but rows that the output quarantined | One insert for each key's first row, and again after each retention, but rows that the output quarantined | An insert for each new key, an update for each later row of a key, and a delete where a filter after the dedupe drops a key's latest row, but rows that the output quarantined |
+| `openetl.operator.rows.written` | One insert for each row, once the watermark passes its time, but rows that the output quarantined | One insert for each key's first row, and again after each retention, but rows that the output quarantined | An insert for each new key, an update for each later row of a key, and a delete where a filter after the dedupe drops a key's latest row, but rows that the output quarantined. Over a stream read with `full_refresh`, each sync writes again an insert of every key's latest row that passes the filter, and a delete of every key whose latest row it drops. |
 | `openetl.operator.rows.repeats` | 0 | Rows of a key that it keeps, which it dropped | Rows no later than their key's latest, which it dropped |
 | `openetl.operator.rows.late` | Rows that came after the watermark had passed their time | Rows of a key that it does not keep, which came after the watermark had passed their time | 0 |
 | `openetl.operator.windows` | 0 | The keys that it keeps | The keys that it keeps |

@@ -111,7 +111,16 @@ SELECT customer_id, email, plan, updated_at FROM (
 WHERE rn = 1 AND plan <> 'free';
 ```
 
-If a customer's latest row has `plan = 'free'`, and the output has the customer's row, the dedupe writes a delete of the customer's key. The delete has the key's columns, and nulls in the others, or their type's zero where a column cannot be null. `destination.deletes` says how the destination applies it. If the filter cannot evaluate a row, the engine quarantines it with the code `statement`, and the output keeps the row it had.
+If a customer's latest row has `plan = 'free'`, the dedupe writes a delete of the customer's key. The delete has the key's columns, and nulls in the others, or their type's zero where a column cannot be null. `destination.deletes` says how the destination applies it. If the filter cannot evaluate a row, the engine quarantines it with the code `statement`, and the output keeps the row it had.
+
+The dedupe keeps, for each key it has seen, whether the output has the key's row:
+
+- If it has seen the key and the output has no row of it, it writes no delete.
+- If it has not seen the key, it writes the delete. The output can have the key's row from before the dedupe's state began, such as from an earlier sync's `full_refresh` read, a reset or an earlier version of the statement.
+
+A delete of a key that the table does not have does nothing with `destination.deletes: hard`. With `soft`, the default, the official Postgres and Iceberg destinations add a row for the key with `_openetl_deleted` true and nulls in its other columns.
+
+Only a row later than every row that the dedupe wrote of a key is written, and the merge keeps a key's row with the greatest `_openetl_seq`, the event time. So a key's row ends as its latest row has it: a delete that an earlier row gave never replaces the latest row.
 
 ## Rows with the same time
 
@@ -150,7 +159,7 @@ A stream that its source replays exactly, which `openetl discover` shows as `exa
 
 A scheduled pipeline keeps the dedupe's state in its checkpoint between syncs:
 
-- **`full_refresh`.** Each sync reads the whole stream, and a first-row dedupe writes every key's first row at the end of the read. The next sync starts again from the whole stream, with no keys kept. So an appended output gets every key's rows again in each sync.
+- **`full_refresh`.** Each sync reads the whole stream, and starts with no state. A first-row dedupe writes every key's first row at the end of the read, so an appended output gets every key's rows again in each sync. A latest-row dedupe writes, in each sync, an upsert of every key's latest row that passes its filter, and a delete of every key whose latest row the filter drops, so the merged output loses a key whose latest row left the filter since the last sync. A key that the source no longer has keeps its row, as with any stream read with `full_refresh` and merged.
 - **`incremental` by the event time, or `stream`.** The kept keys go on in the next sync, so a key written in one sync is a repeat in the next.
 
 The plan refuses a first-row dedupe over a stream read with `incremental` by another cursor: each sync would start its keys again, and write each key's first row again. A latest-row dedupe takes any read, as it compares each row with its key's latest. A stream read with `cdc` is refused, as it is for `OVER`.
@@ -227,5 +236,6 @@ The console's **SQL** tab shows, under **At the last checkpoint**, what the stat
 
 - `openetl.operator.rows.repeats` counts the rows that the dedupe dropped. Over time, the rows taken in are the rows written, the repeats, the late rows, the rows that the output quarantined and the rows that wait for the watermark. An epoch can write rows that came in an earlier epoch, so compare totals over time, not one epoch's numbers. A sudden rise in repeats can mean that a producer sends rows again.
 - `openetl.operator.windows` is the keys that the dedupe keeps. With a retention, it levels off at about the keys of one retention. With `unbounded`, or for a latest-row dedupe, it grows with the number of keys, and so does `openetl.operator.state.memory`.
+- `openetl.operator.rows.written` with `openetl.op` `delete` counts the deletes of a latest-row dedupe with a filter after it. Over a stream read with `full_refresh`, each sync writes one for every key whose latest row the filter drops. Over another read, the dedupe writes one for each such key when it first sees the key, and then only when a key's row leaves the filter.
 - `openetl.operator.rows.late` counts late rows that the engine quarantined. If it grows, set a longer `watermark.delay`. A latest-row dedupe has no late rows.
 - `openetl.operator.watermark.lag` is how far the watermark was behind the time of the commit. A first-row dedupe writes a row once the watermark passes its time, so a lag that grows means that its rows wait longer. A latest-row dedupe writes rows as they come, whatever the watermark.

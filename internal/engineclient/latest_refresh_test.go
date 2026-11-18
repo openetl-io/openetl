@@ -3,13 +3,16 @@ package engineclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"slices"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
@@ -20,7 +23,7 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
-// profile is a row of stream s: its region, amount and time in seconds.
+// profile is a row of stream s: its ID, region, amount and time in seconds.
 type profile struct {
 	id     int
 	region string
@@ -28,159 +31,303 @@ type profile struct {
 	sec    int64
 }
 
-// wholeSource reads stream s whole, its rows then its end.
-type wholeSource struct{ rows []profile }
+// profileSource reads stream s's rows, one at a time with a resume point
+// after each, from the one its state names. A bounded read then completes,
+// so that the next starts over; a continuous one waits. With failAt, a read fails once it has given that
+// many rows and failed closes.
+type profileSource struct {
+	rows       []profile
+	continuous bool
+	failAt     int
+	failed     <-chan struct{}
+}
 
-func (w wholeSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
-	return source.ReadSplits(ctx, req, out, func(_ context.Context, _ source.ConfiguredStream, _ source.Split, e source.SplitEmitter) error {
-		var rows []json.RawMessage
-		for _, p := range w.rows {
-			rows = append(rows, json.RawMessage(fmt.Sprintf(`{"id": %d, "region": %q, "amount": %d, "at": %q}`, p.id, p.region, p.amount, at(p.sec*1_000_000))))
+func (p profileSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	return source.ReadSplits(ctx, req, out, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		n := 0
+		if len(sp.State) > 0 {
+			var err error
+			if n, err = strconv.Atoi(string(sp.State)); err != nil {
+				return err
+			}
 		}
-		if err := e.Rows(rows); err != nil {
-			return err
+		for ; n < len(p.rows); n++ {
+			if p.failed != nil && n == p.failAt {
+				select {
+				case <-p.failed:
+					return errors.New("the read broke")
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			r := p.rows[n]
+			row := json.RawMessage(fmt.Sprintf(`{"id": %d, "region": %q, "amount": %d, "at": %q}`, r.id, r.region, r.amount, at(r.sec*1_000_000)))
+			if err := e.Rows([]json.RawMessage{row}); err != nil {
+				return err
+			}
+			if err := e.ResumePoint([]byte(strconv.Itoa(n + 1))); err != nil {
+				return err
+			}
 		}
-		return e.Complete([]byte("done"))
+		// A full read's next read starts over.
+		if !p.continuous {
+			return e.Complete([]byte("0"))
+		}
+		<-ctx.Done()
+		return ctx.Err()
 	})
 }
 
-// mergeDest is keyDest, merging each row it applies by region, a delete
-// removing it, as a merge with hard deletes does.
-type mergeDest struct {
-	*keyDest
-	ops []string
+// opDest is keyDest, keeping each row's op and sequence.
+type opDest struct{ *keyDest }
+
+func (d opDest) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
+	return &opWriter{&keyWriter{d: d.keyDest, lane: cfg.Lane}}, nil
 }
 
-func (d *mergeDest) Open(ctx context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
-	w, err := d.keyDest.Open(ctx, cfg)
-	return &opWriter{Writer: w, d: d}, err
-}
+type opWriter struct{ *keyWriter }
 
-type opWriter struct {
-	destination.Writer
-	d *mergeDest
-}
-
-func (w *opWriter) Write(ctx context.Context, e destination.Epoch, stream string, b arrow.RecordBatch) error {
-	if i := b.Schema().FieldIndices("_openetl_op"); len(i) == 1 {
-		ops := b.Column(i[0]).(*array.String)
-		regions := b.Column(b.Schema().FieldIndices("region")[0])
-		for r := range int(b.NumRows()) {
-			w.d.mu.Lock()
-			w.d.ops = append(w.d.ops, ops.Value(r)+" "+regions.ValueStr(r))
-			w.d.mu.Unlock()
+func (w *opWriter) Write(_ context.Context, e destination.Epoch, stream string, b arrow.RecordBatch) error {
+	rows := rowsOf(stream, false, b)
+	for _, c := range []string{"_openetl_op", "_openetl_seq"} {
+		if i := b.Schema().FieldIndices(c); len(i) == 1 {
+			col := b.Column(i[0])
+			for r := range rows {
+				rows[r].cols[c] = col.ValueStr(r)
+			}
 		}
 	}
-	return w.Writer.Write(ctx, e, stream, b)
+	w.stage(e, rows)
+	return nil
 }
 
-// table is what a merge leaves of the output, by region: its amount.
-func (d *mergeDest) table() map[string]string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	out := map[string]string{}
-	for i, r := range d.rows {
-		var op string
-		if i < len(d.ops) {
-			_, _ = fmt.Sscanf(d.ops[i], "%s", &op)
+// merged is what a merge with hard deletes leaves of stream, by region,
+// its amount, and every op applied, as op region: a row applies unless the
+// table's row of its key has a greater sequence. Of the rows from from on,
+// a key's come in the order of their sequences, or merged fails the test:
+// the writes of one state's lifetime do.
+func (d opDest) merged(t *testing.T, stream string, from int) (map[string]string, []string) {
+	t.Helper()
+	type row struct{ amount, seq string }
+	out, seqs := map[string]row{}, map[string]string{}
+	var ops []string
+	for i, r := range d.applied(stream) {
+		region, op, seq := r.cols["region"], r.cols["_openetl_op"], r.cols["_openetl_seq"]
+		if i >= from {
+			if seq < seqs[region] {
+				t.Errorf("%s %s at %s after one at %s", op, region, seq, seqs[region])
+			}
+			seqs[region] = seq
 		}
-		switch op {
-		case "delete":
-			delete(out, r.cols["region"])
-		default:
-			out[r.cols["region"]] = r.cols["amount"]
+		ops = append(ops, op+" "+region)
+		if have, ok := out[region]; ok && have.seq > seq {
+			continue
 		}
+		if op == "delete" {
+			delete(out, region)
+			continue
+		}
+		out[region] = row{r.cols["amount"], seq}
 	}
-	return out
+	amounts := map[string]string{}
+	for k, r := range out {
+		amounts[k] = r.amount
+	}
+	return amounts, ops
 }
 
-// A latest-row dedupe with a filter after it, over a stream read with
-// full_refresh, merged: what each of two syncs writes, and what the output
-// holds after them.
-func TestALatestRowDedupeAcrossFullReads(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
-	opts := options(t, nil)
-	s := runner.Stream{
-		Name: "s", Replay: source.Exact, Mode: destination.Append, Read: source.FullRefresh,
+// latestJob runs a latest-row dedupe with a filter after it over stream s,
+// merged by region, read with read: amounts under 50 pass.
+type latestJob struct {
+	t     *testing.T
+	read  source.SyncMode
+	sql   string
+	a     sqlplan.Answer
+	log   *checkpoint.Log
+	state string
+	dest  opDest
+
+	mu      sync.Mutex
+	deletes uint64
+}
+
+func newLatestJob(ctx context.Context, t *testing.T, read source.SyncMode, sql string) *latestJob {
+	t.Helper()
+	declared, err := arrowipc.EncodeSchema(profileStream(read).Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := Plan(ctx, planEngine(t), sqlplan.Request{SQL: sql, Streams: []sqlplan.Stream{{Name: "s", DeclaredSchema: declared, EventTime: "at"}}})
+	if err != nil || len(a.Errors) != 0 {
+		t.Fatal(a.Errors, err)
+	}
+	return &latestJob{t: t, read: read, sql: sql, a: a, log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "latest"),
+		state: "file://" + t.TempDir(), dest: opDest{newKeyDest(1)}}
+}
+
+// profileStream is s as the runner has it read with read: held, but where
+// it's read in the order of its time.
+func profileStream(read source.SyncMode) runner.Stream {
+	return runner.Stream{
+		Name: "s", Replay: source.Exact, Mode: destination.Append, Read: read,
 		Schema: arrow.NewSchema([]arrow.Field{
 			{Name: "id", Type: arrow.PrimitiveTypes.Int64},
 			{Name: "region", Type: arrow.BinaryTypes.String, Nullable: true},
 			{Name: "amount", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
 			{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
 		}, nil),
-		EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Held: true},
+		EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Held: read != source.Stream},
 	}
-	declared, err := arrowipc.EncodeSchema(s.Schema)
-	if err != nil {
-		t.Fatal(err)
-	}
-	const sql = "INSERT INTO latest SELECT region, amount, at FROM (SELECT region, amount, at, " +
-		"row_number() OVER (PARTITION BY region ORDER BY at DESC) AS rn FROM s) AS t WHERE rn = 1 AND amount < 50"
-	a, err := Plan(ctx, planEngine(t), sqlplan.Request{SQL: sql, Streams: []sqlplan.Stream{{Name: "s", DeclaredSchema: declared, EventTime: "at"}}})
-	if err != nil || len(a.Errors) != 0 {
-		t.Fatal(a.Errors, err)
-	}
-	if st := a.Statements[0].State; st == nil || st.Keep != "latest" {
-		t.Fatalf("planned %+v, want a latest-row dedupe", a.Statements[0])
-	}
-	exp := expected(t, a)
-	exp[0].Operator = a.Statements[0].Operator
-	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "latest")
-	state := "file://" + t.TempDir()
-	dest := &mergeDest{keyDest: newKeyDest(1)}
-	var snapshots []int
-	sync := func(n int, rows ...profile) {
-		t.Helper()
-		snapshots = append(snapshots, -1)
-		j := runner.Job{
-			Pipeline: "latest", Owner: fmt.Sprintf("a%d", n), Sync: fmt.Sprintf("s%d", n), Log: log, Source: wholeSource{rows},
-			Streams: []runner.Stream{s},
-			Outputs: []runner.Stream{{Name: "latest", Replay: source.Exact, Read: source.FullRefresh, Mode: destination.Merge, PrimaryKey: []string{"region"},
-				Transformed: true, From: "s", Deduped: true}},
-			SQL:         &runner.SQLTransform{SQL: sql, Expected: exp, Operators: []string{a.Statements[0].Operator}},
-			Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 1, Logger: opts.Logger, StateURL: state,
-			Settings: delivery.Settings{Require: delivery.AtLeastOnce, CommitInterval: 20 * time.Millisecond, Scope: destination.ScopePipeline},
-			OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
-				snapshots[len(snapshots)-1] = len(rec.Snapshots)
-			},
-		}
-		if _, err := runner.RunAttempt(ctx, j); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Sync 1: eu's latest passes the filter, and so does us's.
-	sync(1, profile{1, "eu", 10, 1}, profile{2, "eu", 20, 2}, profile{3, "us", 30, 1}, profile{5, "jp", 40, 1})
-	if got, want := dest.table(), map[string]string{"eu": "20", "us": "30", "jp": "40"}; !maps.Equal(got, want) {
-		t.Fatalf("after sync 1, %v, want %v (ops %v)", got, want, dest.ops)
-	}
-	first := len(dest.ops)
-	// Sync 2: eu's latest row now fails the filter, us is as it was, and jp
-	// is gone from the source.
-	sync(2, profile{1, "eu", 10, 1}, profile{2, "eu", 20, 2}, profile{4, "eu", 90, 3}, profile{3, "us", 30, 1})
-	t.Logf("sync 1 wrote %v; sync 2 wrote %v; snapshots in each sync's last record %v", dest.ops[:first], dest.ops[first:], snapshots)
-	t.Logf("after sync 2 the output holds %v", dest.table())
 }
 
-// A first-row dedupe over a stream read with full_refresh, appended: what
-// each of two syncs writes, with a retention and unbounded.
+func (l *latestJob) job(owner, sync string, src source.Reader, onRecord func(*checkpoint.Record)) runner.Job {
+	opts := options(l.t, nil)
+	exp := expected(l.t, l.a)
+	exp[0].Operator = l.a.Statements[0].Operator
+	return runner.Job{
+		Pipeline: "latest", Owner: owner, Sync: sync, Continuous: l.read == source.Stream, Log: l.log, Source: src,
+		Streams: []runner.Stream{profileStream(l.read)},
+		Outputs: []runner.Stream{{Name: "latest", Replay: source.Exact, Read: l.read, Mode: destination.Merge, PrimaryKey: []string{"region"},
+			Transformed: true, From: "s", Deduped: true}},
+		SQL:         &runner.SQLTransform{SQL: l.sql, Expected: exp, Operators: []string{l.a.Statements[0].Operator}},
+		Destination: l.dest, Dataflow: &Dataflow{Options: opts}, Lanes: 1, Logger: opts.Logger, StateURL: l.state,
+		Settings: delivery.Settings{Require: delivery.AtLeastOnce, CommitInterval: 20 * time.Millisecond, Scope: destination.ScopePipeline},
+		OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) {
+			l.mu.Lock()
+			for _, o := range rec.Operators {
+				l.deletes += o.Deletes
+			}
+			l.mu.Unlock()
+			if onRecord != nil {
+				onRecord(rec)
+			}
+		},
+	}
+}
+
+// takeDeletes are the deletes the operator counted since the last call.
+func (l *latestJob) takeDeletes() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := l.deletes
+	l.deletes = 0
+	return n
+}
+
+const latestSmall = "INSERT INTO latest SELECT region, amount, at FROM (SELECT region, amount, at, " +
+	"row_number() OVER (PARTITION BY region ORDER BY at DESC) AS rn FROM s) AS t WHERE rn = 1 AND amount < 50"
+
+// A latest-row dedupe with a filter after it, over a stream read with
+// full_refresh and merged, through the runner and the engine. Each full
+// read starts with no state, so it writes every key's latest row again, and
+// a delete of each key whose latest row the filter drops: a row of the last
+// read that now fails the filter goes. A key whose earlier row fails and
+// latest passes keeps its latest; a key the read doesn't have keeps its
+// row, as with any full_refresh merge. Within a read, a key whose latest
+// row fails ends with no row. A retry within the second sync restores the
+// state of the rows it read, and deletes a key it hasn't come to yet.
+func TestALatestRowDedupeAcrossFullReads(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	l := newLatestJob(ctx, t, source.FullRefresh, latestSmall)
+	sync1 := []profile{
+		{1, "eu", 10, 1}, {2, "eu", 20, 2}, {3, "us", 30, 1}, {5, "jp", 40, 1},
+		// de passes, then fails within the read.
+		{6, "de", 20, 1}, {7, "de", 90, 2},
+	}
+	if _, err := runner.RunAttempt(ctx, l.job("a1", "s1", profileSource{rows: sync1}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	got, ops := l.dest.merged(t, "latest", 0)
+	if want := map[string]string{"eu": "20", "us": "30", "jp": "40"}; !maps.Equal(got, want) {
+		t.Fatalf("after sync 1, %v, want %v (ops %v)", got, want, ops)
+	}
+	if n := l.takeDeletes(); n != 1 {
+		t.Errorf("sync 1 counted %d deletes, want de's", n)
+	}
+
+	// Sync 2: us as it was; fr's earlier row fails and its latest passes;
+	// then the attempt fails, and its retry reads eu, whose latest row,
+	// first of eu's, now fails: the state the retry restores hasn't eu. jp
+	// is gone from the source.
+	sync2 := []profile{{3, "us", 30, 1}, {8, "fr", 90, 1}, {9, "fr", 5, 2}, {4, "eu", 90, 3}, {1, "eu", 10, 1}, {2, "eu", 20, 2}}
+	failed := make(chan struct{})
+	var once sync.Once
+	read := func(rec *checkpoint.Record) {
+		if slices.ContainsFunc(rec.Splits("s"), func(sp checkpoint.SplitState) bool { return string(sp.State) == "3" }) {
+			once.Do(func() { close(failed) })
+		}
+	}
+	before := len(ops)
+	if _, err := runner.RunAttempt(ctx, l.job("a2", "s2", profileSource{rows: sync2, failAt: 3, failed: failed}, read)); err == nil {
+		t.Fatal("the first attempt of sync 2 succeeded")
+	}
+	if _, err := runner.RunAttempt(ctx, l.job("a3", "s2", profileSource{rows: sync2}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	got, ops = l.dest.merged(t, "latest", before)
+	if want := map[string]string{"us": "30", "fr": "5", "jp": "40"}; !maps.Equal(got, want) {
+		t.Errorf("after sync 2, %v, want %v (ops %v)", got, want, ops)
+	}
+	if !slices.Contains(ops[before:], "delete eu") || !slices.Contains(ops[before:], "insert us") {
+		t.Errorf("sync 2 wrote %v, want eu deleted and us written again", ops[before:])
+	}
+	if n := l.takeDeletes(); n == 0 || n > 2 {
+		t.Errorf("sync 2 counted %d deletes, want eu's, and fr's earlier row's at most", n)
+	}
+}
+
+// A continuous pipeline's restart restores the operator's state: a key it
+// knows the output has no row of writes no delete, and one whose row it
+// knows the output has writes one, once.
+func TestALatestRowDedupesRestartWritesNoExtraDeletes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	l := newLatestJob(ctx, t, source.Stream, latestSmall)
+	rows := []profile{{1, "eu", 5, 1}, {2, "us", 500, 1}, {3, "us", 600, 2}, {4, "eu", 700, 2}}
+	run := func(owner string, upTo int) {
+		t.Helper()
+		drain := make(chan struct{})
+		var once sync.Once
+		j := l.job(owner, "c1", profileSource{rows: rows[:upTo], continuous: true}, func(rec *checkpoint.Record) {
+			if slices.ContainsFunc(rec.Splits("s"), func(sp checkpoint.SplitState) bool { return string(sp.State) == strconv.Itoa(upTo) }) {
+				once.Do(func() { close(drain) })
+			}
+		})
+		j.Drain = drain
+		if _, err := runner.RunAttempt(ctx, j); !errors.Is(err, runner.ErrDrained) {
+			t.Fatalf("%s ended with %v", owner, err)
+		}
+	}
+	run("a1", 2)
+	_, ops := l.dest.merged(t, "latest", 0)
+	if want := []string{"insert eu", "delete us"}; !slices.Equal(ops, want) {
+		t.Errorf("the first run wrote %v, want %v", ops, want)
+	}
+	if n := l.takeDeletes(); n != 1 {
+		t.Errorf("the first run counted %d deletes, want 1", n)
+	}
+	run("a2", 4)
+	got, ops := l.dest.merged(t, "latest", 0)
+	if want := []string{"insert eu", "delete us", "delete eu"}; !slices.Equal(ops, want) || len(got) != 0 {
+		t.Errorf("after the restart, %v and ops %v, want none and %v", got, ops, want)
+	}
+	if n := l.takeDeletes(); n != 1 {
+		t.Errorf("the restart counted %d deletes, want eu's alone", n)
+	}
+}
+
+// A first-row dedupe over a stream read with full_refresh, appended: each
+// full read starts with no keys kept, so the next sync writes every key's
+// first row again, with a retention and unbounded.
 func TestAFirstRowDedupeAcrossFullReads(t *testing.T) {
 	for _, retention := range []int64{time.Hour.Microseconds(), 1<<63 - 1} {
 		t.Run(fmt.Sprint(retention), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			opts := options(t, nil)
-			s := runner.Stream{
-				Name: "s", Replay: source.Exact, Mode: destination.Append, Read: source.FullRefresh,
-				Schema: arrow.NewSchema([]arrow.Field{
-					{Name: "id", Type: arrow.PrimitiveTypes.Int64},
-					{Name: "region", Type: arrow.BinaryTypes.String, Nullable: true},
-					{Name: "amount", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
-					{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
-				}, nil),
-				EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Held: true, Dedupe: &retention},
-			}
+			s := profileStream(source.FullRefresh)
+			s.EventTime.Dedupe = &retention
 			declared, err := arrowipc.EncodeSchema(s.Schema)
 			if err != nil {
 				t.Fatal(err)
@@ -193,12 +340,12 @@ func TestAFirstRowDedupeAcrossFullReads(t *testing.T) {
 			exp := expected(t, a)
 			exp[0].Operator = a.Statements[0].Operator
 			log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "firsts")
-			state := "file://" + t.TempDir()
-			dest := newKeyDest(1)
-			sync := func(n int, rows ...profile) {
+			state, dest := "file://"+t.TempDir(), newKeyDest(1)
+			sync := func(n int, rows ...profile) []string {
 				t.Helper()
+				before := len(dest.applied("firsts"))
 				j := runner.Job{
-					Pipeline: "firsts", Owner: fmt.Sprintf("a%d", n), Sync: fmt.Sprintf("s%d", n), Log: log, Source: wholeSource{rows},
+					Pipeline: "firsts", Owner: fmt.Sprintf("a%d", n), Sync: fmt.Sprintf("s%d", n), Log: log, Source: profileSource{rows: rows},
 					Streams: []runner.Stream{s},
 					Outputs: []runner.Stream{{Name: "firsts", Replay: source.Exact, Read: source.FullRefresh, Mode: destination.Append, PrimaryKey: []string{"region"},
 						Transformed: true, From: "s", Deduped: true}},
@@ -209,19 +356,19 @@ func TestAFirstRowDedupeAcrossFullReads(t *testing.T) {
 				if _, err := runner.RunAttempt(ctx, j); err != nil {
 					t.Fatal(err)
 				}
-			}
-			regions := func(rows []destRow) []string {
 				var out []string
-				for _, r := range rows {
+				for _, r := range dest.applied("firsts")[before:] {
 					out = append(out, r.cols["region"])
 				}
+				slices.Sort(out)
 				return out
 			}
-			sync(1, profile{1, "eu", 10, 1}, profile{2, "us", 30, 1})
-			first := len(dest.applied("firsts"))
-			sync(2, profile{1, "eu", 10, 1}, profile{2, "us", 30, 1}, profile{3, "fr", 5, 2})
-			all := dest.applied("firsts")
-			t.Logf("sync 1 wrote %v; sync 2 wrote %v", regions(all[:first]), regions(all[first:]))
+			if got := sync(1, profile{1, "eu", 10, 1}, profile{2, "us", 30, 1}); !slices.Equal(got, []string{"eu", "us"}) {
+				t.Errorf("sync 1 wrote %v", got)
+			}
+			if got := sync(2, profile{1, "eu", 10, 1}, profile{2, "us", 30, 1}, profile{3, "fr", 5, 2}); !slices.Equal(got, []string{"eu", "fr", "us"}) {
+				t.Errorf("sync 2 wrote %v, want every key again", got)
+			}
 		})
 	}
 }

@@ -26,11 +26,17 @@
 //! partition keys, as rows come: a row later than its key's, by event time,
 //! record ID, then a hash of its values, is written, and any other dropped,
 //! whatever the watermark, so an older row that comes after a newer one
-//! never replaces it. The key's latest rank stays in state for good. A row
-//! the filters after the operator drop is written as a delete of its key
-//! alone, its key's columns and nulls, where the output has the key's row,
-//! so the output holds a key's latest row where it passes them, and none
-//! where it doesn't.
+//! never replaces it. The key's latest rank stays in state for good, with
+//! whether the output has the key's row. A row the filters after the
+//! operator drop is written as a delete of its key alone, its key's
+//! columns and nulls, unless state has the key and says the output has no
+//! row of it: a key state doesn't have may have a row from before the
+//! state began, as from an earlier full read, a reset or another
+//! statement's operator. So the output holds a key's latest row where it
+//! passes them, and none where it doesn't. Of a key's rows, only one later
+//! than every row written of it is written, and its sequence is its event
+//! time, so a merge, which keeps a key's row of the greatest sequence and
+//! of one sequence the last staged, ends with the key's latest row's.
 //!
 //! A written row has its record ID, and its event time as its sequence.
 
@@ -392,9 +398,9 @@ impl Operator {
 
     /// A latest-row dedupe's rows: each one later than its key's latest is
     /// written, an upsert where it passes the filters after the operator,
-    /// and a delete of its key where it doesn't and the output has the
-    /// key's row. A row the filters fail on is quarantined, and the output
-    /// keeps the key's row it has.
+    /// and a delete of its key where it doesn't, unless state has the key
+    /// and says the output has no row of it. A row the filters fail on is
+    /// quarantined, and the output keeps the key's row it has.
     async fn latest<S: StateBackend>(
         &mut self,
         state: &mut S,
@@ -501,7 +507,7 @@ impl Operator {
                     self.base.reason(why),
                     Cause::new(Code::Statement),
                 ));
-            } else if visible {
+            } else if visible || l.stored.is_none() {
                 deleted.push(i);
                 visible = false;
             }
