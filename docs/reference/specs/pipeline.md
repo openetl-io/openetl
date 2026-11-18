@@ -182,7 +182,14 @@ The plan checks hold requirements:
 | `block` | Held, or fails the sync | Held, or fails the sync | Held, or fails the sync |
 | `ignore_new` | Dropped | Values cast to the column's type | Values cast to the column's type |
 
-A policy applies to a stream's rows after the stream's first checkpoint whose rows have columns, on every lane and every worker. The rows up to that checkpoint set the stream's first schema. If a sync restores a checkpoint that has the stream's columns, the policy applies from the start of the sync. A restored checkpoint without the stream's columns does not start the policy. On workers, a worker that has the stream's columns when its lanes pass a checkpoint's barrier applies the policy to its own rows from then on. The coordinator applies it on every worker, also on a worker without the stream's columns, once it merges the workers' parts of the first checkpoint with them. If the coordinator accepts a change before that merge, the change is part of the first schema. The change can come from rows after that checkpoint.
+A policy applies to a stream's rows after the first checkpoint that records a schema with the stream's columns, on every lane and every worker. That schema is the stream's first schema. If a sync restores a checkpoint that has the stream's columns, the policy applies from the start of the sync. A restored checkpoint without the stream's columns does not start the policy.
+
+On workers, the policy starts in two ways:
+
+- When a worker's lanes pass a checkpoint's barrier with the stream's columns, the worker applies the policy to its own rows from then on, by its own schema.
+- The coordinator records the first schema as it merges the workers' parts of the first checkpoint whose schema has the stream's columns. If the coordinator accepts a change before that merge, the change is part of the first schema, also a change from rows after that checkpoint. The coordinator then sends the first schema to every worker, and does not wait for the workers to receive it. A worker applies the policy by the first schema once it receives it, also a worker that has read no rows of the stream.
+
+Until a worker that applies the policy by its own schema receives the first schema, its schema can lack another worker's accepted change. Under every policy except `ignore_new`, the worker sends each change that its rows make to the coordinator. If the coordinator has a newer schema, the worker shapes the rows again by it. Under `ignore_new`, the worker drops a column that its own schema does not have, and casts values to its own schema's types. So the rows that it shapes in that time can lose a column or a type that the first schema has. The rows that it shapes after it receives the first schema keep them.
 
 Widening lets a column represent a broader range of values. Numeric widening includes these conversions:
 

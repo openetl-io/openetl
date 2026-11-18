@@ -1,7 +1,8 @@
 //! A seeded model of the schema protocol on workers, its invariants checked
 //! after every step. The engines are real: each a Plan with remote schemas,
 //! its Owner, and its lanes' LaneStreams, shaping raw rows with the real
-//! Shaper under block, holding what the policy doesn't take. The remote
+//! Shaper under block, holding what the policy doesn't take, or in one
+//! seed of four under ignore_new, dropping and casting it. The remote
 //! owner is a model of internal/runner's schemaOwner: it takes a proposal
 //! made from its newest version, answers one made from an older version
 //! with that version, and as it merges an epoch's shares records the stream,
@@ -18,12 +19,19 @@
 //! of the lanes': a lane returns a batch shaped by its engine's newest
 //! version. Each broken variant puts a past bug back, and must break one.
 //!
+//! Under ignore_new, an engine sealed at its own barrier drops or casts what
+//! its rows have that its schema hasn't, with no proposal, so until it
+//! follows a version with another engine's change of the first schema, its
+//! batches leave that change out. The invariants hold through that: what
+//! they bound is what the destination gets, not what an engine drops.
+//!
 //! A follow on another lane is one step here: the model runs on one
 //! thread, so it can't stop a follow between its writes, as
 //! `another_lanes_follow_is_seen_whole` does with two.
 //!
 //! `OPENETL_SCHEMA_SEEDS=n` runs n seeds, and `OPENETL_SCHEMA_SEED=s` the
-//! one; a value that isn't a number fails the test.
+//! one; a value that isn't a number, or `OPENETL_SCHEMA_SEEDS=0`, fails
+//! the test.
 
 #![allow(clippy::unwrap_used)]
 
@@ -162,6 +170,24 @@ fn unfit(rows: &Columns, to: &Columns) -> Option<String> {
         })
 }
 
+/// The columns of rows that `Model::rows` made, at their own types.
+fn rows_columns(rows: &[Vec<u8>]) -> Columns {
+    let has = |s: &str| {
+        rows.iter()
+            .any(|r| r.windows(s.len()).any(|w| w == s.as_bytes()))
+    };
+    let x = match (has(r#""x": "t""#), has(r#""x": 1.5"#)) {
+        (true, _) => DataType::Utf8,
+        (_, true) => DataType::Float64,
+        _ => DataType::Int64,
+    };
+    let mut c = vec![("id".to_owned(), DataType::Int64), ("x".to_owned(), x)];
+    if has(r#""y": "#) {
+        c.push(("y".to_owned(), DataType::Int64));
+    }
+    c
+}
+
 /// An epoch's record of stream a.
 struct Record {
     schema: Option<SchemaRef>,
@@ -175,6 +201,8 @@ type Shaping = Pin<Box<dyn Future<Output = (LaneStream, Result<Shaped, JobError>
 struct Op {
     lane: usize,
     epoch: u64,
+    /// The columns of the batch's rows, at their own types.
+    rows: Columns,
     fut: Shaping,
 }
 
@@ -247,11 +275,15 @@ struct Stats {
     mid_follow: usize,
     /// A batch shaped again for a version taken while it was shaped.
     reshaped: usize,
+    /// Under ignore_new, a batch that dropped or cast a column of its rows
+    /// that the owner's newest version takes as the rows have it.
+    left_out: usize,
 }
 
 struct Model {
     rng: Rng,
     broken: Option<Broken>,
+    policy: SchemaPolicy,
     dir: tempfile::TempDir,
     owned: Owned,
     engines: Vec<Engine>,
@@ -272,6 +304,10 @@ impl Model {
         let mut m = Self {
             rng: Rng(seed),
             broken,
+            policy: match seed % 4 {
+                3 => SchemaPolicy::IgnoreNew,
+                _ => SchemaPolicy::Block,
+            },
             dir: tempfile::tempdir().unwrap(),
             owned: Owned {
                 epochs: vec![0],
@@ -300,7 +336,7 @@ impl Model {
                 let mut req = crate::plan::tests::lanes_request(&["a"], lanes, lanes);
                 req.remote_schemas = true;
                 req.first_epoch = first_epoch;
-                req.schema_policy = SchemaPolicy::Block as i32;
+                req.schema_policy = self.policy as i32;
                 req.streams[0].primary_key = vec!["id".into()];
                 let mut holds = HoldPlan::default();
                 if let Some(r) = restored {
@@ -392,6 +428,7 @@ impl Model {
         }
         let e = ready[self.rng.below(ready.len())];
         let rows = self.rows();
+        let of_rows = rows_columns(&rows);
         let lane = self.rng.below(self.engines[e].lanes.len());
         let engine = &mut self.engines[e];
         let epoch = engine.lanes[lane].1;
@@ -440,7 +477,12 @@ impl Model {
             (ls, out)
         });
         engine.midway = Some(midway);
-        engine.op = Some(Op { lane, epoch, fut });
+        engine.op = Some(Op {
+            lane,
+            epoch,
+            rows: of_rows,
+            fut,
+        });
         self.poll(e, stats)
     }
 
@@ -462,7 +504,11 @@ impl Model {
         let Some((ls, out)) = done else {
             return Ok(());
         };
-        let lane = engine.op.take().unwrap().lane;
+        let Op {
+            lane,
+            rows: of_rows,
+            ..
+        } = engine.op.take().unwrap();
         if let Some(m) = engine.midway.take() {
             let m = m.get();
             stats.mid_shape += m.took;
@@ -488,6 +534,14 @@ impl Model {
             stats.later_in_earlier += 1;
         }
         let cols = columns(&shaped.batch.schema());
+        if self.policy == SchemaPolicy::IgnoreNew && !self.owned.schema.is_empty() {
+            let newest = columns(&ipc::decode_schema(&self.owned.schema).unwrap());
+            let left_out = of_rows.iter().any(|(c, t)| {
+                let has = |to: &Columns| to.iter().any(|(n, to)| n == c && fits(c, t, to));
+                has(&newest) && !has(&cols)
+            });
+            stats.left_out += usize::from(left_out);
+        }
         // After the first record, the destination takes no other column and
         // no other type.
         if let Some(first) = &self.first
@@ -727,7 +781,7 @@ fn run(seed: u64, broken: Option<Broken>, stats: &mut Stats) -> Result<(), Strin
 
 /// The seeds to run, and whether they replay one: OPENETL_SCHEMA_SEED's
 /// alone, or the first OPENETL_SCHEMA_SEEDS, 300 without it. A value that
-/// isn't a number fails the test.
+/// isn't a number fails the test, as does a sweep of no seeds.
 fn seeds() -> (Vec<u64>, bool) {
     let var = |name: &str| match std::env::var(name) {
         Ok(s) => Some(
@@ -739,10 +793,11 @@ fn seeds() -> (Vec<u64>, bool) {
     };
     match var("OPENETL_SCHEMA_SEED") {
         Some(s) => (vec![s], true),
-        None => (
-            (0..var("OPENETL_SCHEMA_SEEDS").unwrap_or(300)).collect(),
-            false,
-        ),
+        None => {
+            let n = var("OPENETL_SCHEMA_SEEDS").unwrap_or(300);
+            assert!(n > 0, "OPENETL_SCHEMA_SEEDS=0 runs no seeds");
+            ((0..n).collect(), false)
+        }
     }
 }
 
@@ -770,6 +825,7 @@ fn the_schema_protocol_keeps_its_invariants() {
         stats.mid_shape,
         stats.mid_follow,
         stats.reshaped,
+        stats.left_out,
     ];
     if !replay && seeds.len() >= 300 {
         assert!(reached.iter().all(|&n| n > 0), "{stats:#?}");
