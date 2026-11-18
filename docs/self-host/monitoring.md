@@ -68,6 +68,28 @@ A SQL transform's group window, `OVER` or dedupe is a stateful operator: it keep
 
 The console's **SQL** tab shows the same numbers for the last checkpoint ([SQL](../use/sql.md#sql)).
 
+### OVER and dedupe
+
+The same metrics describe `OVER` and dedupe, with these meanings:
+
+| Instrument | `OVER` | First-row dedupe | Latest-row dedupe |
+|---|---|---|---|
+| `openetl.operator.rows.in` | Rows of the stream | Rows of the stream | Rows of the stream |
+| `openetl.operator.rows.written` | One insert for each row, once the watermark passes its time, but rows that the output quarantined | One insert for each key's first row, and again after each retention, but rows that the output quarantined | An insert for each new key, an update for each later row of a key, and a delete where a filter after the dedupe drops a key's latest row, but rows that the output quarantined |
+| `openetl.operator.rows.repeats` | 0 | Rows of a key that it keeps, which it dropped | Rows no later than their key's latest, which it dropped |
+| `openetl.operator.rows.late` | Rows that came after the watermark had passed their time | Rows of a key that it does not keep, which came after the watermark had passed their time | 0 |
+| `openetl.operator.windows` | 0 | The keys that it keeps | The keys that it keeps |
+| `openetl.operator.watermark.lag` | How far the watermark was behind the time of the commit. Rows wait until the watermark passes their time. | As for `OVER`, for the rows of keys that it does not keep | As for `OVER`. Rows do not wait for the watermark. |
+| `openetl.operator.state.memory` | The partitions' frames, and the rows that wait | The kept keys, and the rows that wait | The kept keys |
+
+Alert on these:
+
+- An increase of `openetl.operator.rows.late` over a recent interval, such as the last 15 minutes, for `OVER` or a first-row dedupe. The engine quarantined those rows with the code `late`. Set a longer `watermark.delay` on the stream. The counter does not go down, so an alert on its total never clears.
+- `openetl.operator.watermark.lag` that keeps growing. A split is behind or holds the watermark back. Rows of `OVER` and of a first-row dedupe wait until the watermark passes their time, so they are written later.
+- `openetl.operator.state.memory` that nears half of the job's memory, as a warning. The run fails with `RESOURCE_EXHAUSTED` when the state holds more than that and the engine is also near its memory limit. Set a shorter `dedupe.retention` for a first-row dedupe, or a larger `resources.size`.
+
+A rise in `openetl.operator.rows.repeats` is not an error. It can mean that a producer sends rows again, or that a pipeline read rows again after a failure.
+
 ## Placement signals
 
 Orchestrators export the same placement view, refreshed every 10 seconds. Use `max`, rather than summing replicas, when aggregating that view.

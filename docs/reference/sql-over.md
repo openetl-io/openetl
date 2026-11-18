@@ -34,7 +34,7 @@ FROM orders;
 | `sum(X)`, `avg(X)` | As the [aggregates](./sql-windows.md#aggregates) of a group window give them, over the frame's rows |
 | `min(X)`, `max(X)` | The frame's least or greatest value of a number, text, binary, a boolean, a date, a time, a timestamp or a UUID |
 | `first_value(X)` | `X` on the frame's first row. It takes the types that `min` takes. |
-| `lag(X)`, `lag(X, N)`, `lag(X, N, DEFAULT)` | `X` on the row `N` rows before the current one, 1 by default, or `DEFAULT` where there is none, null by default. `N` is a constant whole number, 1 or more, and `DEFAULT` a constant. `lag` takes no frame. |
+| `lag(X)`, `lag(X, N)`, `lag(X, N, DEFAULT)` | `X` on the row `N` rows before the current one, 1 by default, or `DEFAULT` where there is none, null by default. `N` is a constant whole number, 1 or more, and `DEFAULT` a constant. `lag` takes no frame: a frame written on it is ignored, and keeps the operator's ID. |
 
 - `mean` is another name for `avg`.
 - `FILTER (WHERE …)` after an aggregate counts only the frame's rows where its condition is true, and evaluates the aggregate's argument only on those rows. A row it leaves out still takes its place in a `ROWS` frame.
@@ -109,7 +109,7 @@ A row waits until the stream's watermark passes its event time, so every row of 
 
 ### Changing an OVER statement
 
-The operator's ID is a hash of what it computes and keeps: the output's name, the stream, the event-time column and its type, the `PARTITION BY` columns and their types, each function with its argument, `FILTER`, frame and types, the filters and `UNNEST` before it, and its state's layout. These edits keep the ID:
+The operator's ID is a hash of what it computes and keeps: the output's name, the stream, the event-time column and its type, the `PARTITION BY` columns and their types, each function with its argument, `FILTER`, frame and types (`lag` has no frame), the filters and `UNNEST` before it, and its state's layout. These edits keep the ID:
 
 - Formatting, comments, other names for columns, aliases and views that rename columns.
 - The order of the `PARTITION BY` columns and of the functions.
@@ -117,7 +117,7 @@ The operator's ID is a hash of what it computes and keeps: the output's name, th
 - `QUALIFY`, and filters and projections after `OVER`.
 - Other statements, and the order of the statements.
 
-Another output name, `PARTITION BY`, function, argument, `FILTER` or frame, a filter or `UNNEST` before `OVER`, and a change of type of the event-time column, a `PARTITION BY` column or a function's argument give a new ID. The new operator's state starts empty, and the plan shows it as [Changing a query](./sql-windows.md#changing-a-query) describes:
+Another output name, `PARTITION BY`, function, argument, `FILTER` or frame (but a frame written on `lag`, which `lag` ignores), a filter or `UNNEST` before `OVER`, and a change of type of the event-time column, a `PARTITION BY` column or a function's argument give a new ID. The new operator's state starts empty, and the plan shows it as [Changing a query](./sql-windows.md#changing-a-query) describes:
 
 ```text
     1:1  running_revenue  over-81fa38d0e7ba7bb2  new  over by created_at on region: lag(amount, 1), sum(amount) range unbounded; keeps each key's frame, and its rows until the watermark passes them; starts empty

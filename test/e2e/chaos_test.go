@@ -70,7 +70,7 @@ type chaosConfig struct {
 	// postgres, iceberg or kafka.
 	dest       string
 	continuous bool
-	// "", flink, spark, sql or window.
+	// "", flink, spark, sql, window, dedupe or over.
 	transform   string
 	parallelism int
 	// merge or append.
@@ -257,7 +257,7 @@ func (c chaosConfig) onWorkers() bool {
 // lanes reports whether the run's job runs as many lanes as its size: a
 // SQL transform runs in each of them.
 func (c chaosConfig) lanes() bool {
-	return c.transform == "" || c.transform == "sql" || c.transform == "window" || c.transform == "dedupe"
+	return c.transform == "" || c.transform == "sql" || c.transform == "window" || c.transform == "dedupe" || c.transform == "over"
 }
 
 func (c chaosConfig) name() string {
@@ -473,9 +473,10 @@ func TestChaosChecks(t *testing.T) {
 		chaosConfig{source: "cdc", continuous: true, write: "merge", dest: "postgres", transform: "sql"},
 		chaosConfig{source: "cdc", continuous: true, write: "append", dest: "postgres", transform: "sql"},
 		chaosConfig{source: "cdc", write: "append", dest: "kafka", transform: "sql"})
-	// A run with group windows, and one with dedupes.
+	// A run with group windows, one with dedupes and one with OVER.
 	kinds = append(kinds, chaosConfig{source: "kafka", continuous: true, write: "merge", dest: "postgres", transform: "window"},
-		chaosConfig{source: "kafka", continuous: true, write: "append", dest: "postgres", transform: "dedupe"})
+		chaosConfig{source: "kafka", continuous: true, write: "append", dest: "postgres", transform: "dedupe"},
+		chaosConfig{source: "kafka", continuous: true, write: "append", dest: "postgres", transform: "over"})
 	for i, c := range kinds {
 		plants := []string{plantLoss, plantExtra}
 		if c.holds {
@@ -597,7 +598,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	var pipeline string
 	s.pg.do(func() {
 		switch {
-		case c.transform == "window" || c.transform == "dedupe":
+		case c.transform == "window" || c.transform == "dedupe" || c.transform == "over":
 			w = newWindowWork(t, c, name)
 		case c.source == "kafka":
 			w = newKafkaWork(t, c, name, &s.pg)

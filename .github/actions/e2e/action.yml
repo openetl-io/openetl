@@ -54,6 +54,15 @@ runs:
         python3 -m venv "$RUNNER_TEMP/dbt"
         "$RUNNER_TEMP/dbt/bin/pip" install --quiet dbt-core==1.12.6 dbt-postgres==1.11.0
         echo "OPENETL_DBT=$RUNNER_TEMP/dbt/bin/dbt" >> "$GITHUB_ENV"
+    # The running total's test compares with DuckDB's CLI, as ci's SQL
+    # suites do, and fails without it on CI.
+    - name: DuckDB's CLI
+      shell: bash
+      run: |
+        curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/duckdb.zip" https://github.com/duckdb/duckdb/releases/download/v1.5.1/duckdb_cli-linux-amd64.zip
+        echo "7414b29d4e77ae833ff170a489a59b74331f96d3fde72aa3bb8437dedbcea180  $RUNNER_TEMP/duckdb.zip" | sha256sum -c -
+        unzip -q "$RUNNER_TEMP/duckdb.zip" -d "$RUNNER_TEMP/duckdb"
+        echo "OPENETL_DUCKDB=$RUNNER_TEMP/duckdb/duckdb" >> "$GITHUB_ENV"
     # The images pull and the services start while the rest builds.
     - name: Start Postgres, S3, Kafka, Kinesis, Spark and Flink, and Temporal if it's what's tested
       shell: bash

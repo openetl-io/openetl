@@ -26,6 +26,77 @@ stream plain key(id)
   amount int64
   at timestamp
 
+# The docs' example, which pins the operator's ID they show: each order
+# with its region's revenue so far, and the amount of the order before it.
+plan
+INSERT INTO running_revenue
+SELECT id, region, amount, created_at,
+  sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS revenue_so_far,
+  lag(amount) OVER (PARTITION BY region ORDER BY created_at) AS previous_amount
+FROM orders;
+----
+statement 1:1 running_revenue over
+  inputs orders
+  key id
+  schema id Int64 not null, region Utf8, amount Decimal128(12, 2), created_at Timestamp(µs, "UTC"), revenue_so_far Decimal128(22, 2), previous_amount Decimal128(12, 2)
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Lag { offset: 1, default: None }(orders.amount): Decimal128(12, 2)
+  function Sum(orders.amount) Range { preceding: None }: Decimal128(22, 2)
+  computes lag(amount, 1); sum(amount) range unbounded
+  framed id, region, amount, created_at, lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, region, amount, created_at, revenue_so_far := sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, previous_amount := lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id, region -> region, amount -> amount, created_at -> created_at
+  operator over-81fa38d0e7ba7bb2
+
+# The same with its frames written out: ORDER BY alone is RANGE BETWEEN
+# UNBOUNDED PRECEDING AND CURRENT ROW, lag's offset is 1 by default, and
+# lag takes no frame, so a ROWS frame on it changes nothing. The ID is the
+# same.
+plan
+INSERT INTO running_revenue
+SELECT id, region, amount, created_at,
+  sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS revenue_so_far,
+  lag(amount, 1) OVER (PARTITION BY region ORDER BY created_at ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS previous_amount
+FROM orders;
+----
+statement 1:1 running_revenue over
+  inputs orders
+  key id
+  schema id Int64 not null, region Utf8, amount Decimal128(12, 2), created_at Timestamp(µs, "UTC"), revenue_so_far Decimal128(22, 2), previous_amount Decimal128(12, 2)
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Lag { offset: 1, default: None }(orders.amount): Decimal128(12, 2)
+  function Sum(orders.amount) Range { preceding: None }: Decimal128(22, 2)
+  computes lag(amount, 1); sum(amount) range unbounded
+  framed id, region, amount, created_at, lag(orders.amount,Int64(1)) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN 1 PRECEDING AND CURRENT ROW, sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, region, amount, created_at, revenue_so_far := sum(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, previous_amount := lag(orders.amount,Int64(1)) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN 1 PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id, region -> region, amount -> amount, created_at -> created_at
+  operator over-81fa38d0e7ba7bb2
+
+# mean is avg by another name, and lag takes an offset without a default.
+plan
+INSERT INTO x SELECT id, mean(qty) OVER (PARTITION BY region ORDER BY created_at ROWS 3 PRECEDING) AS m,
+  lag(amount, 3) OVER (PARTITION BY region ORDER BY created_at) AS third
+FROM orders
+----
+statement 1:1 x over
+  inputs orders
+  key id
+  schema id Int64 not null, m Float64, third Decimal128(12, 2)
+  reads orders: id, region, amount, qty, created_at
+  over by created_at on region
+  function Avg(CAST(orders.qty AS Float64)) Rows { preceding: Some(3) }: Float64
+  function Lag { offset: 3, default: None }(orders.amount): Decimal128(12, 2)
+  computes avg(cast(qty as float64)) rows 3; lag(amount, 3)
+  framed id, region, amount, qty, created_at, avg(orders.qty) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN 3 PRECEDING AND CURRENT ROW, lag(orders.amount,Int64(3)) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, m := avg(orders.qty) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] ROWS BETWEEN 3 PRECEDING AND CURRENT ROW, third := lag(orders.amount,Int64(3)) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id
+  operator over-1746b8b6f79c8ea7
+
 # A running total: ORDER BY alone is RANGE BETWEEN UNBOUNDED PRECEDING AND
 # CURRENT ROW. The output keeps the stream's key.
 plan
@@ -316,7 +387,7 @@ error bind 1:1 there's no sum(Utf8): CAST the argument to a type it takes
 plan
 INSERT INTO x SELECT id, first_value(tags) OVER (PARTITION BY customer ORDER BY created_at) AS f FROM orders
 ----
-error unsupported 1:26 first_value takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)
+error unsupported 1:26 first_value takes a number, text, binary, a boolean, a date, a time, a timestamp or a UUID, not List(Utf8)
 
 plan
 INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY customer ORDER BY created_at) FROM orders
@@ -363,6 +434,159 @@ INSERT INTO x SELECT id, unnest(tags) AS tag, count(*) OVER (PARTITION BY region
 error unsupported 1:1 UNNEST of OVER's rows isn't supported: unnest the stream's rows before OVER, in a view
 
 plan
+INSERT INTO x SELECT id, sum(DISTINCT amount) OVER (PARTITION BY customer ORDER BY created_at) AS s FROM orders
+----
+error unsupported 1:26 sum(DISTINCT …) isn't supported over a frame
+
+plan
+INSERT INTO x SELECT id, avg(DISTINCT qty) OVER (PARTITION BY customer ORDER BY created_at) AS a FROM orders
+----
+error unsupported 1:26 avg(DISTINCT …) isn't supported over a frame
+
+plan
+INSERT INTO x SELECT id, lag(amount) IGNORE NULLS OVER (PARTITION BY customer ORDER BY created_at) AS l FROM orders
+----
+error unsupported 1:26 lag(…) IGNORE NULLS isn't supported
+
+plan
+INSERT INTO x SELECT id, first_value(amount) FILTER (WHERE qty > 1) OVER (PARTITION BY customer ORDER BY created_at) AS f FROM orders
+----
+error unsupported 1:26 first_value takes no FILTER, which is for aggregates
+
+plan
+INSERT INTO x SELECT id, lag(amount, 1, amount) OVER (PARTITION BY customer ORDER BY created_at) AS l FROM orders
+----
+error unsupported 1:26 lag's default is a constant, of the value's type
+
+plan
+INSERT INTO x SELECT id, dense_rank() OVER (PARTITION BY region ORDER BY created_at) AS r FROM orders
+----
+error later_tier updating 1:26 dense_rank(): transforms don't run updating statements yet (tier 5)
+
+# A frame that starts after the current row.
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at ROWS BETWEEN 1 FOLLOWING AND CURRENT ROW) AS total FROM orders
+----
+error unsupported 1:26 a frame starts before the current row, or at it
+
+# A RANGE frame's offset is an interval of whole microseconds.
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN INTERVAL '1 nanosecond' PRECEDING AND CURRENT ROW) AS total FROM orders
+----
+error unsupported 1:26 a RANGE frame's offset is whole microseconds
+
+# A RANGE frame's offset that is a number, not an INTERVAL, which binding
+# would read as months.
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN 5 PRECEDING AND CURRENT ROW) AS total FROM orders
+----
+error unsupported 1:26 a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'
+
+# The same in parentheses.
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN (5) PRECEDING AND CURRENT ROW) AS total FROM orders
+----
+error unsupported 1:26 a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'
+
+# lag takes no frame, so one written on it, of a number too, is ignored:
+# the two give one ID.
+plan
+INSERT INTO x SELECT id, lag(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN 5 PRECEDING AND CURRENT ROW) AS before FROM orders
+----
+statement 1:1 x over
+  inputs orders
+  key id
+  schema id Int64 not null, before Decimal128(12, 2)
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Lag { offset: 1, default: None }(orders.amount): Decimal128(12, 2)
+  computes lag(amount, 1)
+  framed id, region, amount, created_at, lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN 5 PRECEDING AND CURRENT ROW
+  project id, before := lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN 5 PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id
+  operator over-e9f61fb3819d220e
+
+plan
+INSERT INTO x SELECT id, lag(amount) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders
+----
+statement 1:1 x over
+  inputs orders
+  key id
+  schema id Int64 not null, before Decimal128(12, 2)
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Lag { offset: 1, default: None }(orders.amount): Decimal128(12, 2)
+  computes lag(amount, 1)
+  framed id, region, amount, created_at, lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, before := lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id
+  operator over-e9f61fb3819d220e
+
+# PARTITION BY a struct, and OVER by an event time that isn't a timestamp.
+stream shapes key(id) time(at)
+  id int64 not null
+  place struct<region utf8; zone int64>
+  amount int64
+  at timestamp
+
+stream counted key(id) time(seq)
+  id int64 not null
+  amount int64
+  seq int64
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY place ORDER BY at) AS total FROM shapes
+----
+error unsupported 1:26 OVER can't partition by place, of type Struct("region": Utf8, "zone": Int64)
+
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY id ORDER BY seq) AS total FROM counted
+----
+error unsupported 1:26 OVER goes by a timestamp, not Int64
+
+plan
 INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY random() ORDER BY created_at) AS total FROM orders
 ----
 error not_deterministic 1:57 random() isn't deterministic, so it can't feed a window's partition
+
+# The end-to-end test's running total over a Kafka topic's own columns,
+# which DuckDB's answer checks.
+stream clicks time(_kafka_timestamp)
+  _kafka_partition int32 not null
+  _kafka_offset int64 not null
+  _kafka_timestamp timestamp not null
+  _kafka_key utf8
+
+plan
+INSERT INTO running
+SELECT _kafka_key AS k, _kafka_partition AS p, _kafka_offset AS o,
+  sum(_kafka_offset) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS total,
+  count(*) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS recent,
+  max(_kafka_offset) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp RANGE BETWEEN INTERVAL '1 second' PRECEDING AND CURRENT ROW) AS top,
+  min(_kafka_offset) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp ROWS UNBOUNDED PRECEDING) AS lowest,
+  lag(_kafka_offset) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS prev,
+  lag(_kafka_offset, 3, -1) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS third,
+  first_value(_kafka_partition) OVER (PARTITION BY _kafka_key ORDER BY _kafka_timestamp) AS first_p
+FROM clicks
+----
+statement 1:1 running over
+  inputs clicks
+  key 
+  schema k Utf8, p Int32 not null, o Int64 not null, total Int64, recent Int64 not null, top Int64, lowest Int64, prev Int64, third Int64, first_p Int32
+  reads clicks: _kafka_partition, _kafka_offset, _kafka_timestamp, _kafka_key
+  over by _kafka_timestamp on _kafka_key
+  function Count(*) Rows { preceding: Some(2) }: Int64
+  function FirstValue(clicks._kafka_partition) Range { preceding: None }: Int32
+  function Lag { offset: 1, default: None }(clicks._kafka_offset): Int64
+  function Lag { offset: 3, default: Some(Int64(-1)) }(clicks._kafka_offset): Int64
+  function Max(clicks._kafka_offset) Range { preceding: Some(1000000) }: Int64
+  function Min(clicks._kafka_offset) Rows { preceding: None }: Int64
+  function Sum(clicks._kafka_offset) Range { preceding: None }: Int64
+  computes count(*) rows 2; first_value(_kafka_partition) range unbounded; lag(_kafka_offset, 1); lag(_kafka_offset, 3, "-1"::int64); max(_kafka_offset) range 1000000; min(_kafka_offset) rows unbounded; sum(_kafka_offset) range unbounded
+  framed _kafka_partition, _kafka_offset, _kafka_timestamp, _kafka_key, count(Int64(1)) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW, first_value(clicks._kafka_partition) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, lag(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, lag(clicks._kafka_offset,Int64(3),Int64(-1)) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, max(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN 1 second PRECEDING AND CURRENT ROW, min(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, sum(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project k := clicks._kafka_key, p := clicks._kafka_partition, o := clicks._kafka_offset, total := sum(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, recent := count(Int64(1)) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] ROWS BETWEEN 2 PRECEDING AND CURRENT ROW, top := max(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN 1 second PRECEDING AND CURRENT ROW, lowest := min(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, prev := lag(clicks._kafka_offset) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, third := lag(clicks._kafka_offset,Int64(3),Int64(-1)) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, first_p := first_value(clicks._kafka_partition) PARTITION BY [clicks._kafka_key] ORDER BY [clicks._kafka_timestamp ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need _kafka_key
+  passes _kafka_partition -> p, _kafka_offset -> o, _kafka_key -> k
+  operator over-ad10d2240da82c49

@@ -21,7 +21,8 @@
 //! `stream` adds a stream to the catalog the cases after it plan against,
 //! with a column per indented line; a name with spaces or quotes is written
 //! in double quotes, and a `json` column is a string the engine marks as
-//! JSON, as a schema shows with `(json)`. `reset` empties the catalog.
+//! JSON, as a schema shows with `(json)`, and a `struct<a utf8; b int64>`
+//! column has a field for each part. `reset` empties the catalog.
 //! `plan` gives SQL, then `----` and what planning gives. Run with
 //! `OPENETL_SQL_REWRITE=1` to write what each case gives into its file.
 
@@ -227,6 +228,18 @@ fn data_type(t: &str) -> Result<DataType, String> {
         _ => {
             if let Some(item) = t.strip_prefix("list<").and_then(|t| t.strip_suffix('>')) {
                 DataType::List(Arc::new(Field::new_list_field(data_type(item)?, true)))
+            } else if let Some(fields) = t.strip_prefix("struct<").and_then(|t| t.strip_suffix('>'))
+            {
+                // `struct<a utf8; b int64>`: `;` between fields, as a
+                // decimal's type has a comma.
+                let fields = fields
+                    .split(';')
+                    .map(|f| {
+                        let (name, t) = word(f);
+                        Ok(Field::new(name, data_type(t)?, true))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                DataType::Struct(fields.into())
             } else if let Some(ps) = t.strip_prefix("decimal(").and_then(|t| t.strip_suffix(')')) {
                 let (p, s) = ps.split_once(',').ok_or(t.to_string())?;
                 DataType::Decimal128(
