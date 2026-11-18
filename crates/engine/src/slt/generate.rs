@@ -153,6 +153,9 @@ pub(super) struct Compared {
     /// The queries compared as translated pairs: ours, then DuckDB's SQL
     /// for the same query.
     pub pairs: usize,
+    /// The comparisons it ran: each query both engines run, over each
+    /// seed's rows.
+    pub compared: usize,
 }
 
 /// The mismatches of a file's queries over each seed's rows.
@@ -256,6 +259,7 @@ pub(super) fn compare(file: &Path, bin: &Path, seeds: &[u64]) -> Result<Compared
     }
     let mut mismatches = Vec::new();
     let mut used = Vec::new();
+    let mut compared = 0;
     for &seed in seeds {
         let mut rng = Rng(seed);
         let mut ours = Ours::default();
@@ -300,6 +304,7 @@ pub(super) fn compare(file: &Path, bin: &Path, seeds: &[u64]) -> Result<Compared
                 .collect()
         });
         for (q, duck) in queries.iter().zip(theirs) {
+            compared += 1;
             let ours = match ours.query(&q.sql, true) {
                 Ok(ran) => Got::Rows(sorted(ran.rows), ran.quarantined.len()),
                 Err(e) => Got::Failed(e.0),
@@ -326,6 +331,7 @@ pub(super) fn compare(file: &Path, bin: &Path, seeds: &[u64]) -> Result<Compared
         mismatches,
         used,
         pairs,
+        compared,
     })
 }
 

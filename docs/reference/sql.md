@@ -7,6 +7,7 @@ description: The statements, names, types, operators and functions a pipeline's 
 |---|---|
 | Statement syntax and names | [Statements](#statements) |
 | Time windows and aggregates | [SQL group windows](./sql-windows.md) |
+| Running totals and the rows before a row | [SQL OVER](./sql-over.md) |
 | Operators, data types and casts | [SQL expressions and types](./sql-expressions.md) |
 | Built-in functions | [SQL functions](./sql-functions.md) |
 | Unsupported operations and error messages | [SQL restrictions and errors](./sql-errors.md) |
@@ -15,7 +16,7 @@ A SQL transform is the `transform.sql` field of a [Pipeline](./specs/pipeline.md
 
 The engine runs row-wise statements. Each output row comes from one input row or one list element expanded with `UNNEST`.
 
-The engine also runs [group windows](./sql-windows.md#group-windows). These aggregate a stream's rows by windows of event time. Unsupported statements fail with their position in the SQL text. [SQL restrictions and errors](./sql-errors.md#whats-refused) lists the messages.
+The engine also runs [group windows](./sql-windows.md#group-windows). These aggregate a stream's rows by windows of event time. It runs [`OVER`](./sql-over.md#over), which gives each row values over the rows before it, such as a running total. Unsupported statements fail with their position in the SQL text. [SQL restrictions and errors](./sql-errors.md#whats-refused) lists the messages.
 
 ## Statements
 
@@ -88,6 +89,7 @@ A view's name is one identifier, never qualified. Quote a name that has dots. An
 | Literals | `'eu' AS region`, `1 AS version` | A `NULL` literal needs a cast: `CAST(NULL AS VARCHAR) AS note` |
 | Filter rows | `WHERE status = 'paid'` | |
 | One row for each element of a list | `SELECT id, unnest(tags) AS tag` | See [UNNEST](#unnest) |
+| Values over the rows before each row | `sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS total` | See [OVER](./sql-over.md#over) |
 | Read a view or a subquery | `FROM paid_orders`, `FROM (SELECT …) AS t` | |
 
 ### UNNEST

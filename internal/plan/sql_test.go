@@ -248,7 +248,54 @@ func TestGroupWindowReads(t *testing.T) {
 		{"changes", apiv1.SyncMode_SYNC_MODE_CDC, "", ""},
 	} {
 		in := Input{Name: "events", Read: c.read, Cursor: c.cursor, Spec: &apiv1.PipelineStream{Name: "events", EventTime: "at"}}
-		got := errors.Join(windowProblems(a, []Input{in}, []Output{{Name: "minutes", Mode: destination.Merge}})...)
+		got := errors.Join(windowProblems(a, []Input{in}, []Output{{Name: "minutes", Mode: destination.Merge}}, warehouse)...)
+		switch {
+		case c.want == "" && got != nil:
+			t.Errorf("%s: %v", c.name, got)
+		case c.want != "" && (got == nil || !strings.Contains(got.Error(), c.want)):
+			t.Errorf("%s: %v, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// OVER takes a stream read whole, or in the order of its event time, as a
+// group window does. It takes no lateness, unless a group window reads the
+// stream too, which takes it. Merged on several writer lanes, its output's
+// primary key holds its PARTITION BY, which its rows reach the writer lanes
+// by.
+func TestOverReadsLatenessAndMerges(t *testing.T) {
+	over := sqlplan.Statement{Output: "totals", Class: "over", Inputs: []string{"events"}, Operator: "over-1",
+		Need: []string{"region"}, Passes: map[string]string{"id": "id", "region": "area"}, Key: []string{"id"}}
+	window := sqlplan.Statement{Output: "minutes", Class: "group_window", Inputs: []string{"events"}, Operator: "window-1"}
+	lanes := warehouse
+	lanes.WriterLanes = 4
+	for _, c := range []struct {
+		name     string
+		a        []sqlplan.Statement
+		read     apiv1.SyncMode
+		cursor   string
+		lateness time.Duration
+		out      Output
+		caps     destination.Capabilities
+		want     string
+	}{
+		{name: "read whole", a: []sqlplan.Statement{over}, read: apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, out: Output{Mode: destination.Overwrite}, caps: lanes},
+		{name: "read by its event time", a: []sqlplan.Statement{over}, read: apiv1.SyncMode_SYNC_MODE_INCREMENTAL, cursor: "at", out: Output{Mode: destination.Append}, caps: lanes},
+		{name: "read by another cursor", a: []sqlplan.Statement{over}, read: apiv1.SyncMode_SYNC_MODE_INCREMENTAL, cursor: "id", out: Output{Mode: destination.Append}, caps: lanes,
+			want: `OVER writing "totals" reads stream "events" with incremental by cursor "id", not by its eventTime "at", so each sync's rows would leave in their own order`},
+		{name: "lateness", a: []sqlplan.Statement{over}, read: apiv1.SyncMode_SYNC_MODE_STREAM, lateness: time.Minute, out: Output{Mode: destination.Append}, caps: lanes,
+			want: `stream "events" sets watermark.lateness, which OVER writing "totals" doesn't take`},
+		{name: "lateness a group window takes", a: []sqlplan.Statement{over, window}, read: apiv1.SyncMode_SYNC_MODE_STREAM, lateness: time.Minute,
+			out: Output{Mode: destination.Append}, caps: lanes},
+		{name: "merged on several writer lanes", a: []sqlplan.Statement{over}, read: apiv1.SyncMode_SYNC_MODE_STREAM, out: Output{Mode: destination.Merge, PrimaryKey: []string{"id"}}, caps: lanes,
+			want: `OVER writing "totals" gives each row to the destination's writer lane of its PARTITION BY's key group, and its primary key (id) doesn't hold PARTITION BY's columns (region)`},
+		{name: "merged on one writer lane", a: []sqlplan.Statement{over}, read: apiv1.SyncMode_SYNC_MODE_STREAM, out: Output{Mode: destination.Merge, PrimaryKey: []string{"id"}}, caps: warehouse},
+		{name: "merged by a key that holds PARTITION BY", a: []sqlplan.Statement{over}, read: apiv1.SyncMode_SYNC_MODE_STREAM,
+			out: Output{Mode: destination.Merge, PrimaryKey: []string{"area", "id"}}, caps: lanes},
+	} {
+		in := Input{Name: "events", Read: c.read, Cursor: c.cursor, Spec: &apiv1.PipelineStream{Name: "events", EventTime: "at", Watermark: &apiv1.Watermark{Lateness: durationpb.New(c.lateness)}}}
+		outs := []Output{c.out, {Name: "minutes", Mode: destination.Merge}}
+		got := errors.Join(windowProblems(&sqlplan.Answer{Statements: c.a}, []Input{in}, outs, c.caps)...)
 		switch {
 		case c.want == "" && got != nil:
 			t.Errorf("%s: %v", c.name, got)

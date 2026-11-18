@@ -169,6 +169,26 @@ func TestPathAPI(t *testing.T) {
 	}
 }
 
+// OVER exchanges its rows by PARTITION BY, and its keyed lanes give them to
+// their own writer lanes: the writer takes that partitioning with no second
+// exchange, whatever the output's key. Without PARTITION BY, every row is
+// on one lane.
+func TestOverPath(t *testing.T) {
+	st := sqlplan.Statement{Class: "over", Operator: "over-1", Need: []string{"region"}, Passes: map[string]string{"id": "id", "region": "area"}}
+	p := StatementPath(Partitioning{}, st, []string{"id"}, false)
+	if got := p.Exchanges(); !slices.Equal(got, []int{0}) {
+		t.Errorf("exchanges before steps %v, want only before OVER", got)
+	}
+	if w := p.Steps[1]; !slices.Equal(w.Need.Columns, []string{"area"}) || w.In.Kind != ByKeyGroup || !slices.Equal(w.In.Columns, []string{"area"}) {
+		t.Errorf("writer %+v", w)
+	}
+	st.Need = nil
+	p = StatementPath(Partitioning{}, st, []string{"id"}, false)
+	if got := p.Exchanges(); !slices.Equal(got, []int{0}) || p.Steps[1].In.Kind != OneLane {
+		t.Errorf("without PARTITION BY: exchanges %v, writer %+v", got, p.Steps[1])
+	}
+}
+
 // Lanes cut their writer lanes' ranges, and the same layouts as the
 // engine's layouts_match_the_runners.
 func TestLayout(t *testing.T) {

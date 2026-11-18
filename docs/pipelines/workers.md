@@ -139,6 +139,8 @@ A [group window](./sql-transforms.md#aggregate-rows-by-windows-of-time) needs ev
 
 The exchange costs what [The exchange between workers](#the-exchange-between-workers) says. A window closes when the watermark of every lane of every worker has passed its end, so the slowest split of the stream holds every worker's windows open.
 
+[`OVER`](./over.md) runs on workers in the same way, with its exchange on its `PARTITION BY` columns. The worker that owns a partition's key group keeps its frames and the rows that wait for the watermark, and writes each row with its own writer lanes, once.
+
 At each checkpoint, each worker writes the state that changed in its key groups, and the checkpoint names the state of every worker. A later attempt restores that state on any number of workers and lanes. Each worker opens the state of the key groups that it owns now. So you can change `resources.workers` without a reset.
 
 ## Schema changes and holds
@@ -174,8 +176,9 @@ With a [SQL transform](./sql-transforms.md), the next attempt runs the statement
 - Of an output without an exchange, the rows of the splits that the lane's own worker read and wrote to that lane.
 - Of an output with an exchange, the rows of the lane's keys, from every split that the statement read in the epoch, on any worker.
 - Of a group window's output, the rows of the windows of the lane's keys that the epoch closed. The next attempt starts from the state of the checkpoint before the epoch, and reads every split that the epoch read again, on any worker. Each row meets the window's watermark that it met in the epoch, and the windows close where the epoch closed them. So the next attempt writes the window rows that the lane wrote in the epoch. A row that was `late` in the epoch is late again, and a session that closed before a row came stays closed.
+- Of an output of `OVER`, the rows of the lane's partitions that the epoch's watermark passed, by the same steps. Each row meets the watermark that it met in the epoch, so a row that was `late` is late again, and every other row gets the values that it got in the epoch.
 
-For this, the checkpoint of each epoch keeps the steps of each group window's watermark in the epoch, where the destination has lane commits. A step says from which row of a split the rows met a later watermark, and which one. The checkpoint keeps a step only where a row can tell it apart. A tumbling or hopping window's watermark takes a step only when it passes the end of a window. An epoch in which the watermark did not move keeps no steps, and other pipelines' checkpoints keep none.
+For this, the checkpoint of each epoch keeps the steps of each group window's or `OVER`'s watermark in the epoch, where the destination has lane commits. A step says from which row of a split the rows met a later watermark, and which one. The checkpoint keeps a step only where a row can tell it apart. A tumbling or hopping window's watermark takes a step only when it passes the end of a window. The watermark of `OVER` takes a step at each move that a row meets. An epoch in which the watermark did not move keeps no steps, and other pipelines' checkpoints keep none.
 
 After 1,024 steps of a window's watermark in an epoch, a lane that keeps the window's state holds the watermark until the checkpoint. The rows of each split can then take one more step, to the held watermark. So a lane keeps at most 1,024 steps of a window in an epoch, and one more for each split whose rows reach it. A row that comes after that is late only if it is behind the held watermark. The windows that the watermark passes in that time close at the checkpoint, and are committed with the epoch, as before.
 

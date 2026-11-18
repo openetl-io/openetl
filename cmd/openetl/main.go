@@ -596,6 +596,13 @@ func printOperators(out io.Writer, ops []*apiv1.OperatorPlan) {
 
 func operatorText(op *apiv1.OperatorPlan) string {
 	var what string
+	if op.GetClass() == "over" {
+		what = "over by " + op.GetEventTime()
+		if len(op.GetKeys()) > 0 {
+			what += " on " + strings.Join(op.GetKeys(), ", ")
+		}
+		what += ": " + strings.Join(op.GetAggregates(), ", ") + "; keeps each key's frame, and its rows until the watermark passes them"
+	}
 	if op.GetWindow() != "" {
 		what = op.GetWindow() + " " + op.GetSize().AsDuration().String()
 		if s := op.GetSlide(); s != nil {

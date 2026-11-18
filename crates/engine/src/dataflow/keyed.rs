@@ -1,15 +1,18 @@
-//! Keyed lanes: where a group window's statement runs. A lane that reads a
-//! window's stream sends each typed row to the keyed lane owning the key
-//! group of the window's keys, and its barriers, watermarks and end to every
-//! keyed lane: the exchange before the statement. Keyed lanes are the
+//! Keyed lanes: where a statement with state runs, a group window or
+//! `OVER`. A lane that reads the statement's stream sends each typed row to
+//! the keyed lane owning the key group of the operator's keys, the window's
+//! group keys or `OVER`'s `PARTITION BY`, and its barriers, watermarks and
+//! end to every keyed lane: the exchange before the statement. Keyed lanes are the
 //! attempt's lanes' twins, each owning its lane's key groups: inside one
 //! engine they're its channels, and with a mesh, other engines' are reached
 //! over their links (see [`crate::mesh`]). Each keyed lane aligns every
 //! sender of the attempt on each barrier, as a writer lane does, runs the
-//! window on its key groups' state, then names and holds the output as a
+//! operator on its key groups' state, then names and holds the output as a
 //! lane does and sends it to its own writer lane, in its own engine: its
 //! range is inside that writer lane's, so an output keyed by the window's
-//! keys needs no second exchange.
+//! keys needs no second exchange. `OVER`'s output, keyed by its input's
+//! key, takes no second exchange either: each of its rows leaves once, on
+//! the writer lane of its `PARTITION BY`'s key group.
 //!
 //! The watermark of a window is the least of its senders', each the
 //! stream's on that lane, which comes after the rows that moved it, from
@@ -63,17 +66,20 @@ use crate::error::JobError;
 use crate::frame;
 use crate::ipc;
 use crate::mesh::Target;
+use crate::over;
 use crate::plan::Plan;
+use crate::transform::Keyed as Planned;
 use crate::watermark::{self, Senders, Steps};
-use crate::window::{Operator, Out};
+use crate::window::{self, Out};
 
 /// Each row's cell the stream holds, of a column the statement reads: the
 /// column and why.
 type Held = Vec<Option<(String, String)>>;
 
-/// What a lane sends a keyed lane, for a window's statement by its index.
+/// What a lane sends a keyed lane, for a stateful statement by its index.
 pub(crate) enum In {
-    /// Rows of the statement's stream: the columns it reads. Each row the
+    /// Rows of the statement's stream: the columns it reads, and for `OVER`,
+    /// each row's record ID after them, in ID_COLUMN. Each row the
     /// statement can't read, as a cell the stream holds, has the cell's
     /// column and why it's held. With where they were read, where the
     /// epoch's steps are recorded or replayed.
@@ -117,6 +123,8 @@ const HELD_REASON: &str = "\0held_reason";
 /// Its schema's metadata of an Origin::At: the split, and the place.
 const SPLIT: &str = "\0split";
 const PLACE: &str = "\0place";
+/// The column of each row's record ID, after the columns `OVER` reads.
+const ID_COLUMN: &str = "\0id";
 
 /// A frame to another engine's keyed lane: its kind, statement and
 /// payload.
@@ -250,11 +258,11 @@ pub(crate) fn unwire(f: frame::Frame, generation: u64) -> Result<In, String> {
     }
 }
 
-/// The group windows' statements, by their index in the transform.
+/// The stateful statements, by their index in the transform.
 pub(crate) fn statements(plan: &Plan) -> Vec<usize> {
     plan.transform.as_ref().map_or_else(Vec::new, |t| {
         (0..t.sql.statements.len())
-            .filter(|&i| t.sql.statements[i].window.is_some())
+            .filter(|&i| t.sql.statements[i].keyed.is_some())
             .collect()
     })
 }
@@ -271,7 +279,7 @@ fn lane_of(lanes: &[RangeInclusive<u32>], g: u32) -> usize {
         .min(lanes.len().saturating_sub(1))
 }
 
-/// Sends the window statements' rows of a typed batch of their stream to
+/// Sends the stateful statements' rows of a typed batch of their stream to
 /// the keyed lanes owning their keys' groups: those the output keeps. `at`
 /// is the split the batch was read from, and the rows the lane read of it
 /// in the epoch before the batch.
@@ -290,10 +298,10 @@ pub(super) async fn rows(
     let mut placed: Option<(Arc<str>, Vec<u64>)> = None;
     for &i in statements {
         let st = &t.sql.statements[i];
-        let Some((window, id)) = &st.window else {
+        let Some((keyed, id)) = &st.keyed else {
             continue;
         };
-        let batch = reads(st, &typed.batch, &t.sql.inputs[st.input].name)?;
+        let batch = reads(st, keyed, &typed.batch, &t.sql.inputs[st.input].name)?;
         let mut held: Vec<Option<(String, String)>> = vec![None; batch.num_rows()];
         // A cell the stream holds is no value only for a column the
         // statement reads.
@@ -306,8 +314,12 @@ pub(super) async fn rows(
                 h.get_or_insert_with(|| (c.column.clone(), c.reason.clone()));
             }
         }
-        let groups = key_groups(&batch, &window.need, plan.key_groups)
+        let groups = key_groups(&batch, keyed.need(), plan.key_groups)
             .map_err(|e| shape_error(&t.sql.inputs[st.input].name, e.into()))?;
+        let batch = match keyed {
+            Planned::Over(_) => with_ids(&batch, &typed.ids)?,
+            Planned::Window(_) => batch,
+        };
         let keep = output_of(plan, st).and_then(|o| plan.keep[o]);
         let mut parts: Vec<Vec<u32>> = vec![Vec::new(); plan.attempt_lanes.len()];
         for (r, &g) in groups.iter().enumerate() {
@@ -395,11 +407,55 @@ async fn send(lane: &Lane, k: usize, item: In) -> Result<(), JobError> {
     sent
 }
 
+/// `batch` with each row's record ID after its columns, in ID_COLUMN.
+fn with_ids(
+    batch: &RecordBatch,
+    ids: &arrow_array::FixedSizeBinaryArray,
+) -> Result<RecordBatch, JobError> {
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    fields.push(Field::new(ID_COLUMN, ids.data_type().clone(), true));
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(ids.clone()));
+    RecordBatch::try_new_with_options(
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            batch.schema().metadata().clone(),
+        )),
+        columns,
+        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )
+    .map_err(|e| JobError::internal(e.to_string()))
+}
+
+/// `OVER`'s rows without the record IDs after them, and the IDs.
+fn without_ids(
+    batch: &RecordBatch,
+) -> Result<(RecordBatch, arrow_array::FixedSizeBinaryArray), JobError> {
+    let n = batch.num_columns();
+    let last = n.checked_sub(1);
+    let ids = last
+        .filter(|&i| batch.schema().field(i).name() == ID_COLUMN)
+        .and_then(|i| batch.column(i).as_fixed_size_binary_opt().cloned());
+    let (Some(ids), Some(last)) = (ids, last) else {
+        return Err(JobError::internal("OVER's rows without their record IDs"));
+    };
+    let rows = batch
+        .project(&(0..last).collect::<Vec<_>>())
+        .map_err(|e| JobError::internal(e.to_string()))?;
+    Ok((rows, ids))
+}
+
 /// The columns a statement reads, from a batch of its stream: null where
-/// the batch lacks one. One of another type changes what the window keeps,
-/// which needs its state built again.
+/// the batch lacks one. One of another type changes what its operator
+/// keeps, which needs its state built again.
 fn reads(
     st: &crate::transform::Statement,
+    keyed: &Planned,
     batch: &RecordBatch,
     stream: &str,
 ) -> Result<RecordBatch, JobError> {
@@ -414,11 +470,12 @@ fn reads(
                 return Err(JobError::new(
                     ErrorCode::SchemaDrift,
                     format!(
-                        "transform.sql: {}: stream {stream}'s column {} changed from {} to {}, and the group window writing {} keeps state of what it read: the pipeline's operator needs its state built again from the stream",
+                        "transform.sql: {}: stream {stream}'s column {} changed from {} to {}, and {} writing {} keeps state of what it read: the pipeline's operator needs its state built again from the stream",
                         st.at,
                         f.name(),
                         f.data_type(),
                         c.data_type(),
+                        keyed.what(),
                         st.output
                     ),
                 ));
@@ -450,13 +507,107 @@ enum Standing {
     Ended,
 }
 
-/// One window's statement on a keyed lane.
+/// A statement's stateful operator, as a keyed lane runs it.
+enum Op {
+    Window(window::Operator),
+    Over(over::Operator),
+}
+
+impl Op {
+    fn new(
+        st: &crate::transform::Statement,
+        keyed: &Planned,
+        id: &str,
+        lateness: i64,
+        key_groups: u32,
+    ) -> Result<Op, JobError> {
+        Ok(match keyed {
+            Planned::Window(w) => Op::Window(window::Operator::new(
+                id,
+                st.at,
+                w.clone(),
+                &st.output,
+                st.schema.clone(),
+                lateness,
+                key_groups,
+            )?),
+            Planned::Over(o) => Op::Over(over::Operator::new(
+                id,
+                st.at,
+                o.clone(),
+                &st.output,
+                key_groups,
+            )?),
+        })
+    }
+
+    /// Takes the state its lane opened.
+    fn open(&self, layer: &mut Layer) {
+        match self {
+            Op::Window(w) => w.open(layer),
+            Op::Over(_) => {}
+        }
+    }
+
+    /// The watermark `wm` as far as rows can tell it apart.
+    fn level(&self, wm: i64) -> i64 {
+        match self {
+            Op::Window(w) => w.level(wm),
+            Op::Over(o) => o.level(wm),
+        }
+    }
+
+    fn watermark_micros(&self) -> Option<i64> {
+        match self {
+            Op::Window(w) => w.watermark_micros(),
+            Op::Over(o) => o.watermark_micros(),
+        }
+    }
+
+    /// Takes rows of the statement's input: for `OVER`, with `ids`, their
+    /// record IDs.
+    async fn rows(
+        &mut self,
+        layer: &mut Layer,
+        input: &RecordBatch,
+        ids: Option<&arrow_array::FixedSizeBinaryArray>,
+    ) -> Result<Out, JobError> {
+        match (self, ids) {
+            (Op::Window(w), _) => w.rows(layer, input).await,
+            (Op::Over(o), Some(ids)) => o.rows(layer, input, ids).await,
+            (Op::Over(_), None) => Err(JobError::internal("OVER's rows without their record IDs")),
+        }
+    }
+
+    /// Moves the watermark to `wm`: what it gave, and whether it has more
+    /// to give at it.
+    async fn advance(&mut self, layer: &mut Layer, wm: i64) -> Result<(Out, bool), JobError> {
+        match self {
+            Op::Window(w) => Ok((w.advance(layer, wm).await?, false)),
+            Op::Over(o) => o.advance(layer, wm).await,
+        }
+    }
+
+    /// The windows, or sessions, it began keeping and stopped keeping since
+    /// the last call.
+    fn take_counts(&mut self) -> (u64, u64) {
+        match self {
+            Op::Window(w) => (
+                std::mem::take(&mut w.opened),
+                std::mem::take(&mut w.dropped),
+            ),
+            Op::Over(_) => (0, 0),
+        }
+    }
+}
+
+/// One stateful statement on a keyed lane.
 struct Keyed {
     statement: usize,
     output: usize,
     /// Its operator's ID.
     id: String,
-    op: Operator,
+    op: Op,
     layer: Layer,
     ls: LaneStream,
     standing: Vec<Standing>,
@@ -506,18 +657,16 @@ pub(super) async fn run(
     let owned = plan.layout.lane(lane.lane);
     let mut windows: Vec<Keyed> = Vec::new();
     for (i, st) in t.sql.statements.iter().enumerate() {
-        let Some((window, id)) = &st.window else {
+        let Some((keyed, id)) = &st.keyed else {
             continue;
         };
         let Some(output) = output_of(plan, st) else {
             continue;
         };
-        let op = Operator::new(
+        let op = Op::new(
+            st,
+            keyed,
             id,
-            st.at,
-            window.clone(),
-            &st.output,
-            st.schema.clone(),
             t.sql.inputs[st.input].lateness,
             plan.key_groups,
         )?;
@@ -539,8 +688,10 @@ pub(super) async fn run(
         let cant_open = |why: String| {
             let stream = &t.sql.inputs[st.input].name;
             format!(
-                "transform.sql {}: the group window writing {} can't open the state the checkpoint names, {why}. Reset stream {stream} to build the state again from a new read of it: openetl reset --stream {stream} NAME",
-                st.at, st.output
+                "transform.sql {}: {} writing {} can't open the state the checkpoint names, {why}. Reset stream {stream} to build the state again from a new read of it: openetl reset --stream {stream} NAME",
+                st.at,
+                keyed.what(),
+                st.output
             )
         };
         let (range, restored) = match range {
@@ -564,7 +715,9 @@ pub(super) async fn run(
             None => (KeyGroupRange::new(*owned.start(), *owned.end()), Vec::new()),
         };
         let Some(state) = &plan.state.job else {
-            return Err(JobError::internal("a group window without the job's state"));
+            return Err(JobError::internal(
+                "a stateful statement without the job's state",
+            ));
         };
         let mut layer = Layer::open(
             &state.stores(id),
@@ -672,7 +825,7 @@ impl Keyed {
                 let advanced = self
                     .watermarks
                     .take(sender, t)
-                    .map_err(|e| JobError::internal(format!("a keyed lane's group window: {e}")))?;
+                    .map_err(|e| JobError::internal(format!("a keyed lane's operator: {e}")))?;
                 match advanced {
                     Some(wm) if self.closes_at.is_none() && !self.holds(wm) => {
                         self.advance(lane, wm).await
@@ -762,14 +915,22 @@ impl Keyed {
         JobError::new(
             ErrorCode::ResourceExhausted,
             format!(
-                "transform.sql {at}: the redo of a writer lane's part of epoch {}, writing {output}, holds the rows that met a later watermark of the group window in the epoch until the epoch's barrier, and they need more than the {limit} it may hold, half of the job's memory. Run the pipeline with a larger resources.size, so that the next attempt can settle the epoch",
+                "transform.sql {at}: the redo of a writer lane's part of epoch {}, writing {output}, holds the rows that met a later watermark of the statement's operator in the epoch until the epoch's barrier, and they need more than the {limit} it may hold, half of the job's memory. Run the pipeline with a larger resources.size, so that the next attempt can settle the epoch",
                 plan.first_epoch
             ),
         )
     }
 
-    /// Takes rows of the window's stream, by the window's watermark now.
+    /// Takes rows of the statement's stream, by the operator's watermark
+    /// now.
     async fn rows(&mut self, lane: &Lane, batch: RecordBatch, held: Held) -> Result<(), JobError> {
+        let (batch, ids) = match &self.op {
+            Op::Over(_) => {
+                let (rows, ids) = without_ids(&batch)?;
+                (rows, Some(ids))
+            }
+            Op::Window(_) => (batch, None),
+        };
         self.counts.rows_in += batch.num_rows() as u64;
         let flow = lane.flow.clone();
         let Some(st) = flow
@@ -798,15 +959,25 @@ impl Keyed {
             })
             .collect();
         self.reject(lane, &batch, rejected)?;
-        let input = match keep.len() == batch.num_rows() {
-            true => batch.clone(),
-            false => arrow_select::take::take_record_batch(
-                &batch,
-                &UInt32Array::from_iter_values(keep.iter().map(|&r| r as u32)),
-            )
-            .map_err(|e| JobError::internal(e.to_string()))?,
+        let (input, ids) = match keep.len() == batch.num_rows() {
+            true => (batch.clone(), ids),
+            false => {
+                let at = UInt32Array::from_iter_values(keep.iter().map(|&r| r as u32));
+                let input = arrow_select::take::take_record_batch(&batch, &at)
+                    .map_err(|e| JobError::internal(e.to_string()))?;
+                let ids = match ids {
+                    Some(ids) => Some(
+                        arrow_select::take::take(&ids, &at, None)
+                            .map_err(|e| JobError::internal(e.to_string()))?
+                            .as_fixed_size_binary()
+                            .clone(),
+                    ),
+                    None => None,
+                };
+                (input, ids)
+            }
         };
-        let out = self.op.rows(&mut self.layer, &input).await?;
+        let out = self.op.rows(&mut self.layer, &input, ids.as_ref()).await?;
         self.relieve(lane).await?;
         self.counts.late += out
             .rejected
@@ -826,13 +997,19 @@ impl Keyed {
         self.give(lane, out).await
     }
 
-    /// Closes the windows the watermark `wm` passes, and passes it on to the
-    /// output's writer lane after their rows.
+    /// Closes the windows the watermark `wm` passes, or gives the rows `OVER`
+    /// has waiting before it, and passes it on to the output's writer lane
+    /// after their rows.
     async fn advance(&mut self, lane: &Lane, wm: i64) -> Result<(), JobError> {
         self.wm = wm;
-        let out = self.op.advance(&mut self.layer, wm).await?;
-        self.relieve(lane).await?;
-        self.give(lane, out).await?;
+        loop {
+            let (out, more) = self.op.advance(&mut self.layer, wm).await?;
+            self.relieve(lane).await?;
+            self.give(lane, out).await?;
+            if !more {
+                break;
+            }
+        }
         let s = self.output;
         lane.all(s, || super::Out::Watermark(s, wm)).await
     }
@@ -869,10 +1046,14 @@ impl Keyed {
                 (st.at.to_string(), st.output.clone())
             },
         );
+        let what = match self.op {
+            Op::Window(_) => "group window",
+            Op::Over(_) => "OVER statement",
+        };
         Err(JobError::new(
             ErrorCode::ResourceExhausted,
             format!(
-                "transform.sql {at}: the group window writing {output} keeps more state in memory than the job's size allows: its lanes and caches hold {} MiB, past the {} MiB, half of the job's {} MiB, that state may hold, with the engine near its memory limit. Run the pipeline with a larger resources.size",
+                "transform.sql {at}: the {what} writing {output} keeps more state in memory than the job's size allows: its lanes and caches hold {} MiB, past the {} MiB, half of the job's {} MiB, that state may hold, with the engine near its memory limit. Run the pipeline with a larger resources.size",
                 held >> 20,
                 budget >> 20,
                 state.memory() >> 20
@@ -908,8 +1089,8 @@ impl Keyed {
         )
     }
 
-    /// Names, holds and sends what the window gave, and quarantines the
-    /// windows whose row it couldn't give.
+    /// Names, holds and sends what the operator gave, and quarantines the
+    /// windows, or rows, it couldn't give.
     async fn give(&mut self, lane: &Lane, out: Out) -> Result<(), JobError> {
         let flow = lane.flow.clone();
         let plan = &flow.plan;
@@ -993,6 +1174,7 @@ impl Keyed {
         memory: usize,
     ) -> Result<OperatorEpoch, JobError> {
         let c = std::mem::take(&mut self.counts);
+        let (opened, dropped) = self.op.take_counts();
         let dir = crate::state::dir(id);
         let mut runs = HashMap::new();
         let mut barrier = StateRequests::default();
@@ -1025,8 +1207,8 @@ impl Keyed {
             updates: c.updates,
             deletes: c.deletes,
             late: c.late,
-            windows_opened: std::mem::take(&mut self.op.opened),
-            windows_dropped: std::mem::take(&mut self.op.dropped),
+            windows_opened: opened,
+            windows_dropped: dropped,
             watermark: self.op.watermark_micros(),
             memory_bytes: memory as u64,
             runs,
@@ -1130,7 +1312,7 @@ impl Keyed {
             return Err(JobError::internal("a keyed lane without a transform"));
         };
         let id = st
-            .window
+            .keyed
             .as_ref()
             .map(|(_, id)| id.clone())
             .unwrap_or_default();
@@ -1144,7 +1326,7 @@ impl Keyed {
             // A redo's epoch is in the record already, numbers and all.
             self.layer.discard();
             self.counts = Counts::default();
-            (self.op.opened, self.op.dropped) = (0, 0);
+            self.op.take_counts();
             self.held(lane, &id);
         } else {
             let memory = self.layer.memory().total();

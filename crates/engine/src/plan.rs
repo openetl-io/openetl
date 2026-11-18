@@ -61,10 +61,10 @@ pub struct Plan {
     /// Each stream's: only rows whose key's group is in this range, first to
     /// last, pass, for a redo of one writer lane's part of an epoch.
     pub keep: Vec<Option<(u32, u32)>>,
-    /// By stream: a group window's statement writes it. Its `keep` then
-    /// takes the window's input rows by the groups of the window's keys,
-    /// before the exchange into keyed lanes, which keep the state of those
-    /// key groups alone.
+    /// By stream: a stateful statement writes it, a group window's or
+    /// `OVER`'s. Its `keep` then takes the statement's input rows by the
+    /// groups of its operator's keys, before the exchange into keyed lanes,
+    /// which keep the state of those key groups alone.
     pub windowed: Vec<bool>,
     /// Each stream's holds; None where it holds nothing.
     pub holds: Vec<Option<HoldConfig>>,
@@ -105,11 +105,11 @@ pub struct Plan {
 pub struct StatePlan {
     pub job: Option<std::sync::Arc<crate::state::JobState>>,
     pub restored: Vec<(String, openetl_state::Snapshot)>,
-    /// Each group window's keyed lanes report the steps of its watermark
-    /// that their rows met in each epoch.
+    /// Each stateful operator's keyed lanes report the steps of its
+    /// watermark that their rows met in each epoch.
     pub record_steps: bool,
-    /// A redo's, by operator: the steps of a group window's watermark in the
-    /// epoch it redoes.
+    /// A redo's, by operator: the steps of a stateful operator's watermark
+    /// in the epoch it redoes.
     pub steps: HashMap<String, std::sync::Arc<crate::watermark::Met>>,
     /// A redo's: what its keyed lanes hold of the rows that wait for its
     /// barrier.
@@ -353,18 +353,18 @@ impl Plan {
             ));
         }
         let transform = check_transform(&req)?;
-        // A group window's keyed lanes take its stream from every lane of
-        // the attempt: those of this engine, or with a mesh, every engine's.
-        // A redo runs one engine, whatever its first lane.
+        // A stateful statement's keyed lanes take its stream from every lane
+        // of the attempt: those of this engine, or with a mesh, every
+        // engine's. A redo runs one engine, whatever its first lane.
         let windowed = transform
             .as_ref()
-            .is_some_and(|t| t.statements.iter().any(|s| s.window.is_some()));
+            .is_some_and(|t| t.statements.iter().any(|s| s.keyed.is_some()));
         let meshed = mesh.as_ref().is_some_and(|m| m.engines.len() > 1);
         let part = (req.first_lane != 0 && !req.state_read_only)
             || (req.attempt_writer_lanes as usize) > writer_lanes;
         if windowed && part && !meshed {
             return Err(JobError::config(
-                "transform.sql has a group window, whose keyed lanes take its stream from every lane of the attempt: a part of an attempt runs it only in a mesh of the attempt's engines",
+                "transform.sql has a statement with state, as a group window or OVER, whose keyed lanes take its stream from every lane of the attempt: a part of an attempt runs it only in a mesh of the attempt's engines",
             ));
         }
         // The attempt's lanes' key groups, from its first lane: every
@@ -385,7 +385,7 @@ impl Plan {
             if !known {
                 return Err(JobError::config(format!(
                     "the checkpoint names state of operator {:?}, which no statement of transform.sql computes, and which the pipeline's version didn't drop: \
-                     what a group window keeps changed since the version was applied, as when the source changed the type of a column it groups by or aggregates. \
+                     what a group window or OVER keeps changed since the version was applied, as when the source changed the type of a column it groups by or aggregates. \
                      Reset the streams the window reads to drop that state and build it again from a new read: openetl reset --stream STREAM NAME",
                     s.operator
                 )));
@@ -397,7 +397,7 @@ impl Plan {
             (0, _) => None,
             (_, "") => {
                 return Err(JobError::config(
-                    "transform.sql has a group window, which keeps state, and the job has no state URL to keep it at",
+                    "transform.sql has a statement with state, as a group window or OVER, and the job has no state URL to keep it at",
                 ));
             }
             (n, url) => Some(std::sync::Arc::new(crate::state::JobState::open(
@@ -488,7 +488,7 @@ impl Plan {
                 }
                 identities[o] = match route {
                     Route::Pass => input,
-                    Route::Statement(_) | Route::Window(_) => Identity {
+                    Route::Statement(_) | Route::Keyed(_) => Identity {
                         stream: names[o].clone(),
                         key: identities[o].key.clone(),
                         cursor: None,
@@ -716,15 +716,15 @@ impl Plan {
                     .iter()
                     .flatten()
                     .flatten()
-                    .any(|&(to, r)| to == o && matches!(r, Route::Window(_)))
+                    .any(|&(to, r)| to == o && matches!(r, Route::Keyed(_)))
             })
             .collect();
-        // A window's keyed lanes give its output to their own writer lanes,
-        // whose part of an epoch, which a redo reads again, is of the key
-        // groups of the window's keys; the output's key holds those keys.
+        // A stateful statement's keyed lanes give its output to their own
+        // writer lanes, whose part of an epoch, which a redo reads again, is
+        // of the key groups of the operator's keys.
         if let Some(o) = (0..names.len()).find(|&o| windowed[o] && exchanges[o].is_some()) {
             return Err(JobError::internal(format!(
-                "output {} is written by a group window, whose keyed lanes give its rows to their own writer lanes, and the job exchanges it again before its writer",
+                "output {} is written by a statement with state, whose keyed lanes give its rows to their own writer lanes, and the job exchanges it again before its writer",
                 names[o]
             )));
         }

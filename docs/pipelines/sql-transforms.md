@@ -5,7 +5,7 @@ description: Rename, filter and reshape a pipeline's streams with SQL statements
 
 A SQL transform changes rows between the source and the destination. You write `INSERT INTO … SELECT` statements in the pipeline's `transform.sql`. Each statement reads a source's stream and writes an **output**, which the destination gets as a stream. The engine runs the statements as it copies, in scheduled and continuous pipelines, with no other system to run.
 
-Most statements are row-wise: they rename, compute, filter and unnest columns, one input row at a time. A group window adds up rows by windows of their time ([Aggregate by windows of time](./windows.md)). [SQL transforms](../reference/sql.md) in the reference lists every statement, operator and function, and what is refused.
+Most statements are row-wise: they rename, compute, filter and unnest columns, one input row at a time. A group window adds up rows by windows of their time ([Aggregate by windows of time](./windows.md)). `OVER` gives each row values over the rows before it, such as a running total ([Compute running totals with OVER](./over.md)). [SQL transforms](../reference/sql.md) in the reference lists every statement, operator and function, and what is refused.
 
 ## Before you start
 
@@ -270,6 +270,22 @@ The output's primary key is `window_start` and `region`. With `full_refresh`, ea
 
 [Aggregate by windows of time](./windows.md) explains event time and watermarks, when each window's row is written, late rows, the state that windows keep, and how to change a window's statement. [Group windows](../reference/sql-windows.md#group-windows) in the reference lists the windows, the aggregates and the rules.
 
+### Compute running totals with OVER
+
+`OVER` gives each row values over its partition's rows before it, in the order of the stream's event time. Set the stream's `eventTime`, as for a group window, and order by it:
+
+```sql
+INSERT INTO running_revenue
+SELECT id, region, amount, created_at,
+  sum(amount) OVER (PARTITION BY region ORDER BY created_at) AS revenue_so_far,
+  lag(amount) OVER (PARTITION BY region ORDER BY created_at) AS previous_amount
+FROM orders;
+```
+
+Each order is written once, with its region's revenue up to its time and the amount of the region's order before it. The output keeps the stream's primary key, `id`, and is appended to. A row is written once the stream's watermark passes its event time, and a row that comes behind the watermark is quarantined as `late`. The functions are `sum`, `count`, `min`, `max`, `avg`, `lag` and `first_value`, over `ROWS` or `RANGE` frames that end at the current row.
+
+[Compute running totals with OVER](./over.md) explains frames, rows with the same time, when each row is written, and the state that `OVER` keeps. [OVER](../reference/sql-over.md#over) in the reference lists the functions, the frames and the rules.
+
 ## Changelog streams
 
 A stream read with `cdc` is a changelog: its rows are inserts, updates and deletes of the stream's primary key. This continuous pipeline keeps a table of open orders, in a destination that merges:
@@ -394,7 +410,7 @@ workspaces/default/pipelines/shop-to-lake (version known after apply)
 openetl: the plan has problems, so apply would refuse it
 ```
 
-Statements that the engine does not run, such as `GROUP BY` without a window, joins and window functions, are problems too. [What is refused](../reference/sql-errors.md#whats-refused) lists them with their messages.
+Statements that the engine does not run, such as `GROUP BY` without a window, joins, and window functions other than those `OVER` takes, are problems too. [What is refused](../reference/sql-errors.md#whats-refused) lists them with their messages.
 
 If no runner takes the statements within 30 seconds, or a stream's columns are not known yet, the plan has a note that starts with `transform.sql wasn't planned`. The sync plans the statements when it starts, and fails with `CONFIG_INVALID` if they have errors.
 

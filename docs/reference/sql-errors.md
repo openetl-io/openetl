@@ -22,7 +22,7 @@ These are refused, each at the place it is written. The message says what was fo
 
 | What | Message |
 |---|---|
-| `OVER`, in the `SELECT` list or in `QUALIFY`, with window functions such as `sum()`, `lag()` or `row_number()` | `OVER: transforms don't run window functions yet (tier 3)`. That is the message for a statement tier 3 takes. One it does not take gives a message that says why, at the place it is written: a window function, frame or `OVER` clause outside tier 3, a stream with no event time, or `row_number()` that is not compared with `= 1`. For example, `rank(): transforms don't run updating statements yet (tier 5)` |
+| `ROW_NUMBER() OVER (…) = 1`, in `QUALIFY` or in the `WHERE` of a `SELECT` that reads it, which deduplicates | `OVER: transforms don't run window functions yet (tier 3)`. [Window functions](#window-functions) lists what else `OVER` refuses. |
 | A window function without `OVER` | `rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)` |
 | `JOIN` | `a join: transforms don't run joins yet (tier 4)` |
 | Two relations in `FROM` | `reading two relations: transforms don't run joins yet (tier 4)` |
@@ -95,6 +95,38 @@ A view of one of these kinds is refused too, where the view is defined.
 | A group window over a changelog stream | `changes is a changelog, and a group window groups appended rows: transforms don't run updating statements yet (tier 5)` |
 
 The plan also has a problem where a group window's stream is read in a way that the window cannot take ([Reads](./sql-windows.md#reads)), and where a stream sets `watermark.lateness` and the window's output is not merged.
+
+### Window functions
+
+| What | Message |
+|---|---|
+| A stream without an event time | `orders has no event time, which OVER goes by: set eventTime on the stream in source.streams` |
+| `ORDER BY` another column, or no `ORDER BY` | `OVER goes by the event time of orders, created_at: write ORDER BY created_at` |
+| `ORDER BY` the event time and other columns | `OVER orders by the event time alone, which ties don't change: write ORDER BY created_at` |
+| `ORDER BY … DESC` | `OVER's frames end at the current row in event-time order: write ORDER BY created_at without DESC` |
+| A frame that does not end at the current row | `OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW` |
+| A frame that starts after the current row | `a frame starts before the current row, or at it` |
+| `GROUPS` | `GROUPS frames aren't supported: write ROWS or RANGE` |
+| A `RANGE` offset in months | `a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies` |
+| `lead` | `lead reads rows after the current one, and OVER's frames end at the current row: lag reads the rows before it` |
+| Another function, such as `last_value` | `last_value isn't a function OVER takes: OVER takes sum, count, min, max, avg, lag and first_value, and ROW_NUMBER() … = 1 to deduplicate` |
+| `rank`, `dense_rank`, and `ROW_NUMBER()` compared otherwise than `= 1` | `rank(): transforms don't run updating statements yet (tier 5)` |
+| Two `PARTITION BY` or `ORDER BY` in a statement | `a statement's OVER clauses have one PARTITION BY and ORDER BY, by which one operator keeps their state: compute the others in a statement of their own` |
+| A computed `PARTITION BY` column | `OVER partitions by columns of orders, renamed or not: lower(orders.region) is computed` |
+| `PARTITION BY` a list or a struct | `OVER can't partition by tags, of type List(Utf8)` |
+| `DISTINCT` in `count`, `sum` or `avg` | `count(DISTINCT …) isn't supported over a frame` |
+| `IGNORE NULLS` | `first_value(…) IGNORE NULLS isn't supported` |
+| `FILTER` on `lag` or `first_value` | `lag takes no FILTER, which is for aggregates` |
+| `lag`'s offset other than a constant of 1 or more | `lag's offset is a constant whole number, 1 or more` |
+| `OVER` over a changelog stream | `cdc is a changelog, and OVER reads appended rows: transforms don't run updating statements yet (tier 5)` |
+| `OVER` and a group window in one statement | `a statement groups by a window or computes OVER, not both: compute OVER in a statement of its own` |
+| `OVER` in a view | `a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view` |
+| `OVER` in `WHERE` | `WHERE runs before OVER, so it can't read OVER's values: compare them in QUALIFY, or in the WHERE of a SELECT that reads this one` |
+| `WINDOW` | `WINDOW isn't supported: write each OVER (…) in full` |
+| `OVER` over another `OVER`'s values | `OVER over the values of another OVER isn't supported: compute a statement's OVER over the stream's rows` |
+| `unnest` of `OVER`'s rows | `UNNEST of OVER's rows isn't supported: unnest the stream's rows before OVER, in a view` |
+
+The plan also has a problem where the stream of `OVER` is read in a way that it cannot take ([OVER reads](./sql-over.md#over-reads)), where the stream sets `watermark.lateness` and no group window reads it, and where the output is merged and its primary key does not hold the `PARTITION BY` columns, on a destination with several writer lanes ([The output](./sql-over.md#the-output)).
 
 ### Changelog streams
 

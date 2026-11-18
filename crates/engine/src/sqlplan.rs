@@ -37,10 +37,14 @@
 //! null for nothing), the input's columns that reach the output unchanged,
 //! each with its name there (`passes`), its stateful operator's ID
 //! (`operator`, null for none), and what that operator keeps (`state`, null
-//! for none): its `window` (`tumble`, `hop` or `session`), its `size_us` (a
-//! tumble's or hop's size, a session's gap) and `slide_us` (a hop's) in
-//! microseconds, and by the stream's names its `event_time`, `keys` and
-//! `aggregates`, such as `sum(amount)`. Each error has a `kind`, a `class` and
+//! for none). A group window's has its `window` (`tumble`, `hop` or
+//! `session`), its `size_us` (a tumble's or hop's size, a session's gap) and
+//! `slide_us` (a hop's) in microseconds, and by the stream's names its
+//! `event_time`, `keys` and `aggregates`, such as `sum(amount)`. `OVER`'s has
+//! a null `window`, `size_us` and `slide_us`, its `event_time`, its `keys`,
+//! `PARTITION BY`'s columns, and its `functions` with their frames, such as
+//! `sum(amount) range unbounded` or `lag(amount, 1)`. Each error has a
+//! `kind`, a `class` and
 //! `tier` for a later tier's statement, an `at` unless it isn't about the
 //! text, and a `message`.
 //!
@@ -134,14 +138,19 @@ pub struct AnswerStatement {
 /// microseconds.
 #[derive(Debug, Serialize)]
 pub struct AnswerState {
-    pub window: &'static str,
-    /// A tumble's or hop's size, or a session's gap.
-    pub size_us: i64,
+    /// A group window's kind; `None` for `OVER`.
+    pub window: Option<&'static str>,
+    /// A tumble's or hop's size, or a session's gap; `None` for `OVER`.
+    pub size_us: Option<i64>,
     /// A hop's slide; `None` for the others.
     pub slide_us: Option<i64>,
     pub event_time: String,
+    /// A window's group keys, or `OVER`'s `PARTITION BY`.
     pub keys: Vec<String>,
+    /// A group window's.
     pub aggregates: Vec<String>,
+    /// `OVER`'s, with their frames, such as `sum(amount) rows unbounded`.
+    pub functions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -317,8 +326,20 @@ fn statement(s: &Statement) -> Result<AnswerStatement, String> {
 }
 
 fn state(s: &Statement) -> Option<AnswerState> {
-    let Operator::GroupWindow(g) = &s.operator else {
-        return None;
+    let g = match &s.operator {
+        Operator::GroupWindow(g) => g,
+        Operator::Over(o) => {
+            return Some(AnswerState {
+                window: None,
+                size_us: None,
+                slide_us: None,
+                event_time: o.event_time.clone(),
+                keys: o.need.clone(),
+                aggregates: Vec::new(),
+                functions: o.computes.clone(),
+            });
+        }
+        _ => return None,
     };
     let per_micro = match g.rows.field(g.time).data_type() {
         DataType::Timestamp(TimeUnit::Nanosecond, _) => 1000,
@@ -330,12 +351,13 @@ fn state(s: &Statement) -> Option<AnswerState> {
         Window::Session { gap } => (gap, None),
     };
     Some(AnswerState {
-        window: g.window.name(),
-        size_us: size / per_micro,
+        window: Some(g.window.name()),
+        size_us: Some(size / per_micro),
         slide_us: slide,
         event_time: g.event_time.clone(),
         keys: g.need.clone(),
         aggregates: g.computes.clone(),
+        functions: Vec::new(),
     })
 }
 
@@ -681,31 +703,38 @@ mod tests {
         assert!(e[1]["message"].as_str().unwrap().contains("nope"));
     }
 
-    /// OVER and dedupe plan, and the answer refuses each as a tier 3
-    /// statement at its first OVER, as a job's start does.
+    /// OVER plans, with what it keeps; dedupe plans, and the answer refuses
+    /// it as a tier 3 statement at its OVER, as a job's start does.
     #[test]
-    fn over_and_dedupe_are_refused_as_tier_3s() {
+    fn over_says_what_it_keeps_and_dedupe_is_refused_as_tier_3s() {
         let mut stream = customers();
         stream["event_time"] = json!("created_at");
         stream["changelog"] = json!(false);
         let got = answer(json!({
-            "sql": "INSERT INTO running\nSELECT id, count(*) OVER (PARTITION BY email ORDER BY created_at) AS n FROM customers;\n\
-                    INSERT INTO latest SELECT id, email FROM customers\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY created_at DESC) = 1",
+            "sql": "INSERT INTO running\nSELECT id, count(*) OVER (PARTITION BY email ORDER BY created_at) AS n, \
+                    lag(id) OVER (PARTITION BY email ORDER BY created_at) AS before FROM customers",
+            "streams": [stream.clone()],
+        }));
+        assert_eq!(got["errors"], json!([]));
+        let st = &got["statements"][0];
+        assert_eq!(st["class"], "over");
+        assert_eq!(st["need"], json!(["email"]));
+        assert!(st["operator"].as_str().unwrap().starts_with("over-"));
+        assert_eq!(
+            st["state"],
+            json!({"window": null, "size_us": null, "slide_us": null, "event_time": "created_at",
+                   "keys": ["email"], "aggregates": [], "functions": ["count(*) range unbounded", "lag(\"id\", 1)"]})
+        );
+        let got = answer(json!({
+            "sql": "INSERT INTO latest SELECT id, email FROM customers\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY created_at DESC) = 1",
             "streams": [stream],
         }));
         assert_eq!(got["statements"], json!([]));
-        let refused = json!({"kind": "later_tier", "class": "over", "tier": 3, "message": "OVER: transforms don't run window functions yet (tier 3)"});
-        for (e, at) in got["errors"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip([(2, 12), (4, 9)])
-        {
-            let mut want = refused.clone();
-            want["at"] = json!({"line": at.0, "column": at.1});
-            assert_eq!(*e, want);
-        }
-        assert_eq!(got["errors"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            got["errors"],
+            json!([{"kind": "later_tier", "class": "over", "tier": 3, "at": {"line": 2, "column": 9},
+                    "message": "OVER: transforms don't run window functions yet (tier 3)"}])
+        );
     }
 
     /// `openetl-engine plan` plans the deepest chain of views on a small
@@ -764,7 +793,7 @@ mod tests {
         assert_eq!(
             got["statements"][0]["state"],
             json!({"window": "hop", "size_us": 300_000_000, "slide_us": 60_000_000, "event_time": "at",
-                   "keys": ["kind"], "aggregates": ["count(*)", "max(n)"]})
+                   "keys": ["kind"], "aggregates": ["count(*)", "max(n)"], "functions": []})
         );
         let got = answer(
             json!({"sql": "INSERT INTO t SELECT id FROM customers", "streams": [customers()]}),

@@ -7,6 +7,7 @@
     "specs",
     "sql",
     "sql-windows",
+    "sql-over",
     "sql-expressions",
     "sql-functions",
     "sql-errors",

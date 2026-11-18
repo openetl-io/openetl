@@ -906,8 +906,9 @@ mod windows {
 
     use super::*;
     use crate::dataflow::tests::{
-        MINUTES, SEC, WindowRow, barrier_of, minute_row, row, rows as json_rows, split,
-        window_request, window_rows,
+        MINUTES, OverRow, RUNNING, SEC, WindowRow, barrier_of, minute_row, over_input,
+        over_request, over_rows, row, rows as json_rows, running, split, window_request,
+        window_rows,
     };
     use crate::watermark::END;
 
@@ -1213,25 +1214,36 @@ mod windows {
         per_lane
     }
 
-    /// What one epoch of a window gave: its window rows, the rows it
-    /// quarantined, its window watermark at the barrier, and the steps of
-    /// that watermark its rows met.
+    /// What one epoch of a stateful statement gave: its rows, the rows it
+    /// quarantined, its operator's watermark at the barrier, and the steps
+    /// of that watermark its rows met.
     #[derive(Debug)]
-    struct OneEpoch {
-        rows: Vec<WindowRow>,
+    struct OneEpoch<R = WindowRow> {
+        rows: Vec<R>,
         late: u64,
         closed: i64,
         steps: Vec<openetl_proto::engine::v1::LaneSteps>,
     }
 
-    /// One epoch of `sql` over stream a on one lane: the rows of key x at
-    /// `seconds`, in that order, each a batch of its own, then the barrier.
-    /// Live where `redo` is None, recording the steps of the window's
-    /// watermark; else a redo of `redo`'s epoch, which replays its steps
-    /// and closes the windows where it did.
-    async fn one_epoch(sql: &str, seconds: &[i64], redo: Option<&OneEpoch>) -> OneEpoch {
+    /// What reads each writer lane's rows of the frames it gave, from an
+    /// epoch on.
+    type Rows<R> = fn(&[Vec<Frame>], u64) -> Vec<Vec<R>>;
+
+    /// One epoch on one lane of the job `req` gives, of a statement over
+    /// stream a that writes minutes, its state and quarantine below the
+    /// folder it's given: the rows of key x at `seconds`, in that order, each
+    /// a batch of its own, then the barrier. Live where `redo` is None,
+    /// recording the steps of the operator's watermark; else a redo of
+    /// `redo`'s epoch, which replays its steps and closes at its watermark.
+    /// `rows` reads the writer lanes' rows.
+    async fn epoch_of<R: Ord, Q>(
+        req: impl FnOnce(&std::path::Path) -> StartJobRequest,
+        seconds: &[i64],
+        redo: Option<&OneEpoch<Q>>,
+        rows: Rows<R>,
+    ) -> OneEpoch<R> {
         let dir = tempfile::tempdir().unwrap();
-        let mut req = window_request(&dir.path().join("state"), sql, 1, 1, 1);
+        let mut req = req(&dir.path().join("state"));
         req.quarantine_url = format!("file://{}", dir.path().display());
         req.record_window_steps = true;
         if let Some(live) = redo {
@@ -1266,10 +1278,10 @@ mod windows {
             .filter(|q| q.stream == "minutes")
             .map(|q| q.rows)
             .sum();
-        let mut rows: Vec<WindowRow> = window_rows(&outs, 1).into_iter().flatten().collect();
-        rows.sort();
+        let mut got: Vec<R> = rows(&outs, 1).into_iter().flatten().collect();
+        got.sort();
         OneEpoch {
-            rows,
+            rows: got,
             late,
             closed: ready[0].window_watermarks["a"],
             steps: ready[0]
@@ -1278,6 +1290,17 @@ mod windows {
                 .flat_map(|o| o.steps.clone())
                 .collect(),
         }
+    }
+
+    /// One epoch of the window `sql`, as epoch_of says.
+    async fn one_epoch(sql: &str, seconds: &[i64], redo: Option<&OneEpoch>) -> OneEpoch {
+        epoch_of(
+            |state| window_request(state, sql, 1, 1, 1),
+            seconds,
+            redo,
+            window_rows,
+        )
+        .await
     }
 
     /// The live epoch of `seconds`, and a redo of it, which gives the same
@@ -1293,6 +1316,129 @@ mod windows {
         );
         assert!(redo.steps.is_empty(), "a redo records no steps");
         live
+    }
+
+    /// OVER's rows cross engines to the keyed lanes that own their emails'
+    /// key groups: each row leaves once, from the writer lane of its
+    /// email's keyed lane, with the running total of every engine's rows of
+    /// its email up to its time, once every lane of the attempt has passed
+    /// that time, and the rest at the end of input.
+    #[tokio::test]
+    async fn over_takes_its_keys_rows_from_every_engine() {
+        let state = tempfile::tempdir().unwrap();
+        let parts = [(2, 1), (1, 1)];
+        let mut es = start_mesh(
+            |me, addrs| {
+                let mut req = window_mesh_of(state.path(), RUNNING, &parts, me, addrs, 1, 1);
+                req.outputs[0].primary_key = vec!["id".into()];
+                req
+            },
+            2,
+        )
+        .await;
+        let drains: Vec<_> = es
+            .iter_mut()
+            .map(|e| drain(std::mem::take(&mut e.outs)))
+            .collect();
+        let (mut lane, mut all) = (0, Vec::new());
+        for e in &mut es {
+            for w in &mut e.ins {
+                let id = format!("s{lane}");
+                let input = over_input(lane);
+                all.extend(input.clone());
+                put_on(w, FrameKind::Split, 0, split(&id, None)).await;
+                let rs: Vec<String> = input
+                    .iter()
+                    .map(|(id, e, s)| minute_row(*id, e, *s))
+                    .collect();
+                let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                put_on(w, FrameKind::Rows, 0, json_rows(&refs)).await;
+                barriers(w, 1, 1).await;
+                put_on(w, FrameKind::Split, 0, split(&id, Some(END))).await;
+                barriers(w, 1, 2).await;
+                end_both(w).await;
+                lane += 1;
+            }
+        }
+        let (outs, ready) = finish(es, drains).await;
+        let per_lane = over_rows(&outs, 1);
+        let want = running(&all);
+        let mut seen = BTreeSet::new();
+        for r in per_lane.iter().flatten() {
+            assert!(seen.insert(r.id), "row {} twice", r.id);
+            let (email, total, before) = &want[&r.id];
+            assert_eq!(
+                (&r.email, r.total, r.before),
+                (email, *total, *before),
+                "{r:?}"
+            );
+            let at = all.iter().find(|a| a.0 == r.id).unwrap().2;
+            assert_eq!(r.epoch, if at < 91 { 1 } else { 2 }, "{r:?}");
+        }
+        assert_eq!(seen.len(), 24);
+        for key in ["x", "y", "z", "w"] {
+            let lanes = per_lane
+                .iter()
+                .filter(|r| r.iter().any(|o| o.email == key))
+                .count();
+            assert_eq!(lanes, 1, "{key} on {lanes} writer lanes");
+        }
+        for (engine, r) in ready.iter().enumerate() {
+            let marks: Vec<i64> = r.iter().map(|r| r.window_watermarks["a"]).collect();
+            assert_eq!(marks, [91 * SEC, END], "engine {engine}");
+        }
+        let ops: Vec<_> = ready.iter().flatten().flat_map(|r| &r.operators).collect();
+        assert_eq!(ops.iter().map(|o| o.rows_in).sum::<u64>(), 24);
+        assert_eq!(ops.iter().map(|o| o.inserts).sum::<u64>(), 24);
+    }
+
+    /// One epoch of RUNNING, as epoch_of says.
+    async fn over_epoch(seconds: &[i64], redo: Option<&OneEpoch<OverRow>>) -> OneEpoch<OverRow> {
+        epoch_of(
+            |state| over_request(state, RUNNING, 1, 1, 1),
+            seconds,
+            redo,
+            over_rows,
+        )
+        .await
+    }
+
+    /// A redo of OVER's epoch replays the steps of its watermark that the
+    /// epoch's rows met: a row that came behind the watermark inside the
+    /// epoch is late there too, every other row waits as it did, and the
+    /// rows the epoch's barrier had passed leave with the values they left
+    /// with live.
+    #[tokio::test]
+    async fn a_redo_of_over_gives_the_epochs_rows_and_late_ones() {
+        let seconds = [10, 50, 20, 70, 30, 80, 60, 90];
+        let live = over_epoch(&seconds, None).await;
+        let redo = over_epoch(&seconds, Some(&live)).await;
+        // Rows 2, 4 and 6 came behind the watermark; row 7, at 90 s, the
+        // barrier's watermark, waits.
+        let got: Vec<(i64, i64, Option<i64>)> = live
+            .rows
+            .iter()
+            .map(|r| (r.id, r.total, r.before))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, 0, None),
+                (1, 1, Some(0)),
+                (3, 4, Some(1)),
+                (5, 9, Some(3))
+            ]
+        );
+        assert_eq!((live.late, live.closed), (3, 90 * SEC));
+        assert_eq!((&redo.rows, redo.late), (&live.rows, live.late));
+        assert!(redo.steps.is_empty(), "a redo records no steps");
+        let steps: usize = live
+            .steps
+            .iter()
+            .flat_map(|l| &l.splits)
+            .map(|s| s.places.len())
+            .sum();
+        assert_eq!(steps, 4, "{:?}", live.steps);
     }
 
     /// A redo replays the steps of the window's watermark that the epoch's

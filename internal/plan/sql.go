@@ -122,9 +122,16 @@ func statementSource(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, st sqlplan.St
 
 // StatementPath is the way of a statement's output, keyed by key, from the
 // source of the stream it reads to the destination's writer, which writes
-// on one writer lane with oneLane.
+// on one writer lane with oneLane. OVER's keyed lanes give its rows to their
+// own writer lanes, whatever the output's key: its writer needs the
+// partitioning OVER gives, by its PARTITION BY as the output names it, and
+// takes it with no second exchange.
 func StatementPath(source Partitioning, st sqlplan.Statement, key []string, oneLane bool) Path {
-	return Place(source, StatementOperator(st), WriterOperator(key, oneLane))
+	writer := WriterOperator(key, oneLane)
+	if st.Class == "over" {
+		writer.Need.Columns = through(Partitioning{Kind: ByKeyGroup, Columns: st.Need}, st.Passes).Columns
+	}
+	return Place(source, StatementOperator(st), writer)
 }
 
 // Lands reports whether the source's stream reaches the destination as it
@@ -144,7 +151,7 @@ func Lands(spec *apiv1.PipelineSpec, a *sqlplan.Answer, stream string) bool {
 // statements' outputs, as SQLOutputs gives them. A stream passed through is
 // checked as one without a transform.
 func SQLSettingProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlplan.Answer, inputs []Input, outs []Output) []error {
-	out := windowProblems(a, inputs, outs)
+	out := windowProblems(a, inputs, outs, caps)
 	for _, in := range inputs {
 		ps := in.Spec
 		set := landingSettings(ps)
@@ -170,19 +177,31 @@ func SQLSettingProblems(spec *apiv1.PipelineSpec, caps destination.Capabilities,
 	return out
 }
 
-// windowProblems fail a group window over a stream whose reads would cut
-// its windows short: one read in another order than its event time, other
-// than whole, as each read's windows would hold only that read's rows. A
-// window open at a sync's end goes on in the next sync, from the state the
-// record names. And a stream's watermark.lateness where a group window over
-// it writes an output that isn't merged: a row that comes late gives the
-// window's row again, which only a merge takes as an update.
-func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output) []error {
+// windowProblems fail a group window or OVER over a stream whose reads
+// would cut its state short: one read in another order than its event
+// time, other than whole, as each read's windows would hold only that
+// read's rows, and OVER would give each read's rows in their own order,
+// after rows an earlier read gave later in time. A window open, or a row
+// waiting, at a sync's end goes on in the next sync, from the state the
+// record names. A stream's watermark.lateness where a group window over it
+// writes an output that isn't merged: a row that comes late gives the
+// window's row again, which only a merge takes as an update. Lateness on a
+// stream that OVER reads and no group window does, as OVER takes none.
+// And a merged output of OVER keyed otherwise than by its PARTITION BY on
+// several writer lanes: OVER gives each row to the writer lane of its
+// PARTITION BY's key group, so two rows of a key may be on two.
+func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output, caps destination.Capabilities) []error {
 	var out []error
+	windowed := func(stream string) bool {
+		return slices.ContainsFunc(a.Statements, func(st sqlplan.Statement) bool {
+			return st.Class == "group_window" && slices.Contains(st.Inputs, stream)
+		})
+	}
 	for i, st := range a.Statements {
 		if st.Operator == "" {
 			continue
 		}
+		over := st.Class == "over"
 		for _, in := range inputs {
 			if !slices.Contains(st.Inputs, in.Name) {
 				continue
@@ -190,17 +209,42 @@ func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output) []error {
 			column := in.Spec.GetEventTime()
 			switch {
 			case in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, column == "":
+			case !OrderedRead(in.Read, in.Cursor, column) && over:
+				out = append(out, fmt.Errorf("OVER writing %q reads stream %q with %s by cursor %q, not by its eventTime %q, "+
+					"so each sync's rows would leave in their own order, after rows an earlier sync gave that come later in time: read it with full_refresh", st.Output, in.Name, syncName(in.Read), in.Cursor, column))
 			case !OrderedRead(in.Read, in.Cursor, column):
 				out = append(out, fmt.Errorf("the group window writing %q reads stream %q with %s by cursor %q, not by its eventTime %q, "+
 					"so each sync's windows would hold only the rows that sync reads: read it with full_refresh", st.Output, in.Name, syncName(in.Read), in.Cursor, column))
 			}
-			if i < len(outs) && outs[i].Mode != destination.Merge && in.Spec.GetWatermark().GetLateness().AsDuration() > 0 {
+			late := in.Spec.GetWatermark().GetLateness().AsDuration() > 0
+			switch {
+			case late && over && !windowed(in.Name):
+				out = append(out, fmt.Errorf("stream %q sets watermark.lateness, which OVER writing %q doesn't take: a row that comes behind the watermark is quarantined as late. "+
+					"Set a longer watermark.delay to wait for later rows, or no lateness", in.Name, st.Output))
+			case late && !over && i < len(outs) && outs[i].Mode != destination.Merge:
 				out = append(out, fmt.Errorf("stream %q sets watermark.lateness, so a row that comes late gives its window's row again, "+
 					"and output %q isn't merged, which would keep both rows: set destination.write: merge, or no lateness", in.Name, st.Output))
 			}
 		}
+		if over && i < len(outs) && outs[i].Mode == destination.Merge && caps.Lanes() > 1 && !keyHolds(st, outs[i].PrimaryKey) {
+			out = append(out, fmt.Errorf("OVER writing %q gives each row to the destination's writer lane of its PARTITION BY's key group, and its primary key (%s) doesn't hold PARTITION BY's columns (%s), "+
+				"so merged, two rows of one key could reach two writer lanes in either order: write it with destination.write: append, or partition by columns of its primary key",
+				st.Output, strings.Join(outs[i].PrimaryKey, ", "), strings.Join(st.Need, ", ")))
+		}
 	}
 	return out
+}
+
+// keyHolds reports whether an output keyed by key holds every column of its
+// statement's need, as the output names them: rows of a key then have one
+// key group.
+func keyHolds(st sqlplan.Statement, key []string) bool {
+	for _, c := range st.Need {
+		if !slices.Contains(key, st.Passes[c]) {
+			return false
+		}
+	}
+	return true
 }
 
 // landingSettings names the settings ps sets that apply to the stream as
