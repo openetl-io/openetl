@@ -111,7 +111,7 @@ If a customer's latest row has `plan = 'free'`, and the output has the customer'
 
 ## Rows with the same time
 
-Rows of one key with the same event time go by their record IDs (`_openetl_id`). A first-row dedupe keeps the least, and of rows with one ID, the least by their values. A latest-row dedupe keeps the greatest, and of rows with one ID, the greatest by a 64-bit hash of their values, which is not the order of the values. The order depends only on the rows, not on the order in which they arrive. So a retry, or a read of the rows again, keeps the same row. If the order of such rows matters to you, give them event times that differ.
+Rows of one key with the same event time go by their record IDs (`_openetl_id`). A first-row dedupe keeps the least, and of rows with one ID, the least by the bytes that the engine encodes their values to, which is not the order of the values. A latest-row dedupe keeps the greatest, and of rows with one ID, the greatest by a 64-bit hash of their values, which is not the order of the values. The order depends only on the rows, not on the order in which they arrive. So a retry, or a read of the rows again, keeps the same row. If the order of such rows matters to you, give them event times that differ.
 
 ## The output
 

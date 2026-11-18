@@ -148,7 +148,7 @@ QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY created_at) = 1;
 | Ascending | The key's first row by event time | Once the watermark passes its event time. A row of a key that the dedupe keeps, less than the retention after the key's first row, is a repeat, and is dropped as it comes. |
 | Descending | The key's latest row by event time | As it comes, if it is later than the key's latest row. An earlier row, or one with the same time and a lesser record ID, is dropped, whatever the watermark. |
 
-- A key's rows with the same event time go by their record IDs (`_openetl_id`). A first-row dedupe keeps the least, and of rows with one ID, the least by their values. A latest-row dedupe keeps the greatest, and of rows with one ID, the greatest by a 64-bit hash of their values. The order depends only on the rows, so a retry or a redo keeps the same row.
+- A key's rows with the same event time go by their record IDs (`_openetl_id`). A first-row dedupe keeps the least, and of rows with one ID, the least by the bytes that the engine encodes their values to. A latest-row dedupe keeps the greatest, and of rows with one ID, the greatest by a 64-bit hash of their values. The order depends only on the rows, so a retry or a redo keeps the same row.
 - A row whose event time is null is quarantined, with the code `event_time`.
 - A `PARTITION BY` value that is null is a key, as in a group window.
 - Equal JSON values are one key, whatever their spaces or the order of their objects' keys.
