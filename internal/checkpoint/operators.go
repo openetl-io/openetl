@@ -24,8 +24,11 @@ type OperatorPart struct {
 	Operator                                string
 	RowsIn, Inserts, Updates, Deletes, Late uint64
 	// Windows, or sessions, whose state it began keeping, and stopped
-	// keeping.
+	// keeping; a dedupe's keys.
 	Opened, Dropped uint64
+	// A dedupe's rows it didn't write: repeats of a key it keeps, and for
+	// one that keeps each key's latest row, rows no later than the key's.
+	Repeats uint64
 	// The least of its lanes' watermarks, in microseconds since the Unix
 	// epoch; nil while a lane has none.
 	Watermark   *int64
@@ -54,9 +57,11 @@ type Operator struct {
 	Deletes uint64 `json:"deletes,omitempty"`
 	// Rows it quarantined as late.
 	Late uint64 `json:"late,omitempty"`
+	// A dedupe's rows it didn't write, as OperatorPart's.
+	Repeats uint64 `json:"repeats,omitempty"`
 	// The windows, or sessions, whose state it keeps: open, or closed and
-	// kept for their lateness. It counts from the record its attempt
-	// restored, and from 0 where that holds none of its state.
+	// kept for their lateness; a dedupe's keys. It counts from the record
+	// its attempt restored, and from 0 where that holds none of its state.
 	Windows int64 `json:"windows"`
 	// The least of its lanes' watermarks, in microseconds since the Unix
 	// epoch, or the largest int64 at the end of input; nil while a lane has
@@ -109,6 +114,7 @@ func Operators(parts []OperatorPart, kept map[string]int64, snapshots []Snapshot
 		o.Updates += p.Updates
 		o.Deletes += p.Deletes
 		o.Late += p.Late
+		o.Repeats += p.Repeats
 		o.Windows += ints.Int64Clamped(p.Opened) - ints.Int64Clamped(p.Dropped)
 		switch {
 		case p.Watermark == nil:

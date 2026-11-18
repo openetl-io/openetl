@@ -2,7 +2,7 @@ import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { durationFromMs } from "@bufbuild/protobuf/wkt";
 import { describe, expect, it } from "vitest";
 import { OperatorChange, OperatorPlanSchema, TransformPlanSchema } from "@/gen/openetl/api/v1/pipeline_pb";
-import { aboutSql, changeLabel, changeText, heldText, notDelivered, span, operatorComputes, partOf, parts, position, sqlMessages } from "../sql-plan";
+import { aboutSql, changeLabel, changeText, heldText, notDelivered, span, operatorComputes, operatorKeeps, partOf, parts, position, sqlMessages } from "../sql-plan";
 
 describe("sqlMessages", () => {
   it("keeps the plan's messages about transform.sql, with their places, problems first", () => {
@@ -76,6 +76,22 @@ describe("operators", () => {
     expect(operatorComputes(op({ window: "tumble", size: durationFromMs(3_600_000), eventTime: "at" }))).toBe("tumble 1h by at: ");
     expect(operatorComputes(op({ window: "tumble", size: durationFromMs(3_601_000), eventTime: "at" }))).toBe("tumble 1h1s by at: ");
     expect(span(durationFromMs(90_500))).toBe("1m30.5s");
+  });
+
+  it("says what OVER and a dedupe keep, and what a dedupe guarantees", () => {
+    const over = op({ class: "over", eventTime: "at", keys: ["region"], aggregates: ["sum(amount) range unbounded"] });
+    expect(operatorComputes(over)).toBe("over by at on region: sum(amount) range unbounded");
+    expect(operatorKeeps(over)).toBe("Each key's frame, and its rows until the watermark passes them");
+    const dedupe = { class: "over", eventTime: "at", keys: ["event_id"], keep: "first" };
+    const first = op({ ...dedupe, guarantee: "exactly_once_within", retention: durationFromMs(86_400_000) });
+    expect(operatorComputes(first)).toBe("dedupe first by at on event_id");
+    expect(operatorKeeps(first)).toBe("Each key for 24h of event time from its first row: exactly once within 24h");
+    expect(operatorKeeps(op({ ...dedupe, guarantee: "exactly_once" }))).toBe("Every key, for good: exactly once. Its state grows with the number of keys");
+    expect(operatorKeeps(op(dedupe))).toBe("Its stream sets no dedupe.retention");
+    const latest = op({ class: "over", eventTime: "at", keys: ["id"], keep: "latest", guarantee: "exactly_once" });
+    expect(operatorComputes(latest)).toBe("dedupe latest by at on id");
+    expect(operatorKeeps(latest)).toBe("Each key's latest row's time, for good: exactly once, as upserts. Its state grows with the number of keys");
+    expect(operatorKeeps(op({ id: "dedupe-1", change: OperatorChange.DROPPED }))).toBe("");
   });
 
   it("says what applying does to its state", () => {

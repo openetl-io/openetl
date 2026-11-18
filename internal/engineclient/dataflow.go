@@ -375,7 +375,8 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		sp := streamPlan(plan, s, plan.Schemas[s.Name], !sql)
 		sp.ArrowSchema, sp.CursorField, sp.ReadStartMicros = declared, s.CursorField, plan.ReadStarts[s.Name]
 		if e := s.EventTime; e != nil {
-			sp.EventTime = &enginev1.EventTime{Column: e.Column, DelayMicros: e.Delay.Microseconds(), Held: e.Held, LatenessMicros: e.Lateness.Microseconds()}
+			sp.EventTime = &enginev1.EventTime{Column: e.Column, DelayMicros: e.Delay.Microseconds(), Held: e.Held, LatenessMicros: e.Lateness.Microseconds(),
+				DedupeRetentionMicros: e.Dedupe}
 			if f, ok := plan.Floors[s.Name]; ok {
 				sp.EventTime.Floor = &f
 			}

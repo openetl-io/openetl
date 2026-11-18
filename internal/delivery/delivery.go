@@ -76,6 +76,12 @@ type Stream struct {
 	// A transform's engine, as the spec names it, for messages; empty:
 	// spark.
 	Engine string
+	// A SQL dedupe's output, whose state drops a repeat of a key it keeps,
+	// so a repeat a superset input reads again isn't written again. A
+	// first-row dedupe keeps a key Remembers of event time from its first
+	// row; 0: for good, as a latest-row dedupe keeps its keys.
+	Deduped   bool
+	Remembers time.Duration
 }
 
 // outputField is the spec's field that sets a transform's output's
@@ -143,6 +149,12 @@ func PlanStream(caps destination.Capabilities, s Stream, require Level) Plan {
 		p.Collapse, p.Level, p.Why = false, ExactlyOnce, "a transform's output over exact inputs"
 	case s.Replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
 		p.Level, p.Why = ExactlyOnce, "exact replay"
+	case s.Deduped && s.Remembers > 0 && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
+		p.Collapse, p.Level = false, ExactlyOnce
+		p.Why = fmt.Sprintf("exactly once within %v of event time: a dedupe's output over superset inputs, which remembers a key %v from its first row "+
+			"and writes a repeat after that again", s.Remembers, s.Remembers)
+	case s.Deduped && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
+		p.Collapse, p.Level, p.Why = false, ExactlyOnce, "a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys"
 	case s.Transformed && caps.Class == destination.StageAndApply && s.Mode == destination.Merge:
 		p.Collapse, p.Level, p.Why = false, EffectivelyOnce, "a transform's output over superset inputs, written with merge"
 	case caps.Class == destination.StageAndApply && s.Mode == destination.Merge:

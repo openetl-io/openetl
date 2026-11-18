@@ -906,9 +906,9 @@ mod windows {
 
     use super::*;
     use crate::dataflow::tests::{
-        MINUTES, OverRow, RUNNING, SEC, WindowRow, barrier_of, minute_row, over_input,
-        over_request, over_rows, row, rows as json_rows, running, split, window_request,
-        window_rows,
+        DedupeRow, FIRST, LATEST, MINUTES, OverRow, RUNNING, SEC, WindowRow, barrier_of,
+        dedupe_request, dedupe_rows, minute_row, over_input, over_request, over_rows, row,
+        rows as json_rows, running, split, window_request, window_rows,
     };
     use crate::watermark::END;
 
@@ -1439,6 +1439,126 @@ mod windows {
             .map(|s| s.places.len())
             .sum();
         assert_eq!(steps, 4, "{:?}", live.steps);
+    }
+
+    /// Dedupes' rows cross engines to the keyed lanes that own their
+    /// emails' key groups: the first-row dedupe writes each email's first
+    /// row of every engine's once, from the writer lane of its email's keyed
+    /// lane, and the latest-row dedupe leaves each email's latest there.
+    #[tokio::test]
+    async fn dedupes_take_their_keys_rows_from_every_engine() {
+        for (sql, retention) in [(FIRST, Some(3600 * SEC)), (LATEST, None)] {
+            let state = tempfile::tempdir().unwrap();
+            let parts = [(2, 1), (1, 1)];
+            let mut es = start_mesh(
+                |me, addrs| {
+                    let mut req = window_mesh_of(state.path(), MINUTES, &parts, me, addrs, 1, 1);
+                    let dedupe = dedupe_request(state.path(), sql, (1, 1, 1), retention);
+                    req.streams = dedupe.streams;
+                    req.outputs = dedupe.outputs;
+                    req.transform = dedupe.transform;
+                    req
+                },
+                2,
+            )
+            .await;
+            let drains: Vec<_> = es
+                .iter_mut()
+                .map(|e| drain(std::mem::take(&mut e.outs)))
+                .collect();
+            let (mut lane, mut all) = (0, Vec::new());
+            for e in &mut es {
+                for w in &mut e.ins {
+                    let id = format!("s{lane}");
+                    let input = over_input(lane);
+                    all.extend(input.clone());
+                    put_on(w, FrameKind::Split, 0, split(&id, None)).await;
+                    let rs: Vec<String> = input
+                        .iter()
+                        .map(|(id, e, s)| minute_row(*id, e, *s))
+                        .collect();
+                    let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
+                    put_on(w, FrameKind::Rows, 0, json_rows(&refs)).await;
+                    barriers(w, 1, 1).await;
+                    put_on(w, FrameKind::Split, 0, split(&id, Some(END))).await;
+                    barriers(w, 1, 2).await;
+                    end_both(w).await;
+                    lane += 1;
+                }
+            }
+            let (outs, ready) = finish(es, drains).await;
+            let per_lane = dedupe_rows(&outs, 1);
+            let mut want: BTreeMap<&str, (i64, i64)> = BTreeMap::new();
+            for &(id, email, at) in &all {
+                let e = want.entry(email).or_insert((id, at));
+                if (sql == LATEST) == ((at, id) > (e.1, e.0)) {
+                    *e = (id, at);
+                }
+            }
+            let mut last: BTreeMap<&str, i64> = BTreeMap::new();
+            for r in per_lane.iter().flatten() {
+                let had = last.insert(r.email.as_str(), r.id);
+                assert!(had.is_none() || sql == LATEST, "{sql}: {r:?} twice");
+            }
+            let want: BTreeMap<&str, i64> = want.iter().map(|(e, w)| (*e, w.0)).collect();
+            assert_eq!(last, want, "{sql}");
+            for key in ["x", "y", "z", "w"] {
+                let lanes = per_lane
+                    .iter()
+                    .filter(|r| r.iter().any(|o| o.email == key))
+                    .count();
+                assert_eq!(lanes, 1, "{sql}: {key} on {lanes} writer lanes");
+            }
+            let ops: Vec<_> = ready.iter().flatten().flat_map(|r| &r.operators).collect();
+            assert_eq!(ops.iter().map(|o| o.rows_in).sum::<u64>(), 24);
+            assert_eq!(ops.iter().map(|o| o.inserts).sum::<u64>(), 4);
+            let dropped: u64 = ops.iter().map(|o| o.repeats + o.updates).sum();
+            assert_eq!(dropped, 20, "{sql}");
+        }
+    }
+
+    /// One epoch of a first-row dedupe of stream a by `key`, unbounded, as
+    /// epoch_of says.
+    async fn dedupe_epoch(
+        key: &str,
+        seconds: &[i64],
+        redo: Option<&OneEpoch<DedupeRow>>,
+    ) -> OneEpoch<DedupeRow> {
+        let sql = FIRST.replace("PARTITION BY email", &format!("PARTITION BY {key}"));
+        epoch_of(
+            |state| {
+                let mut req = dedupe_request(state, &sql, (1, 1, 1), Some(i64::MAX));
+                req.outputs[0].primary_key = vec![key.to_owned()];
+                req
+            },
+            seconds,
+            redo,
+            dedupe_rows,
+        )
+        .await
+    }
+
+    /// A redo of a first-row dedupe's epoch replays the steps of its
+    /// watermark that the epoch's rows met: by id, each row its own key,
+    /// a row that came behind the watermark inside the epoch is late there
+    /// too, and the rows the epoch's barrier had passed are written; by
+    /// email, every row of one key, the first is written, and the rest are
+    /// repeats, late or not, as live.
+    #[tokio::test]
+    async fn a_redo_of_a_dedupe_gives_the_epochs_rows_and_late_ones() {
+        let seconds = [10, 50, 20, 70, 30, 80, 60, 90];
+        let ids = |e: &OneEpoch<DedupeRow>| e.rows.iter().map(|r| r.id).collect::<Vec<_>>();
+        let live = dedupe_epoch("id", &seconds, None).await;
+        let redo = dedupe_epoch("id", &seconds, Some(&live)).await;
+        assert_eq!(ids(&live), [0, 1, 3, 5]);
+        assert_eq!((live.late, live.closed), (3, 90 * SEC));
+        assert_eq!((&redo.rows, redo.late), (&live.rows, live.late));
+        assert!(redo.steps.is_empty(), "a redo records no steps");
+        assert!(!live.steps.is_empty());
+        let live = dedupe_epoch("email", &seconds, None).await;
+        let redo = dedupe_epoch("email", &seconds, Some(&live)).await;
+        assert_eq!((ids(&live), live.late), (vec![0], 0));
+        assert_eq!((&redo.rows, redo.late), (&live.rows, live.late));
     }
 
     /// A redo replays the steps of the window's watermark that the epoch's

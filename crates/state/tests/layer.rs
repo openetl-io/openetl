@@ -271,6 +271,15 @@ async fn the_set_expires_by_time_and_by_horizon() {
         .await
         .unwrap();
     assert_eq!(twice, [true, false]);
+    // An expiry at or before the time asked at keeps nothing: the call only
+    // asks.
+    assert!(!ins(&mut l, b"a", 15, i64::MIN).await);
+    assert!(ins(&mut l, b"d", 0, i64::MIN).await);
+    assert!(ins(&mut l, b"d", 7, 7).await);
+    assert!(ins(&mut l, b"d", 0, 10).await);
+    // NEVER keeps a new id, whatever the time asked at.
+    assert!(ins(&mut l, b"e", NEVER, NEVER).await);
+    assert!(!ins(&mut l, b"e", NEVER, NEVER).await);
     assert!(ins(&mut l, b"forever", 0, NEVER).await);
     l.barrier(1).await.unwrap();
     // The horizon expires what's at or before it, whatever the time asked

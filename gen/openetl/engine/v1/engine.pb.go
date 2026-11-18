@@ -1498,9 +1498,13 @@ type EventTime struct {
 	// lanes stay at the floor while the epoch is read again, whatever their
 	// senders' watermarks, and close the windows up to this one at the
 	// barrier. Unset: they go by their senders'.
-	ClosesAt      *int64 `protobuf:"varint,6,opt,name=closes_at,json=closesAt,proto3,oneof" json:"closes_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ClosesAt *int64 `protobuf:"varint,6,opt,name=closes_at,json=closesAt,proto3,oneof" json:"closes_at,omitempty"`
+	// How long a dedupe that keeps each key's first row remembers a key, in
+	// microseconds of event time from that row's; the largest int64 for good.
+	// Unset: the stream sets none, and such a dedupe over it is refused.
+	DedupeRetentionMicros *int64 `protobuf:"varint,7,opt,name=dedupe_retention_micros,json=dedupeRetentionMicros,proto3,oneof" json:"dedupe_retention_micros,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *EventTime) Reset() {
@@ -1571,6 +1575,13 @@ func (x *EventTime) GetLatenessMicros() int64 {
 func (x *EventTime) GetClosesAt() int64 {
 	if x != nil && x.ClosesAt != nil {
 		return *x.ClosesAt
+	}
+	return 0
+}
+
+func (x *EventTime) GetDedupeRetentionMicros() int64 {
+	if x != nil && x.DedupeRetentionMicros != nil {
+		return *x.DedupeRetentionMicros
 	}
 	return 0
 }
@@ -2992,6 +3003,7 @@ type OperatorEpoch struct {
 	Late uint64 `protobuf:"varint,6,opt,name=late,proto3" json:"late,omitempty"`
 	// Windows, or sessions, whose state it began keeping, and stopped
 	// keeping: closed past their lateness, or merged into another session.
+	// A dedupe's keys it began keeping, and forgot past their retention.
 	WindowsOpened  uint64 `protobuf:"varint,7,opt,name=windows_opened,json=windowsOpened,proto3" json:"windows_opened,omitempty"`
 	WindowsDropped uint64 `protobuf:"varint,8,opt,name=windows_dropped,json=windowsDropped,proto3" json:"windows_dropped,omitempty"`
 	// The least of its lanes' watermarks at their barriers, in microseconds
@@ -3024,7 +3036,10 @@ type OperatorEpoch struct {
 	Steps []*LaneSteps `protobuf:"bytes,17,rep,name=steps,proto3" json:"steps,omitempty"`
 	// Reads of blocks and of runs' indexes and filters that the disk cache
 	// answered, counted as lookups are.
-	Disk          *DiskReads `protobuf:"bytes,18,opt,name=disk,proto3" json:"disk,omitempty"`
+	Disk *DiskReads `protobuf:"bytes,18,opt,name=disk,proto3" json:"disk,omitempty"`
+	// A dedupe's rows it didn't write: repeats of a key it keeps, and for one
+	// that keeps each key's latest row, rows no later than the key's.
+	Repeats       uint64 `protobuf:"varint,19,opt,name=repeats,proto3" json:"repeats,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3183,6 +3198,13 @@ func (x *OperatorEpoch) GetDisk() *DiskReads {
 		return x.Disk
 	}
 	return nil
+}
+
+func (x *OperatorEpoch) GetRepeats() uint64 {
+	if x != nil {
+		return x.Repeats
+	}
+	return 0
 }
 
 // DiskReads are reads of state that the engine's disk cache answered in
@@ -4514,17 +4536,19 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"key_groups\x18\x0e \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12;\n" +
 	"\n" +
-	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\"\xd8\x01\n" +
+	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\"\xb1\x02\n" +
 	"\tEventTime\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12!\n" +
 	"\fdelay_micros\x18\x02 \x01(\x03R\vdelayMicros\x12\x12\n" +
 	"\x04held\x18\x03 \x01(\bR\x04held\x12\x19\n" +
 	"\x05floor\x18\x04 \x01(\x03H\x00R\x05floor\x88\x01\x01\x12'\n" +
 	"\x0flateness_micros\x18\x05 \x01(\x03R\x0elatenessMicros\x12 \n" +
-	"\tcloses_at\x18\x06 \x01(\x03H\x01R\bclosesAt\x88\x01\x01B\b\n" +
+	"\tcloses_at\x18\x06 \x01(\x03H\x01R\bclosesAt\x88\x01\x01\x12;\n" +
+	"\x17dedupe_retention_micros\x18\a \x01(\x03H\x02R\x15dedupeRetentionMicros\x88\x01\x01B\b\n" +
 	"\x06_floorB\f\n" +
 	"\n" +
-	"_closes_at\"\xe3\x03\n" +
+	"_closes_atB\x1a\n" +
+	"\x18_dedupe_retention_micros\"\xe3\x03\n" +
 	"\bHoldPlan\x12\x14\n" +
 	"\x05cells\x18\x01 \x01(\bR\x05cells\x12+\n" +
 	"\x04held\x18\x02 \x01(\v2\x17.openetl.engine.v1.HeldR\x04held\x12B\n" +
@@ -4661,7 +4685,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\".openetl.engine.v1.SplitWatermarksR\x05value:\x028\x01\x1aC\n" +
 	"\x15WindowWatermarksEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xdf\x06\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xf9\x06\n" +
 	"\rOperatorEpoch\x12\x1a\n" +
 	"\boperator\x18\x01 \x01(\tR\boperator\x12\x17\n" +
 	"\arows_in\x18\x02 \x01(\x04R\x06rowsIn\x12\x18\n" +
@@ -4683,7 +4707,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"merge_read\x18\x10 \x01(\v2 .openetl.engine.v1.StateRequestsR\tmergeRead\x122\n" +
 	"\x05steps\x18\x11 \x03(\v2\x1c.openetl.engine.v1.LaneStepsR\x05steps\x120\n" +
-	"\x04disk\x18\x12 \x01(\v2\x1c.openetl.engine.v1.DiskReadsR\x04disk\x1a7\n" +
+	"\x04disk\x18\x12 \x01(\v2\x1c.openetl.engine.v1.DiskReadsR\x04disk\x12\x18\n" +
+	"\arepeats\x18\x13 \x01(\x04R\arepeats\x1a7\n" +
 	"\tRunsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01B\f\n" +

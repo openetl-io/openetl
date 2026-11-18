@@ -26,9 +26,10 @@ export function watermark(s: OperatorStats, committed?: Timestamp): { at: string
   return { at: at.toISOString().replace(/\.\d{3}Z$/, "Z"), behind: behind > 0 ? `${duration(behind)} behind the commit` : "At the commit" };
 }
 
-/** What the operator wrote, by op: "30 new, 10 updated, 2 deleted". */
+/** What the operator wrote, by op, and a dedupe's repeats it dropped: "30 new, 10 updated, 2 deleted, 7 repeats dropped". */
 export function written(s: OperatorStats) {
-  return `${full(s.inserts)} new, ${full(s.updates)} updated, ${full(s.deletes)} deleted`;
+  const repeats = s.repeats > 0n ? `, ${full(s.repeats)} repeats dropped` : "";
+  return `${full(s.inserts)} new, ${full(s.updates)} updated, ${full(s.deletes)} deleted${repeats}`;
 }
 
 /** Requests of one kind, or reads from disk: "3 (1.2 MiB)", or "0". */

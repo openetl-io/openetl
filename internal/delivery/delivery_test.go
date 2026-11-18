@@ -306,12 +306,22 @@ func TestTransformed(t *testing.T) {
 		{"superset inputs, kafka", kafka, Stream{Replay: source.Superset, Mode: destination.Append}, AtLeastOnce, none},
 		{"exact inputs, kafka", kafka, Stream{Replay: source.Exact, Mode: destination.Append}, ExactlyOnce, none},
 		{"exact inputs, webhook", webhook, Stream{Replay: source.Exact, Mode: destination.Append}, AtLeastOnce, none},
+		{"a dedupe's, superset inputs", parquet, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true, Remembers: time.Hour}, ExactlyOnce, none},
+		{"a dedupe's for good, kafka", kafka, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true}, ExactlyOnce, none},
+		{"a dedupe's, webhook", webhook, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true}, AtLeastOnce, none},
 	} {
 		tc.s.Name, tc.s.Transformed = "out", true
 		p := PlanStream(tc.caps, tc.s, ExactlyOnce)
 		if p.Level != tc.want || p.Dedupe != tc.dedupe || p.Collapse {
 			t.Errorf("%s: plan = %+v, want %v and %v", tc.name, p, tc.want, tc.dedupe)
 		}
+	}
+	deduped := Stream{Name: "out", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Deduped: true, Remembers: time.Hour}
+	if p := PlanStream(parquet, deduped, ExactlyOnce); !strings.HasPrefix(p.Why, "exactly once within 1h0m0s of event time") {
+		t.Errorf("a dedupe's output: %s", p.Why)
+	}
+	if !CanForce(parquet, deduped, ExactlyOnce) {
+		t.Error("a dedupe drops what a forced barrier reads again")
 	}
 	out := Stream{Name: "out", Replay: source.Exact, Mode: destination.Append, Keyed: true, Transformed: true}
 	if CanForce(postgres, out, ExactlyOnce) || !CanForce(postgres, out, AtLeastOnce) {

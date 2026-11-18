@@ -68,6 +68,14 @@ func TestParseSQLTransform(t *testing.T) {
 		"lateness": {strings.Replace(continuous, "eventTime: at}", "eventTime: at, watermark: {delay: 5s, lateness: 10m}}", 1) + "  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
 			return p.GetSource().GetStreams()[0].GetWatermark().GetLateness().AsDuration().Minutes() == 10
 		}},
+		"dedupe retention": {strings.Replace(continuous, "eventTime: at}", "eventTime: at, dedupe: {retention: 24h}}", 1) + "  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
+			d := p.GetSource().GetStreams()[0].GetDedupe()
+			return d.GetRetention().AsDuration().Hours() == 24 && !d.GetUnbounded()
+		}},
+		"dedupe unbounded": {strings.Replace(continuous, "eventTime: at}", "eventTime: at, dedupe: {retention: unbounded}}", 1) + "  transform: {sql: 'SELECT 1'}\n", func(p *apiv1.PipelineSpec) bool {
+			d := p.GetSource().GetStreams()[0].GetDedupe()
+			return d.GetRetention() == nil && d.GetUnbounded()
+		}},
 		// The stream as the destination gets it holds, collapses and
 		// changes types as these say; the plan checks where it can.
 		"holds, collapse and typeChanges": {strings.Replace(continuous, "eventTime: at}",
@@ -124,6 +132,12 @@ func TestParseSQLTransformErrors(t *testing.T) {
 		"negative delay":        {sql("{name: a, eventTime: at, watermark: {delay: -5s}}"), "source.streams[0].watermark.delay must be zero or more"},
 		"negative lateness":     {sql("{name: a, eventTime: at, watermark: {lateness: -1m}}"), "source.streams[0].watermark.lateness must be zero or more"},
 		"watermark field":       {sql("{name: a, eventTime: at, watermark: {lag: 5s}}"), "lag"},
+		"dedupe without sql":    {scheduled("{name: a, eventTime: at, dedupe: {retention: 1h}}", ""), "source.streams[0].dedupe: a dedupe is a SQL transform's statement"},
+		"dedupe no eventTime":   {sql("{name: a, dedupe: {retention: 1h}}"), "source.streams[0].dedupe needs source.streams[0].eventTime"},
+		"dedupe no retention":   {sql("{name: a, eventTime: at, dedupe: {}}"), "source.streams[0].dedupe.retention is empty: give how long"},
+		"dedupe retention text": {sql("{name: a, eventTime: at, dedupe: {retention: forever}}"), `source.streams[0].dedupe.retention: "forever" isn't a duration such as 90s or 15m, or unbounded`},
+		"dedupe zero retention": {sql("{name: a, eventTime: at, dedupe: {retention: 0s}}"), "source.streams[0].dedupe.retention must be more than zero, or unbounded"},
+		"dedupe field":          {sql("{name: a, eventTime: at, dedupe: {window: 1h}}"), "window"},
 		"watermark text":        {sql("{name: a, eventTime: at, watermark: 5s}"), "watermark"},
 		"flinkAccess":           {sql("{name: a}") + "  flinkAccess: {emrRole: 'arn:aws:iam::123456789012:role/r'}\n", "flinkAccess"},
 		"sparkAccess":           {sql("{name: a}") + "  sparkAccess: {emrRole: 'arn:aws:iam::123456789012:role/r'}\n", "sparkAccess"},

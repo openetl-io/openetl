@@ -68,12 +68,28 @@ export const span = (d?: Duration) => (d ? goDuration(`${Number(d.seconds) + d.n
  * Empty for a dropped one, whose statement is gone.
  */
 export function operatorComputes(op: OperatorPlan) {
+  const on = `by ${op.eventTime}${op.keys.length ? ` on ${op.keys.join(", ")}` : ""}`;
+  if (op.keep) return `dedupe ${op.keep} ${on}`;
+  if (op.class === "over") return `over ${on}: ${op.aggregates.join(", ")}`;
   if (!op.window) return "";
   let s = `${op.window} ${span(op.size)}`;
   if (op.slide) s += ` every ${span(op.slide)}`;
   s += ` by ${op.eventTime}`;
   if (op.keys.length) s += ` on ${op.keys.join(", ")}`;
   return `${s}: ${op.aggregates.join(", ")}`;
+}
+
+/** What an operator keeps, for how long, and for a dedupe what it guarantees, in a sentence; empty for a dropped one. */
+export function operatorKeeps(op: OperatorPlan) {
+  if (op.window) return `Each window's state for ${span(op.retention)} of event time, lateness ${span(op.lateness)} included`;
+  if (op.keep === "latest") return "Each key's latest row's time, for good: exactly once, as upserts. Its state grows with the number of keys";
+  if (op.keep && !op.guarantee) return "Its stream sets no dedupe.retention";
+  if (op.keep && op.retention) {
+    return `Each key for ${span(op.retention)} of event time from its first row: exactly once within ${span(op.retention)}`;
+  }
+  if (op.keep) return "Every key, for good: exactly once. Its state grows with the number of keys";
+  if (op.class === "over") return "Each key's frame, and its rows until the watermark passes them";
+  return "";
 }
 
 /** What applying does to an operator's state, against the pipeline's current version. */

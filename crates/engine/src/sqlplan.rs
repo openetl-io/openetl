@@ -19,7 +19,9 @@
 //! `extension<arrow.json>` for those logical types. Statements see every
 //! column as nullable, as the engine's first half types them, and a stream
 //! with `nanoseconds` keeps its timestamps in nanoseconds. `event_time`
-//! names the column group windows go by.
+//! names the column group windows go by, and `dedupe_retention_us` how long
+//! a dedupe that keeps each key's first row remembers a key, in
+//! microseconds of event time, the largest int64 for good.
 //!
 //! A stream can have its columns as Arrow IPC streams holding only a
 //! schema, in base64, as a job's start has them: `declared_schema`, in place
@@ -43,10 +45,15 @@
 //! `event_time`, `keys` and `aggregates`, such as `sum(amount)`. `OVER`'s has
 //! a null `window`, `size_us` and `slide_us`, its `event_time`, its `keys`,
 //! `PARTITION BY`'s columns, and its `functions` with their frames, such as
-//! `sum(amount) range unbounded` or `lag(amount, 1)`. Each error has a
-//! `kind`, a `class` and
-//! `tier` for a later tier's statement, an `at` unless it isn't about the
-//! text, and a `message`.
+//! `sum(amount) range unbounded` or `lag(amount, 1)`. A dedupe's has its
+//! `event_time` and `keys` as `OVER`'s, which row it keeps (`keep`, `first`
+//! or `latest`), a first-row dedupe's `retention_us`, its stream's, null
+//! for unbounded, and what it guarantees of a key's repeats (`guarantee`):
+//! `exactly_once`, `exactly_once_within` its retention, or null where its
+//! stream sets no retention. The others have null `keep`, `retention_us`
+//! and `guarantee`. Each error has a `kind`, a `class` and `tier` for a
+//! later tier's statement, an `at` unless it isn't about the text, and a
+//! `message`.
 //!
 //! Exit codes: 0 when the SQL planned; 1 when it has errors, which the
 //! answer lists; 2 when the call failed (usage, or a request that can't be
@@ -59,7 +66,7 @@ use arrow_schema::{DataType, Field, IntervalUnit, Schema, SchemaRef, TimeUnit};
 use base64::Engine as _;
 use openetl_normalize::{EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY};
 use openetl_proto::engine::v1::StreamPlan;
-use openetl_sql::{Catalog, ErrorKind, Operator, Position, Statement, Stream, Window};
+use openetl_sql::{Catalog, ErrorKind, Keep, Operator, Position, Statement, Stream, Window};
 use serde::{Deserialize, Serialize};
 
 use crate::{ipc, transform};
@@ -97,6 +104,10 @@ pub struct RequestStream {
     /// The column of its rows' event time, which group windows go by.
     #[serde(default)]
     pub event_time: Option<String>,
+    /// How long a dedupe that keeps each key's first row remembers a key,
+    /// in microseconds of event time; the largest int64 for good.
+    #[serde(default)]
+    pub dedupe_retention_us: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,6 +162,15 @@ pub struct AnswerState {
     pub aggregates: Vec<String>,
     /// `OVER`'s, with their frames, such as `sum(amount) rows unbounded`.
     pub functions: Vec<String>,
+    /// A dedupe's: `first` or `latest`.
+    pub keep: Option<&'static str>,
+    /// A first-row dedupe's retention, from its stream; `None` for
+    /// unbounded, and where the stream sets none.
+    pub retention_us: Option<i64>,
+    /// What a dedupe guarantees of a key's repeats: `exactly_once`, or
+    /// `exactly_once_within` its retention; `None` where the stream sets
+    /// no retention, which a first-row dedupe needs.
+    pub guarantee: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -225,7 +245,7 @@ pub fn plan(req: &Request) -> Result<Answer, String> {
     };
     let mut out = Answer::default();
     for s in &planned.statements {
-        out.statements.push(statement(s)?);
+        out.statements.push(statement(s, &req.streams)?);
     }
     for v in &planned.views {
         out.views.push(AnswerView {
@@ -304,7 +324,7 @@ fn stream(s: &RequestStream) -> Result<Stream, String> {
     })
 }
 
-fn statement(s: &Statement) -> Result<AnswerStatement, String> {
+fn statement(s: &Statement, streams: &[RequestStream]) -> Result<AnswerStatement, String> {
     let schema = ipc::encode_schema(&s.schema)
         .map_err(|e| format!("statement at {}: its schema: {e}", s.at))?;
     Ok(AnswerStatement {
@@ -321,25 +341,50 @@ fn statement(s: &Statement) -> Result<AnswerStatement, String> {
         need: s.need().map(<[String]>::to_vec),
         passes: s.passes().into_iter().collect(),
         operator: s.operator_id().map(str::to_owned),
-        state: state(s),
+        state: state(s, streams),
     })
 }
 
-fn state(s: &Statement) -> Option<AnswerState> {
+fn state(s: &Statement, streams: &[RequestStream]) -> Option<AnswerState> {
+    let keeps = |event_time: &str, keys: &[String]| AnswerState {
+        window: None,
+        size_us: None,
+        slide_us: None,
+        event_time: event_time.to_owned(),
+        keys: keys.to_vec(),
+        aggregates: Vec::new(),
+        functions: Vec::new(),
+        keep: None,
+        retention_us: None,
+        guarantee: None,
+    };
     let g = match &s.operator {
         Operator::GroupWindow(g) => g,
         Operator::Over(o) => {
             return Some(AnswerState {
-                window: None,
-                size_us: None,
-                slide_us: None,
-                event_time: o.event_time.clone(),
-                keys: o.need.clone(),
-                aggregates: Vec::new(),
                 functions: o.computes.clone(),
+                ..keeps(&o.event_time, &o.need)
             });
         }
-        _ => return None,
+        Operator::Dedupe(d) => {
+            let retention = streams
+                .iter()
+                .find(|r| r.name == d.input.input)
+                .and_then(|r| r.dedupe_retention_us);
+            let (keep, retention_us, guarantee) = match (d.keep, retention) {
+                (Keep::Latest, _) => ("latest", None, Some("exactly_once")),
+                (Keep::First, Some(openetl_state::NEVER)) => ("first", None, Some("exactly_once")),
+                (Keep::First, Some(r)) => ("first", Some(r), Some("exactly_once_within")),
+                (Keep::First, None) => ("first", None, None),
+            };
+            return Some(AnswerState {
+                keep: Some(keep),
+                retention_us,
+                guarantee,
+                ..keeps(&d.event_time, &d.need)
+            });
+        }
+        Operator::RowWise(_) => return None,
     };
     let per_micro = match g.rows.field(g.time).data_type() {
         DataType::Timestamp(TimeUnit::Nanosecond, _) => 1000,
@@ -354,10 +399,8 @@ fn state(s: &Statement) -> Option<AnswerState> {
         window: Some(g.window.name()),
         size_us: Some(size / per_micro),
         slide_us: slide,
-        event_time: g.event_time.clone(),
-        keys: g.need.clone(),
         aggregates: g.computes.clone(),
-        functions: Vec::new(),
+        ..keeps(&g.event_time, &g.need)
     })
 }
 
@@ -703,10 +746,10 @@ mod tests {
         assert!(e[1]["message"].as_str().unwrap().contains("nope"));
     }
 
-    /// OVER plans, with what it keeps; dedupe plans, and the answer refuses
-    /// it as a tier 3 statement at its OVER, as a job's start does.
+    /// OVER plans, with what it keeps, and so does dedupe, with which row it
+    /// keeps, its stream's retention and what it guarantees.
     #[test]
-    fn over_says_what_it_keeps_and_dedupe_is_refused_as_tier_3s() {
+    fn over_and_dedupe_say_what_they_keep() {
         let mut stream = customers();
         stream["event_time"] = json!("created_at");
         stream["changelog"] = json!(false);
@@ -723,18 +766,60 @@ mod tests {
         assert_eq!(
             st["state"],
             json!({"window": null, "size_us": null, "slide_us": null, "event_time": "created_at",
-                   "keys": ["email"], "aggregates": [], "functions": ["count(*) range unbounded", "lag(\"id\", 1)"]})
+                   "keys": ["email"], "aggregates": [], "functions": ["count(*) range unbounded", "lag(\"id\", 1)"],
+                   "keep": null, "retention_us": null, "guarantee": null})
         );
-        let got = answer(json!({
-            "sql": "INSERT INTO latest SELECT id, email FROM customers\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY created_at DESC) = 1",
-            "streams": [stream],
-        }));
-        assert_eq!(got["statements"], json!([]));
-        assert_eq!(
-            got["errors"],
-            json!([{"kind": "later_tier", "class": "over", "tier": 3, "at": {"line": 2, "column": 9},
-                    "message": "OVER: transforms don't run window functions yet (tier 3)"}])
-        );
+        let dedupe = |order: &str, retention: Option<i64>| {
+            let mut stream = stream.clone();
+            if let Some(r) = retention {
+                stream["dedupe_retention_us"] = json!(r);
+            }
+            let got = answer(json!({
+                "sql": format!("INSERT INTO kept SELECT id, email FROM customers\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY created_at {order}) = 1"),
+                "streams": [stream],
+            }));
+            assert_eq!(got["errors"], json!([]));
+            let st = &got["statements"][0];
+            assert_eq!(st["class"], "over");
+            assert!(st["operator"].as_str().unwrap().starts_with("dedupe-"));
+            let s = &st["state"];
+            assert_eq!(
+                (&s["event_time"], &s["keys"]),
+                (&json!("created_at"), &json!(["id"]))
+            );
+            (
+                s["keep"].clone(),
+                s["retention_us"].clone(),
+                s["guarantee"].clone(),
+            )
+        };
+        let day = 86_400_000_000_i64;
+        let cases = [
+            (
+                "",
+                Some(day),
+                ("first", json!(day), json!("exactly_once_within")),
+            ),
+            (
+                "",
+                Some(i64::MAX),
+                ("first", json!(null), json!("exactly_once")),
+            ),
+            ("", None, ("first", json!(null), json!(null))),
+            ("DESC", None, ("latest", json!(null), json!("exactly_once"))),
+            (
+                "DESC",
+                Some(day),
+                ("latest", json!(null), json!("exactly_once")),
+            ),
+        ];
+        for (order, retention, (keep, r, g)) in cases {
+            assert_eq!(
+                dedupe(order, retention),
+                (json!(keep), r, g),
+                "{order} {retention:?}"
+            );
+        }
     }
 
     /// `openetl-engine plan` plans the deepest chain of views on a small
@@ -793,7 +878,8 @@ mod tests {
         assert_eq!(
             got["statements"][0]["state"],
             json!({"window": "hop", "size_us": 300_000_000, "slide_us": 60_000_000, "event_time": "at",
-                   "keys": ["kind"], "aggregates": ["count(*)", "max(n)"], "functions": []})
+                   "keys": ["kind"], "aggregates": ["count(*)", "max(n)"], "functions": [],
+                   "keep": null, "retention_us": null, "guarantee": null})
         );
         let got = answer(
             json!({"sql": "INSERT INTO t SELECT id FROM customers", "streams": [customers()]}),

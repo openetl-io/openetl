@@ -80,10 +80,14 @@ type Stream struct {
 	// A stream a SQL transform reads whose rows' time is a column's; nil
 	// for none.
 	EventTime *EventTime
+	// A SQL dedupe's output, as delivery.Stream has it.
+	Deduped   bool
+	Remembers time.Duration
 }
 
 func (s Stream) delivery() delivery.Stream {
-	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed}
+	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed,
+		Deduped: s.Deduped, Remembers: s.Remembers}
 }
 
 // columns names the columns of Schema; nil without one.

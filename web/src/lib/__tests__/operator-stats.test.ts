@@ -23,6 +23,7 @@ describe("operator stats", () => {
 
   it("counts what was written and asked", () => {
     expect(written(create(OperatorStatsSchema, { inserts: 1200n, updates: 3n }))).toBe("1,200 new, 3 updated, 0 deleted");
+    expect(written(create(OperatorStatsSchema, { inserts: 4n, repeats: 12n }))).toBe("4 new, 0 updated, 0 deleted, 12 repeats dropped");
     expect(requests(undefined)).toBe("0");
     expect(requests({ $typeName: "openetl.api.v1.StateRequests", count: 4n, bytes: 1_310_720n })).toBe("4 (1.3 MiB)");
   });

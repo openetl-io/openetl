@@ -22,7 +22,6 @@ These are refused, each at the place it is written. The message says what was fo
 
 | What | Message |
 |---|---|
-| `ROW_NUMBER() OVER (…) = 1`, in `QUALIFY` or in the `WHERE` of a `SELECT` that reads it, which deduplicates | `OVER: transforms don't run window functions yet (tier 3)`. [Window functions](#window-functions) lists what else `OVER` refuses. |
 | A window function without `OVER` | `rank is a window function, which takes OVER: rank(…) OVER (PARTITION BY … ORDER BY …)` |
 | `JOIN` | `a join: transforms don't run joins yet (tier 4)` |
 | Two relations in `FROM` | `reading two relations: transforms don't run joins yet (tier 4)` |
@@ -103,7 +102,12 @@ The plan also has a problem where a group window's stream is read in a way that 
 | A stream without an event time | `orders has no event time, which OVER goes by: set eventTime on the stream in source.streams` |
 | `ORDER BY` another column, or no `ORDER BY` | `OVER goes by the event time of orders, created_at: write ORDER BY created_at` |
 | `ORDER BY` the event time and other columns | `OVER orders by the event time alone, which ties don't change: write ORDER BY created_at` |
-| `ORDER BY … DESC` | `OVER's frames end at the current row in event-time order: write ORDER BY created_at without DESC` |
+| `ORDER BY … DESC`, other than in a dedupe | `OVER's frames end at the current row in event-time order: write ORDER BY created_at without DESC` |
+| `ROW_NUMBER()` selected, not compared | `ROW_NUMBER() deduplicates, keeping the rows where it's 1: compare it = 1 in QUALIFY, or in the WHERE of a SELECT that reads it; count(*) OVER (… ROWS UNBOUNDED PRECEDING) numbers every row` |
+| `ROW_NUMBER()` without `PARTITION BY` | `ROW_NUMBER() … = 1 keeps a row for each key of its PARTITION BY: partition by the columns that identify a row` |
+| A dedupe that doesn't select a `PARTITION BY` column | `a deduplicated output keeps its PARTITION BY columns, which are its primary key: select customer` |
+| `ROW_NUMBER()` and another function `OVER` in a statement | `ROW_NUMBER() … = 1 deduplicates on its own: compute other functions OVER in a statement of their own` |
+| `ROW_NUMBER()` with an argument, `FILTER` or `DISTINCT` | `ROW_NUMBER() takes nothing but OVER (…)` |
 | A frame that does not end at the current row | `OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW` |
 | A frame that starts after the current row | `a frame starts before the current row, or at it` |
 | `GROUPS` | `GROUPS frames aren't supported: write ROWS or RANGE` |
@@ -127,6 +131,17 @@ The plan also has a problem where a group window's stream is read in a way that 
 | `unnest` of `OVER`'s rows | `UNNEST of OVER's rows isn't supported: unnest the stream's rows before OVER, in a view` |
 
 The plan also has a problem where the stream of `OVER` is read in a way that it cannot take ([OVER reads](./sql-over.md#over-reads)), where the stream sets `watermark.lateness` and no group window reads it, and where the output is merged and its primary key does not hold the `PARTITION BY` columns, on a destination with several writer lanes ([The output](./sql-over.md#the-output)).
+
+A [dedupe](./sql-over.md#dedupe) has these problems in the plan, each about the spec, not the SQL. A job that starts with a first-row dedupe over a stream without `dedupe.retention` fails with `CONFIG_INVALID` and the same message.
+
+| What | Message |
+|---|---|
+| A first-row dedupe over a stream without `dedupe.retention` | `transform.sql:1:1: the dedupe writing "events_once", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, and stream "events" sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time, such as 24h, after which a key's next row is written again, or to unbounded, to remember every key` |
+| A latest-row dedupe whose output isn't merged | `transform.sql:1:1: the dedupe writing "latest_profiles", ROW_NUMBER() … = 1 in descending order of the event time, keeps each key's latest row, as upserts and deletes that only a merge applies, and the output is written with append: set destination.write: merge, on a destination that merges` |
+| A first-row dedupe over a stream read by another cursor than its event time | `the dedupe writing "events_once" reads stream "events" with incremental by cursor "id", not by its eventTime "created_at", so each sync's read would start its keys again, and write each key's first row again: read it with full_refresh` |
+| `watermark.lateness` on a stream that a latest-row dedupe reads | `stream "profile_changes" sets watermark.lateness, which the dedupe writing "latest_profiles" doesn't take: it writes each key's latest row as it comes, whatever the watermark. Set no lateness` |
+| `dedupe.retention` on a stream that no first-row dedupe reads | `stream "profile_changes" sets dedupe.retention, which only a dedupe that keeps each key's first row takes, ROW_NUMBER() … = 1 in ascending order of its eventTime, and no statement of transform.sql dedupes it so: set no dedupe` |
+| A `dedupe.retention` under 1µs | `stream "events" sets dedupe.retention 1ns, under the microsecond that event time counts in: set 1µs or more, or unbounded` |
 
 ### Changelog streams
 

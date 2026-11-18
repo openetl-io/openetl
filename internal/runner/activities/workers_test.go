@@ -302,11 +302,12 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 // coordinator's job has the engine's dataflow when it decides, so it isn't
 // placed again on one pod; both workers join; the attempt commits several
 // epochs; and output, which sql writes, is staged from both workers'
-// destination processes. It gives output's JSON lines.
-func timedSQLOnWorkers(t *testing.T, sql, output string) string {
+// destination processes. The stream sets dedupe. It gives output's JSON
+// lines.
+func timedSQLOnWorkers(t *testing.T, sql, output string, dedupe *apiv1.Dedupe) string {
 	t.Helper()
 	res, api, _, out, err := onWorkerProcesses(t, &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}}, &apiv1.PipelineSpec{
-		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at"}}},
+		Source:    &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at", Dedupe: dedupe}}},
 		Transform: &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
 		Delivery:  &apiv1.Delivery{Commit: &apiv1.Commit{MaxBytes: 16 << 10, Scope: apiv1.CommitScope_COMMIT_SCOPE_PIPELINE}},
 	})
@@ -347,7 +348,7 @@ func timedSQLOnWorkers(t *testing.T, sql, output string) string {
 // once, from both workers' writer lanes, with every row.
 func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
 	sql := "INSERT INTO tens SELECT window_start, region, count(*) AS n FROM events GROUP BY tumble(at, INTERVAL '10 seconds'), region"
-	lines := timedSQLOnWorkers(t, sql, "tens")
+	lines := timedSQLOnWorkers(t, sql, "tens", nil)
 	starts := map[string][]string{}
 	got := map[string]int{}
 	for line := range strings.Lines(lines) {
@@ -391,7 +392,7 @@ func TestAGroupWindowOnWorkerProcesses(t *testing.T) {
 // rows up to its time, every worker's rows among them.
 func TestAnOverOnWorkerProcesses(t *testing.T) {
 	sql := "INSERT INTO counted SELECT id, region, count(*) OVER (PARTITION BY region ORDER BY at) AS n FROM events"
-	lines := timedSQLOnWorkers(t, sql, "counted")
+	lines := timedSQLOnWorkers(t, sql, "counted", nil)
 	want := timedCounts()
 	got := map[int64]int{}
 	for line := range strings.Lines(lines) {
@@ -417,6 +418,53 @@ func TestAnOverOnWorkerProcesses(t *testing.T) {
 	}
 	if len(got) != len(want) || compared != timedSplits*timedChunks*timedRows {
 		t.Errorf("%d rows landed and %d compared, want %d", len(got), compared, timedSplits*timedChunks*timedRows)
+	}
+}
+
+// A dedupe's job runs on the workers it was placed on, through the
+// activities a runner runs, with the stream's dedupe.retention. The
+// workers' engines send each row to the keyed lane that owns its region,
+// on either worker, and each region's first row lands once, from the
+// writer lane of its region's keyed lane: the earliest of every worker's
+// rows of the region.
+func TestADedupeOnWorkerProcesses(t *testing.T) {
+	sql := "INSERT INTO firsts SELECT id, region, at FROM events QUALIFY row_number() OVER (PARTITION BY region ORDER BY at) = 1"
+	lines := timedSQLOnWorkers(t, sql, "firsts", &apiv1.Dedupe{Unbounded: true})
+	got := map[string]int64{}
+	for line := range strings.Lines(lines) {
+		var r struct {
+			ID     int64
+			Region string
+		}
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := got[r.Region]; ok {
+			t.Fatalf("region %s landed twice", r.Region)
+		}
+		got[r.Region] = r.ID
+	}
+	// Each region's earliest row is in the first chunk, at the least
+	// millisecond any split gives it.
+	want := map[string]int64{}
+	for k := range timedSplits {
+		for r := range timedRows {
+			region := timedRegions[(k+r)%len(timedRegions)]
+			id := int64(k*timedChunks*timedRows + r)
+			if w, ok := want[region]; !ok || int64(r) < w%timedRows {
+				want[region] = id
+			}
+		}
+	}
+	compared := 0
+	for region, id := range want {
+		if got[region] != id {
+			t.Errorf("region %s kept row %d, want %d", region, got[region], id)
+		}
+		compared++
+	}
+	if len(got) != len(want) || compared != len(timedRegions) {
+		t.Errorf("%d regions landed and %d compared, want %d", len(got), compared, len(timedRegions))
 	}
 }
 
@@ -497,10 +545,10 @@ func TestAnOwnCodeTransformGoesToOnePodBeforeItsSetup(t *testing.T) {
 	}
 }
 
-// A statement tier 3 takes, as a dedupe by ROW_NUMBER() = 1, is refused
-// as its sync's job is built, before the attempt is placed: on workers as on
-// one pod.
-func TestATier3StatementIsRefusedOnWorkersAsOnOnePod(t *testing.T) {
+// A dedupe that keeps each key's first row, over a stream that sets no
+// dedupe.retention, is refused as its sync's job is built, before the attempt
+// is placed: on workers as on one pod.
+func TestADedupeWithoutARetentionIsRefusedOnWorkersAsOnOnePod(t *testing.T) {
 	engine := os.Getenv("OPENETL_ENGINE")
 	if _, err := os.Stat(engine); engine == "" || err != nil {
 		t.Skip("OPENETL_ENGINE names no engine binary")
@@ -551,7 +599,7 @@ func TestATier3StatementIsRefusedOnWorkersAsOnOnePod(t *testing.T) {
 	for _, workers := range []int{0, 2} {
 		wk := worker.NewWork(worker.Spec{ID: "run/attempt/1", Runner: "coordinator", Workers: workers, Size: resources.S, Received: time.Now()}, nil)
 		_, err := s.RunSyncAttempt(worker.NewContext(t.Context(), wk), contract.AttemptInput{OrgID: "org", PipelineID: "p", Version: "v1", SyncID: "s", RunKey: "run", Attempt: 1})
-		if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "transform.sql:1:62: OVER: transforms don't run window functions yet (tier 3)") {
+		if errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), `transform.sql:1:1: the dedupe writing "firsts", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, and stream "events" sets no dedupe.retention`) {
 			t.Errorf("on %d workers: %v", workers, err)
 		}
 	}

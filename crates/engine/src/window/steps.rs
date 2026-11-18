@@ -77,6 +77,57 @@ pub fn run_rows(
     Ok((ran, failed))
 }
 
+/// The output's rows that delete, by their key, the rows `rows` gave or
+/// would give: the steps' projections without their filters. A column
+/// that gives the same value for the same input gives it again; one that
+/// may not, as one that reads `now()`, isn't evaluated, so it's null, or
+/// its type's zero where it can't be.
+pub fn deletes(steps: &[Step], rows: RecordBatch) -> Result<Ran, String> {
+    let n = rows.num_rows();
+    let mut cur = rows;
+    for step in steps {
+        match step {
+            Step::Filter(_) => {}
+            Step::Project(p) => {
+                let mut columns = Vec::with_capacity(p.columns.len());
+                for (c, f) in p.columns.iter().zip(p.schema.fields()) {
+                    columns.push(match c.expr.is_deterministic() {
+                        true => c.expr.eval(&cur).map_err(|e| e.message)?,
+                        false => empty(f, n)?,
+                    });
+                }
+                cur = RecordBatch::try_new_with_options(
+                    p.schema.clone(),
+                    columns,
+                    &arrow_array::RecordBatchOptions::new().with_row_count(Some(n)),
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            Step::Unnest(_) => return Err("an output that unnests".into()),
+        }
+    }
+    Ok(Ran {
+        batch: cur,
+        rows: (0..n).collect(),
+    })
+}
+
+/// `n` values of `f` for a column whose value doesn't matter: nulls, or
+/// where it can't be null, its type's zero.
+pub fn empty(f: &arrow_schema::Field, n: usize) -> Result<ArrayRef, String> {
+    let nulls = arrow_array::new_null_array(f.data_type(), n);
+    if f.is_nullable() {
+        return Ok(nulls);
+    }
+    let zeros = nulls
+        .to_data()
+        .into_builder()
+        .nulls(None)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(arrow_array::make_array(zeros))
+}
+
 fn eval(e: arrow_schema::ArrowError) -> Error {
     Error {
         kind: openetl_sql::ErrorKind::Eval,
@@ -200,6 +251,12 @@ fn each(
 }
 
 /// The rows of `batch` at `rows`, in that order.
+/// Rows `rows` of one column.
+pub fn take_column(column: &ArrayRef, rows: &[usize]) -> Result<ArrayRef, Error> {
+    let indices = UInt64Array::from_iter_values(rows.iter().map(|&r| r as u64));
+    arrow_select::take::take(column.as_ref(), &indices, None).map_err(eval)
+}
+
 pub fn take(batch: &RecordBatch, rows: &[usize]) -> Result<RecordBatch, Error> {
     if rows.len() == batch.num_rows() && rows.iter().enumerate().all(|(i, &r)| i == r) {
         return Ok(batch.clone());

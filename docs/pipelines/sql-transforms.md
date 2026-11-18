@@ -5,7 +5,7 @@ description: Rename, filter and reshape a pipeline's streams with SQL statements
 
 A SQL transform changes rows between the source and the destination. You write `INSERT INTO … SELECT` statements in the pipeline's `transform.sql`. Each statement reads a source's stream and writes an **output**, which the destination gets as a stream. The engine runs the statements as it copies, in scheduled and continuous pipelines, with no other system to run.
 
-Most statements are row-wise: they rename, compute, filter and unnest columns, one input row at a time. A group window adds up rows by windows of their time ([Aggregate by windows of time](./windows.md)). `OVER` gives each row values over the rows before it, such as a running total ([Compute running totals with OVER](./over.md)). [SQL transforms](../reference/sql.md) in the reference lists every statement, operator and function, and what is refused.
+Most statements are row-wise: they rename, compute, filter and unnest columns, one input row at a time. A group window adds up rows by windows of their time ([Aggregate by windows of time](./windows.md)). `OVER` gives each row values over the rows before it, such as a running total ([Compute running totals with OVER](./over.md)). A dedupe keeps one row for each key ([Deduplicate rows with ROW_NUMBER](./dedupe.md)). [SQL transforms](../reference/sql.md) in the reference lists every statement, operator and function, and what is refused.
 
 ## Before you start
 
@@ -286,6 +286,27 @@ Each order is written once, with its region's revenue up to its time and the amo
 
 [Compute running totals with OVER](./over.md) explains frames, rows with the same time, when each row is written, and the state that `OVER` keeps. [OVER](../reference/sql-over.md#over) in the reference lists the functions, the frames and the rules.
 
+### Deduplicate rows
+
+`ROW_NUMBER() … = 1` keeps one row for each key: the first in ascending order of the event time, or the latest in descending order. To keep the first delivery of each event, set how long the dedupe remembers a key in the stream's `dedupe.retention`:
+
+```yaml
+    - name: events
+      eventTime: created_at
+      dedupe: { retention: 24h }
+```
+
+```sql
+INSERT INTO events_once
+SELECT event_id, kind, amount, created_at
+FROM events
+QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY created_at) = 1;
+```
+
+The output's primary key is `event_id`. Each event's first row is written once, when the watermark passes its time, and a repeat of it within 24 hours of event time is dropped. With `ORDER BY created_at DESC`, the dedupe writes each key's latest row as an upsert, which needs `destination.write: merge`, and takes no retention.
+
+[Deduplicate rows with ROW_NUMBER](./dedupe.md) explains the retention, when each row is written, late rows and what the plan guarantees. [Dedupe](../reference/sql-over.md#dedupe) in the reference lists the rules.
+
 ## Changelog streams
 
 A stream read with `cdc` is a changelog: its rows are inserts, updates and deletes of the stream's primary key. This continuous pipeline keeps a table of open orders, in a destination that merges:
@@ -358,6 +379,7 @@ A stream that passes through is delivered as it would be without the transform. 
 
 - Over streams that replay exactly from a resume point, which the plan's reasons call `exact replay`, an output can be delivered exactly once.
 - Over a stream whose reads may repeat rows, such as an incremental read, an output is delivered at least once. Written with `merge`, it is effectively once.
+- Into a destination that stages and applies, or that writes each commit in a transaction, a [dedupe](./dedupe.md)'s output drops the rows that a read repeats. It is delivered exactly once, within its retention where it has one. Into other destinations, the plan reports it as at least once.
 
 The default `delivery.require` is `exactly_once`. Without `require: at_least_once`, the plan of the example has problems, and `openetl apply` refuses it:
 

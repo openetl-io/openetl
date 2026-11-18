@@ -35,6 +35,10 @@ type Stream struct {
 	// The column of its rows' event time, which group windows and OVER go
 	// by; empty for none.
 	EventTime string `json:"event_time,omitempty"`
+	// How long a dedupe that keeps each key's first row remembers a key, in
+	// microseconds of event time; math.MaxInt64 for good, and nil where the
+	// stream sets none.
+	DedupeRetentionMicros *int64 `json:"dedupe_retention_us,omitempty"`
 }
 
 // Column is a stream's column. Its type is Arrow's, named as the catalog
@@ -92,6 +96,15 @@ type Statement struct {
 	State *State `json:"state"`
 }
 
+// Keep is which row of each key a dedupe keeps, first or latest; empty for
+// a statement that isn't a dedupe.
+func (st Statement) Keep() string {
+	if st.State == nil {
+		return ""
+	}
+	return st.State.Keep
+}
+
 // State is what a stateful operator keeps, by the stream's names.
 type State struct {
 	// A group window's: tumble, hop or session; empty for OVER.
@@ -110,6 +123,15 @@ type State struct {
 	// OVER's functions over the stream's columns, with their frames, such as
 	// sum(amount) range unbounded or lag(amount, 1).
 	Functions []string `json:"functions"`
+	// A dedupe's: first or latest; empty for the others.
+	Keep string `json:"keep"`
+	// A first-row dedupe's retention, its stream's, in microseconds; nil for
+	// unbounded, and where the stream sets none.
+	RetentionMicros *int64 `json:"retention_us"`
+	// What a dedupe guarantees of a key's repeats: exactly_once, or
+	// exactly_once_within its retention; empty where its stream sets no
+	// retention, which a first-row dedupe needs.
+	Guarantee string `json:"guarantee"`
 }
 
 // View is a CREATE VIEW, planned on its own.

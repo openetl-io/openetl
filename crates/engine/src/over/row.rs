@@ -49,6 +49,11 @@ pub fn tie(row: &[u8]) -> &[u8] {
     row.get(8..).unwrap_or_default()
 }
 
+/// A row's values, without its schema's hash and its record ID.
+pub fn values(row: &[u8]) -> &[u8] {
+    row.get(24..).unwrap_or_default()
+}
+
 /// Whether a column of type `t` keeps its values in a few bytes, as
 /// [`codec::build`] gives them back.
 fn compact(t: &DataType) -> bool {

@@ -190,7 +190,7 @@ func operatorStats(o checkpoint.Operator) *apiv1.OperatorStats {
 		return &apiv1.StateRequests{Count: r.Count, Bytes: r.Bytes}
 	}
 	s := &apiv1.OperatorStats{
-		Operator: o.Operator, RowsIn: o.RowsIn, Inserts: o.Inserts, Updates: o.Updates, Deletes: o.Deletes, LateRows: o.Late,
+		Operator: o.Operator, RowsIn: o.RowsIn, Inserts: o.Inserts, Updates: o.Updates, Deletes: o.Deletes, LateRows: o.Late, Repeats: o.Repeats,
 		Windows: o.Windows, MemoryBytes: o.MemoryBytes, StoredBytes: o.StoredBytes, CheckpointBytes: o.CheckpointBytes,
 		BarrierRequests: req(o.Barrier), ReadRequests: req(o.Lookup), RestoreRequests: req(o.Restore),
 		MergeWriteRequests: req(o.MergeWrite), MergeReadRequests: req(o.MergeRead), DiskReads: &apiv1.DiskReads{Count: o.Disk.Count, Bytes: o.Disk.Bytes},

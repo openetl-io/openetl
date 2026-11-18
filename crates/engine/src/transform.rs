@@ -9,7 +9,9 @@ use arrow_schema::{Field, Schema, SchemaRef};
 use openetl_normalize::VERSIONS_KEY;
 use openetl_normalize::naming::{METADATA_COLUMNS, TABLE_KEY, source_names};
 use openetl_proto::engine::v1::{StreamPlan, Transform as TransformPlan};
-use openetl_sql::{Catalog, GroupWindow, Operator, Over, Position, RowWise, Sql, Stream};
+use openetl_sql::{
+    Catalog, Dedupe, GroupWindow, Keep, Operator, Over, Position, RowWise, Sql, Stream,
+};
 
 use crate::error::JobError;
 use crate::ipc;
@@ -29,6 +31,10 @@ pub struct Input {
     /// How long after a group window over it closes a row may still come,
     /// in microseconds. OVER doesn't take it.
     pub lateness: i64,
+    /// How long a dedupe that keeps each key's first row remembers a key,
+    /// in microseconds of event time; `openetl_state::NEVER` for good, and
+    /// None where the stream sets none.
+    pub dedupe: Option<i64>,
 }
 
 impl Input {
@@ -69,6 +75,10 @@ impl Input {
                 .map(|e| e.column.clone())
                 .filter(|t| !t.is_empty()),
             lateness: s.event_time.as_ref().map_or(0, |e| e.lateness_micros),
+            dedupe: s
+                .event_time
+                .as_ref()
+                .and_then(|e| e.dedupe_retention_micros),
         })
     }
 }
@@ -163,6 +173,7 @@ pub struct Statement {
 pub enum Keyed {
     Window(Arc<GroupWindow>),
     Over(Arc<Over>),
+    Dedupe(Arc<Dedupe>),
 }
 
 impl Keyed {
@@ -172,7 +183,13 @@ impl Keyed {
         match self {
             Keyed::Window(g) => &g.need,
             Keyed::Over(o) => &o.need,
+            Keyed::Dedupe(d) => &d.need,
         }
+    }
+
+    /// Whether its rows go to it with their record IDs, which it keeps.
+    pub fn ids(&self) -> bool {
+        !matches!(self, Keyed::Window(_))
     }
 
     /// What it is, for messages.
@@ -180,6 +197,7 @@ impl Keyed {
         match self {
             Keyed::Window(_) => "the group window",
             Keyed::Over(_) => "OVER",
+            Keyed::Dedupe(_) => "the dedupe",
         }
     }
 }
@@ -409,13 +427,25 @@ fn list(names: BTreeSet<&str>) -> String {
     }
 }
 
-/// Whether jobs run an operator. Dedupe plans, and is refused as a later
-/// tier's until its operator runs.
+/// Whether jobs run an operator: every one that plans.
 pub(crate) fn runs(op: &Operator) -> bool {
     match op {
-        Operator::RowWise(_) | Operator::GroupWindow(_) | Operator::Over(_) => true,
-        Operator::Dedupe(_) => false,
+        Operator::RowWise(_)
+        | Operator::GroupWindow(_)
+        | Operator::Over(_)
+        | Operator::Dedupe(_) => true,
     }
+}
+
+/// Why a dedupe that keeps each key's first row, of the statement at `at`
+/// that writes `output`, is refused over `stream`, which sets no
+/// retention: what to set, as the plan says it.
+pub(crate) fn no_retention(at: Position, output: &str, stream: &str) -> String {
+    format!(
+        "transform.sql:{at}: the dedupe writing \"{output}\", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, \
+         and stream \"{stream}\" sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time, \
+         such as 24h, after which a key's next row is written again, or to unbounded, to remember every key"
+    )
 }
 
 /// Plans every statement, with one input's schema replaced if `changed`.
@@ -501,11 +531,9 @@ fn plan_statements(
                 let id = o.id.clone();
                 (o.input.clone(), Some((Keyed::Over(Arc::new(*o)), id)))
             }
-            Operator::Dedupe(_) => {
-                return Err(JobError::internal(format!(
-                    "the statement at {} has an operator jobs don't run",
-                    s.at
-                )));
+            Operator::Dedupe(d) => {
+                let id = d.id.clone();
+                (d.input.clone(), Some((Keyed::Dedupe(Arc::new(*d)), id)))
             }
         };
         let Some(&input) = index.get(op.input.as_str()) else {
@@ -514,6 +542,16 @@ fn plan_statements(
                 s.at, op.input
             )));
         };
+        if let Some((Keyed::Dedupe(d), _)) = &keyed
+            && d.keep == Keep::First
+            && inputs[input].dedupe.is_none()
+        {
+            return Err(JobError::config(no_retention(
+                s.at,
+                &s.output,
+                &inputs[input].name,
+            )));
+        }
         let reads_unknown: Vec<&str> = s
             .inputs
             .iter()
@@ -557,6 +595,7 @@ mod tests {
             changelog,
             event_time: None,
             lateness: 0,
+            dedupe: None,
         }
     }
 
@@ -657,10 +696,10 @@ mod tests {
         assert!(e.message.starts_with("transform.sql: 2:"), "{}", e.message);
     }
 
-    /// OVER runs on keyed lanes, by its PARTITION BY; dedupe plans, and is
-    /// refused as tier 3's.
+    /// OVER and dedupe run on keyed lanes, by their PARTITION BY; a dedupe
+    /// that keeps each key's first row needs its stream's retention.
     #[test]
-    fn over_runs_and_dedupe_is_refused_as_tier_3s() {
+    fn over_and_dedupe_run_on_keyed_lanes() {
         let mut a = input("a", &["id"], false);
         a.schema = Some(Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -685,19 +724,35 @@ mod tests {
         assert!(id.starts_with("over-"), "{id}");
         assert_eq!(t.routes(&["c".into()])[0], [(0, Route::Keyed(0))]);
         assert_eq!(t.operators().collect::<Vec<_>>(), [id.as_str()]);
-        let e = Transform::plan(
-            "INSERT INTO c\nSELECT id, amount FROM a\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1",
-            vec![a],
-        )
-        .unwrap_err();
+        let dedupe = |order: &str| {
+            format!(
+                "INSERT INTO c\nSELECT id, amount FROM a\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY at {order}) = 1"
+            )
+        };
+        let t = Transform::plan(&dedupe("DESC"), vec![a.clone()]).unwrap();
+        let Some((keyed, id)) = &t.statements[0].keyed else {
+            panic!("{:?}", t.statements[0]);
+        };
+        assert!(
+            matches!(keyed, Keyed::Dedupe(_)) && keyed.ids(),
+            "{keyed:?}"
+        );
+        assert!(id.starts_with("dedupe-"), "{id}");
+        let e = Transform::plan(&dedupe(""), vec![a.clone()]).unwrap_err();
         assert_eq!(
             e.code,
             openetl_proto::connector::v1::ErrorCode::ConfigInvalid
         );
+        // Word for word what the plan says, as internal/plan's dedupeProblems
+        // has it.
         assert_eq!(
             e.message,
-            "transform.sql: 3:9: OVER: transforms don't run window functions yet (tier 3)"
+            "transform.sql:1:1: the dedupe writing \"c\", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, \
+             and stream \"a\" sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time, \
+             such as 24h, after which a key's next row is written again, or to unbounded, to remember every key"
         );
+        a.dedupe = Some(openetl_state::NEVER);
+        Transform::plan(&dedupe(""), vec![a]).unwrap();
     }
 
     #[test]
@@ -761,6 +816,7 @@ mod tests {
             changelog: false,
             event_time: None,
             lateness: 0,
+            dedupe: None,
         };
         let t = Transform::plan(
             r#"INSERT INTO c SELECT id, lower("Email Address") AS e FROM a"#,

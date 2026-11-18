@@ -3,6 +3,7 @@ package plan
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/delivery"
@@ -37,6 +38,9 @@ type Output struct {
 	// A SQL transform's output that replaces a source's stream: the spec's
 	// settings for that stream, which it lands with. Nil otherwise.
 	Spec *apiv1.PipelineStream
+	// A SQL dedupe's output, as delivery.Stream has it.
+	Deduped   bool
+	Remembers time.Duration
 }
 
 func (o Output) Delivery() delivery.Stream {
@@ -44,7 +48,8 @@ func (o Output) Delivery() delivery.Stream {
 	if o.Exact {
 		r = source.Exact
 	}
-	return delivery.Stream{Name: o.Name, Replay: r, Mode: o.Mode, Keyed: len(o.PrimaryKey) > 0, Require: o.Require, Transformed: true, Engine: o.Engine}
+	return delivery.Stream{Name: o.Name, Replay: r, Mode: o.Mode, Keyed: len(o.PrimaryKey) > 0, Require: o.Require, Transformed: true, Engine: o.Engine,
+		Deduped: o.Deduped, Remembers: o.Remembers}
 }
 
 // Outputs are a transform's outputs: the declared ones, or else each
