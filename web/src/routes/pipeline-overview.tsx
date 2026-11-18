@@ -35,6 +35,7 @@ const PipelineGraph = lazy(() => import("@/components/pipeline-graph"));
 export const levelLabel: Record<DeliveryLevel, string> = {
   [DeliveryLevel.UNSPECIFIED]: "Unknown",
   [DeliveryLevel.AT_LEAST_ONCE]: "At least once",
+  [DeliveryLevel.EXACTLY_ONCE_WITHIN]: "Exactly once within retention",
   [DeliveryLevel.EFFECTIVELY_ONCE]: "Effectively once",
   [DeliveryLevel.EXACTLY_ONCE]: "Exactly once",
 };

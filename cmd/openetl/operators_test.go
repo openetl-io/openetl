@@ -60,7 +60,7 @@ func TestPlanShowsDedupes(t *testing.T) {
 		dedupe("d", "latest", "exactly_once", nil),
 	})
 	want := `  state:
-    1:1  a  a  kept  dedupe first by at on event_id; remembers a key 24h0m0s of event time from its first row: exactly once within 24h0m0s of event time
+    1:1  a  a  kept  dedupe first by at on event_id; remembers a key 24h0m0s of event time from its first row: exactly_once_within 24h0m0s of event time
     1:1  b  b  kept  dedupe first by at on event_id; remembers every key: exactly_once, and its state grows with the number of keys
     1:1  c  c  kept  dedupe first by at on event_id; its stream sets no dedupe.retention
     1:1  d  d  kept  dedupe latest by at on event_id; keeps each key's latest row's time, and writes it as an upsert: exactly_once, and its state grows with the number of keys
@@ -84,11 +84,12 @@ func TestPlanOfADedupeThroughTheEngine(t *testing.T) {
 	}}}
 	sql := "INSERT INTO first_events\nSELECT event_id, kind, at FROM events\nQUALIFY row_number() OVER (PARTITION BY event_id ORDER BY at) = 1;\n" +
 		"INSERT INTO latest_events\nSELECT event_id, kind, at FROM events\nQUALIFY row_number() OVER (PARTITION BY event_id ORDER BY at DESC) = 1"
-	planned := func(d *apiv1.Dedupe) ([]*apiv1.OperatorPlan, []error, []*apiv1.StreamPlan) {
+	planned := func(d *apiv1.Dedupe, require apiv1.DeliveryLevel, write apiv1.WriteMode) ([]*apiv1.OperatorPlan, []error, []*apiv1.StreamPlan) {
 		sp := &apiv1.PipelineSpec{
 			Mode:        apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
 			Source:      &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events", EventTime: "at", Dedupe: d}}},
-			Destination: &apiv1.PipelineDestination{},
+			Destination: &apiv1.PipelineDestination{Write: write},
+			Delivery:    &apiv1.Delivery{Require: require},
 			Transform:   &apiv1.Transform{Engine: &apiv1.Transform_Sql{Sql: &apiv1.SqlTransform{Sql: sql, Passthrough: apiv1.Passthrough_PASSTHROUGH_NONE}}},
 		}
 		req, unknown := plan.SQLRequest(sp, cat, nil)
@@ -105,19 +106,29 @@ func TestPlanOfADedupeThroughTheEngine(t *testing.T) {
 		ops, _, _ := plan.Operators(sp, cat, &a, nil, nil, nil)
 		return ops, problems, streams
 	}
-	_, problems, _ := planned(nil)
+	none, unset := apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED, apiv1.WriteMode_WRITE_MODE_UNSPECIFIED
+	_, problems, _ := planned(nil, none, unset)
 	if err := errors.Join(problems...); err == nil || !strings.Contains(err.Error(),
 		`transform.sql:1:1: the dedupe writing "first_events", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, and stream "events" sets no dedupe.retention`) {
 		t.Errorf("without a retention: %v", err)
 	}
-	ops, problems, streams := planned(&apiv1.Dedupe{Retention: durationpb.New(24 * time.Hour)})
+	day := &apiv1.Dedupe{Retention: durationpb.New(24 * time.Hour)}
+	// The default require refuses a retention, and says what to set.
+	_, problems, _ = planned(day, none, unset)
+	if err := errors.Join(problems...); len(problems) != 1 || !strings.Contains(err.Error(),
+		`delivery.require: stream "first_events" gets exactly_once_within (`) || !strings.Contains(err.Error(),
+		`below exactly_once: to accept that a key is written again by a row 24h0m0s or more of event time after its first row, set delivery.require: exactly_once_within; `+
+			`to remember every key from then on, set source.streams[events].dedupe.retention: unbounded (a key already forgotten stays forgotten)`) {
+		t.Errorf("a retention under the default require: %v", err)
+	}
+	ops, problems, streams := planned(day, apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN, unset)
 	if len(problems) != 0 {
 		t.Errorf("problems %v", problems)
 	}
 	var out bytes.Buffer
 	printOperators(&out, ops)
 	for _, want := range []string{
-		"first_events   dedupe-", "dedupe first by at on event_id; remembers a key 24h0m0s of event time from its first row: exactly once within 24h0m0s of event time",
+		"first_events   dedupe-", "dedupe first by at on event_id; remembers a key 24h0m0s of event time from its first row: exactly_once_within 24h0m0s of event time",
 		"latest_events  dedupe-", "dedupe latest by at on event_id; keeps each key's latest row's time, and writes it as an upsert: exactly_once",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -125,18 +136,53 @@ func TestPlanOfADedupeThroughTheEngine(t *testing.T) {
 		}
 	}
 	// Over a superset stream, each output is written once a key: within the
-	// retention, or for good.
-	got := map[string]string{}
-	for _, s := range streams {
-		got[s.GetName()] = fmt.Sprintf("%v %v %s", s.GetWrite(), s.GetLevel(), s.GetReason())
+	// retention, or for good. Merged, a repeat after the retention is
+	// merged onto its key's row.
+	levels := func(streams []*apiv1.StreamPlan) map[string]string {
+		got := map[string]string{}
+		for _, s := range streams {
+			got[s.GetName()] = fmt.Sprintf("%v %v %s", s.GetWrite(), s.GetLevel(), s.GetReason())
+		}
+		return got
 	}
+	latest := "WRITE_MODE_MERGE DELIVERY_LEVEL_EXACTLY_ONCE a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys"
+	for _, c := range []struct {
+		name    string
+		streams []*apiv1.StreamPlan
+		first   string
+	}{
+		{"appended", streams, "WRITE_MODE_APPEND DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN a dedupe's output over superset inputs, " +
+			"which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again"},
+		{"merged", func() []*apiv1.StreamPlan {
+			_, problems, streams := planned(day, none, apiv1.WriteMode_WRITE_MODE_MERGE)
+			if len(problems) != 1 || !strings.Contains(problems[0].Error(), `stream "first_events" gets effectively_once`) {
+				t.Errorf("merged under the default require: %v", problems)
+			}
+			return streams
+		}(), "WRITE_MODE_MERGE DELIVERY_LEVEL_EFFECTIVELY_ONCE a dedupe's output over superset inputs, " +
+			"which remembers a key 24h0m0s of event time from its first row, written with merge, which merges a repeat after that onto its key's row"},
+		{"unbounded", func() []*apiv1.StreamPlan {
+			_, problems, streams := planned(&apiv1.Dedupe{Unbounded: true}, none, unset)
+			if len(problems) != 0 {
+				t.Errorf("unbounded: %v", problems)
+			}
+			return streams
+		}(), "WRITE_MODE_APPEND DELIVERY_LEVEL_EXACTLY_ONCE a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys"},
+	} {
+		if got, want := levels(c.streams), map[string]string{"first_events": c.first, "latest_events": latest}; !maps.Equal(got, want) {
+			t.Errorf("%s: streams %v, want %v", c.name, got, want)
+		}
+	}
+	// Over an exact stream, such as a Kafka topic, nothing is read twice, so
+	// the default require takes a retention.
+	cat.Streams[0].Replay = apiv1.Replay_REPLAY_EXACT
+	_, problems, streams = planned(day, none, unset)
 	want := map[string]string{
-		"first_events": "WRITE_MODE_APPEND DELIVERY_LEVEL_EXACTLY_ONCE exactly once within 24h0m0s of event time: a dedupe's output over superset inputs, " +
-			"which remembers a key 24h0m0s from its first row and writes a repeat after that again",
-		"latest_events": "WRITE_MODE_MERGE DELIVERY_LEVEL_EXACTLY_ONCE a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys",
+		"first_events":  "WRITE_MODE_APPEND DELIVERY_LEVEL_EXACTLY_ONCE a transform's output over exact inputs",
+		"latest_events": "WRITE_MODE_MERGE DELIVERY_LEVEL_EXACTLY_ONCE a transform's output over exact inputs",
 	}
-	if !maps.Equal(got, want) {
-		t.Errorf("streams %v, want %v", got, want)
+	if got := levels(streams); len(problems) != 0 || !maps.Equal(got, want) {
+		t.Errorf("exact: problems %v, streams %v, want %v", problems, got, want)
 	}
 }
 

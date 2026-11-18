@@ -189,6 +189,7 @@ func sqlOutputs(ctx context.Context, p *apiv1.PipelineSpec, caps destination.Cap
 			Partitioning: plan.Place(s.Partitioning, plan.StatementOperator(st)).Out(),
 			Table:        p.GetDestination().GetTables()[o.Name],
 			From:         s.Name,
+			Replaces:     o.Replaces,
 			Deduped:      o.Deduped,
 			Remembers:    o.Remembers,
 		}

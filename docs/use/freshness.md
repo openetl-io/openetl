@@ -75,7 +75,7 @@ A diagram shows the source, streams, destination and steps that run after a sync
 | **Stream** | The table, topic or stream it reads, marked **Paused** if syncs skip it. |
 | **Read** | How it is read: full refresh, incremental (and on which column), CDC or stream. **Source default** when the pipeline leaves it to the source. |
 | **Write** | How it is written: append, overwrite or merge. |
-| **Delivery** | Its [delivery guarantee](../get-started/concepts.md#delivery-guarantees): **Exactly once**, **Effectively once** or **At least once**. Point to it for the reason. **Checked when it syncs** means OpenETL checks the guarantee before each sync. |
+| **Delivery** | Its [delivery guarantee](../get-started/concepts.md#delivery-guarantees): **Exactly once**, **Effectively once**, **Exactly once within retention** or **At least once**. Point to it for the reason. **Checked when it syncs** means OpenETL checks the guarantee before each sync. |
 | **Schema** | Its schema's version. Click it to see the columns. |
 | **Rows** | Rows the latest sync copied. |
 | **Quarantined** | Rows that the latest sync did not write. OpenETL saves each row with its reason. See [quarantine](../get-started/concepts.md#holds-and-quarantine). |

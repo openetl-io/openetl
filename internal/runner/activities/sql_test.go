@@ -225,6 +225,35 @@ func TestBuildJobRefusesSQLThatDoesntPlan(t *testing.T) {
 	}
 }
 
+// An output replaces a stream where its statement says so, also one that
+// reads another stream, and not where its name is merely its input's.
+func TestSQLOutputsReplaceWhatTheirStatementsDo(t *testing.T) {
+	caps := destination.Capabilities{WriteModes: []destination.WriteMode{destination.Append}}
+	p := sqlSpec(t, emails, 0, nil).GetPipeline()
+	p.Source = &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "users"}, {Name: "purchases"}}}
+	streams := []runner.Stream{{Name: "users", PrimaryKey: []string{"id"}}, {Name: "purchases", PrimaryKey: []string{"id"}}}
+	inputs := []plan.Input{{Name: "users", PrimaryKey: []string{"id"}, Spec: p.Source.Streams[0]}, {Name: "purchases", PrimaryKey: []string{"id"}, Spec: p.Source.Streams[1]}}
+	compared := 0
+	for _, c := range []struct {
+		output   string
+		replaces bool
+	}{{"purchases", true}, {"users", true}, {"emails", false}} {
+		a := planned(t, c.output, "uid")
+		a.Statements[0].Replaces = c.replaces
+		_, outs, err := sqlOutputs(t.Context(), p, caps, destination.SoftDelete, (&planner{answer: a}).plan(), streams, inputs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if o := outs[0]; o.Name != c.output || o.From != "users" || o.Replaces != c.replaces {
+			t.Errorf("%s: %+v, want replaces %v", c.output, o, c.replaces)
+		}
+		compared++
+	}
+	if compared != 3 {
+		t.Errorf("%d cases compared", compared)
+	}
+}
+
 // A SQL transform's output lands with the settings of the stream of its
 // name, which it replaces or is: its holds, collapse and typeChanges. An
 // output of another name has the pipeline's. A setting with no output to
