@@ -482,6 +482,48 @@ INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_
 ----
 error unsupported 1:26 a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'
 
+# The same in parentheses.
+plan
+INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN (5) PRECEDING AND CURRENT ROW) AS total FROM orders
+----
+error unsupported 1:26 a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'
+
+# lag takes no frame, so one written on it, of a number too, is ignored:
+# the two give one ID.
+plan
+INSERT INTO x SELECT id, lag(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN 5 PRECEDING AND CURRENT ROW) AS before FROM orders
+----
+statement 1:1 x over
+  inputs orders
+  key id
+  schema id Int64 not null, before Decimal128(12, 2)
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Lag { offset: 1, default: None }(orders.amount): Decimal128(12, 2)
+  computes lag(amount, 1)
+  framed id, region, amount, created_at, lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN 5 PRECEDING AND CURRENT ROW
+  project id, before := lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN 5 PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id
+  operator over-e9f61fb3819d220e
+
+plan
+INSERT INTO x SELECT id, lag(amount) OVER (PARTITION BY region ORDER BY created_at) AS before FROM orders
+----
+statement 1:1 x over
+  inputs orders
+  key id
+  schema id Int64 not null, before Decimal128(12, 2)
+  reads orders: id, region, amount, created_at
+  over by created_at on region
+  function Lag { offset: 1, default: None }(orders.amount): Decimal128(12, 2)
+  computes lag(amount, 1)
+  framed id, region, amount, created_at, lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  project id, before := lag(orders.amount) PARTITION BY [orders.region] ORDER BY [orders.created_at ASC NULLS LAST] RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+  need region
+  passes id -> id
+  operator over-e9f61fb3819d220e
+
 # PARTITION BY a struct, and OVER by an event time that isn't a timestamp.
 stream shapes key(id) time(at)
   id int64 not null

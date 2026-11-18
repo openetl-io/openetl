@@ -271,7 +271,7 @@ func runningTotal(t *testing.T, bin, plane string, workers int) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the operator's numbers over every checkpoint: got %s, want %s", gotOps, wantOps)
 		}
-		ops := operatorTotals(t, name)
+		ops := operatorTotals(t, name, deadline)
 		gotOps = fmt.Sprintf("%d operators", len(ops))
 		for _, o := range ops {
 			if len(ops) == 1 {
@@ -285,17 +285,20 @@ func runningTotal(t *testing.T, bin, plane string, workers int) {
 type opTotals struct{ in, inserts, updates, deletes, late, repeats uint64 }
 
 // operatorTotals sums, by operator ID, what every checkpoint of the pipeline
-// the control plane has says each operator did, from one listing.
-func operatorTotals(t *testing.T, name string) map[string]opTotals {
+// the control plane has says each operator did, from one listing, each of
+// its pages by the caller's deadline.
+func operatorTotals(t *testing.T, name string, deadline time.Time) map[string]opTotals {
 	t.Helper()
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
 	out := map[string]opTotals{}
 	token := ""
 	for {
-		res, err := pipelines().ListCheckpoints(t.Context(), connect.NewRequest(&apiv1.ListCheckpointsRequest{
+		res, err := pipelines().ListCheckpoints(ctx, connect.NewRequest(&apiv1.ListCheckpointsRequest{
 			Parent: "workspaces/default/pipelines/" + name, PageSize: 500, PageToken: token,
 		}))
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("listing %s's checkpoints: %v", name, err)
 		}
 		for _, c := range res.Msg.GetCheckpoints() {
 			for _, o := range c.GetOperators() {
@@ -555,7 +558,7 @@ WHERE rn = 1`, topic))
 		if time.Now().After(deadline) {
 			t.Fatalf("the dedupes' numbers over every checkpoint: got %s, want %s", got, want)
 		}
-		totals := operatorTotals(t, name)
+		totals := operatorTotals(t, name, deadline)
 		f, l := totals[ops["firsts"]], totals[ops["latest"]]
 		got = fmt.Sprintf("firsts: in %d, %d written, %d repeats, %d late; latest: in %d, %d inserts, %d updates and repeats, %d late",
 			f.in, f.inserts, f.repeats, f.late, l.in, l.inserts, l.updates+l.repeats, l.late)

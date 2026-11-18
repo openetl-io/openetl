@@ -970,7 +970,7 @@ impl<'a> Check<'a> {
         for (span, name, shape, w) in &over_specs {
             self.over_function(*span, name, *shape);
             if let ast::WindowType::WindowSpec(spec) = w {
-                self.range_offset(*span, spec);
+                self.range_offset(*span, name, spec);
             }
         }
         if let Some((span, name)) = window_only {
@@ -1272,16 +1272,24 @@ impl<'a> Check<'a> {
         }
     }
 
-    /// A RANGE frame's offset written as a number, which binding would read
-    /// as months of an interval.
-    fn range_offset(&mut self, span: Span, spec: &ast::WindowSpec) {
+    /// A RANGE frame's offset written as a number, in parentheses or not,
+    /// which binding would read as months of an interval. `lag` and
+    /// `ROW_NUMBER()` take no frame, and one written on them is ignored.
+    fn range_offset(&mut self, span: Span, name: &str, spec: &ast::WindowSpec) {
         let Some(frame) = &spec.window_frame else {
             return;
         };
-        let number = |b: &ast::WindowFrameBound| {
-            matches!(b, ast::WindowFrameBound::Preceding(Some(e)) | ast::WindowFrameBound::Following(Some(e))
-                if matches!(e.as_ref(), ast::Expr::Value(v) if matches!(v.value, ast::Value::Number(..))))
-        };
+        if matches!(name, "lag" | "row_number") {
+            return;
+        }
+        fn number(e: &ast::Expr) -> bool {
+            match e {
+                ast::Expr::Nested(e) => number(e),
+                ast::Expr::Value(v) => matches!(v.value, ast::Value::Number(..)),
+                _ => false,
+            }
+        }
+        let number = |b: &ast::WindowFrameBound| matches!(b, ast::WindowFrameBound::Preceding(Some(e)) | ast::WindowFrameBound::Following(Some(e)) if number(e));
         if frame.units == ast::WindowFrameUnits::Range
             && (number(&frame.start_bound) || frame.end_bound.as_ref().is_some_and(number))
         {

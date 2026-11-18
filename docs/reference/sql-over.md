@@ -34,7 +34,7 @@ FROM orders;
 | `sum(X)`, `avg(X)` | As the [aggregates](./sql-windows.md#aggregates) of a group window give them, over the frame's rows |
 | `min(X)`, `max(X)` | The frame's least or greatest value of a number, text, binary, a boolean, a date, a time, a timestamp or a UUID |
 | `first_value(X)` | `X` on the frame's first row. It takes the types that `min` takes. |
-| `lag(X)`, `lag(X, N)`, `lag(X, N, DEFAULT)` | `X` on the row `N` rows before the current one, 1 by default, or `DEFAULT` where there is none, null by default. `N` is a constant whole number, 1 or more, and `DEFAULT` a constant. `lag` takes no frame. |
+| `lag(X)`, `lag(X, N)`, `lag(X, N, DEFAULT)` | `X` on the row `N` rows before the current one, 1 by default, or `DEFAULT` where there is none, null by default. `N` is a constant whole number, 1 or more, and `DEFAULT` a constant. `lag` takes no frame: a frame written on it is ignored, and keeps the operator's ID. |
 
 - `mean` is another name for `avg`.
 - `FILTER (WHERE …)` after an aggregate counts only the frame's rows where its condition is true, and evaluates the aggregate's argument only on those rows. A row it leaves out still takes its place in a `ROWS` frame.

@@ -111,7 +111,7 @@ The plan also has a problem where a group window's stream is read in a way that 
 | A frame that does not end at the current row | `OVER's frames end at the current row: write ROWS or RANGE BETWEEN … PRECEDING AND CURRENT ROW` |
 | A frame that starts after the current row | `a frame starts before the current row, or at it` |
 | `GROUPS` | `GROUPS frames aren't supported: write ROWS or RANGE` |
-| A `RANGE` offset that is a number, such as `RANGE BETWEEN 5 PRECEDING AND CURRENT ROW` | `a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'` |
+| A `RANGE` offset that is a number, such as `RANGE BETWEEN 5 PRECEDING AND CURRENT ROW`, on a function other than `lag` | `a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'` |
 | A `RANGE` offset in months | `a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies` |
 | A `RANGE` offset in parts of a microsecond | `a RANGE frame's offset is whole microseconds` |
 | A negative `RANGE` offset, or one that does not fit a 64-bit count of the event time's unit: about 292,000 years of microseconds, or about 292 years of nanoseconds | `a RANGE frame's offset is zero or more, and under 290,000 years` |
