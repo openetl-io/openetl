@@ -828,7 +828,7 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 				return res, err
 			}
 		}
-		if settled, err = settleOnWorkers(rctx, co, n, recovering, settle.GetRecord(), previous, settle.GetForced()); err != nil {
+		if settled, err = j.settleOnWorkers(rctx, co, n, recovering, settle.GetRecord(), previous, settle.GetForced()); err != nil {
 			return res, err
 		}
 	}
@@ -947,11 +947,11 @@ func (j *Job) startSchemas(restored *checkpoint.Record) map[ownedKey][]byte {
 }
 
 // settleOnWorkers has the workers settle rec's committables, raw as the
-// log holds it, those that hold rows of one split on one worker, and says
-// how: Redone if any was. previous is the record before rec, as JSON; nil
-// for none.
-func settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *checkpoint.Record, raw, previous []byte, forced []string) (destination.Recovery, error) {
-	groups := settleGroups(rec, n)
+// log holds it, those that hold rows of one split, or of any stream read
+// with CDC, on one worker, and says how: Redone if any was. previous is the
+// record before rec, as JSON; nil for none.
+func (j *Job) settleOnWorkers(ctx context.Context, co attempt.Coordinator, n int, rec *checkpoint.Record, raw, previous []byte, forced []string) (destination.Recovery, error) {
+	groups := settleGroups(rec, n, j.readsChanges)
 	got := make([][]destination.Recovery, n)
 	g, gctx := errgroup.WithContext(ctx)
 	for w, which := range groups {
