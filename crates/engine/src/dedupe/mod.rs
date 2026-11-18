@@ -8,26 +8,29 @@
 //! on how they came. A row whose event time is null is quarantined.
 //!
 //! Ascending, it keeps each key's first row, which the output appends. A
-//! kept key is in a set with its first row's time. A row of a kept key is
-//! a repeat, and is dropped as it comes, late or not. Any other row waits
-//! in state until the watermark passes its time, when no earlier row of
-//! its key can come but a late one; then a key's rows leave in order, and
-//! each is written where its key isn't kept by then, and the key is kept
-//! from it. A late row of a key not kept is quarantined, as it might have
-//! been the key's first. With a retention, a key is forgotten once the
-//! watermark passes its first row's time plus the retention, and its next
-//! row is written again: the set's horizon trails the watermark by the
+//! kept key is in a set with its first row's time. A row of a kept key,
+//! less than the retention after that time, is a repeat, and is dropped as
+//! it comes, late or not. Any other row waits in state until the watermark
+//! passes its time, when no earlier row of its key can come but a late
+//! one; then a key's rows leave in order, and each is written where its
+//! key isn't kept by then, and the key is kept from it. A row at or past
+//! the retention is so written once the watermark passes its own time,
+//! which is past the key's retention by then. A late row of a key not kept
+//! is quarantined, as it might have been the key's first. With a
+//! retention, a key is forgotten once the watermark passes its first row's
+//! time plus the retention: the set's horizon trails the watermark by the
 //! retention, so a changed retention applies to every key kept, and a key
 //! forgotten stays forgotten. Unbounded, a key is never forgotten.
 //!
 //! Descending, it keeps each key's latest row, as upserts keyed by the
-//! partition keys, as rows come: a row later than its key's, by event time
-//! then record ID, is written, and any other dropped, whatever the
-//! watermark, so an older row that comes after a newer one never replaces
-//! it. The key's latest time and ID stay in state for good. A row the
-//! filters after the operator drop is written as a delete of its key where
-//! the output has the key's row, so the output holds a key's latest row
-//! where it passes them, and none where it doesn't.
+//! partition keys, as rows come: a row later than its key's, by event time,
+//! record ID, then a hash of its values, is written, and any other dropped,
+//! whatever the watermark, so an older row that comes after a newer one
+//! never replaces it. The key's latest rank stays in state for good. A row
+//! the filters after the operator drop is written as a delete of its key
+//! alone, its key's columns and nulls, where the output has the key's row,
+//! so the output holds a key's latest row where it passes them, and none
+//! where it doesn't.
 //!
 //! A written row has its record ID, and its event time as its sequence.
 
@@ -35,13 +38,14 @@
 #[allow(clippy::unwrap_used)]
 mod tests;
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, FixedSizeBinaryArray, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions, StringArray};
 use bytes::Bytes;
 use openetl_normalize::{Cause, Code, render_row};
-use openetl_sql::Keep;
+use openetl_sql::{Keep, Step};
 use openetl_state::{DueRow, KeyRef, NEVER, OperatorId, StateBackend};
 
 use crate::error::JobError;
@@ -112,7 +116,8 @@ impl Operator {
             }
             (Keep::First, None) => {
                 return Err(JobError::config(crate::transform::no_retention(
-                    plan.at,
+                    at,
+                    output,
                     &plan.input.input,
                 )));
             }
@@ -417,24 +422,52 @@ impl Operator {
                 (l.stored, l.visible) = decode_latest(&v).map_err(|e| self.base.corrupt(&e))?;
             }
         }
+        // Rows of one time and ID go by their values' hashes, which only
+        // such ties need.
+        let base = &self.base;
+        let mut hashes: HashMap<usize, u64> = HashMap::new();
+        let mut hash = |r: usize| -> Result<u64, JobError> {
+            if let Some(h) = hashes.get(&r) {
+                return Ok(*h);
+            }
+            let h = base.values_hash(taken, r)?;
+            hashes.insert(r, h);
+            Ok(h)
+        };
+        let mut repeats = 0;
         for &(r, t) in timed {
             let name = (taken.groups[r], named(LATEST, &taken.keys[r]));
             let Some(l) = latest.get_mut(&name) else {
                 continue;
             };
-            let id = taken.ids[r].as_slice();
-            let current = match l.row {
-                Some((b, tb)) => Some((tb, taken.ids[b].as_slice())),
-                None => l.stored.as_ref().map(|(t, id)| (*t, id.as_slice())),
+            let current = match (l.row, &l.stored) {
+                (Some((b, tb)), _) => Some((tb, taken.ids[b], Err(b))),
+                (None, Some(s)) => Some((s.time, s.id, Ok(s.values))),
+                (None, None) => None,
             };
-            match current {
-                Some(c) if (t, id) <= c => self.repeats += 1,
-                _ => {
-                    self.repeats += u64::from(l.row.is_some());
+            let later = match current {
+                None => true,
+                Some((ct, cid, values)) => match (t, taken.ids[r]).cmp(&(ct, cid)) {
+                    Ordering::Greater => true,
+                    Ordering::Less => false,
+                    Ordering::Equal => {
+                        let theirs = match values {
+                            Ok(v) => v,
+                            Err(b) => hash(b)?,
+                        };
+                        hash(r)? > theirs
+                    }
+                },
+            };
+            match later {
+                true => {
+                    repeats += u64::from(l.row.is_some());
                     l.row = Some((r, t));
                 }
+                false => repeats += 1,
             }
         }
+        self.repeats += repeats;
         let changed: Vec<((u32, Vec<u8>), Latest)> = latest
             .into_iter()
             .filter(|(_, l)| l.row.is_some())
@@ -473,23 +506,20 @@ impl Operator {
                 visible = false;
             }
             self.kept += u64::from(l.stored.is_none());
-            let (r, t) = l.row.unwrap_or_default();
-            state.put(
-                self.id,
-                KeyRef::new(*g, name),
-                latest_value(t, &taken.ids[r], visible),
-            );
+            let (r, time) = l.row.unwrap_or_default();
+            let rank = Rank {
+                time,
+                id: taken.ids[r],
+                values: hash(r)?,
+            };
+            state.put(self.id, KeyRef::new(*g, name), latest_value(&rank, visible));
         }
         let mut batches = Vec::new();
         if !written.is_empty() {
             batches.push(steps::take(&ran.batch, &written).map_err(internal)?);
         }
         if !deleted.is_empty() {
-            let gone = steps::take(&rows, &deleted).map_err(internal)?;
-            let gone = steps::deletes(&self.plan.steps, gone).map_err(|e| {
-                JobError::internal(self.base.reason(&format!("a delete of a key's row: {e}")))
-            })?;
-            batches.push(gone.batch);
+            batches.push(self.key_deletes(&rows, &deleted)?);
             ops.extend(deleted.iter().map(|_| "delete"));
         }
         if batches.is_empty() {
@@ -511,16 +541,79 @@ impl Operator {
         out.rows = Some(self.base.typed(batch, &rows, &order, ids, Some(ops))?);
         Ok(())
     }
+
+    /// The output's rows that delete the keys of rows `at` of `rows`, rows
+    /// of the operator's input: each output column that passes a
+    /// `PARTITION BY` column through has its value, and the rest are null,
+    /// or their type's zero where they can't be. No step after the
+    /// operator runs, as a filter dropped these rows before its
+    /// projections.
+    fn key_deletes(&self, rows: &RecordBatch, at: &[usize]) -> Result<RecordBatch, JobError> {
+        let schema = self
+            .plan
+            .steps
+            .iter()
+            .rev()
+            .find_map(|s| match s {
+                Step::Project(p) => Some(p.schema.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| self.plan.rows.clone());
+        let internal = |e: String| {
+            JobError::internal(self.base.reason(&format!("a delete of a key's row: {e}")))
+        };
+        let n = at.len();
+        let mut columns = Vec::with_capacity(schema.fields().len());
+        for f in schema.fields() {
+            let key = self.plan.keys.iter().find(|k| {
+                self.plan
+                    .passes
+                    .iter()
+                    .any(|(stream, out)| *stream == k.stream && out == f.name())
+            });
+            columns.push(match key {
+                Some(k) => {
+                    let c = steps::take_column(rows.column(k.column), at)
+                        .map_err(|e| internal(e.message))?;
+                    if c.data_type() != f.data_type() {
+                        return Err(internal(format!(
+                            "key column {} is {} in the rows kept and {} in the output",
+                            f.name(),
+                            c.data_type(),
+                            f.data_type()
+                        )));
+                    }
+                    c
+                }
+                None => steps::empty(f, n).map_err(internal)?,
+            });
+        }
+        RecordBatch::try_new_with_options(
+            schema,
+            columns,
+            &RecordBatchOptions::new().with_row_count(Some(n)),
+        )
+        .map_err(|e| internal(e.to_string()))
+    }
 }
 
-/// A latest-row dedupe's key in a batch: its latest row's time and ID as
-/// state has them, whether the output has its row, and the row of the batch
-/// later than that, with its time.
+/// A latest-row dedupe's key in a batch: its latest row as state has it,
+/// whether the output has its row, and the row of the batch later than
+/// that, with its time.
 #[derive(Default)]
 struct Latest {
-    stored: Option<(i64, Vec<u8>)>,
+    stored: Option<Rank>,
     visible: bool,
     row: Option<(usize, i64)>,
+}
+
+/// Where a row stands among its key's, for a latest-row dedupe: by event
+/// time, then record ID, then a hash of its values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Rank {
+    time: i64,
+    id: [u8; 16],
+    values: u64,
 }
 
 /// A key's name in state, of what `kind` holds of it.
@@ -531,28 +624,30 @@ fn named(kind: u8, key: &[u8]) -> Vec<u8> {
     b
 }
 
-/// A key's latest row's time and record ID, and whether the output has it.
-fn latest_value(time: i64, id: &[u8], visible: bool) -> Bytes {
-    let mut b = Vec::with_capacity(10 + id.len());
+/// A key's latest row's rank, and whether the output has it.
+fn latest_value(rank: &Rank, visible: bool) -> Bytes {
+    let mut b = Vec::with_capacity(34);
     b.push(LAYOUT);
-    b.extend_from_slice(&time.to_be_bytes());
-    b.extend_from_slice(id);
+    b.extend_from_slice(&rank.time.to_be_bytes());
+    b.extend_from_slice(&rank.id);
+    b.extend_from_slice(&rank.values.to_be_bytes());
     b.push(u8::from(visible));
     Bytes::from(b)
 }
 
-type Stored = (Option<(i64, Vec<u8>)>, bool);
-
-fn decode_latest(v: &[u8]) -> Result<Stored, String> {
+fn decode_latest(v: &[u8]) -> Result<(Option<Rank>, bool), String> {
     let mut at = v;
     let [layout] = take::<1>(&mut at)?;
     if layout != LAYOUT {
         return Err(format!("a key's latest row of layout {layout}"));
     }
-    let time = i64::from_be_bytes(take(&mut at)?);
-    let id: [u8; 16] = take(&mut at)?;
+    let rank = Rank {
+        time: i64::from_be_bytes(take(&mut at)?),
+        id: take(&mut at)?,
+        values: u64::from_be_bytes(take(&mut at)?),
+    };
     let [visible] = take::<1>(&mut at)?;
-    Ok((Some((time, id.to_vec())), visible == 1))
+    Ok((Some(rank), visible == 1))
 }
 
 fn count(v: &[u8]) -> Result<u64, String> {

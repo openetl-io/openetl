@@ -437,11 +437,14 @@ pub(crate) fn runs(op: &Operator) -> bool {
     }
 }
 
-/// Why a dedupe that keeps each key's first row, at `at`, is refused over
-/// `stream`, which sets no retention: what to set.
-pub(crate) fn no_retention(at: Position, stream: &str) -> String {
+/// Why a dedupe that keeps each key's first row, of the statement at `at`
+/// that writes `output`, is refused over `stream`, which sets no
+/// retention: what to set, as the plan says it.
+pub(crate) fn no_retention(at: Position, output: &str, stream: &str) -> String {
     format!(
-        "transform.sql: {at}: ROW_NUMBER() … = 1 in ascending order of the event time keeps each key's first row, and stream {stream} sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time, such as 24h, or to unbounded"
+        "transform.sql:{at}: the dedupe writing \"{output}\", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, \
+         and stream \"{stream}\" sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time, \
+         such as 24h, after which a key's next row is written again, or to unbounded, to remember every key"
     )
 }
 
@@ -543,7 +546,11 @@ fn plan_statements(
             && d.keep == Keep::First
             && inputs[input].dedupe.is_none()
         {
-            return Err(JobError::config(no_retention(d.at, &inputs[input].name)));
+            return Err(JobError::config(no_retention(
+                s.at,
+                &s.output,
+                &inputs[input].name,
+            )));
         }
         let reads_unknown: Vec<&str> = s
             .inputs
@@ -736,10 +743,13 @@ mod tests {
             e.code,
             openetl_proto::connector::v1::ErrorCode::ConfigInvalid
         );
-        assert!(
-            e.message.starts_with("transform.sql: 3:9: ROW_NUMBER() … = 1 in ascending order of the event time keeps each key's first row, and stream a sets no dedupe.retention"),
-            "{}",
-            e.message
+        // Word for word what the plan says, as internal/plan's dedupeProblems
+        // has it.
+        assert_eq!(
+            e.message,
+            "transform.sql:1:1: the dedupe writing \"c\", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, \
+             and stream \"a\" sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time, \
+             such as 24h, after which a key's next row is written again, or to unbounded, to remember every key"
         );
         a.dedupe = Some(openetl_state::NEVER);
         Transform::plan(&dedupe(""), vec![a]).unwrap();

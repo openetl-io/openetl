@@ -379,7 +379,7 @@ A stream that passes through is delivered as it would be without the transform. 
 
 - Over streams that replay exactly from a resume point, which the plan's reasons call `exact replay`, an output can be delivered exactly once.
 - Over a stream whose reads may repeat rows, such as an incremental read, an output is delivered at least once. Written with `merge`, it is effectively once.
-- A [dedupe](./dedupe.md)'s output drops the rows that a read repeats, so it is delivered exactly once, within its retention where it has one.
+- Into a destination that stages and applies, or that writes each commit in a transaction, a [dedupe](./dedupe.md)'s output drops the rows that a read repeats. It is delivered exactly once, within its retention where it has one. Into other destinations, the plan reports it as at least once.
 
 The default `delivery.require` is `exactly_once`. Without `require: at_least_once`, the plan of the example has problems, and `openetl apply` refuses it:
 

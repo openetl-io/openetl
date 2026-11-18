@@ -178,8 +178,9 @@ pub trait StateBackend: Send {
     /// `expires`, or [`NEVER`]; a repeat keeps the expiry it had. An entry
     /// is live while its expiry is past both `at` and the operator's
     /// horizon. An id that an earlier one in the call inserted is a repeat.
-    /// An `expires` at or before its `at` keeps nothing, so a call of only
-    /// those asks which ids are live and changes nothing.
+    /// An `expires` other than [`NEVER`] at or before its `at` keeps
+    /// nothing, so a call of only those asks which ids are live and changes
+    /// nothing. [`NEVER`] keeps a new id whatever its `at`.
     fn insert_new(
         &mut self,
         op: OperatorId,

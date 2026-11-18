@@ -285,6 +285,15 @@ impl Partitioned {
         Ok(buf)
     }
 
+    /// A hash of row `r`'s values, as state keeps them, which orders rows
+    /// whose key, time and record ID are equal.
+    pub fn values_hash(&self, taken: &Taken, r: usize) -> Result<u64, JobError> {
+        let mut buf = Vec::new();
+        row::encode(&taken.rows, Some(&taken.ids[r]), r, 0, &mut buf)
+            .map_err(|e| JobError::internal(self.reason(&e)))?;
+        Ok(twox_hash::XxHash3_64::oneshot(row::values(&buf)))
+    }
+
     /// Each row's key group and key: `PARTITION BY`'s values, equal JSON
     /// one key whatever its spaces or its objects' order, in the key group
     /// the exchange before the operator gives it.

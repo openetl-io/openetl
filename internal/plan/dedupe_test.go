@@ -37,6 +37,8 @@ func TestDedupeProblems(t *testing.T) {
 		{name: "first with a retention", st: first, dedupe: retention, read: apiv1.SyncMode_SYNC_MODE_STREAM, mode: destination.Append},
 		{name: "first unbounded, merged", st: first, dedupe: &apiv1.Dedupe{Unbounded: true}, read: apiv1.SyncMode_SYNC_MODE_STREAM, mode: destination.Merge},
 		{name: "first read whole", st: first, dedupe: retention, read: apiv1.SyncMode_SYNC_MODE_FULL_REFRESH, mode: destination.Overwrite},
+		{name: "first with a retention under a microsecond", st: first, dedupe: &apiv1.Dedupe{Retention: durationpb.New(time.Nanosecond)}, read: apiv1.SyncMode_SYNC_MODE_STREAM,
+			mode: destination.Append, want: `stream "events" sets dedupe.retention 1ns, under the microsecond that event time counts in: set 1µs or more, or unbounded`},
 		{name: "first without a retention", st: first, read: apiv1.SyncMode_SYNC_MODE_STREAM, mode: destination.Append,
 			want: `transform.sql:3:1: the dedupe writing "firsts", ROW_NUMBER() … = 1 in ascending order of the event time, keeps each key's first row, ` +
 				`and stream "events" sets no dedupe.retention, how long it remembers a key: set source.streams[].dedupe.retention to a duration of event time`},
@@ -67,7 +69,7 @@ func TestDedupeProblems(t *testing.T) {
 		}
 		compared++
 	}
-	if compared != 12 {
+	if compared != 13 {
 		t.Errorf("%d cases compared", compared)
 	}
 	day := (24 * time.Hour).Microseconds()

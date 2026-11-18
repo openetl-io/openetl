@@ -132,7 +132,7 @@ The plan also has a problem where a group window's stream is read in a way that 
 
 The plan also has a problem where the stream of `OVER` is read in a way that it cannot take ([OVER reads](./sql-over.md#over-reads)), where the stream sets `watermark.lateness` and no group window reads it, and where the output is merged and its primary key does not hold the `PARTITION BY` columns, on a destination with several writer lanes ([The output](./sql-over.md#the-output)).
 
-A [dedupe](./sql-over.md#dedupe) has these problems in the plan, each about the spec, not the SQL:
+A [dedupe](./sql-over.md#dedupe) has these problems in the plan, each about the spec, not the SQL. A job that starts with a first-row dedupe over a stream without `dedupe.retention` fails with `CONFIG_INVALID` and the same message.
 
 | What | Message |
 |---|---|
@@ -141,6 +141,7 @@ A [dedupe](./sql-over.md#dedupe) has these problems in the plan, each about the 
 | A first-row dedupe over a stream read by another cursor than its event time | `the dedupe writing "events_once" reads stream "events" with incremental by cursor "id", not by its eventTime "created_at", so each sync's read would start its keys again, and write each key's first row again: read it with full_refresh` |
 | `watermark.lateness` on a stream that a latest-row dedupe reads | `stream "profile_changes" sets watermark.lateness, which the dedupe writing "latest_profiles" doesn't take: it writes each key's latest row as it comes, whatever the watermark. Set no lateness` |
 | `dedupe.retention` on a stream that no first-row dedupe reads | `stream "profile_changes" sets dedupe.retention, which only a dedupe that keeps each key's first row takes, ROW_NUMBER() … = 1 in ascending order of its eventTime, and no statement of transform.sql dedupes it so: set no dedupe` |
+| A `dedupe.retention` under 1µs | `stream "events" sets dedupe.retention 1ns, under the microsecond that event time counts in: set 1µs or more, or unbounded` |
 
 ### Changelog streams
 

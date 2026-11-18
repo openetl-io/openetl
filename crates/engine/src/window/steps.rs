@@ -114,7 +114,7 @@ pub fn deletes(steps: &[Step], rows: RecordBatch) -> Result<Ran, String> {
 
 /// `n` values of `f` for a column whose value doesn't matter: nulls, or
 /// where it can't be null, its type's zero.
-fn empty(f: &arrow_schema::Field, n: usize) -> Result<ArrayRef, String> {
+pub fn empty(f: &arrow_schema::Field, n: usize) -> Result<ArrayRef, String> {
     let nulls = arrow_array::new_null_array(f.data_type(), n);
     if f.is_nullable() {
         return Ok(nulls);
@@ -251,6 +251,12 @@ fn each(
 }
 
 /// The rows of `batch` at `rows`, in that order.
+/// Rows `rows` of one column.
+pub fn take_column(column: &ArrayRef, rows: &[usize]) -> Result<ArrayRef, Error> {
+    let indices = UInt64Array::from_iter_values(rows.iter().map(|&r| r as u64));
+    arrow_select::take::take(column.as_ref(), &indices, None).map_err(eval)
+}
+
 pub fn take(batch: &RecordBatch, rows: &[usize]) -> Result<RecordBatch, Error> {
     if rows.len() == batch.num_rows() && rows.iter().enumerate().all(|(i, &r)| i == r) {
         return Ok(batch.clone());

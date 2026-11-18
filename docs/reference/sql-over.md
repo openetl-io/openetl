@@ -144,10 +144,10 @@ QUALIFY row_number() OVER (PARTITION BY event_id ORDER BY created_at) = 1;
 
 | Order | Keeps | When it is written |
 |---|---|---|
-| Ascending | The key's first row by event time | Once the watermark passes its event time. A row of a key that the dedupe keeps is a repeat, and is dropped as it comes. |
+| Ascending | The key's first row by event time | Once the watermark passes its event time. A row of a key that the dedupe keeps, less than the retention after the key's first row, is a repeat, and is dropped as it comes. |
 | Descending | The key's latest row by event time | As it comes, if it is later than the key's latest row. An earlier row, or one with the same time and a lesser record ID, is dropped, whatever the watermark. |
 
-- A key's rows with the same event time go by their record IDs (`_openetl_id`). A first-row dedupe keeps the least, and of rows with one ID, the least by their values. A latest-row dedupe keeps the greatest, and of rows with one ID, the one it kept first. The order depends only on the rows, so a retry or a redo keeps the same row.
+- A key's rows with the same event time go by their record IDs (`_openetl_id`). A first-row dedupe keeps the least, and of rows with one ID, the least by their values. A latest-row dedupe keeps the greatest, and of rows with one ID, the greatest by a 64-bit hash of their values. The order depends only on the rows, so a retry or a redo keeps the same row.
 - A row whose event time is null is quarantined, with the code `event_time`.
 - A `PARTITION BY` value that is null is a key, as in a group window.
 - Equal JSON values are one key, whatever their spaces or the order of their objects' keys.
@@ -158,12 +158,12 @@ A dedupe that keeps each key's first row needs its stream's `source.streams[].de
 
 | `dedupe.retention` | A kept key is forgotten | The plan reports |
 |---|---|---|
-| A duration more than zero, such as `24h` | Once the watermark passes the time of the key's first row plus the retention. The key's next row is written again, and the key is kept from it. | `exactly once within 24h0m0s of event time` |
+| A duration of 1µs or more, such as `24h` | Once the watermark passes the time of the key's first row plus the retention. The key's next row is written again, and the key is kept from it. | `exactly once within 24h0m0s of event time` |
 | `unbounded` | Never. The dedupe's state grows with the number of keys. | `exactly_once`, and that the state grows with the number of keys |
 
-- A first-row dedupe over a stream without `dedupe.retention` is a problem in the plan, and a job refuses it with `CONFIG_INVALID`.
-- A row of a kept key is a repeat when its time is less than the retention after the key's first row, whenever the row comes.
-- A row that comes after the watermark has passed its time is late. A late row of a kept key is a repeat. A late row of a key not kept is quarantined, with the code `late`.
+- A first-row dedupe over a stream without `dedupe.retention` is a problem in the plan, and a job refuses it with `CONFIG_INVALID`. So is a retention under 1µs, the unit that event time counts in.
+- A row of a kept key is a repeat when its time is less than the retention after the key's first row. A row at or after that time waits for the watermark, as a row of a key not kept does, and is written once the watermark passes its time, when the key is forgotten.
+- A row that comes after the watermark has passed its time is late. A late row of a kept key is a repeat. A late row of a key not kept, or forgotten before the row came, is quarantined, with the code `late`.
 - A dedupe takes no `watermark.lateness`. Lateness on a stream that a dedupe reads, and no group window does, is a problem in the plan.
 - A dedupe that keeps each key's latest row takes no retention, and keeps every key. `dedupe.retention` on a stream that no first-row dedupe reads is a problem in the plan.
 
@@ -180,7 +180,7 @@ A dedupe that keeps each key's first row needs its stream's `source.streams[].de
 
 - A first-row dedupe's rows are inserts, written once for each key, or again after the retention. Without `destination.write`, the output is appended to, or overwritten when its stream is read with `full_refresh`. `merge` takes it too.
 - A latest-row dedupe's rows are upserts keyed by the `PARTITION BY` columns: an insert, then updates. They need `merge`: without `destination.write`, the output is merged where the destination merges, and another write mode is a problem in the plan.
-- Where a filter after a latest-row dedupe drops a key's latest row, and the output has the key's row, the dedupe writes a delete of the key, which `destination.deletes` applies. A row that the filter cannot evaluate is quarantined, with the code `statement`, and the output keeps the key's row.
+- Where a filter after a latest-row dedupe drops a key's latest row, and the output has the key's row, the dedupe writes a delete of the key, which `destination.deletes` applies. The delete has the key's columns, and nulls in the others, or their type's zero where a column cannot be null: the steps after the filter do not run on the row. A row that the filter cannot evaluate is quarantined, with the code `statement`, and the output keeps the key's row.
 - Each row's `_openetl_id` is its input row's, and its `_openetl_seq` is its event time.
 - A dedupe drops what a source repeats after a failure. Into a destination that stages and applies, or that writes each commit in a transaction, its output is `exactly_once`, with the reason `exactly once within 24h0m0s of event time: …` for a first-row dedupe with a retention ([The plan's reasons](../pipelines/delivery.md#the-plans-reasons)).
 
@@ -194,7 +194,7 @@ The engine exchanges the stream's rows by the key groups of the `PARTITION BY` c
 ```
 
 - A first-row dedupe keeps each kept key with its first row's time, and each row of a key not kept until the watermark passes it, with all of its columns. With a retention, the state of a key is dropped once the key is forgotten.
-- A latest-row dedupe keeps each key's latest time and record ID, and whether the output has the key's row.
+- A latest-row dedupe keeps each key's latest time, record ID and hash of values, and whether the output has the key's row.
 - The state is kept as a group window's is ([State](./sql-windows.md#state)). The next attempt restores it on any number of lanes and workers.
 
 ### Changing a dedupe
@@ -209,4 +209,11 @@ The dedupe's ID is a hash of the output's name, the stream, the event-time colum
 
 Another `PARTITION BY`, order, output name, filter or `UNNEST` before the dedupe, or a change of type of the event-time column or a `PARTITION BY` column, gives a new ID, whose state starts empty.
 
-A changed `dedupe.retention` applies to every key that the dedupe keeps: a longer one keeps them longer, and a shorter one forgets those it has passed. A key that a retention forgot stays forgotten. Keys kept with `unbounded` stay kept after a change to a duration. To start the state again, reset the stream: `openetl reset --stream STREAM PIPELINE`.
+A changed `dedupe.retention` applies to every key that the dedupe keeps: a longer one keeps them longer, and a shorter one forgets those it has passed. A key that a retention forgot stays forgotten. Keys kept with `unbounded` stay kept after a change to a duration. To start the state again, reset the streams that the statement reads.
+
+> [!WARNING]
+> A reset reads the stream again for every statement that reads it, so an appended output gets those rows twice. Read [Build the state again](../pipelines/over.md#build-the-state-again) first.
+
+```sh
+openetl reset --stream STREAM PIPELINE
+```

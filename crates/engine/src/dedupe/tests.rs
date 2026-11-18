@@ -404,10 +404,22 @@ async fn a_key_is_forgotten_past_its_retention() {
         .await;
     assert_eq!((run.repeats, run.late), (4, 0));
     run.rows(&[(8, "eu", 8, 35 * SEC)]).await;
+    assert!(!run.out.appended.contains_key(&8));
+    // Row 8 waits for the watermark to pass its own time, by when the key
+    // kept at 25 seconds is forgotten.
+    run.advance(36 * SEC).await;
+    assert!(run.out.appended.contains_key(&8));
+    // A row of a key forgotten before it comes, behind the watermark, is
+    // late: us, kept at 37 seconds, is forgotten once the watermark passes
+    // 47.
+    run.rows(&[(9, "us", 9, 37 * SEC)]).await;
+    run.advance(48 * SEC).await;
+    run.rows(&[(10, "us", 10, 40 * SEC)]).await;
+    assert_eq!((run.late, run.repeats), (1, 4));
     run.advance(i64::MAX).await;
     let written: Vec<u64> = run.out.appended.keys().copied().collect();
-    assert_eq!(written, [1, 3, 5, 8]);
-    assert_eq!((run.kept, run.forgot), (4, 4));
+    assert_eq!(written, [1, 3, 5, 8, 9]);
+    assert_eq!((run.kept, run.forgot), (5, 5));
 }
 
 /// A changed retention applies to every key kept, but a key the old one
@@ -488,6 +500,57 @@ async fn a_latest_row_a_filter_drops_deletes_its_keys_row() {
     );
 }
 
+/// A delete of a key whose latest row a filter drops has the key's columns
+/// and nulls: a projection after the filter, which would fail on the row,
+/// never runs on it.
+#[tokio::test]
+async fn a_delete_runs_no_projection_its_filter_kept_from_the_row() {
+    let sql = "INSERT INTO o SELECT region, 100 / amount AS share, at FROM \
+               (SELECT *, row_number() OVER (PARTITION BY region ORDER BY at DESC) AS rn FROM orders) \
+               WHERE rn = 1 AND amount <> 0";
+    let bucket = MemoryBucket::new();
+    let mut run = Run::new(sql, None, &bucket, (1, 1), 1, &[]).await;
+    run.rows(&[(1, "eu", 5, SEC)]).await;
+    assert!(
+        run.out.merged["eu"].1.contains("share=20 "),
+        "{:?}",
+        run.out
+    );
+    let (b, i) = batch(&run.ops[0], &[(2, "eu", 0, 2 * SEC)]);
+    let out = run.ops[0].rows(&mut run.layers[0], &b, &i).await.unwrap();
+    let t = out.rows.as_ref().unwrap();
+    let cells: Vec<String> = (0..t.batch.num_columns())
+        .map(|c| arrow_cast::display::array_value_to_string(t.batch.column(c), 0).unwrap())
+        .collect();
+    assert_eq!(cells, ["eu", "", ""]);
+    run.give(&out);
+    assert_eq!(run.out.ops, ["insert", "delete"]);
+    assert!(run.out.merged.is_empty() && out.failed.is_empty());
+}
+
+/// Rows of a key with one time and record ID, and other values, as a
+/// source can give, go by their values' hashes: the same row is the key's
+/// latest whichever comes first.
+#[tokio::test]
+async fn equal_times_and_ids_go_by_their_values_whatever_the_order() {
+    let rows = [
+        (5, "eu", 1, 10 * SEC),
+        (5, "eu", 2, 10 * SEC),
+        (5, "eu", 3, 10 * SEC),
+    ];
+    let mut kept = BTreeSet::new();
+    for order in [[0, 1, 2], [2, 1, 0], [1, 2, 0]] {
+        let bucket = MemoryBucket::new();
+        let mut run = Run::new(LATEST, None, &bucket, (1, 1), 1, &[]).await;
+        for i in order {
+            run.rows(&[rows[i]]).await;
+        }
+        kept.insert(run.out.merged["eu"].1.clone());
+        assert_eq!(run.repeats + run.out.ops.len() as u64, 3);
+    }
+    assert_eq!(kept.len(), 1, "{kept:?}");
+}
+
 /// A first-row dedupe needs a retention, which must be more than none.
 #[test]
 fn a_first_row_dedupe_needs_a_retention() {
@@ -509,7 +572,7 @@ fn a_first_row_dedupe_needs_a_retention() {
     };
     let d = Arc::new(*d);
     for (retention, want) in [
-        (None, "stream orders sets no dedupe.retention"),
+        (None, "and stream \"orders\" sets no dedupe.retention"),
         (Some(0), "a dedupe's retention of 0µs"),
     ] {
         let Err(e) = Operator::new(&d.id, st.at, d.clone(), "o", retention, GROUPS) else {

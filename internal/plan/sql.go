@@ -270,7 +270,8 @@ func windowProblems(a *sqlplan.Answer, inputs []Input, outs []Output, caps desti
 // stream that sets no dedupe.retention, which has no default; one that
 // keeps each key's latest row whose output isn't merged, as it writes
 // upserts and, where a filter after it drops a key's latest row, deletes;
-// and a stream's dedupe.retention that no first-row dedupe over it takes.
+// a stream's dedupe.retention under a microsecond, which event time
+// counts in; and one that no first-row dedupe over the stream takes.
 // outs are the statements' outputs, as SQLOutputs gives them.
 func dedupeProblems(a *sqlplan.Answer, inputs []Input, outs []Output) []error {
 	var out []error
@@ -295,6 +296,9 @@ func dedupeProblems(a *sqlplan.Answer, inputs []Input, outs []Output) []error {
 		}
 	}
 	for _, in := range inputs {
+		if r := in.Spec.GetDedupe().GetRetention(); r != nil && r.AsDuration() < time.Microsecond {
+			out = append(out, fmt.Errorf("stream %q sets dedupe.retention %v, under the microsecond that event time counts in: set 1µs or more, or unbounded", in.Name, r.AsDuration()))
+		}
 		if in.Spec.GetDedupe() != nil && !first(in.Name) {
 			out = append(out, fmt.Errorf("stream %q sets dedupe.retention, which only a dedupe that keeps each key's first row takes, "+
 				"ROW_NUMBER() … = 1 in ascending order of its eventTime, and no statement of transform.sql dedupes it so: set no dedupe", in.Name))
