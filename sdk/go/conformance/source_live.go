@@ -337,11 +337,11 @@ func (r *sourceRun) checkContinuous(t T) {
 }
 
 // Read: continuous splits: a continuous read with one lane reads every split
-// of each stream read with cdc or stream that the source splits, and what's
-// added upstream after: such splits don't complete to free a lane, so none
-// may wait for one.
+// of each stream read with cdc or stream that the source splits, everything
+// a bounded read of the streams just before had, and what's added upstream
+// after: such splits don't complete to free a lane, so none may wait for one.
 func (r *sourceRun) checkContinuousSplits(t T) {
-	full, streams := r.fullRead(t)
+	_, streams := r.fullRead(t)
 	if !r.spec.GetSource().GetSplits() {
 		t.Skipf("the source doesn't split streams")
 	}
@@ -366,9 +366,15 @@ func (r *sourceRun) checkContinuousSplits(t T) {
 	if len(follow) == 0 {
 		t.Skipf("the source splits no stream the suite reads with cdc or stream")
 	}
+	// What's upstream now, which the checks before may have added to.
+	var whole []*protocolv1.ConfiguredStream
+	for _, cs := range follow {
+		whole = append(whole, &protocolv1.ConfiguredStream{Name: cs.GetName(), SyncMode: cs.GetSyncMode(), Cursor: cs.GetCursor()})
+	}
+	upstream := r.readUnder(t, r.pipeline(), whole...)
 	l := startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: follow, Pipeline: r.pipeline(), Continuous: true, Lanes: 1})
 	defer l.stop()
-	if !l.wait(r.readTimeout(), func(events []event) bool { return caughtUp(full, follow, events) }) {
+	if !l.wait(r.readTimeout(), func(events []event) bool { return caughtUp(upstream, follow, events) }) {
 		r.liveFailed(t, l, "every split's records, on one lane")
 	}
 	r.addAndFollow(t, l, follow)
