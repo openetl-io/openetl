@@ -373,8 +373,8 @@ func TestExactlyOnceWithin(t *testing.T) {
 	}{
 		{name: "the default refuses it", pipeline: ExactlyOnce, s: within,
 			want: `delivery.require: stream "events_once" gets exactly_once_within (a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, ` +
-				`and writes a repeat after that again), below exactly_once: to accept that a repeat 24h0m0s or more of event time after a key's first row is written again, ` +
-				`set delivery.require: exactly_once_within; to remember every key, set source.streams[events].dedupe.retention: unbounded`},
+				`and writes a repeat after that again), below exactly_once: to accept that a key is written again by a row 24h0m0s or more of event time after its first row, ` +
+				`set delivery.require: exactly_once_within; to remember every key from then on, set source.streams[events].dedupe.retention: unbounded (a key already forgotten stays forgotten)`},
 		{name: "effectively_once refuses it", pipeline: EffectivelyOnce, s: within, want: "below effectively_once: to accept that"},
 		{name: "exactly_once_within takes it", pipeline: ExactlyOnceWithin, s: within},
 		{name: "at_least_once takes it", pipeline: AtLeastOnce, s: within},
@@ -406,7 +406,7 @@ func TestExactlyOnceWithin(t *testing.T) {
 	}
 	replaces := Stream{Name: "events", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Engine: "sql", Deduped: true, Remembers: time.Hour, DedupeOf: "events", Replaces: true}
 	if err := Check(parquet, Settings{Require: ExactlyOnce, Scope: destination.ScopeStream}, []Stream{replaces}); err == nil ||
-		!strings.Contains(err.Error(), "set source.streams[events].require: exactly_once_within; to remember every key, set source.streams[events].dedupe.retention: unbounded") {
+		!strings.Contains(err.Error(), "set source.streams[events].require: exactly_once_within; to remember every key from then on, set source.streams[events].dedupe.retention: unbounded (a key already forgotten stays forgotten)") {
 		t.Errorf("replaces: %v", err)
 	}
 }

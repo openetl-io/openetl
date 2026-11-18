@@ -4850,8 +4850,9 @@ export enum DeliveryLevel {
   EXACTLY_ONCE = 3,
 
   /**
-   * A first-row dedupe's output with a retention: nothing repeats within
-   * the retention, and a repeat after it is written again.
+   * A first-row dedupe's output with a retention: a row of a key less than
+   * the retention, in event time, after the key's first row isn't written,
+   * and one at or after it can be written as the key's next first row.
    *
    * @generated from enum value: DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN = 4;
    */

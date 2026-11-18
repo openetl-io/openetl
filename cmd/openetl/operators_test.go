@@ -117,8 +117,8 @@ func TestPlanOfADedupeThroughTheEngine(t *testing.T) {
 	_, problems, _ = planned(day, none, unset)
 	if err := errors.Join(problems...); len(problems) != 1 || !strings.Contains(err.Error(),
 		`delivery.require: stream "first_events" gets exactly_once_within (`) || !strings.Contains(err.Error(),
-		`below exactly_once: to accept that a repeat 24h0m0s or more of event time after a key's first row is written again, set delivery.require: exactly_once_within; `+
-			`to remember every key, set source.streams[events].dedupe.retention: unbounded`) {
+		`below exactly_once: to accept that a key is written again by a row 24h0m0s or more of event time after its first row, set delivery.require: exactly_once_within; `+
+			`to remember every key from then on, set source.streams[events].dedupe.retention: unbounded (a key already forgotten stays forgotten)`) {
 		t.Errorf("a retention under the default require: %v", err)
 	}
 	ops, problems, streams := planned(day, apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN, unset)
@@ -155,7 +155,7 @@ func TestPlanOfADedupeThroughTheEngine(t *testing.T) {
 			"which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again"},
 		{"merged", func() []*apiv1.StreamPlan {
 			_, problems, streams := planned(day, none, apiv1.WriteMode_WRITE_MODE_MERGE)
-			if len(problems) == 0 || !strings.Contains(errors.Join(problems...).Error(), `stream "first_events" gets effectively_once`) {
+			if len(problems) != 1 || !strings.Contains(problems[0].Error(), `stream "first_events" gets effectively_once`) {
 				t.Errorf("merged under the default require: %v", problems)
 			}
 			return streams

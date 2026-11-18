@@ -93,7 +93,7 @@ Enum values are lowercase (`merge`), durations are Go durations (`90s`, `15m`), 
 | Field | What it does | Unset |
 |---|---|---|
 | `schemaPolicy` | What a change to a stream's schema does. `allow_all` adds columns and widens types, and sends a type change that is not a widening to a new column; `allow_columns` adds columns and widens types, but holds other type changes or fails when they cannot be held; `block` holds changes or fails the stream; `ignore_new` drops new columns, and values that do not fit follow `unfitValues` | `allow_all` |
-| `delivery.require` | The lowest guarantee any stream may have: `at_least_once`, `exactly_once_within`, `effectively_once` or `exactly_once` | `exactly_once` |
+| `delivery.require` | The lowest guarantee a stream may have, unless its own `require` sets another: `at_least_once`, `exactly_once_within`, `effectively_once` or `exactly_once` | `exactly_once` |
 | `delivery.commit.interval` | How often to commit what is been read | 5 minutes in a scheduled pipeline; in a continuous one, the destination's own interval, or 10 seconds |
 | `delivery.commit.maxBytes` | Commit once this much has been read since the last commit | `256MB`, which grows when commits cannot keep up |
 | `delivery.commit.scope` | Commit every stream together (`pipeline`) or each on its own (`stream`) | `pipeline` where the destination can, otherwise `stream` |

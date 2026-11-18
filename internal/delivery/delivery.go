@@ -17,10 +17,11 @@ type Level int
 
 const (
 	AtLeastOnce Level = iota + 1
-	// A dedupe's output that nothing repeats within its retention, of event
-	// time from a key's first row, and that a repeat after it is written to
-	// again, as a row of its own. Above AtLeastOnce, which promises nothing of
-	// repeats, and below EffectivelyOnce, which promises no row is repeated.
+	// A first-row dedupe's output with a retention: a row of a key less than
+	// the retention, in event time, after the key's first row is dropped,
+	// and one at or after it can be written as the key's next first row.
+	// Above AtLeastOnce, which promises nothing of repeats, and below
+	// EffectivelyOnce, which never writes a second row of a version.
 	ExactlyOnceWithin
 	// Repeats are keyed and guarded by _openetl_seq, so the final state is
 	// the same.
@@ -86,9 +87,12 @@ type Stream struct {
 	// A SQL dedupe's output, whose state drops a repeat of a key it keeps,
 	// so a repeat a superset input reads again isn't written again. A
 	// first-row dedupe keeps a key Remembers of event time from its first
-	// row; 0: for good, as a latest-row dedupe keeps its keys.
+	// row; 0: for good, as a latest-row dedupe keeps its keys. Refreshed:
+	// its stream is read with full_refresh, so each sync starts it with no
+	// keys kept and writes every key's rows again.
 	Deduped   bool
 	Remembers time.Duration
+	Refreshed bool
 	// For messages: the stream a dedupe reads, whose dedupe.retention sets
 	// Remembers, and whether a SQL output replaces a source's stream, and so
 	// takes that stream's require.
@@ -178,6 +182,16 @@ func PlanStream(caps destination.Capabilities, s Stream, require Level) Plan {
 		p.Collapse, p.Level, p.Why = false, ExactlyOnce, "a transform's output over exact inputs"
 	case s.Replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
 		p.Level, p.Why = ExactlyOnce, "exact replay"
+	case s.Deduped && s.Refreshed && s.Mode == destination.Overwrite && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
+		p.Collapse, p.Level = false, ExactlyOnce
+		p.Why = "a dedupe's output over superset inputs read with full_refresh, which drops every repeat within a sync's read, overwritten with each sync's"
+	case s.Deduped && s.Refreshed && s.Mode == destination.Merge && caps.Class == destination.StageAndApply:
+		p.Collapse, p.Level = false, EffectivelyOnce
+		p.Why = "a dedupe's output over superset inputs read with full_refresh, which starts each sync with no keys kept, written with merge, " +
+			"which merges each sync's rows onto their keys' rows"
+	case s.Deduped && s.Refreshed && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
+		p.Collapse = false
+		p.Why = "a dedupe's output over superset inputs read with full_refresh, which starts each sync with no keys kept, so writes every key's rows again in each sync"
 	case s.Deduped && s.Remembers > 0 && caps.Class == destination.StageAndApply && s.Mode == destination.Merge:
 		p.Collapse, p.Level = false, EffectivelyOnce
 		p.Why = fmt.Sprintf("a dedupe's output over superset inputs, which remembers a key %v of event time from its first row, "+
@@ -277,8 +291,8 @@ func Problems(caps destination.Capabilities, s Settings, streams []Stream) []err
 		switch {
 		case p.Level >= require:
 		case p.Level == ExactlyOnceWithin:
-			fails = append(fails, fmt.Errorf("%s: stream %q gets %v (%s), below %v: to accept that a repeat %v or more of event time after a key's first row is written again, set %s: %v; "+
-				"to remember every key, set %s: unbounded", field, st.Name, p.Level, p.Why, require, st.Remembers, st.requireField(field), ExactlyOnceWithin, st.retentionField()))
+			fails = append(fails, fmt.Errorf("%s: stream %q gets %v (%s), below %v: to accept that a key is written again by a row %v or more of event time after its first row, set %s: %v; "+
+				"to remember every key from then on, set %s: unbounded (a key already forgotten stays forgotten)", field, st.Name, p.Level, p.Why, require, st.Remembers, st.requireField(field), ExactlyOnceWithin, st.retentionField()))
 		default:
 			fails = append(fails, fmt.Errorf("%s: stream %q gets %v (%s), below %v", field, st.Name, p.Level, p.Why, require))
 		}

@@ -76,7 +76,7 @@ A **delivery guarantee** describes whether retries can produce duplicate changes
 
 - **Exactly once:** each change is committed once, including after a failure and retry.
 - **Effectively once:** a change can be written again, but merge updates the same row. The final row is the same as if the change were written once.
-- **Exactly once within retention:** a dedupe drops each repeat that comes within the retention it remembers a key for. A repeat that comes later is written again.
+- **Exactly once within retention:** a dedupe drops a row of a key if the row's event time is less than the retention after the key's first row. A row at or after that time can be written as the key's next first row.
 - **At least once:** retries can write duplicate changes. Each row has an `_openetl_id` that readers can use to remove duplicates.
 
 A pipeline requires exactly-once delivery by default. OpenETL refuses to run it if any stream cannot meet the required guarantee.

@@ -408,6 +408,7 @@ func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlp
 			refresh = refresh && in.Read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH
 			cdc = cdc || in.Read == apiv1.SyncMode_SYNC_MODE_CDC
 		}
+		o.Refreshed = o.Deduped && refresh
 		if i := slices.IndexFunc(inputs, func(in Input) bool { return in.Name == st.Output }); st.Replaces && i >= 0 {
 			o.Require, o.Spec = Level(inputs[i].Spec.GetRequire()), inputs[i].Spec
 		}
