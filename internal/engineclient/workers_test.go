@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,14 +34,17 @@ var workerTimings = attempt.Options{Heartbeat: 100 * time.Millisecond, Timeout: 
 // splitSource reads stream "s" in splits "0" to splits-1, a chunk of rows
 // at a time with a resume point after each: split k's chunk c holds ids
 // k*10000+c*100+r for r below rows, each as row makes it. Its state is the
-// next chunk. With upTo, a split has only that many chunks so far, and
-// keeps its read open once it has read them, until it's cancelled.
+// next chunk. With upTo, a split has only that many chunks so far, and a
+// read that has read them stays open until it's cancelled, every split
+// read up to there.
 type splitSource struct {
 	splits, chunks, rows int
 	upTo                 int
 	row                  func(split, chunk int, id int64) string
 	// Called before each chunk of a split but its first; nil: nothing.
 	before func(ctx context.Context, split, chunk int) error
+	// Splits that have no chunks yet, whatever upTo says.
+	held map[int]bool
 }
 
 func (s *splitSource) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
@@ -52,7 +56,8 @@ func (s *splitSource) Splits(context.Context, source.ConfiguredStream, []source.
 }
 
 func (s *splitSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
-	return source.ReadSplits(ctx, req, out, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+	var open atomic.Bool
+	err := source.ReadSplits(ctx, req, out, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
 		split, err := strconv.Atoi(sp.ID)
 		if err != nil {
 			return err
@@ -66,6 +71,9 @@ func (s *splitSource) Read(ctx context.Context, req source.ReadRequest, out sour
 		upTo := s.chunks
 		if s.upTo > 0 {
 			upTo = min(s.upTo, s.chunks)
+		}
+		if s.held[split] {
+			upTo = 0
 		}
 		for c := from; c < upTo; c++ {
 			if c > 0 && s.before != nil {
@@ -85,11 +93,18 @@ func (s *splitSource) Read(ctx context.Context, req source.ReadRequest, out sour
 			}
 		}
 		if upTo < s.chunks {
-			<-ctx.Done()
-			return ctx.Err()
+			// Its lane goes to a split waiting for one: ReadSplits reads only
+			// as many at a time as the read has lanes.
+			open.Store(true)
+			return nil
 		}
 		return e.Complete([]byte(strconv.Itoa(s.chunks)))
 	})
+	if err != nil || !open.Load() {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // keyDest is a stage-and-apply destination of several writer lanes that
@@ -409,18 +424,18 @@ func TestSQLOnWorkersThroughTheEngine(t *testing.T) {
 	}
 	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
 	dest := newKeyDest(16)
-	src := func(upTo int) *splitSource {
-		return &splitSource{splits: 6, chunks: 8, rows: 20, upTo: upTo, row: func(split, _ int, id int64) string {
+	src := func(upTo int, held map[int]bool) *splitSource {
+		return &splitSource{splits: 6, chunks: 8, rows: 20, upTo: upTo, held: held, row: func(split, _ int, id int64) string {
 			if split == 5 {
 				return fmt.Sprintf(`{"id": %d, "extra": "e%d"}`, id, id)
 			}
 			return fmt.Sprintf(`{"id": %d}`, id)
 		}}
 	}
-	job := func(owner string, upTo int) func() runner.Job {
+	job := func(owner string, upTo int, held map[int]bool) func() runner.Job {
 		return func() runner.Job {
 			return runner.Job{
-				Pipeline: "p", Owner: owner, Sync: "s1", Log: log, Source: src(upTo),
+				Pipeline: "p", Owner: owner, Sync: "s1", Log: log, Source: src(upTo, held),
 				Streams:     []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, Schema: declared}},
 				Outputs:     []runner.Stream{{Name: "kept", Replay: source.Exact, Mode: destination.Append, Transformed: true, From: "s"}},
 				SQL:         &runner.SQLTransform{SQL: kept, Expected: expected(t, a)},
@@ -432,8 +447,8 @@ func TestSQLOnWorkersThroughTheEngine(t *testing.T) {
 	srv := listen(t)
 
 	// Three workers, one of which is lost after the first commit, with some
-	// of the rows to read.
-	p := &inProcess{ctx: ctx, mk: job("a1", 3)}
+	// of the rows to read, and none yet of the split with extra.
+	p := &inProcess{ctx: ctx, mk: job("a1", 3, map[int]bool{5: true})}
 	j := p.mk()
 	p.on(&j, srv, 3)
 	var once sync.Once
@@ -442,17 +457,20 @@ func TestSQLOnWorkersThroughTheEngine(t *testing.T) {
 		t.Fatal("the attempt went on without its worker")
 	}
 	p.wait()
-
-	// Two workers, with more to read, drained once a record holds what
-	// worker 1, which reads the split with extra, saw; then one runner, to
-	// the end.
-	p.mk = job("a2", 6)
-	j = p.mk()
-	p.on(&j, srv, 2)
 	sawExtra := func(raw []byte) bool {
 		names, err := fieldNames(raw)
 		return err == nil && slices.Contains(names, "extra:utf8")
 	}
+	if head, err := log.Latest(ctx); err != nil || head == nil || sawExtra(head.Streams["s"].Schema) {
+		t.Fatalf("after three workers, the record is %+v (%v), and should have no extra", head, err)
+	}
+
+	// Two workers, with more to read, drained once a record holds what
+	// worker 1, which reads the split with extra, saw; then one runner, to
+	// the end.
+	p.mk = job("a2", 6, nil)
+	j = p.mk()
+	p.on(&j, srv, 2)
 	drainOnceRecorded(&j, func(rec *checkpoint.Record) bool {
 		return sawExtra(rec.Streams["s"].Schema) && sawExtra(rec.Outputs["kept"].Schema)
 	})
@@ -485,7 +503,7 @@ func TestSQLOnWorkersThroughTheEngine(t *testing.T) {
 	if !slices.Contains(in, "extra:utf8") || !slices.Contains(out, "extra:utf8") || !slices.Contains(out, "r:int64") {
 		t.Errorf("the record's schemas: stream %v, output %v", in, out)
 	}
-	last, err := runner.RunAttempt(ctx, job("a3", 0)())
+	last, err := runner.RunAttempt(ctx, job("a3", 0, nil)())
 	if err != nil {
 		t.Fatal(err)
 	}
