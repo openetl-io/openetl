@@ -269,7 +269,9 @@ export function SqlOperatorStats({ checkpoint, operators }: { checkpoint: Checkp
                 </TableCell>
                 <TableCell className="whitespace-normal tabular-nums">
                   <div>{stateBytes(s.memoryBytes)} in memory</div>
-                  <div className="text-[0.8125rem] text-muted-foreground">{stateBytes(s.storedBytes)} stored</div>
+                  <div className="text-[0.8125rem] text-muted-foreground">
+                    {stateBytes(s.storedBytes)} stored, {stateBytes(s.checkpointBytes)} in the checkpoint
+                  </div>
                 </TableCell>
                 <TableCell className="whitespace-normal text-[0.8125rem] tabular-nums">
                   <div>Writes {requests(s.barrierRequests)}</div>

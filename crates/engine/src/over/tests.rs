@@ -10,7 +10,10 @@ use arrow_array::{FixedSizeBinaryArray, RecordBatch, TimestampMicrosecondArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use openetl_normalize::Code;
 use openetl_sql::{Catalog, Operator as Planned, Stream};
-use openetl_state::{KeyGroupRange, Layer, MemoryBucket, Snapshot, Stores};
+use openetl_state::{
+    KeyGroupRange, Layer, MemoryBucket, ObjectStorage, PendingLimit, RunConfig, RunStores,
+    Snapshot, Stores,
+};
 
 use super::{Operator, RELEASE, TAKE};
 use crate::window::tests::{REGIONS, next, orders, ranges, routed};
@@ -522,4 +525,77 @@ async fn each_rows_values_dont_depend_on_order_barriers_or_lanes() {
     }
     assert_eq!(compared, 3 * 12 * 300);
     assert!(restores > 12, "{restores} restores");
+}
+
+/// OVER's waiting rows and frames ride in the record, in its lanes'
+/// pending sets, while they're within a lane's share, and a run takes them
+/// once they pass it. Kills at barriers whose records carry only pending
+/// sets, and pending sets beside runs, then restores onto other numbers of
+/// lanes, give each row the values it has in order on one lane.
+#[tokio::test]
+async fn restores_from_records_that_carry_pending_sets() {
+    let input = rows(11, 300);
+    let bucket = MemoryBucket::new();
+    let mut want = Run::new(RUNNING, &bucket, 1, 1, 1, &[]).await;
+    let mut ordered = input.clone();
+    ordered.sort_by_key(|r| (r.3, r.0));
+    want.rows(&ordered).await;
+    want.advance(i64::MAX).await;
+    let (mut only_pending, mut beside_runs) = (0, 0);
+    for (seed, bytes) in [
+        (1u64, 1usize << 30),
+        (2, 1 << 30),
+        (3, 6 << 10),
+        (4, 6 << 10),
+    ] {
+        let objects = Arc::new(ObjectStorage::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            object_store::path::Path::from("state"),
+        ));
+        let stores = RunStores::new(objects, RunConfig::default()).with_pending(PendingLimit {
+            bytes,
+            key_groups: GROUPS,
+        });
+        let mut s = seed;
+        let mut shuffled = input.clone();
+        for i in (1..shuffled.len()).rev() {
+            let j = usize::try_from(next(&mut s) % (i as u64 + 1)).unwrap();
+            shuffled.swap(i, j);
+        }
+        let mut run = Run::new(RUNNING, &stores, 1, 1, 2, &[]).await;
+        let (mut epoch, mut at) = (1, 0);
+        while at < shuffled.len() {
+            let part = &shuffled[at..(at + 25).min(shuffled.len())];
+            at += part.len();
+            run.rows(part).await;
+            let left = shuffled[at..].iter().map(|r| r.3).min().unwrap_or(i64::MAX);
+            run.advance(left.min(i64::MAX - 1)).await;
+            let snaps = run.barrier(epoch).await;
+            let pending = snaps.iter().any(|sn| !sn.pending.is_empty());
+            let named = snaps
+                .iter()
+                .any(|sn| !openetl_state::runs::runs(sn).unwrap_or_default().is_empty());
+            match (pending, named) {
+                (true, false) => only_pending += 1,
+                (true, true) => beside_runs += 1,
+                _ => {}
+            }
+            epoch += 1;
+            // The attempt dies after the record; another restores it on
+            // another number of lanes.
+            let lanes = 1 + u32::try_from(next(&mut s) % 4).unwrap();
+            let given = std::mem::take(&mut run.given);
+            let watermark = run.ops[0].watermark;
+            run = Run::new(RUNNING, &stores, epoch, epoch, lanes, &snaps).await;
+            run.given = given;
+            run.advance(watermark).await;
+        }
+        run.advance(i64::MAX).await;
+        assert_eq!(run.rejected, 0, "seed {seed}");
+        assert_eq!(run.given, want.given, "seed {seed}");
+    }
+    assert!(
+        only_pending > 0 && beside_runs > 0,
+        "{only_pending} records with only pending sets, {beside_runs} with runs beside them"
+    );
 }

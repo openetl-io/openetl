@@ -3,7 +3,7 @@ title: Compute running totals with OVER
 description: Give each row a running total, a moving average or the previous row's value with SQL's OVER, and know when each row is written, what happens to late rows, and where the state is kept.
 ---
 
-An `OVER` statement gives each row of a stream values that come from the rows before it, such as a running total of each customer's orders, or the amount of the customer's previous order. It writes each row once, with its own columns and those values. This page explains how to write one, when each row is written, what happens to rows that come late, and how to change the statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [OVER](../reference/sql.md#over) in the SQL reference lists every function, frame and rule.
+An `OVER` statement gives each row of a stream values that come from the rows before it, such as a running total of each customer's orders, or the amount of the customer's previous order. It writes each row once, with its own columns and those values. This page explains how to write one, when each row is written, what happens to rows that come late, and how to change the statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [OVER](../reference/sql-over.md#over) in the SQL reference lists every function, frame and rule.
 
 ## Before you start
 
@@ -37,7 +37,7 @@ The functions are `sum`, `count`, `min`, `max`, `avg`, `lag` and `first_value`. 
 | `ROWS BETWEEN 2 PRECEDING AND CURRENT ROW` | The 2 rows before the current row, and the current row |
 | `RANGE BETWEEN INTERVAL '1 hour' PRECEDING AND CURRENT ROW` | The rows of the last hour of event time, up to the current row's time |
 
-`lag(amount, 2, 0)` gives the amount of the second row before the current one, or 0 if there is no such row. Frames that look past the current row, `lead` and `rank` are refused. [What's refused](../reference/sql.md#window-functions) lists them.
+`lag(amount, 2, 0)` gives the amount of the second row before the current one, or 0 if there is no such row. Frames that look past the current row, `lead` and `rank` are refused. [What's refused](../reference/sql-errors.md#window-functions) lists them.
 
 ### Rows with the same time
 
@@ -105,7 +105,7 @@ openetl reset --stream orders PIPELINE
     1:1  running_revenue  over-81fa38d0e7ba7bb2  new  over by created_at on region: lag(amount, 1), sum(amount) range unbounded; keeps each key's frame, and its rows until the watermark passes them; starts empty
 ```
 
-Other names for columns, columns that pass through, `QUALIFY` and the order of the functions keep the ID. Another `PARTITION BY`, function, argument or frame gives a new ID, and the new operator's state starts empty: running totals start again from the rows that the pipeline reads after the change. [Changing a query](../reference/sql.md#changing-an-over-statement) lists the edits that keep the ID. To build the new state from the stream's start, apply the change, then reset the stream as [Build the state again](#build-the-state-again) describes.
+Other names for columns, columns that pass through, `QUALIFY` and the order of the functions keep the ID. Another `PARTITION BY`, function, argument or frame gives a new ID, and the new operator's state starts empty: running totals start again from the rows that the pipeline reads after the change. [Changing a query](../reference/sql-over.md#changing-an-over-statement) lists the edits that keep the ID. To build the new state from the stream's start, apply the change, then reset the stream as [Build the state again](#build-the-state-again) describes.
 
 A column that the source adds to the stream keeps the ID too. Rows that waited in state before the change are written with a null in the new column.
 

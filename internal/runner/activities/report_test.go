@@ -62,7 +62,7 @@ func TestMirroredCheckpoint(t *testing.T) {
 	streams := req.GetStreams()
 	end, wm := runner.EndOfInput, created.Add(-time.Minute).UnixMicro()
 	ops := r.mirrored(&checkpoint.Record{CreatedAt: created, Operators: []checkpoint.Operator{
-		{Operator: "window-a", RowsIn: 9, Inserts: 2, Updates: 1, Deletes: 1, Late: 3, Windows: 4, Watermark: &wm, MemoryBytes: 5, StoredBytes: 6,
+		{Operator: "window-a", RowsIn: 9, Inserts: 2, Updates: 1, Deletes: 1, Late: 3, Windows: 4, Watermark: &wm, MemoryBytes: 5, StoredBytes: 6, CheckpointBytes: 12,
 			Barrier: checkpoint.Requests{Count: 1, Bytes: 7}, Lookup: checkpoint.Requests{Count: 2, Bytes: 8}, Restore: checkpoint.Requests{Count: 3, Bytes: 9},
 			MergeWrite: checkpoint.Requests{Count: 4, Bytes: 10}, MergeRead: checkpoint.Requests{Count: 5, Bytes: 11}},
 		{Operator: "window-b", Watermark: &end},
@@ -74,7 +74,7 @@ func TestMirroredCheckpoint(t *testing.T) {
 	}
 	if a := stats[0]; a.GetOperator() != "window-a" || a.GetRowsIn() != 9 || a.GetInserts() != 2 || a.GetUpdates() != 1 || a.GetDeletes() != 1 ||
 		a.GetLateRows() != 3 || a.GetWindows() != 4 || !a.GetWatermark().AsTime().Equal(created.Add(-time.Minute)) || a.GetEndOfInput() ||
-		a.GetMemoryBytes() != 5 || a.GetStoredBytes() != 6 || a.GetBarrierRequests().GetBytes() != 7 || a.GetReadRequests().GetCount() != 2 ||
+		a.GetMemoryBytes() != 5 || a.GetStoredBytes() != 6 || a.GetCheckpointBytes() != 12 || a.GetBarrierRequests().GetBytes() != 7 || a.GetReadRequests().GetCount() != 2 ||
 		a.GetRestoreRequests().GetBytes() != 9 || a.GetMergeWriteRequests().GetCount() != 4 || a.GetMergeReadRequests().GetBytes() != 11 {
 		t.Errorf("window-a: %v", a)
 	}

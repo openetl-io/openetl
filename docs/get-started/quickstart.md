@@ -347,7 +347,7 @@ docker stop quickstart-postgres
 To start them again where they stopped, run `docker start quickstart-postgres` and `docker compose up -d`.
 
 > [!WARNING]
-> These commands delete the stack's volumes and the destination database. This removes all pipelines, secrets, checkpoints and copied data of this installation.
+> These commands delete this installation’s pipelines, secrets, checkpoints and copied data. Keep a backup if you need them.
 
 To remove everything:
 

@@ -86,6 +86,7 @@ func (d *Dataflow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		index[n] = ints.Uint32(i)
 	}
 	req.Passthrough = d.Options.Passthrough
+	req.StatePendingBytes = d.Options.StatePendingBytes
 	if s := d.Options.Size; s != (resources.Size{}) {
 		req.Limits = &enginev1.Limits{MemoryBytes: ints.Uint64(s.EngineMemory())}
 	}

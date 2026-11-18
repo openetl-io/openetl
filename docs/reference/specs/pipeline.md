@@ -51,7 +51,7 @@ spec:
 
 In `spec`:
 
-- A field the spec doesn't have is refused, and so is a value of the wrong type.
+- A field the spec does not have is refused, and so is a value of the wrong type.
 - An integer field takes a whole number in its range, such as `4`, `4.0` or `0x10`. A number with a fraction, such as `1.9`, is refused, and so is one outside the range. The error names the field, the value and the range: `resources.workers: "1.9" isn't a whole number from 1 to 64`.
 - Enum values are lowercase, as in `merge`.
 - A duration is a Go duration, such as `90s`, `15m` or `1h30m`.
@@ -65,10 +65,10 @@ In `spec`:
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
 | `mode` | `scheduled` or `continuous` | No | `scheduled` | A scheduled pipeline copies in syncs, which start on its `schedule`. A continuous one runs one job that keeps reading, and commits as it goes. A continuous pipeline has no `schedule`, `postSync`, `transform.spark` or `resources.finishWithin`. |
-| `schedule` | object | Yes, when `mode: scheduled` | — | When syncs start: one of `every` and `cron`. A new scheduled pipeline starts its first sync when it's applied. A start that comes while a sync is still running is skipped. |
+| `schedule` | object | Yes, when `mode: scheduled` | — | When syncs start: one of `every` and `cron`. A new scheduled pipeline starts its first sync when it is applied. A start that comes while a sync is still running is skipped. |
 | `schedule.every` | duration, positive | One of `every` or `cron` | None | Start a sync this often, such as `1h`, counting from midnight UTC on 1 January 1970: `1h` starts one on the hour. |
-| `schedule.cron` | cron expression | One of `every` or `cron` | None | Start a sync at the times a cron expression gives, with five fields: minute, hour, day of the month, month and day of the week, as in `0 6 * * *`. It's in UTC unless it starts with `CRON_TZ=` and a time zone, as in `CRON_TZ=Europe/Berlin 0 6 * * *`. |
-| `schedule.jitter` | duration | No | None | A random delay of up to this much before each start, so that pipelines on the same schedule don't all start at once |
+| `schedule.cron` | cron expression | One of `every` or `cron` | None | Start a sync at the times a cron expression gives, with five fields: minute, hour, day of the month, month and day of the week, as in `0 6 * * *`. It is in UTC unless it starts with `CRON_TZ=` and a time zone, as in `CRON_TZ=Europe/Berlin 0 6 * * *`. |
+| `schedule.jitter` | duration | No | None | A random delay of up to this much before each start, so that pipelines on the same schedule do not all start at once |
 | `dataPlane` | string | No | The server's data plane: its `--data-plane` setting, `default` unless set | The data plane whose runners run the pipeline's jobs |
 | `heal` | object | No | `mode: auto_safe` | What OpenETL does about the pipeline's [incidents](../../get-started/concepts.md#incidents) |
 | `heal.mode` | `off`, `suggest`, `auto_safe` or `auto` | No | `auto_safe` | `off` opens incidents and notifies, and takes no action. `suggest` proposes the actions that hold data back, such as pausing the pipeline, rather than taking them. `auto_safe` applies every playbook's actions. `auto` is the same as `auto_safe`. |
@@ -78,12 +78,12 @@ In `spec`:
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
 | `resources` | object | No | Sized automatically, in the `default` pool | How much CPU and memory the pipeline's jobs get, and which runners run them |
-| `resources.size` | job size, or `auto` | No | `auto` | Each job's size. `auto` takes it from the connectors' hints, and then from the job's measured peaks; with neither, it's `s`. |
+| `resources.size` | job size, or `auto` | No | `auto` | Each job's size. `auto` takes it from the connectors' hints, and then from the job's measured peaks; with neither, it is `s`. |
 | `resources.min` | job size | No | None | The smallest size `auto` chooses |
 | `resources.max` | job size | No | `xl` with `auto`, and otherwise `resources.size` itself | The largest size a job grows to: `auto`'s choice, and a retry after the job runs out of memory |
 | `resources.finishWithin` | duration, positive | No | None | Scheduled only, with an automatic size: run as many lanes as the last sync's bytes need, at each lane's measured rate, to finish within this long. |
 | `resources.pool` | pool name | No | `default` | The pool of runners that runs the jobs: at most 64 letters, digits, dots, hyphens and underscores, starting with a letter or digit |
-| `resources.workers` | integer, 1 to 64 | No | `1` | How many workers each job runs on, each of the job's size. Above 1, a coordinator of size `xs` runs too, so a job takes the workers plus one pod, which the pool's pod launcher makes all or none. A job that can't run on workers runs on one pod. |
+| `resources.workers` | integer, 1 to 64 | No | `1` | How many workers each job runs on, each of the job's size. Above 1, a coordinator of size `xs` runs too, so a job takes the workers plus one pod, which the pool's pod launcher makes all or none. A job that cannot run on workers runs on one pod. |
 
 When a job size is an object rather than a preset, both `cpu` and `memory` are required; neither has a default.
 
@@ -95,7 +95,7 @@ With `resources.workers` above 1, `openetl plan` shows `workers:` and the count 
 - the destination declares fewer writer lanes than workers (`maxWriterLanes`, one if unset), is a transactional stream without lane commits (`laneCommits`), loads staged epochs, or is the built-in `parquet`;
 - no pod launcher of the pipeline's pool has reported in the last ten minutes, while other runners of its data plane have.
 
-A pipeline with `transform.sql` runs on workers, also into a destination with lane commits. A [group window](../sql.md#group-windows)'s statement sends each row of the stream it reads to the worker that keeps the state of the row's key group, and that worker writes the window's rows: the plan's `partitioning` shows the one exchange, before the statement. Each checkpoint holds every worker's state, and a later attempt restores it on any number of workers and lanes. Streams that hold columns or cells run on workers too. The coordinator decides each stream's schema and what it holds, so every worker writes the same columns and holds the same ones. Only the first worker patches in released holds. A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
+A pipeline with `transform.sql` runs on workers, also into a destination with lane commits. A [group window](../sql-windows.md#group-windows)'s statement sends each row of the stream it reads to the worker that keeps the state of the row's key group, and that worker writes the window's rows: the plan's `partitioning` shows the one exchange, before the statement. Each checkpoint holds every worker's state, and a later attempt restores it on any number of workers and lanes. Streams that hold columns or cells run on workers too. The coordinator decides each stream's schema and what it holds, so every worker writes the same columns and holds the same ones. Only the first worker patches in released holds. A transactional destination with lane commits runs on workers, and on one pod gets one writer lane. [When a pod fails](../../pipelines/workers.md#when-a-pod-fails) says how it recovers an epoch.
 
 Each job's workers read the source's splits between them. A stream with an exchange in the plan's `partitioning` sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Each of these streams is read on one worker, and the plan warns about each one:
 
@@ -106,7 +106,7 @@ With `transform.sql`, these rules apply to each statement's output and each stre
 
 When the control plane cannot check the destination's capabilities or the source's catalog, the plan says so in a note. Then the job's coordinator checks the capabilities before each attempt, and runs the attempt on one pod if it must. The sync's attempts show how many workers each one ran on, and why one ran on one pod. [Run a job on several pods](../../pipelines/workers.md) explains the plan's messages and what happens when a pod fails.
 
-`resources.min` can't be larger than `resources.size` or `resources.max`, nor `resources.size` larger than `resources.max`. A job size is a preset or amounts:
+`resources.min` cannot be larger than `resources.size` or `resources.max`, nor `resources.size` larger than `resources.max`. A job size is a preset or amounts:
 
 | Size | CPU | Memory |
 |---|---|---|
@@ -123,19 +123,19 @@ When the control plane cannot check the destination's capabilities or the source
 |---|---|---|---|---|
 | `source` | object | Yes | — | What to read |
 | `source.ref` | name | Yes | — | The `Source` to read, by its name in the same workspace |
-| `source.streams` | list | No | Every stream the source offers, each with the defaults below | The streams to copy. Naming a stream the source doesn't offer is a problem in the plan. |
+| `source.streams` | list | No | Every stream the source offers, each with the defaults below | The streams to copy. Naming a stream the source does not offer is a problem in the plan. |
 | `source.streams[].name` | string | Yes | — | The stream's name, as `openetl discover` lists it. Each stream appears once. |
-| `source.streams[].sync` | `full_refresh`, `incremental`, `cdc` or `stream` | No | The first way the source says it reads the stream; in a continuous pipeline, the first of those that's `cdc` or `stream` | How the stream is read. A continuous pipeline's streams are read with `cdc` or `stream`. |
-| `source.streams[].cursor` | column name | When the read mode needs a cursor and the source supplies none | The stream's cursor, if the source names one | The column an `incremental` read goes by, such as `updated_at`. An incremental stream without a cursor is a problem in the plan, and so is a stream with a primary key that's read with `stream`, whose cursor tells one event of a key from the next. |
-| `source.streams[].timestamps` | `microsecond` or `nanosecond` | No | `microsecond` | The unit timestamps arrive in. Finer values are truncated. Nanoseconds need a destination that keeps them, and hold only 1677-09-21 to 2262-04-11. A Spark transform's inputs can't keep nanoseconds. |
+| `source.streams[].sync` | `full_refresh`, `incremental`, `cdc` or `stream` | No | The first way the source says it reads the stream; in a continuous pipeline, the first of those that is `cdc` or `stream` | How the stream is read. A continuous pipeline's streams are read with `cdc` or `stream`. |
+| `source.streams[].cursor` | column name | When the read mode needs a cursor and the source supplies none | The stream's cursor, if the source names one | The column an `incremental` read goes by, such as `updated_at`. An incremental stream without a cursor is a problem in the plan, and so is a stream with a primary key that is read with `stream`, whose cursor tells one event of a key from the next. |
+| `source.streams[].timestamps` | `microsecond` or `nanosecond` | No | `microsecond` | The unit timestamps arrive in. Finer values are truncated. Nanoseconds need a destination that keeps them, and hold only 1677-09-21 to 2262-04-11. A Spark transform's inputs cannot keep nanoseconds. |
 | `source.streams[].require` | delivery guarantee | No | `delivery.require` | The lowest guarantee this stream may have, in place of `delivery.require` |
 | `source.streams[].collapse` | boolean | No | `true` for a stream whose reads may repeat rows (the plan's reason says `superset replay`) and that requires more than `at_least_once`; otherwise `false` | For a stream without a primary key: rows with the same content become one row. A stream with a primary key ignores it, and the plan warns. |
 | `source.streams[].unfitValues` | `quarantine` or `hold` | No | `quarantine` | What a value that does not fit its column's type does. `quarantine`: OpenETL does not write the row, and quarantines it with the reason. `hold`: OpenETL writes the row and holds the value's cell, where it can hold the cell. Where it cannot, it quarantines the row ([When hold still quarantines a row](../../pipelines/holds-and-quarantine.md#when-hold-still-quarantines-a-row)). |
-| `source.streams[].held` | `null`, `value` or `last` | No | `null`, or `value` when `heldValue` is set | What a held cell shows, in the columns that `columns` doesn't set it for: `null`; `value`, the value in `heldValue`; or `last`, the value the destination already has, which needs merge. |
-| `source.streams[].heldValue` | any value | Yes with `held: value` | None | With `held: value`, what held cells show; with `held: last`, what they show in rows the destination doesn't have yet. A value of the column's delivered type. Set alone, it means `held: value`. `held: null` takes none. |
+| `source.streams[].held` | `null`, `value` or `last` | No | `null`, or `value` when `heldValue` is set | What a held cell shows, in the columns that `columns` does not set it for: `null`; `value`, the value in `heldValue`; or `last`, the value the destination already has, which needs merge. |
+| `source.streams[].heldValue` | any value | Yes with `held: value` | None | With `held: value`, what held cells show; with `held: last`, what they show in rows the destination does not have yet. A value of the column's delivered type. Set alone, it means `held: value`. `held: null` takes none. |
 | `source.streams[].groups` | list of lists of column names | No | None | Columns held together, by their source names: holding one holds the rest. Each group has two columns or more. |
 | `source.streams[].typeChanges` | `refuse` or `allow` | No | `destination.typeChanges` | `destination.typeChanges` for this stream alone. With a SQL transform, for the stream as the destination gets it ([Settings and holds of outputs](#settings-and-holds-of-outputs)). |
-| `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it, and the stream has no watermark | The column that holds a row's event time, for a SQL transform's statements, and that the stream's watermark follows ([Event time and watermarks](#event-time-and-watermarks)). A [group window](../sql.md#group-windows) or [`OVER`](../sql.md#over) over the stream goes by it. Its values are timestamps or dates. It needs `transform.sql`. A column that the source's latest catalog doesn't list for the stream is a problem in the plan. |
+| `source.streams[].eventTime` | column name | No | None: a row's time is when the engine reads it, and the stream has no watermark | The column that holds a row's event time, for a SQL transform's statements, and that the stream's watermark follows ([Event time and watermarks](#event-time-and-watermarks)). A [group window](../sql-windows.md#group-windows) or [`OVER`](../sql-over.md#over) over the stream goes by it. Its values are timestamps or dates. It needs `transform.sql`. A column that the source's latest catalog does not list for the stream is a problem in the plan. |
 | `source.streams[].watermark` | object | No | `delay: 0s` | How far behind the latest event time the stream's watermark stays. It needs `eventTime`. |
 | `source.streams[].watermark.delay` | duration, 0 or more | No | `0s` | Each of the stream's splits has a watermark that trails the latest event time the split has read by this much. |
 | `source.streams[].watermark.lateness` | duration, 0 or more | No | `0s` | How long after a group window over the stream closes a row may still come. Such a row writes the window's row again, as an update. A later row is quarantined. A stream with lateness needs `destination.write: merge` for each group window's output over it. A changed value applies to windows that are open or within their lateness, and to new windows. A window whose lateness had passed stays gone, and its late rows are quarantined. `OVER` takes no lateness: a stream that `OVER` reads, and no group window does, sets none. |
@@ -159,11 +159,11 @@ The plan checks hold requirements:
 | `destination` | object | Yes | — | Where and how to write |
 | `destination.ref` | name | Yes | — | The `Destination` to write to, by its name in the same workspace |
 | `destination.namespace` | string | No | The destination's default | The schema or dataset to write into |
-| `destination.tables` | map of stream names to names | No | Each stream's own name, through `destination.naming` | Streams' names in the destination, exactly as written: a table, or what the destination has instead, such as a topic. A stream left out goes by its own name. Two streams can't share one. It can't be used with a Spark or Flink transform, whose outputs name their tables. With a SQL transform, it names the outputs that statements write and the streams that pass through. A name that is neither is a problem in the plan, once the statements are planned, and fails a sync with `CONFIG_INVALID`; until the statements are planned, the plan checks only each table's length. Changing one on a running pipeline leaves what was delivered in the old table, and the new one starts with what's read next; `openetl reset --stream` reads it all again. |
+| `destination.tables` | map of stream names to names | No | Each stream's own name, through `destination.naming` | Streams' names in the destination, exactly as written: a table, or what the destination has instead, such as a topic. A stream left out goes by its own name. Two streams cannot share one. It cannot be used with a Spark or Flink transform, whose outputs name their tables. With a SQL transform, it names the outputs that statements write and the streams that pass through. A name that is neither is a problem in the plan, once the statements are planned, and fails a sync with `CONFIG_INVALID`; until the statements are planned, the plan checks only each table's length. Changing one on a running pipeline leaves what was delivered in the old table, and the new one starts with what is read next; `openetl reset --stream` reads it all again. |
 | `destination.write` | `append`, `overwrite` or `merge` | No | For each stream, where the destination has the mode: `overwrite` for a stream read with `full_refresh`, and `merge` for a stream with a primary key read with `cdc`; `append` otherwise | How every stream is written. `merge` needs streams with a primary key, and `overwrite` streams read with `full_refresh`. |
-| `destination.deletes` | `soft` or `hard` | No | `soft` | How merge applies a delete. `soft` keeps the row, with `_openetl_deleted` true and its other columns as they were; `hard` removes it. Other write modes don't apply deletes, and the plan warns. |
+| `destination.deletes` | `soft` or `hard` | No | `soft` | How merge applies a delete. `soft` keeps the row, with `_openetl_deleted` true and its other columns as they were; `hard` removes it. Other write modes do not apply deletes, and the plan warns. |
 | `destination.naming` | `normalized` or `source` | No | `normalized` | How tables and columns are named. `normalized` names are lowercase, with anything outside `a-z`, `0-9` and `_` replaced; `source` names are the source's, quoted. |
-| `destination.typeChanges` | `refuse` or `allow` | No | `refuse` | Whether the destination changes a column's type itself when the stream's type widens, for every stream that doesn't say. With `refuse`, the destination refuses, and the column is held, or the stream stops, until a person changes the column. With `allow`, the destination changes the type in place, which on a database can rewrite the table under a lock. |
+| `destination.typeChanges` | `refuse` or `allow` | No | `refuse` | Whether the destination changes a column's type itself when the stream's type widens, for every stream that does not say. With `refuse`, the destination refuses, and the column is held, or the stream stops, until a person changes the column. With `allow`, the destination changes the type in place, which on a database can rewrite the table under a lock. |
 
 ## Schema
 
@@ -176,7 +176,7 @@ The plan checks hold requirements:
 | Policy | A new column | A type that widens | A type that changes otherwise |
 |---|---|---|---|
 | `allow_all` | Added | Widened | Delivered to a new column, `COLUMN__v2` |
-| `allow_columns` | Added | Widened | Held, or where the column can't be held, fails the sync with `SCHEMA_DRIFT` |
+| `allow_columns` | Added | Widened | Held, or where the column cannot be held, fails the sync with `SCHEMA_DRIFT` |
 | `block` | Held, or fails the sync | Held, or fails the sync | Held, or fails the sync |
 | `ignore_new` | Dropped | Values cast to the column's type | Values cast to the column's type |
 
@@ -200,9 +200,9 @@ The destination changes an existing column's type only when `typeChanges` permit
 | `delivery` | object | No | The defaults below | How the pipeline commits, and the guarantee it requires |
 | `delivery.require` | delivery guarantee | No | `exactly_once` | The lowest guarantee any stream may have. A stream whose guarantee is lower is a problem in the plan. |
 | `delivery.commit` | object | No | The defaults below | When the pipeline commits what it has read |
-| `delivery.commit.interval` | duration, positive | No | 5 minutes in a scheduled pipeline; in a continuous one, the destination's own interval, or else 10 seconds | How often to commit. Outside the destination's minimum and maximum, if it has them, it's a problem in the plan. |
-| `delivery.commit.maxBytes` | byte count | No | `256MB`, which grows when commits can't keep up | Commit once this much has been read since the last commit. Once set, it doesn't grow. |
-| `delivery.commit.scope` | `pipeline` or `stream` | No | `pipeline` where the destination can, otherwise `stream` | Commit every stream together (`pipeline`), or each on its own (`stream`). A scope the destination can't do is a problem in the plan. |
+| `delivery.commit.interval` | duration, positive | No | 5 minutes in a scheduled pipeline; in a continuous one, the destination's own interval, or else 10 seconds | How often to commit. Outside the destination's minimum and maximum, if it has them, it is a problem in the plan. |
+| `delivery.commit.maxBytes` | byte count | No | `256MB`, which grows when commits cannot keep up | Commit once this much has been read since the last commit. Once set, it does not grow. |
+| `delivery.commit.scope` | `pipeline` or `stream` | No | `pipeline` where the destination can, otherwise `stream` | Commit every stream together (`pipeline`), or each on its own (`stream`). A scope the destination cannot do is a problem in the plan. |
 | `delivery.resumePointTimeout` | duration, positive, or `none` | No | `1m` | How long a commit waits for a point the source can resume from exactly, before it commits without one. It commits without one only where the stream keeps its guarantee anyway. `none` waits forever. |
 
 ## Quarantined rows
@@ -218,7 +218,7 @@ The destination changes an existing column's type only when `typeChanges` permit
 
 A transform sits between the source and the destination. The source's streams are its inputs, and its outputs are what the destination gets. A pipeline has at most one transform: SQL statements, or your own code, which is Spark in a scheduled pipeline and Flink in a continuous one. The [Spark](../../integrate/spark.md) and [Flink](../../integrate/flink.md) guides cover writing and running your own code.
 
-[A SQL transform](#a-sql-transform) says which statements run, and what they do to keys, changelogs and errors. `openetl plan` and `openetl apply` plan the statements on a runner of the pipeline's data plane. Errors in the SQL are problems in the plan, with their line and column, and `apply` refuses them. When no runner takes the statements, or a stream's columns aren't known yet, the plan doesn't plan them and can't report their errors: a note says why, and a sync reports them when it starts. [A SQL transform in the plan](../../pipelines/index.md#a-sql-transform-in-the-plan) shows the output and those cases.
+[A SQL transform](#a-sql-transform) says which statements run, and what they do to keys, changelogs and errors. `openetl plan` and `openetl apply` plan the statements on a runner of the pipeline's data plane. Errors in the SQL are problems in the plan, with their line and column, and `apply` refuses them. When no runner takes the statements, or a stream's columns are not known yet, the plan does not plan them and cannot report their errors: a note says why, and a sync reports them when it starts. [A SQL transform in the plan](../../pipelines/plan-and-apply.md#a-sql-transform-in-the-plan) shows the output and those cases.
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
@@ -232,7 +232,7 @@ A transform sits between the source and the destination. The source's streams ar
 | `transform.spark.code.python` | URI | One of `jar` or `python` | None | A Python file that calls `openetl_spark.run` with its transform, at an `s3://`, `s3a://` or `https://` URI the runner can read |
 | `transform.spark.code.sha256` | 64 lowercase hex digits | Yes | — | The file's SHA-256 |
 | `transform.spark.code.class` | class name | Yes with `jar` | — | The class in the jar that implements openetl-spark's `Transform`. A Python file takes none. |
-| `transform.spark.conf` | map of strings | No | None | Spark properties for the application, over the cluster's. Each name starts with `spark.`, and isn't one the runner sets: `spark.master`, `spark.submit.deployMode`, `spark.app.name`, `spark.yarn.tags`, `spark.kubernetes.driver.pod.name`, or any that starts with `spark.openetl.`. |
+| `transform.spark.conf` | map of strings | No | None | Spark properties for the application, over the cluster's. Each name starts with `spark.`, and is not one the runner sets: `spark.master`, `spark.submit.deployMode`, `spark.app.name`, `spark.yarn.tags`, `spark.kubernetes.driver.pod.name`, or any that starts with `spark.openetl.`. |
 | `transform.spark.outputs` | list | No | Each input stream, under its name and with its settings | The transform's outputs, which are the destination's streams |
 | `transform.spark.outputs[].name` | string | Yes | — | The output's name. Each output appears once. |
 | `transform.spark.outputs[].primaryKey` | list of column names | No | The primary key of the input stream with the output's name, if there is one | The output's primary key |
@@ -245,7 +245,7 @@ A transform sits between the source and the destination. The source's streams ar
 | `transform.flink.code.sha256` | 64 lowercase hex digits | Yes | — | The file's SHA-256 |
 | `transform.flink.code.class` | class name | No | The class the jar's manifest names | The job's main class |
 | `transform.flink.parallelism` | integer, 0 or more | No | `0`: the cluster's default | The job's parallelism |
-| `transform.flink.conf` | map of strings | No | None | Flink configuration for the job, over the cluster's. Each name has a dot in it, and isn't one the runner sets, listed below. |
+| `transform.flink.conf` | map of strings | No | None | Flink configuration for the job, over the cluster's. Each name has a dot in it, and is not one the runner sets, listed below. |
 | `transform.flink.outputs` | list | No | Each input stream, under its name and with its settings | As `transform.spark.outputs` |
 | `transform.flink.outputs[].name` | string | Yes | — | As `transform.spark.outputs[].name` |
 | `transform.flink.outputs[].primaryKey` | list of column names | No | As `transform.spark.outputs[].primaryKey` | As `transform.spark.outputs[].primaryKey` |
@@ -277,13 +277,13 @@ It also rejects names starting with these prefixes:
 - `openetl.`
 - `$internal.`
 
-A Flink transform's inputs must each replay exactly from a resume point, since its checkpoints restore them; the plan says which don't.
+A Flink transform's inputs must each replay exactly from a resume point, since its checkpoints restore them; the plan says which do not.
 
 ## Steps after a sync
 
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
-| `postSync` | list | No | None | Steps that run in order after a sync's data is committed. Each has one of `dbt` and `spark`. A step that fails fails the sync, and the steps after it don't run. Scheduled pipelines only. |
+| `postSync` | list | No | None | Steps that run in order after a sync's data is committed. Each has one of `dbt` and `spark`. A step that fails fails the sync, and the steps after it do not run. Scheduled pipelines only. |
 | `postSync[].dbt` | object | One of `dbt` or `spark` per step | None | Runs a dbt project against the pipeline's destination |
 | `postSync[].dbt.project` | name | Yes | — | A `DbtProject` in the same workspace. A sync runs the project's files as they were when it started. |
 | `postSync[].dbt.command` | `build`, `run` or `test` | No | `build` | The dbt command to run |
@@ -307,13 +307,13 @@ A transform or step uses the cluster's identity to access pipeline storage by de
 | Field | Type | Required | Default | Meaning |
 |---|---|---|---|---|
 | `sparkAccess` | object | No | The cluster's own identity | How the pipeline's Spark applications reach its `_spark/` prefix of the data plane's store. It sets `emrRole`, `keys`, or both, and needs a Spark transform or step. |
-| `sparkAccess.emrRole` | IAM role ARN | One or both of `emrRole` and `keys`, when `sparkAccess` is set | None | On EMR: the runtime role each step runs as (`ExecutionRoleArn`, EMR 6.7 and later). It's all the step's AWS access, to your own data too. |
+| `sparkAccess.emrRole` | IAM role ARN | One or both of `emrRole` and `keys`, when `sparkAccess` is set | None | On EMR: the runtime role each step runs as (`ExecutionRoleArn`, EMR 6.7 and later). It is all the step's AWS access, to your own data too. |
 | `sparkAccess.keys` | object | One or both of `emrRole` and `keys`, when `sparkAccess` is set | None | Elsewhere: S3A keys for the data plane's bucket alone |
 | `sparkAccess.keys.accessKeyId` | string, or secret reference | Yes in `keys` | — | The access key's ID |
-| `sparkAccess.keys.secretAccessKey` | secret reference | Yes in `keys` | — | The secret access key, as a secret reference, so the key isn't kept in the spec |
+| `sparkAccess.keys.secretAccessKey` | secret reference | Yes in `keys` | — | The secret access key, as a secret reference, so the key is not kept in the spec |
 | `flinkAccess` | object | No | The cluster's own identity | How the pipeline's Flink job reaches its `_flink/` prefix of the data plane's store, where its code, checkpoints and savepoints are. It sets `emrRole`, `keys`, or both, and needs a Flink transform. |
 | `flinkAccess.emrRole` | IAM role ARN | One or both of `emrRole` and `keys`, when `flinkAccess` is set | None | On EMR: the runtime role each step runs as (`ExecutionRoleArn`) |
-| `flinkAccess.keys` | object | One or both of `emrRole` and `keys`, when `flinkAccess` is set | None | Elsewhere: S3 keys for the data plane's bucket alone, for Flink's Hadoop S3 filesystem. A session cluster reads its filesystems' settings when it starts, so it can't take them. |
+| `flinkAccess.keys` | object | One or both of `emrRole` and `keys`, when `flinkAccess` is set | None | Elsewhere: S3 keys for the data plane's bucket alone, for Flink's Hadoop S3 filesystem. A session cluster reads its filesystems' settings when it starts, so it cannot take them. |
 | `flinkAccess.keys.accessKeyId` | string, or secret reference | Yes in `keys` | — | The access key's ID |
 | `flinkAccess.keys.secretAccessKey` | secret reference | Yes in `keys` | — | The secret access key, as a secret reference |
 
@@ -418,7 +418,7 @@ A stream with `eventTime` has a watermark: a time before which no more of the st
 - The stream's watermark in each of the job's lanes is the least of the watermarks of the splits that the lane reads. A lane without splits of the stream does not hold it back. The watermark of a statement's output is the least of the watermarks of the streams the statement reads.
 - Each checkpoint records each split's watermark. A job that restores a checkpoint starts each split at the recorded watermark. The next sync's read starts each split at the watermark its read ended with, and a split the source adds at the least of those watermarks.
 - If the `eventTime` column holds values other than timestamps or dates, the sync fails with `CONFIG_INVALID`.
-- A [group window](../sql.md#group-windows) closes when the watermark reaches the window's end. Rows that come after the watermark has passed their time are late, and `watermark.lateness` says how long a closed window still takes them.
+- A [group window](../sql-windows.md#group-windows) closes when the watermark reaches the window's end. Rows that come after the watermark has passed their time are late, and `watermark.lateness` says how long a closed window still takes them.
 
 `openetl plan` has a note for each stream with event time. The note names the column and says how the stream's watermark moves. The `openetl.job.watermark` metric gives each stream's watermark, and `openetl.operator.watermark` each group window's ([Monitoring](../../self-host/monitoring.md#stateful-operators)). [Aggregate by windows of time](../../pipelines/windows.md) explains watermarks with examples.
 

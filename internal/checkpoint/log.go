@@ -302,7 +302,8 @@ type QuarantineCause struct {
 // the lane's key groups. An operator's snapshots in a record hold every key
 // group between them. A record keeps one that names no object too: Data
 // holds what the engine keeps beside the runs, as where a group window's
-// windows are gone up to.
+// windows are gone up to, and Pending what the lane changed since its last
+// run.
 type Snapshot struct {
 	Operator  string        `json:"operator"`
 	KeyGroups KeyGroupRange `json:"key_groups"`
@@ -312,6 +313,9 @@ type Snapshot struct {
 	Data []byte `json:"data,omitempty"`
 	// The objects it names, below StateDir: what retention keeps.
 	Runs []string `json:"runs,omitempty"`
+	// The lane's changes since it last wrote a run, which the record carries
+	// in place of one, in the engine's encoding. They name no object.
+	Pending []byte `json:"pending,omitempty"`
 }
 
 // KeyGroups is how many key groups a pipeline has, unless its record says

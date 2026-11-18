@@ -2,5 +2,11 @@
   "title": "Internals",
   "description": "How OpenETL works inside, for contributors and the curious",
   "icon": "Cpu",
-  "pages": ["index"]
+  "pages": [
+    "index",
+    "architecture",
+    "engine",
+    "commits",
+    "testing"
+  ]
 }

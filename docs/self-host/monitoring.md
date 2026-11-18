@@ -3,7 +3,7 @@ title: Monitor an installation
 description: Export metrics and traces, interpret pipeline and placement signals, and choose alerts for stalled data delivery.
 ---
 
-Use pipeline freshness to track delivery, source lag to track backlog, and placement metrics to track jobs waiting for room. Logs and traces explain individual failures. The console's [Incidents](../use/index.md#incidents) records conditions that need attention; [Troubleshoot a pipeline](../pipelines/troubleshooting.md) connects symptoms to recovery steps.
+Use pipeline freshness to track delivery, source lag to track backlog, and placement metrics to track jobs waiting for room. Logs and traces explain individual failures. The console's [Incidents](../use/incidents.md#incidents) records conditions that need attention; [Troubleshoot a pipeline](../pipelines/troubleshooting.md) connects symptoms to recovery steps.
 
 ## Export telemetry
 
@@ -57,12 +57,13 @@ A SQL transform's group window or `OVER` is a stateful operator: it keeps state 
 | `openetl.operator.windows` | windows | Windows, or sessions, whose state the operator keeps: open, or closed and within their lateness. A reset, or a version that changes the operator, starts it again from 0. |
 | `openetl.operator.watermark` | seconds since the Unix epoch | The operator's watermark: the least of its lanes'. It is absent until every lane has one, and is not updated at the end of input. |
 | `openetl.operator.watermark.lag` | seconds | How far the watermark was behind the time of the commit. |
-| `openetl.operator.state.memory` | bytes | What the operator's state held in memory at the end of the epoch. It counts the epoch's changes and the indexes and filters of the state files that the operator opened. It also counts the hashes of the windows' keys in the files it names, what its merges hold, and its block cache. |
+| `openetl.operator.state.memory` | bytes | What the operator's state held in memory at the end of the epoch. It counts the epoch's changes, the changes that the checkpoint record holds, and the indexes and filters of the state files that the operator opened. It also counts the hashes of the windows' keys in the files it names, what its merges hold, and its block cache. |
+| `openetl.operator.state.checkpoint` | bytes | The bytes of the operator's state that the checkpoint record holds: what each lane changed since it last wrote a state file. A lane writes its changes as a file when they become larger than its share of the record, which is at most 1 MiB for all of a pipeline's operators. |
 | `openetl.operator.state.stored` | bytes | The bytes on object storage of the state files that the checkpoint names for the operator. A checkpoint names a file while any of the state in it is still in use, and this counts the whole file. A checkpoint names none after every window has closed and its lateness has passed. Retention deletes the rest. |
-| `openetl.operator.state.requests` | requests, counter | The operator's requests to object storage, by `openetl.request.kind`. `barrier` writes its state at a checkpoint. It counts each epoch's own writes, and none in an epoch whose changes left nothing in use. `lookup` reads blocks of the state. `restore` opens the files that a checkpoint names. After a restart, it also reads their windows' values whole at the first checkpoint that writes state. `merge_write` writes, at a checkpoint, the files that merge other files. `merge_read` reads the files that a merge merges. A `lookup`, `restore` or `merge_read` made near a checkpoint can count with the epoch next to it. Each request counts once. |
+| `openetl.operator.state.requests` | requests, counter | The operator's requests to object storage, by `openetl.request.kind`. `barrier` writes its state at a checkpoint. It counts each epoch's own writes. It counts none in an epoch whose changes the checkpoint record holds, or whose changes left nothing in use. `lookup` reads blocks of the state. `restore` opens the files that a checkpoint names. After a restart, it also reads their windows' values whole at the first checkpoint that writes state. `merge_write` writes, at a checkpoint, the files that merge other files. `merge_read` reads the files that a merge merges. A `lookup`, `restore` or `merge_read` made near a checkpoint can count with the epoch next to it. Each request counts once. |
 | `openetl.operator.state.request.bytes` | bytes, counter | Those requests' bytes, by `openetl.request.kind`. |
 
-The console's **SQL** tab shows the same numbers for the last checkpoint ([SQL](../use/index.md#sql)).
+The console's **SQL** tab shows the same numbers for the last checkpoint ([SQL](../use/sql.md#sql)).
 
 ## Placement signals
 
@@ -90,7 +91,7 @@ Choose thresholds from each pipeline's schedule, commit interval and delivery de
 | Quarantine rate rises or hold age grows | Invalid values, schema policy and a pending schema repair. |
 | Metrics disappear | Scrape/exporter health and component availability, then whether the pipeline is running. |
 
-Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/index.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
+Freshness, backlog and capacity answer different questions. Keep separate alerts for telemetry availability and data delivery. Use [events and webhooks](../integrate/webhooks.md#events-and-webhooks) for incident notifications; receivers should deduplicate deliveries and verify signatures.
 
 If the quarantine rate rises, run `openetl quarantine --since 1h PIPELINE`. It lists the files of quarantined rows, and adds up their rows by stream, column and code. It lists the newest 100 files, and its sums count only those files. If it says that there are more, add `--limit` with a larger number.
 

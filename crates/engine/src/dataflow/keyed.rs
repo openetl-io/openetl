@@ -1233,9 +1233,11 @@ impl Keyed {
         }
     }
 
-    /// The epoch's state is the layer's barrier: a run of what the epoch
-    /// changed, which counts once the record names the lane's snapshot, and
-    /// that once every writer lane has passed the epoch; then the output's
+    /// The epoch's state is the layer's barrier: what the lane changed
+    /// since its last run, in its snapshot, or past its share of the
+    /// record, a run of it. It counts once the record names the lane's
+    /// snapshot, and that once every writer lane has passed the epoch; then
+    /// the output's
     /// barrier goes on. A read-only job's epoch changes nothing, and reports
     /// no numbers. Each keyed lane reports the window's watermark there, the
     /// same on all of them.

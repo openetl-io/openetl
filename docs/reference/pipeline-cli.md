@@ -66,7 +66,7 @@ A failed check, a failed preflight or a plan problem does not change the exit st
 
 For a pipeline with `transform.sql`, `plan` and `apply` send the statements to a runner of the pipeline's data plane and wait up to 30 seconds for one to take them. Without a runner, the plan has a note instead of the statements' plan.
 
-`plan` returns an error if a pipeline that would be created or changed has plan problems. Its output can also show problems on unchanged pipelines. See [Plan, then apply](../pipelines/index.md#plan-then-apply) for the review procedure.
+`plan` returns an error if a pipeline that would be created or changed has plan problems. Its output can also show problems on unchanged pipelines. See [Plan, then apply](../pipelines/plan-and-apply.md#plan-then-apply) for the review procedure.
 
 ## Pause, resume and sync
 
@@ -311,11 +311,11 @@ Run the preflight again to check the current version. If the command cannot get 
 
 The last line, which starts with `openetl:`, is on standard error. For a failed preflight, it names the first failed part. If no part failed, it names the first skipped part, such as `source shop's preflight was skipped: the source's check failed`. If no part failed or was skipped, it says `it failed, though none of its parts did; run it again`.
 
-The CLI fills each title, message and fix from the item's params. It removes control characters and bidirectional formatting characters from all text that a connector sent, so that the text cannot change the terminal. A detail keeps its line breaks. OpenETL cuts a connector's long texts, and ends each cut text with `…`. An answer with too many items fails with `INTERNAL`. [What OpenETL does with the answer](../build-connectors/checks.md#what-the-platform-does-with-the-answer) gives the limits.
+The CLI fills each title, message and fix from the item's params. It removes control characters and bidirectional formatting characters from all text that a connector sent, so that the text cannot change the terminal. A detail keeps its line breaks. OpenETL cuts a connector's long texts, and ends each cut text with `…`. An answer with too many items fails with `INTERNAL`. [What OpenETL does with the answer](../build-connectors/check-results.md#what-the-platform-does-with-the-answer) gives the limits.
 
 ### JSON output
 
-With `--format json`, `check` and `preflight` print the API's result as one JSON document on standard output, and nothing else there. `check` prints a `CheckResult`, and `preflight` prints a `PreflightResult`. [Check and preflight results](../integrate/index.md#check-and-preflight-results) describes their fields. In JSON, `preflight` does not print the plan. Notes and errors go to standard error.
+With `--format json`, `check` and `preflight` print the API's result as one JSON document on standard output, and nothing else there. `check` prints a `CheckResult`, and `preflight` prints a `PreflightResult`. [Check and preflight results](../integrate/api-checks.md#check-and-preflight-results) describes their fields. In JSON, `preflight` does not print the plan. Notes and errors go to standard error.
 
 The document is as the API sends it:
 
@@ -346,7 +346,7 @@ A status of `2` says nothing about the connection or the pipeline. The error, af
 
 - A usage error gives the flag or the argument that is wrong, such as `--format yaml: want text or json`.
 - An API call that fails starts with the API's error code, such as `not_found` for a pipeline that does not exist, or `unavailable` for an API that cannot be reached.
-- If the API could not run or finish the check or the preflight on a runner, `the check couldn't run:` or `the preflight couldn't run:` follows the error code. [Check and preflight results](../integrate/index.md#check-and-preflight-results) lists these errors.
+- If the API could not run or finish the check or the preflight on a runner, `the check couldn't run:` or `the preflight couldn't run:` follows the error code. [Check and preflight results](../integrate/api-checks.md#check-and-preflight-results) lists these errors.
 - If the preflight passed but the plan could not be fetched, the error starts with the pipeline's name and `passed its preflight, but its plan couldn't be fetched:`.
 - For `openetl connector check`, a connector that did not start or answer gives an error that names the connector.
 

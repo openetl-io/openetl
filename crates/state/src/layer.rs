@@ -1,12 +1,16 @@
-//! The memory tier: a lane's open epoch of changes over its store.
+//! The memory tier: a lane's open epoch of changes, and its pending set,
+//! over its store.
 
-use std::collections::{BTreeMap, HashMap};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap, btree_map};
+use std::iter::Peekable;
 use std::ops::Bound;
 
 use bytes::Bytes;
 
 use crate::layout::{self, SectionKind};
-use crate::store::{Horizons, Snapshot, Store, Stores};
+use crate::pending;
+use crate::store::{Change, Horizons, Snapshot, Store, Stores};
 use crate::{
     DueRow, Error, KeyGroup, KeyGroupRange, KeyRef, LAYOUT, NEVER, OperatorId, Result,
     StateBackend, Timer,
@@ -24,20 +28,24 @@ const PAGE: usize = 1024;
 pub struct Memory {
     /// The open epoch's changes.
     pub changes: usize,
+    /// The pending set's.
+    pub pending: usize,
     /// The store's.
     pub store: usize,
 }
 
 impl Memory {
     pub fn total(&self) -> usize {
-        self.changes + self.store
+        self.changes + self.pending + self.store
     }
 }
 
 /// A lane's state, for its range of key groups and every operator of the
 /// lane, as [`StateBackend`] serves it. The open epoch's changes stay in
-/// memory until [`Layer::barrier`] commits them, or [`Layer::discard`]
-/// drops them.
+/// memory until [`Layer::barrier`] adds them to the pending set, or
+/// [`Layer::discard`] drops them. The pending set holds the lane's changes
+/// since it last committed to its store, newer than all the store holds,
+/// and stays in memory while the record carries it.
 pub struct Layer {
     store: Box<dyn Store>,
     range: KeyGroupRange,
@@ -46,6 +54,15 @@ pub struct Layer {
     /// The open epoch's changes by key: a value, or `None` for a delete.
     changes: BTreeMap<Bytes, Option<Bytes>>,
     change_bytes: usize,
+    /// The changes of the epochs since the lane last committed to its
+    /// store, as `changes` holds them.
+    pending: BTreeMap<Bytes, Option<Bytes>>,
+    pending_bytes: usize,
+    /// What a record may carry of the pending set, in bytes of its
+    /// encoding.
+    share: usize,
+    /// Barriers that committed a pending set to the store.
+    commits: u64,
     /// Each operator's horizon in each group, as the store keeps it.
     horizons: Horizons,
     /// The set's horizons a store of layout 1 kept as values, by operator
@@ -65,9 +82,9 @@ pub struct Layer {
 
 impl Layer {
     /// Opens a lane's state for `range`, as `snapshots` hold it: those of
-    /// the record it restores, empty for none. `epoch` is the first the
-    /// lane commits, one past the record's, and `generation` the
-    /// attempt's.
+    /// the record it restores, empty for none, with the part of their
+    /// pending sets in `range`. `epoch` is the first the lane commits, one
+    /// past the record's, and `generation` the attempt's.
     pub async fn open(
         stores: &dyn Stores,
         generation: u64,
@@ -95,12 +112,26 @@ impl Layer {
         let store = stores.open(generation, range, snapshots).await?;
         let mut horizons = store.horizons();
         horizons.retain(|(_, g), h| range.contains(*g) && *h > i64::MIN);
+        // Snapshots are disjoint, so a key is in one pending set at most.
+        let mut pending = BTreeMap::new();
+        for s in snapshots.iter().filter(|s| s.range.overlaps(&range)) {
+            for (k, v) in pending::decode(&s.pending, s.range)? {
+                if layout::group_of(&k).is_some_and(|g| range.contains(g.into())) {
+                    pending.insert(k, v);
+                }
+            }
+        }
+        let pending_bytes = memory_of(&pending);
         Ok(Layer {
             store,
             range,
             epoch,
             changes: BTreeMap::new(),
             change_bytes: 0,
+            pending,
+            pending_bytes,
+            share: stores.pending_share(range),
+            commits: 0,
             horizons,
             kept: HashMap::new(),
             moved: HashMap::new(),
@@ -123,15 +154,32 @@ impl Layer {
     pub fn memory(&self) -> Memory {
         Memory {
             changes: self.change_bytes,
+            pending: self.pending_bytes,
             store: self.store.memory_bytes(),
         }
     }
 
-    /// The barrier of epoch `epoch`, the open one: commits its changes to
-    /// the store and returns the snapshots the record names for the lane.
-    /// They count once the record is written. Another epoch is refused;
-    /// after any other error the layer is unusable, and the lane opens
-    /// again from a record.
+    /// What a record may carry of the lane's pending set, in bytes of its
+    /// encoding: its share of the job's.
+    pub fn pending_share(&self) -> usize {
+        self.share
+    }
+
+    /// How many of its barriers committed a pending set, not empty, to the
+    /// store.
+    pub fn commits(&self) -> u64 {
+        self.commits
+    }
+
+    /// The barrier of epoch `epoch`, the open one: adds its changes to the
+    /// pending set, and returns the snapshots the record names for the
+    /// lane. They carry the pending set while its encoding is within the
+    /// lane's share; past it, the barrier commits the set to the store,
+    /// and the set starts empty. What the horizons passed leaves the set,
+    /// and so do deletes of what the store can't hold. The snapshots count
+    /// once the record is written. Another epoch is refused; after any
+    /// other error the layer is unusable, and the lane opens again from a
+    /// record.
     pub async fn barrier(&mut self, epoch: u64) -> Result<Vec<Snapshot>> {
         self.usable()?;
         if epoch != self.epoch {
@@ -145,11 +193,34 @@ impl Layer {
             return Err(e);
         }
         self.settle_horizons();
-        let changes = std::mem::take(&mut self.changes)
-            .into_iter()
-            .filter(|(k, v)| !self.passed(k, v.as_deref()))
-            .collect();
-        let snapshots = self.store.commit(epoch, changes, &self.horizons).await?;
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.append(&mut self.changes);
+        pending.retain(|k, v| {
+            !self.passed(k, v.as_deref()) && (v.is_some() || self.store.may_hold(k))
+        });
+        let changes: Vec<Change> = match pending::encoded_len(pending.iter()) <= self.share {
+            true => Vec::new(),
+            false => std::mem::take(&mut pending).into_iter().collect(),
+        };
+        let committed = !changes.is_empty();
+        let mut snapshots = self.store.commit(epoch, changes, &self.horizons).await?;
+        self.commits += u64::from(committed);
+        for s in &mut snapshots {
+            let r = s.range;
+            s.pending = match r.contains(self.range.first) && r.contains(self.range.last) {
+                true => pending::encode(pending.iter()),
+                // Timers aren't ordered by group.
+                false => {
+                    let mine: Vec<_> = pending
+                        .iter()
+                        .filter(|(k, _)| layout::group_of(k).is_some_and(|g| r.contains(g.into())))
+                        .collect();
+                    pending::encode(mine.into_iter())
+                }
+            };
+        }
+        self.pending_bytes = memory_of(&pending);
+        self.pending = pending;
         self.epoch += 1;
         self.change_bytes = 0;
         self.appended = 0;
@@ -158,7 +229,8 @@ impl Layer {
     }
 
     /// Drops the open epoch's changes, which failed: the layer is as the
-    /// last barrier left it, and the epoch is open again.
+    /// last barrier left it, its pending set too, and the epoch is open
+    /// again.
     pub fn discard(&mut self) {
         self.changes.clear();
         self.change_bytes = 0;
@@ -317,6 +389,11 @@ impl Layer {
         ))
     }
 
+    /// A key's change: the open epoch's, or else the pending set's.
+    fn changed(&self, k: &[u8]) -> Option<&Option<Bytes>> {
+        self.changes.get(k).or_else(|| self.pending.get(k))
+    }
+
     fn change(&mut self, k: Bytes, v: Option<Bytes>) {
         let (key, value) = (k.len(), v.as_ref().map_or(0, |v| v.len()));
         match self.changes.insert(k, v) {
@@ -339,14 +416,18 @@ impl Layer {
     }
 
     /// Up to `limit` live entries with `start <= key < end`, in key order:
-    /// the store's, under the open epoch's changes.
+    /// the store's, under the pending set, under the open epoch's changes.
     async fn live(&self, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<(Bytes, Bytes)>> {
         let mut out = Vec::new();
         if limit == 0 || start >= end {
             return Ok(out);
         }
         let bounds = (Bound::Included(start), Bound::Excluded(end));
-        let mut changes = self.changes.range::<[u8], _>(bounds).peekable();
+        let mut changes = Overlay {
+            newer: self.changes.range::<[u8], _>(bounds).peekable(),
+            older: self.pending.range::<[u8], _>(bounds).peekable(),
+        }
+        .peekable();
         let mut page = Vec::new().into_iter();
         let mut from = Bytes::copy_from_slice(start);
         let mut more = true;
@@ -395,7 +476,7 @@ impl StateBackend for Layer {
         let mut at = Vec::new();
         for (i, k) in keys.iter().enumerate() {
             let key = layout::value(self.group(k.group)?, op, k.key);
-            match self.changes.get(&key) {
+            match self.changed(&key) {
                 Some(v) => out.push(v.clone()),
                 None => {
                     out.push(None);
@@ -524,7 +605,7 @@ impl StateBackend for Layer {
         self.load_horizons(&groups).await?;
         let ask: Vec<Bytes> = keys
             .iter()
-            .filter(|k| !self.changes.contains_key(*k))
+            .filter(|k| self.changed(k).is_none())
             .cloned()
             .collect();
         let got = self.store.get(&ask).await?;
@@ -532,7 +613,7 @@ impl StateBackend for Layer {
         let mut out = Vec::with_capacity(keys.len());
         for (i, k) in keys.into_iter().enumerate() {
             let now = at[i].max(self.set_horizon(op, groups[i].1));
-            let current = match self.changes.get(&k) {
+            let current = match self.changed(&k) {
                 Some(v) => v.clone(),
                 None => stored.get(&k).cloned().flatten(),
             };
@@ -620,5 +701,40 @@ impl StateBackend for Layer {
             }
         }
         Ok(out)
+    }
+}
+
+/// What a map of changes holds in memory, about, as [`Layer::change`]
+/// counts it.
+fn memory_of(m: &BTreeMap<Bytes, Option<Bytes>>) -> usize {
+    m.iter()
+        .map(|(k, v)| k.len() + v.as_ref().map_or(0, |v| v.len()) + ENTRY_OVERHEAD)
+        .sum()
+}
+
+/// Two maps' entries in a range, in key order: of a key in both, `newer`'s.
+struct Overlay<'a> {
+    newer: Peekable<btree_map::Range<'a, Bytes, Option<Bytes>>>,
+    older: Peekable<btree_map::Range<'a, Bytes, Option<Bytes>>>,
+}
+
+impl<'a> Iterator for Overlay<'a> {
+    type Item = (&'a Bytes, &'a Option<Bytes>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let order = match (self.newer.peek(), self.older.peek()) {
+            (None, None) => return None,
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(a), Some(b)) => a.0.cmp(b.0),
+        };
+        match order {
+            Ordering::Less => self.newer.next(),
+            Ordering::Greater => self.older.next(),
+            Ordering::Equal => {
+                self.older.next();
+                self.newer.next()
+            }
+        }
     }
 }

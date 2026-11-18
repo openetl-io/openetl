@@ -56,6 +56,7 @@ Keep to one kind of page at a time: a tutorial walks through something that work
   ```
 
   The kinds are `NOTE`, `TIP`, `IMPORTANT`, `WARNING` and `CAUTION`.
+- **Callout text** is one or two short sentences. Use `NOTE` for background, `CAUTION` for changes that can affect results or interrupt work, and `WARNING` for destructive actions. Put the consequence and the required precaution before the action. Keep detailed conditions, lists and recovery procedures in the page body. Use `WARNING`, not `WARN`, in Markdown.
 - **The release's version** is `{{version}}`, without the `v`: `ghcr.io/openetl-io/openetl:{{version}}`, and `v{{version}}` where the tag is meant, as in a download URL. The docs site writes the version in its place: for `next`, the newest release, prereleases included, and for `stable`, the stable line's newest release. GitHub shows `{{version}}` as written. Never write a release's number where a reader installs or downloads it: the tag is the only place a version lives, and `go test ./test/docs` fails on a pinned one. A version given as an example, such as "a version, such as `0.1.0-alpha`", is fine.
 - **Code blocks** always name their language: `sh`, `yaml`, `json`, `go`, `sql`, and `text` for output. Commands have no prompt, and output goes in a `text` block of its own after them. Write placeholders in capitals, as the CLI's usage does: `openetl connector apply oci://REGISTRY/REPOSITORY:VERSION`.
 - **Diagrams** are `mermaid` code blocks, which GitHub and the site both draw. Keep them small.

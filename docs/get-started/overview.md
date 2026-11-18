@@ -1,14 +1,16 @@
 ---
 title: What is OpenETL?
-description: What OpenETL does, who it's for, and how connectors link your systems.
+description: Learn what OpenETL does and choose a guide for your role.
 ---
 
-OpenETL copies data between your systems. Source connectors read data from databases and event streams. Destination connectors write that data into warehouses, data lakes and other streams. Pipelines keep the copies up to date, on a schedule or continuously. OpenETL reports failures and other conditions that need attention.
+OpenETL copies data between your systems. A pipeline defines which data to copy, where to write it and when to run.
+
+Pipelines read from databases and event streams. They write into warehouses, data lakes and other streams. OpenETL reports failures and other conditions that need attention.
 
 OpenETL is open source under Apache 2.0. You run it on your own machines or in your own cloud account.
 
 > [!NOTE]
-> OpenETL is in alpha. The current release is {{version}}. The pipeline format and the API can change between releases.
+> OpenETL {{version}} is in alpha. The pipeline format and API can change between releases.
 
 ## Connect your systems
 
@@ -16,7 +18,7 @@ OpenETL is open source under Apache 2.0. You run it on your own machines or in y
 
 The official connectors live in [openetl-connectors](https://github.com/openetl-io/openetl-connectors). Community members and organizations can also build and maintain connectors in their own repositories, including private ones. Connector authors choose their own versions and release cadence, independently of OpenETL.
 
-For setup, permissions, config and limits, read the documentation for the connector version you use. [Choose and manage connectors](../pipelines/connectors.md) explains how to find, install and upgrade them. [Build a connector](../build-connectors/index.md) covers writing your own.
+For setup, permissions, configuration and limits, read the documentation for the connector version you use. [Choose and manage connectors](../pipelines/connectors.md) explains installation and upgrades.
 
 ## What it does for you
 
@@ -30,7 +32,7 @@ For setup, permissions, config and limits, read the documentation for the connec
 
 ## Who uses it
 
-- **Analysts, product managers and other data users** check freshness and diagnose stale tables in the console. Start with [Use the console](../use/index.md).
+- **Analysts, product managers and other data users** check freshness and incidents in the console. Start with [Check data freshness](../use/freshness.md).
 - **Data and analytics engineers** write and review pipelines. Start with [Pipelines](../pipelines/index.md).
 - **Platform engineers** install and run OpenETL for everyone else. Start with [Self-host](../self-host/index.md).
 - **Developers** connect it to other tools, or write connectors for systems they need: [Integrate](../integrate/index.md) and [Build a connector](../build-connectors/index.md).
@@ -38,4 +40,4 @@ For setup, permissions, config and limits, read the documentation for the connec
 ## Next
 
 - Try it on your laptop with the [quickstart](./quickstart.md).
-- Read the [concepts](./concepts.md): a short page that explains every word the rest of the docs use.
+- Read [Concepts](./concepts.md) for the terms used in the console and guides.

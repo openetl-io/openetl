@@ -19,7 +19,7 @@ Some work does not spread:
 
 - A stream that one worker reads is read no faster. [Streams that one worker reads](#streams-that-one-worker-reads) lists them.
 - A keyed stream that the source does not split by key sends rows between the workers. [The exchange between workers](#the-exchange-between-workers) says what that costs.
-- A [group window](../reference/sql.md#group-windows) sends the rows of the stream it reads between the workers too. [Group windows on workers](#group-windows-on-workers) says how.
+- A [group window](../reference/sql-windows.md#group-windows) sends the rows of the stream it reads between the workers too. [Group windows on workers](#group-windows-on-workers) says how.
 - The first worker commits each checkpoint for all the workers, so a job whose time goes to commits gains little. A destination with lane commits is different: each worker commits its own part.
 - Each attempt starts more pods. The coordinator also starts the source and destination connectors to set them up before the workers start.
 
@@ -114,7 +114,7 @@ With a [SQL transform](./sql-transforms.md), these rules apply to each statement
 
 ## The exchange between workers
 
-A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./index.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Every worker writes the keys that it owns, whichever worker read them.
+A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./plan-and-apply.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Every worker writes the keys that it owns, whichever worker read them.
 
 Where the rows are read does not depend on the exchange. The workers can share a stream's splits, unless the stream is read with `cdc` or written with `overwrite`; then one worker reads all of them, as [Streams that one worker reads](#streams-that-one-worker-reads) says. A worker gets no split when there are fewer splits than workers.
 
@@ -184,16 +184,30 @@ After 1,024 steps of a window's watermark in an epoch, a lane that keeps the win
 
 While the next attempt reads a lane's part again, it keeps in memory the rows that met a later watermark than the epoch's first, until it reaches the epoch's checkpoint. These rows can take at most half of the job's memory. If they need more, the attempt fails with `RESOURCE_EXHAUSTED`, and the epoch stays unsettled. This limit reserves no memory for the rows, and does not make the attempt report `RESOURCE_EXHAUSTED` first: if the rest of the attempt uses more than the other half, the attempt can run out of memory before the rows reach their limit. In either case, set a larger `resources.size`, so that the next attempt can settle the epoch.
 
-> [!IMPORTANT]
-> Reading a lane's part again keeps an exact stream exactly once only if the source returns the same records from a saved position. If the part ended at a resume point, the source must also return the resume point the epoch recorded; the resume points before it may differ. A source that stops where OpenETL asks sends that resume point as it stops, and a source that doesn't must arrive at it by itself. The source's documentation says whether it stops where OpenETL asks. If the part ended its read in the epoch, OpenETL asks the source to complete it where the first read completed it. A source that does this stops there. A source that does not reads the part to its end, so it completes at the same position only if no records came after it. In both cases, the part must have no fewer records. You make sure that the records are the same through the source's settings, such as a fixed start position and a retention period longer than an epoch can take to recover. OpenETL reads again without following the source, so the source ends the read where OpenETL asks, or once it has caught up. The attempt fails with `POSITION_LOST` in these cases:
->
-> - The read ends before the saved position.
-> - The read returns fewer records up to the saved position than the epoch had, unless the epoch's checkpoint was placed on that part without a resume point. The restore reads the records after the last resume point again in that case.
-> - A part that ended its read in the epoch ends at another position.
->
-> In the last case, the error says that the source did not complete the part where OpenETL asked. Either this version of the source connector does not do that, or it cannot for this read. The connector's documentation says which reads it completes where OpenETL asks. Use a version of the source connector that completes this part where OpenETL asks, then resume the pipeline. If no such version exists, delete the pipeline and apply it again. This creates a new pipeline, which reads from the source's start position.
->
-> If the source returns other records in the same number, or more records, OpenETL commits them. For a keyed stream that the source does not split by key, or that is read with `cdc`, OpenETL commits only the records whose keys belong to the lane. If the source keeps the read open, the attempt waits until it is stopped.
+### Requirements for reading an epoch again
+
+For an exact stream, exactly-once recovery requires the same records from saved positions. Keep those records available until recovery completes.
+
+If the part ended at a resume point, the source must return the resume point recorded by the epoch. Earlier resume points can differ. A source that stops where OpenETL asks sends that point when it stops. Other sources must reach that point themselves. The connector's documentation describes this behavior.
+
+If the part completed its read, OpenETL asks the source to complete at the same position again. A connector that supports this stops there. Other connectors read to the end. They complete at the same position only if no records were added. In both cases, the read must return at least the original number of records.
+
+Use the source's settings to preserve the records. These can include a fixed start position and retention longer than the recovery period. OpenETL reads without following the source. The source ends the read where OpenETL asks, or when it catches up.
+
+The attempt fails with `POSITION_LOST` in these cases:
+
+- The read ends before the saved position.
+- The read returns fewer records up to the saved position than the epoch recorded. This check does not apply after a checkpoint without a resume point. In that case, restoration rereads records after the last resume point.
+- A part that completed its read ends at a different position.
+
+In the last case, the error says that the source did not complete where OpenETL asked. The connector version might not support this operation, or the current read might not support it. Check the connector's documentation. Use a version that supports completing this part at the requested position. Then resume the pipeline.
+
+> [!CAUTION]
+> Recreating the pipeline starts a new read from the source's start position. Check the destination effects before you continue.
+
+If no connector version supports the required completion, delete and reapply the pipeline. [Delivery guarantees](./delivery.md#commits-as-a-reader-sees-them) explains destination effects during recovery.
+
+If the source returns different records in the same number, or more records, OpenETL commits them. For a keyed stream without splits by key, it commits only records whose keys belong to the lane. This restriction also applies to CDC streams. If the source keeps the read open, the attempt waits until stopped.
 
 Do not change the primary key of a keyed stream while an epoch waits to be finished. Each lane's part of such a stream holds the rows of some of the key's values, so OpenETL cannot read it again under another key. The attempt then fails with `CONFIG_INVALID`, and names the key that the epoch used. Apply the pipeline with that key again, and change the key once the pipeline has committed again.
 
