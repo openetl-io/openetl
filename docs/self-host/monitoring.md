@@ -47,7 +47,7 @@ Source progress gauges are present only while a job reports them. Missing lag is
 
 ## Stateful operators
 
-A SQL transform's group window is a stateful operator: it keeps state between rows ([Aggregate by windows of time](../pipelines/windows.md)). The runner that commits a job records these metrics at each commit, from every worker's lanes of the operator, so a job on several pods reports each number once. Each has the attributes `openetl.org`, `openetl.pipeline` and `openetl.operator`, the operator's ID as `openetl plan` shows it. Counters count committed epochs only, as `openetl.job.rows.committed` does. Gauges hold the values at the operator's last commit.
+A SQL transform's group window or `OVER` is a stateful operator: it keeps state between rows ([Aggregate by windows of time](../pipelines/windows.md), [Compute running totals with OVER](../pipelines/over.md)). The runner that commits a job records these metrics at each commit, from every worker's lanes of the operator, so a job on several pods reports each number once. Each has the attributes `openetl.org`, `openetl.pipeline` and `openetl.operator`, the operator's ID as `openetl plan` shows it. Counters count committed epochs only, as `openetl.job.rows.committed` does. Gauges hold the values at the operator's last commit.
 
 | Instrument | Unit | Meaning |
 |---|---|---|

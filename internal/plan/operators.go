@@ -101,9 +101,14 @@ func Operators(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, a *sqlplan.Answer, 
 }
 
 // keeps fills in what op keeps, from planning's state and the spec's
-// settings for the stream it reads, ps.
+// settings for the stream it reads, ps. OVER's functions, with their
+// frames, are its aggregates, and it has no window, lateness or retention.
 func keeps(op *apiv1.OperatorPlan, s *sqlplan.State, ps *apiv1.PipelineStream) {
 	if s == nil {
+		return
+	}
+	if s.Window == "" {
+		op.EventTime, op.Keys, op.Aggregates = s.EventTime, s.Keys, s.Functions
 		return
 	}
 	op.EventTime, op.Window, op.Keys, op.Aggregates = s.EventTime, s.Window, s.Keys, s.Aggregates
@@ -122,14 +127,18 @@ func keeps(op *apiv1.OperatorPlan, s *sqlplan.State, ps *apiv1.PipelineStream) {
 // nothing to build.
 func changeWarning(op *apiv1.OperatorPlan) string {
 	at := fmt.Sprintf("transform.sql:%d:%d: ", op.GetLine(), op.GetColumn())
+	what, holds := "the group window", "its windows hold only rows read from then on, and a window open now loses the rows read before"
+	if op.GetClass() == "over" {
+		what, holds = "OVER", "each key's frame holds only rows read from then on, so running values start again"
+	}
 	backfill := ""
 	if len(op.GetBackfill()) > 0 {
 		empty := "from the next sync"
 		if op.GetEarlier() {
 			empty = "if it starts empty, from the next sync"
 		}
-		backfill = fmt.Sprintf(": %s, its windows hold only rows read from then on, and a window open now loses the rows read before; "+
-			"openetl reset --stream %s, after applying, reads %s again from the start to build it (a backfill)", empty, op.GetInput(), op.GetInput())
+		backfill = fmt.Sprintf(": %s, %s; "+
+			"openetl reset --stream %s, after applying, reads %s again from the start to build it (a backfill)", empty, holds, op.GetInput(), op.GetInput())
 	}
 	// An operator that an earlier version had: the current version dropped
 	// its state, but a sync may not have yet.
@@ -145,16 +154,16 @@ func changeWarning(op *apiv1.OperatorPlan) string {
 		if op.GetEarlier() {
 			start = earlier
 		}
-		return at + fmt.Sprintf("the group window writing %s computes or keeps something else now, so it's a new operator, %s, in place of %s: "+
-			"%s, and %s's state is dropped%s", op.GetOutput(), op.GetId(), op.GetReplaces(), start, op.GetReplaces(), backfill)
+		return at + fmt.Sprintf("%s writing %s computes or keeps something else now, so it's a new operator, %s, in place of %s: "+
+			"%s, and %s's state is dropped%s", what, op.GetOutput(), op.GetId(), op.GetReplaces(), start, op.GetReplaces(), backfill)
 	case apiv1.OperatorChange_OPERATOR_CHANGE_NEW:
 		if op.GetEarlier() {
-			return at + fmt.Sprintf("the group window writing %s is new to the current version: %s%s", op.GetOutput(), earlier, backfill)
+			return at + fmt.Sprintf("%s writing %s is new to the current version: %s%s", what, op.GetOutput(), earlier, backfill)
 		}
 		if backfill == "" {
 			return ""
 		}
-		return at + fmt.Sprintf("the group window writing %s is new, and its state starts empty%s", op.GetOutput(), backfill)
+		return at + fmt.Sprintf("%s writing %s is new, and its state starts empty%s", what, op.GetOutput(), backfill)
 	}
 	return ""
 }

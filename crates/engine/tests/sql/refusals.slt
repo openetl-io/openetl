@@ -32,19 +32,14 @@ SELECT count(*) AS n FROM orders GROUP BY hop(created_at, INTERVAL '1 minute', I
 unsupported 1:43 orders has no event time, which a group window goes by: set eventTime on the stream in source.streams
 
 
-# Window functions: OVER and dedupe by ROW_NUMBER() … = 1 plan, and the
-# engine doesn't run them yet (tier 3). Others are refused as they plan.
+# Window functions: dedupe by ROW_NUMBER() … = 1 plans, and the engine
+# doesn't run it yet (tier 3). OVER runs (over.slt); what it refuses is
+# refused as it plans.
 statement ok
 CREATE TABLE clicks (id BIGINT NOT NULL, region TEXT, amount DECIMAL(12, 2), at TIMESTAMPTZ, PRIMARY KEY (id))
 
 statement ok
 ALTER TABLE clicks SET EVENT TIME at
-
-query error
-SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY at) AS total FROM clicks
-----
-later_tier over 1:12 OVER: transforms don't run window functions yet (tier 3)
-
 
 query error
 SELECT id, amount FROM clicks QUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1

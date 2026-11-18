@@ -18,6 +18,7 @@
     "schema-changes",
     "sql-transforms",
     "windows",
+    "over",
     "workers",
     "troubleshooting"
   ]

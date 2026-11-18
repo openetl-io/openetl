@@ -21,7 +21,7 @@ use super::Operator;
 const GROUPS: u32 = 256;
 const MIN: i64 = 60_000_000;
 
-fn stream() -> SchemaRef {
+pub(crate) fn stream() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("region", DataType::Utf8, true),
         Field::new("amount", DataType::Int64, true),
@@ -64,26 +64,51 @@ fn operator(sql: &str, lateness: i64) -> Operator {
     .unwrap()
 }
 
-type Row = (&'static str, i64, i64);
+pub(crate) type Row = (&'static str, i64, i64);
 
-/// A batch of the statement's input: what it reads of `orders`' rows.
-fn batch(op: &Operator, rows: &[Row]) -> RecordBatch {
-    let full = RecordBatch::try_new(
+/// A batch of `orders`, of rows of a region, an amount and a time.
+pub(crate) fn orders(rows: impl Iterator<Item = Row> + Clone) -> RecordBatch {
+    RecordBatch::try_new(
         stream(),
         vec![
-            Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.0))) as ArrayRef,
-            Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.1))),
+            Arc::new(StringArray::from_iter_values(rows.clone().map(|r| r.0))) as ArrayRef,
+            Arc::new(Int64Array::from_iter_values(rows.clone().map(|r| r.1))),
             Arc::new(
-                TimestampMicrosecondArray::from_iter_values(rows.iter().map(|r| r.2))
-                    .with_timezone("UTC"),
+                TimestampMicrosecondArray::from_iter_values(rows.map(|r| r.2)).with_timezone("UTC"),
             ),
         ],
     )
-    .unwrap();
-    op.plan.input.input(&full).unwrap()
+    .unwrap()
 }
 
-fn ranges(lanes: u32) -> Vec<KeyGroupRange> {
+/// A batch of the statement's input: what it reads of `orders`' rows.
+fn batch(op: &Operator, rows: &[Row]) -> RecordBatch {
+    op.plan.input.input(&orders(rows.iter().copied())).unwrap()
+}
+
+/// Each lane's rows of `all`, of the key groups of `need` in its range, as
+/// indexes; None for a lane with none.
+pub(crate) fn routed(
+    all: &RecordBatch,
+    need: &[String],
+    ranges: &[KeyGroupRange],
+) -> Vec<Option<arrow_array::UInt32Array>> {
+    let groups = key_groups(all, need, GROUPS).unwrap();
+    ranges
+        .iter()
+        .map(|range| {
+            let mine: Vec<u32> = groups
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| range.contains(**g))
+                .map(|(r, _)| r as u32)
+                .collect();
+            (!mine.is_empty()).then(|| arrow_array::UInt32Array::from(mine))
+        })
+        .collect()
+}
+
+pub(crate) fn ranges(lanes: u32) -> Vec<KeyGroupRange> {
     (0..lanes)
         .map(|i| KeyGroupRange::new(GROUPS * i / lanes, GROUPS * (i + 1) / lanes - 1))
         .collect()
@@ -193,22 +218,13 @@ impl Run {
 
     async fn rows(&mut self, rows: &[Row]) {
         let all = batch(&self.ops[0], rows);
-        let need = self.ops[0].plan.need.clone();
-        let groups = key_groups(&all, &need, GROUPS).unwrap();
-        for i in 0..self.layers.len() {
-            let range = self.layers[i].range();
-            let mine: Vec<u32> = groups
-                .iter()
-                .enumerate()
-                .filter(|(_, g)| range.contains(**g))
-                .map(|(r, _)| r as u32)
-                .collect();
-            if mine.is_empty() {
-                continue;
-            }
-            let part =
-                arrow_select::take::take_record_batch(&all, &arrow_array::UInt32Array::from(mine))
-                    .unwrap();
+        let ranges: Vec<KeyGroupRange> = self.layers.iter().map(Layer::range).collect();
+        for (i, mine) in routed(&all, &self.ops[0].plan.need, &ranges)
+            .into_iter()
+            .enumerate()
+        {
+            let Some(mine) = mine else { continue };
+            let part = arrow_select::take::take_record_batch(&all, &mine).unwrap();
             let out = self.ops[i].rows(&mut self.layers[i], &part).await.unwrap();
             self.rejected += out.rejected.len();
             self.give(&out);
@@ -1080,7 +1096,7 @@ async fn a_delete_doesnt_evaluate_the_clock_again() {
     );
 }
 
-fn next(seed: &mut u64) -> u64 {
+pub(crate) fn next(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut z = *seed;
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -1088,7 +1104,7 @@ fn next(seed: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
-const REGIONS: [&str; 5] = ["eu", "us", "apac", "latam", "mena"];
+pub(crate) const REGIONS: [&str; 5] = ["eu", "us", "apac", "latam", "mena"];
 
 /// Rows over ten minutes, each with an amount, its time a microsecond
 /// apart from the next so that sessions vary.

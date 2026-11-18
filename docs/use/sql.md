@@ -21,7 +21,7 @@ Each statement's card shows:
 |---|---|
 | **INSERT INTO** | The output it writes, and the destination table it goes to if the pipeline names one |
 | Its place | The line and column where the statement starts |
-| **Row-wise** or **Group window** | The kind of statement. A row-wise statement changes one row at a time. A group window adds up rows by windows of time. |
+| **Row-wise**, **Group window** or **Over** | The kind of statement. A row-wise statement changes one row at a time. A group window adds up rows by windows of time. An over statement gives each row values from the rows up to and including it, such as a running total. |
 | **Replaces stream** | The output takes the place of the source's stream of the same name. |
 | **Primary key** | The output's key. **None, so append only** means rows are only added, never merged. |
 | **Reads** | The source's streams it reads, and the views it reads them through |

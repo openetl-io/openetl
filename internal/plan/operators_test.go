@@ -207,3 +207,29 @@ func TestCarriedNotes(t *testing.T) {
 		t.Errorf("unknown: %q", got)
 	}
 }
+
+// OVER keeps its PARTITION BY's frames: the plan shows its keys and its
+// functions with their frames, and no window, lateness or retention. A
+// changed one says its frames start again.
+func TestOverOperators(t *testing.T) {
+	over := func(id string) sqlplan.Statement {
+		return sqlplan.Statement{At: sqlplan.Position{Line: 2, Column: 1}, Output: "totals", Class: "over", Inputs: []string{"orders"}, Operator: id,
+			State: &sqlplan.State{EventTime: "at", Keys: []string{"region"}, Functions: []string{"sum(amount) range unbounded", "lag(amount, 1)"}}}
+	}
+	applied := &apiv1.SqlPlan{Outputs: []*apiv1.SqlOutput{{Name: "totals", Operator: "over-old"}}, Operators: []string{"over-old"}}
+	a := &sqlplan.Answer{Statements: []sqlplan.Statement{over("over-new")}}
+	ops, warnings, _ := Operators(windowSpec(0), windowCatalog, a, applied, map[string]bool{"orders": true}, nil)
+	if len(ops) != 1 {
+		t.Fatalf("operators %v", ops)
+	}
+	op := ops[0]
+	if op.GetClass() != "over" || op.GetWindow() != "" || op.GetSize() != nil || op.GetLateness() != nil || op.GetRetention() != nil || op.GetEventTime() != "at" ||
+		!slices.Equal(op.GetKeys(), []string{"region"}) || !slices.Equal(op.GetAggregates(), []string{"sum(amount) range unbounded", "lag(amount, 1)"}) ||
+		op.GetChange() != apiv1.OperatorChange_OPERATOR_CHANGE_CHANGED {
+		t.Errorf("operator %v", op)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0].GetMessage(), "transform.sql:2:1: OVER writing totals computes or keeps something else now") ||
+		!strings.Contains(warnings[0].GetMessage(), "each key's frame holds only rows read from then on, so running values start again") {
+		t.Errorf("warnings = %v", warnings)
+	}
+}

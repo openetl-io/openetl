@@ -27,11 +27,14 @@ func TestPlanShowsState(t *testing.T) {
 		{Id: "window-c", Output: "hops", Line: 6, Column: 1, Window: "hop", Size: durationpb.New(5 * time.Minute), Slide: minute, EventTime: "at",
 			Aggregates: []string{"count(*)"}, Lateness: durationpb.New(0), Retention: durationpb.New(5 * time.Minute), Change: apiv1.OperatorChange_OPERATOR_CHANGE_KEPT},
 		{Id: "window-d", Output: "gone", Change: apiv1.OperatorChange_OPERATOR_CHANGE_DROPPED},
+		{Id: "over-e", Output: "totals", Line: 9, Column: 1, Class: "over", EventTime: "at", Keys: []string{"region"},
+			Aggregates: []string{"sum(amount) range unbounded", "lag(amount, 1)"}, Change: apiv1.OperatorChange_OPERATOR_CHANGE_NEW},
 	})
 	want := `  state:
     1:1  revenue  window-a  changed  tumble 1m0s by at on region: sum(amount); keeps a window's state 1m30s of event time (lateness 30s); starts empty, in place of window-b; a backfill reads again orders
     6:1  hops     window-c  kept     hop 5m0s every 1m0s by at: count(*); keeps a window's state 5m0s of event time (lateness 0s)
     -    gone     window-d  dropped  its state is dropped
+    9:1  totals   over-e    new      over by at on region: sum(amount) range unbounded, lag(amount, 1); keeps each key's frame, and its rows until the watermark passes them; starts empty
 `
 	if out.String() != want {
 		t.Errorf("printed\n%s\nwant\n%s", out.String(), want)

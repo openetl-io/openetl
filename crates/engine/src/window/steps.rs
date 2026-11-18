@@ -2,8 +2,16 @@
 //! window, which give the rows it groups, and those after, HAVING and the
 //! projection to the output.
 
-use arrow_array::{RecordBatch, UInt64Array};
-use openetl_sql::{Error, Step};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch, UInt64Array};
+use openetl_normalize::{Cause, Code};
+use openetl_proto::connector::v1::ErrorCode;
+use openetl_sql::{Error, Expr, Step};
+
+use super::Out;
+use crate::error::JobError;
 
 /// What the steps gave: the batch, and each of its rows' row of the input.
 pub struct Ran {
@@ -75,6 +83,120 @@ fn eval(e: arrow_schema::ArrowError) -> Error {
         at: None,
         message: e.to_string(),
     }
+}
+
+/// Runs a statement's steps before its stateful operator on `input`: what
+/// they gave, and what to give for the rows they fail on, rejected with
+/// `reason` of why.
+pub fn before(
+    steps: &[Step],
+    input: &RecordBatch,
+    reason: impl Fn(&str) -> String,
+) -> Result<(Ran, Out), JobError> {
+    let (ran, failed) =
+        run_rows(steps, input.clone(), true).map_err(|e| JobError::internal(reason(&e.message)))?;
+    let mut out = Out::default();
+    for (r, why) in failed {
+        out.rejected
+            .push((r, reason(&why), Cause::new(Code::Statement)));
+    }
+    Ok((ran, out))
+}
+
+/// Each aggregate's argument and FILTER on some rows, as columns of all of
+/// them, and the rows one fails on, with why.
+pub type Arguments = (
+    Vec<Option<ArrayRef>>,
+    Vec<Option<BooleanArray>>,
+    BTreeMap<usize, String>,
+);
+
+/// Each of `aggregates`' FILTER on `rows`, then its argument on the rows
+/// its FILTER admits, each aggregate its argument and FILTER: a row an
+/// aggregate's FILTER leaves out never evaluates its argument, which is
+/// null there. Where one fails on the batch, it's evaluated row by row, and
+/// a row it fails on is given with `reason` of why: no aggregate takes it.
+pub fn arguments<'a>(
+    rows: &RecordBatch,
+    aggregates: impl Iterator<Item = (Option<&'a Expr>, Option<&'a Expr>)>,
+    reason: &dyn Fn(&str) -> String,
+) -> Result<Arguments, JobError> {
+    let n = rows.num_rows();
+    let all: Vec<usize> = (0..n).collect();
+    let mut bad = BTreeMap::new();
+    let (mut args, mut filters) = (Vec::new(), Vec::new());
+    for (arg, filter) in aggregates {
+        let filter = match filter {
+            None => None,
+            Some(e) => {
+                let got = each(
+                    rows,
+                    &all,
+                    |b| e.eval_predicate(b).map(|p| Arc::new(p) as ArrayRef),
+                    &mut bad,
+                    reason,
+                )?;
+                Some(arrow_array::cast::AsArray::as_boolean(got.as_ref()).clone())
+            }
+        };
+        let arg = match arg {
+            None => None,
+            Some(e) => {
+                let admitted: Vec<usize> = (0..n)
+                    .filter(|&r| super::accumulate::passes(filter.as_ref(), r))
+                    .collect();
+                Some(each(rows, &admitted, |b| e.eval(b), &mut bad, reason)?)
+            }
+        };
+        filters.push(filter);
+        args.push(arg);
+    }
+    Ok((args, filters, bad))
+}
+
+/// `f` on the rows `at` of `rows`, as a column of all of them: null at
+/// the others, and at a row it fails on, which `bad` gets with `reason` of
+/// why.
+fn each(
+    rows: &RecordBatch,
+    at: &[usize],
+    f: impl Fn(&RecordBatch) -> Result<ArrayRef, Error>,
+    bad: &mut BTreeMap<usize, String>,
+    reason: &dyn Fn(&str) -> String,
+) -> Result<ArrayRef, JobError> {
+    let internal = |e: Error| JobError::internal(e.message);
+    let some = take(rows, at).map_err(internal)?;
+    let (got, ok) = match f(&some) {
+        Ok(a) => (a, at.to_vec()),
+        Err(_) => {
+            let mut ok = Vec::with_capacity(at.len());
+            for (i, &r) in at.iter().enumerate() {
+                match f(&some.slice(i, 1)) {
+                    Ok(_) => ok.push(r),
+                    Err(e) => {
+                        bad.entry(r).or_insert_with(|| reason(&e.message));
+                    }
+                }
+            }
+            let kept = take(rows, &ok).map_err(internal)?;
+            let got = f(&kept).map_err(|e| {
+                JobError::new(
+                    ErrorCode::DataInvalid,
+                    reason(&format!(
+                        "rows that it evaluates one at a time fail together ({})",
+                        e.kind.code()
+                    )),
+                )
+            })?;
+            (got, ok)
+        }
+    };
+    let mut index = vec![None; rows.num_rows()];
+    for (i, &r) in ok.iter().enumerate() {
+        index[r] = Some(i as u64);
+    }
+    arrow_select::take::take(got.as_ref(), &UInt64Array::from(index), None)
+        .map_err(|e| JobError::internal(e.to_string()))
 }
 
 /// The rows of `batch` at `rows`, in that order.

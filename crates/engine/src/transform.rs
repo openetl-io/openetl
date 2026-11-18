@@ -9,7 +9,7 @@ use arrow_schema::{Field, Schema, SchemaRef};
 use openetl_normalize::VERSIONS_KEY;
 use openetl_normalize::naming::{METADATA_COLUMNS, TABLE_KEY, source_names};
 use openetl_proto::engine::v1::{StreamPlan, Transform as TransformPlan};
-use openetl_sql::{Catalog, GroupWindow, Operator, Position, RowWise, Sql, Stream};
+use openetl_sql::{Catalog, GroupWindow, Operator, Over, Position, RowWise, Sql, Stream};
 
 use crate::error::JobError;
 use crate::ipc;
@@ -23,10 +23,11 @@ pub struct Input {
     pub schema: Option<SchemaRef>,
     pub key: Vec<String>,
     pub changelog: bool,
-    /// The column of its rows' event time, which group windows go by.
+    /// The column of its rows' event time, which group windows and OVER go
+    /// by.
     pub event_time: Option<String>,
     /// How long after a group window over it closes a row may still come,
-    /// in microseconds.
+    /// in microseconds. OVER doesn't take it.
     pub lateness: i64,
 }
 
@@ -149,11 +150,38 @@ pub struct Statement {
     pub schema: SchemaRef,
     /// The output's primary key; empty where it can only be appended.
     pub key: Vec<String>,
-    /// Its row-wise steps: a group window's, those before the window.
+    /// Its row-wise steps: a stateful operator's, those before it.
     pub op: Arc<RowWise>,
-    /// A group window, and its operator's ID; None for a row-wise
-    /// statement.
-    pub window: Option<(Arc<GroupWindow>, String)>,
+    /// Its stateful operator, which keyed lanes run, and the operator's ID;
+    /// None for a row-wise statement.
+    pub keyed: Option<(Keyed, String)>,
+}
+
+/// A statement's stateful operator. Its input's rows go by the key groups
+/// of its need to the keyed lanes that own them, which keep its state.
+#[derive(Debug, Clone)]
+pub enum Keyed {
+    Window(Arc<GroupWindow>),
+    Over(Arc<Over>),
+}
+
+impl Keyed {
+    /// The stream's columns whose key groups its rows go by; none for every
+    /// row on one keyed lane.
+    pub fn need(&self) -> &[String] {
+        match self {
+            Keyed::Window(g) => &g.need,
+            Keyed::Over(o) => &o.need,
+        }
+    }
+
+    /// What it is, for messages.
+    pub fn what(&self) -> &'static str {
+        match self {
+            Keyed::Window(_) => "the group window",
+            Keyed::Over(_) => "OVER",
+        }
+    }
 }
 
 /// How a stream reaches one of the outputs.
@@ -163,9 +191,9 @@ pub enum Route {
     Pass,
     /// A statement, by its index, writes that output from it.
     Statement(usize),
-    /// A group window's statement, by its index, writes that output from
-    /// it: its rows go by key group to the lanes that run it.
-    Window(usize),
+    /// A stateful statement, by its index, writes that output from it: its
+    /// rows go by key group to the keyed lanes that run it.
+    Keyed(usize),
 }
 
 /// A job's SQL, planned.
@@ -265,7 +293,7 @@ impl Transform {
     pub fn operators(&self) -> impl Iterator<Item = &str> {
         self.statements
             .iter()
-            .filter_map(|s| s.window.as_ref().map(|(_, id)| id.as_str()))
+            .filter_map(|s| s.keyed.as_ref().map(|(_, id)| id.as_str()))
     }
 
     /// Each stream's routes to the outputs, by output index: the statements
@@ -279,8 +307,8 @@ impl Transform {
         let mut routes = vec![Vec::new(); self.inputs.len()];
         for (i, s) in self.statements.iter().enumerate() {
             if let Some(&o) = index.get(s.output.as_str()) {
-                let route = match s.window {
-                    Some(_) => Route::Window(i),
+                let route = match s.keyed {
+                    Some(_) => Route::Keyed(i),
                     None => Route::Statement(i),
                 };
                 routes[s.input].push((o, route));
@@ -381,12 +409,12 @@ fn list(names: BTreeSet<&str>) -> String {
     }
 }
 
-/// Whether jobs run an operator. `OVER` and dedupe plan, and are refused
-/// as a later tier's until their operators run.
+/// Whether jobs run an operator. Dedupe plans, and is refused as a later
+/// tier's until its operator runs.
 pub(crate) fn runs(op: &Operator) -> bool {
     match op {
-        Operator::RowWise(_) | Operator::GroupWindow(_) => true,
-        Operator::Over(_) | Operator::Dedupe(_) => false,
+        Operator::RowWise(_) | Operator::GroupWindow(_) | Operator::Over(_) => true,
+        Operator::Dedupe(_) => false,
     }
 }
 
@@ -463,13 +491,17 @@ fn plan_statements(
         .collect();
     let mut out = Vec::with_capacity(plan.statements.len());
     for s in plan.statements {
-        let (op, window) = match s.operator {
+        let (op, keyed) = match s.operator {
             Operator::RowWise(op) => (op, None),
             Operator::GroupWindow(g) => {
                 let id = g.id.clone();
-                (g.input.clone(), Some((Arc::new(*g), id)))
+                (g.input.clone(), Some((Keyed::Window(Arc::new(*g)), id)))
             }
-            Operator::Over(_) | Operator::Dedupe(_) => {
+            Operator::Over(o) => {
+                let id = o.id.clone();
+                (o.input.clone(), Some((Keyed::Over(Arc::new(*o)), id)))
+            }
+            Operator::Dedupe(_) => {
                 return Err(JobError::internal(format!(
                     "the statement at {} has an operator jobs don't run",
                     s.at
@@ -502,7 +534,7 @@ fn plan_statements(
             schema: s.schema,
             key: s.key,
             op: Arc::new(op),
-            window,
+            keyed,
         });
     }
     Ok(out)
@@ -625,8 +657,10 @@ mod tests {
         assert!(e.message.starts_with("transform.sql: 2:"), "{}", e.message);
     }
 
+    /// OVER runs on keyed lanes, by its PARTITION BY; dedupe plans, and is
+    /// refused as tier 3's.
     #[test]
-    fn over_and_dedupe_plan_and_are_refused_as_tier_3s() {
+    fn over_runs_and_dedupe_is_refused_as_tier_3s() {
         let mut a = input("a", &["id"], false);
         a.schema = Some(Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -638,28 +672,32 @@ mod tests {
             ),
         ])));
         a.event_time = Some("at".into());
-        for (sql, at) in [
-            (
-                "INSERT INTO c\nSELECT id, sum(amount) OVER (PARTITION BY id ORDER BY at) AS total FROM a",
-                "2:12",
-            ),
-            (
-                "INSERT INTO c\nSELECT id, amount FROM a\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1",
-                "3:9",
-            ),
-        ] {
-            let e = Transform::plan(sql, vec![a.clone()]).unwrap_err();
-            assert_eq!(
-                e.code,
-                openetl_proto::connector::v1::ErrorCode::ConfigInvalid
-            );
-            assert_eq!(
-                e.message,
-                format!(
-                    "transform.sql: {at}: OVER: transforms don't run window functions yet (tier 3)"
-                ),
-            );
-        }
+        let t = Transform::plan(
+            "INSERT INTO c\nSELECT id, sum(amount) OVER (PARTITION BY id ORDER BY at) AS total FROM a",
+            vec![a.clone()],
+        )
+        .unwrap();
+        let Some((keyed, id)) = &t.statements[0].keyed else {
+            panic!("{:?}", t.statements[0]);
+        };
+        assert!(matches!(keyed, Keyed::Over(_)), "{keyed:?}");
+        assert_eq!(keyed.need(), ["id"]);
+        assert!(id.starts_with("over-"), "{id}");
+        assert_eq!(t.routes(&["c".into()])[0], [(0, Route::Keyed(0))]);
+        assert_eq!(t.operators().collect::<Vec<_>>(), [id.as_str()]);
+        let e = Transform::plan(
+            "INSERT INTO c\nSELECT id, amount FROM a\nQUALIFY row_number() OVER (PARTITION BY id ORDER BY at DESC) = 1",
+            vec![a],
+        )
+        .unwrap_err();
+        assert_eq!(
+            e.code,
+            openetl_proto::connector::v1::ErrorCode::ConfigInvalid
+        );
+        assert_eq!(
+            e.message,
+            "transform.sql: 3:9: OVER: transforms don't run window functions yet (tier 3)"
+        );
     }
 
     #[test]

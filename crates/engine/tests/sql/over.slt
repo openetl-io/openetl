@@ -1,0 +1,408 @@
+# OVER: aggregates, lag and first_value over a frame of each key's rows that
+# ends at the current row, in event-time order, on rows that have all come,
+# so every row leaves at the end of input, once, with its values. Rows of
+# one event time are peers: a RANGE frame, which ORDER BY alone gives,
+# takes them all, so they share a value. A ROWS frame, lag and first_value
+# take peers in the order of their record IDs, which here are the order
+# the rows were inserted in: DuckDB writes that ORDER BY ts, rowid, so each
+# such query is ours, then the same query in DuckDB's SQL.
+
+control sortmode rowsort
+
+statement ok
+CREATE TABLE orders (id BIGINT NOT NULL, region TEXT, amount DECIMAL(12, 2), qty INTEGER, price DOUBLE, ts TIMESTAMPTZ NOT NULL, PRIMARY KEY (id))
+
+onlyif openetl
+statement ok
+ALTER TABLE orders SET EVENT TIME ts
+
+statement ok
+INSERT INTO orders VALUES (1, 'eu', 120.00, 3, 1.5, '2024-02-29 12:30:45.123456+00:00'), (2, 'eu', 9.99, 1, 2.5, '2024-02-29 12:30:59+00:00'), (3, 'us', 45.50, 2, -0.5, '2024-02-29 12:31:10+00:00'), (4, NULL, 1000.01, 12, 1e10, '2024-02-29 12:31:20+00:00'), (5, 'eu', 0.01, 0, NULL, '2024-02-29 12:32:00+00:00'), (6, 'us', NULL, NULL, 100.125, '2024-02-29 13:00:00+00:00'), (7, 'eu', 7.00, 7, 7.0, '2024-02-29 12:31:00+00:00'), (8, 'eu', 3.50, 2, 0.25, '2024-02-29 12:30:59+00:00'), (9, 'us', 1.25, 5, 2.0, '2024-02-29 12:31:10+00:00'), (10, NULL, 2.00, NULL, NULL, '2024-02-29 12:31:20+00:00')
+
+statement ok
+CREATE VIEW paid AS SELECT id, region AS area, amount, ts AS t FROM orders WHERE amount > 0
+
+# A running total by region: ORDER BY alone is RANGE BETWEEN UNBOUNDED
+# PRECEDING AND CURRENT ROW, so peers share their total.
+query ITR
+SELECT id, region, sum(amount) OVER (PARTITION BY region ORDER BY ts) AS total FROM orders
+----
+1 eu 120
+10 NULL 1002.01
+2 eu 133.49
+3 us 46.75
+4 NULL 1002.01
+5 eu 140.5
+6 us 46.75
+7 eu 140.49
+8 eu 133.49
+9 us 46.75
+
+# Counts, the least and the most, row by row: peers take their turn.
+onlyif openetl
+query ITIIRT
+SELECT id, region, count(*) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS n,
+  count(qty) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS q,
+  min(amount) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS lo,
+  max(region) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS hi
+FROM orders
+----
+1 eu 1 1 120 eu
+10 NULL 2 1 2 NULL
+2 eu 2 2 9.99 eu
+3 us 1 1 45.5 us
+4 NULL 1 1 1000.01 NULL
+5 eu 5 5 0.01 eu
+6 us 3 2 1.25 us
+7 eu 4 4 3.5 eu
+8 eu 3 3 3.5 eu
+9 us 2 2 1.25 us
+
+onlyif duckdb
+query ITIIRT
+SELECT id, region, count(*) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS n,
+  count(qty) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS q,
+  min(amount) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS lo,
+  max(region) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS hi
+FROM orders
+----
+1 eu 1 1 120 eu
+10 NULL 2 1 2 NULL
+2 eu 2 2 9.99 eu
+3 us 1 1 45.5 us
+4 NULL 1 1 1000.01 NULL
+5 eu 5 5 0.01 eu
+6 us 3 2 1.25 us
+7 eu 4 4 3.5 eu
+8 eu 3 3 3.5 eu
+9 us 2 2 1.25 us
+
+# A frame of the row before and the row itself, and one of the row alone.
+onlyif openetl
+query IIRI
+SELECT id, sum(qty) OVER (PARTITION BY region ORDER BY ts ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS two,
+  avg(qty) OVER (PARTITION BY region ORDER BY ts ROWS 1 PRECEDING) AS mean,
+  max(qty) OVER (PARTITION BY region ORDER BY ts ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS own
+FROM orders
+----
+1 3 3 3
+10 12 12 NULL
+2 4 2 1
+3 2 2 2
+4 12 12 12
+5 7 3.5 0
+6 5 5 NULL
+7 9 4.5 7
+8 3 1.5 2
+9 7 3.5 5
+
+onlyif duckdb
+query IIRI
+SELECT id, sum(qty) OVER (PARTITION BY region ORDER BY ts, rowid ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS two,
+  avg(qty) OVER (PARTITION BY region ORDER BY ts, rowid ROWS 1 PRECEDING) AS mean,
+  max(qty) OVER (PARTITION BY region ORDER BY ts, rowid ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS own
+FROM orders
+----
+1 3 3 3
+10 12 12 NULL
+2 4 2 1
+3 2 2 2
+4 12 12 12
+5 7 3.5 0
+6 5 5 NULL
+7 9 4.5 7
+8 3 1.5 2
+9 7 3.5 5
+
+# The last minute of event time, peers and all.
+query IIRI
+SELECT id, count(*) OVER (PARTITION BY region ORDER BY ts RANGE BETWEEN INTERVAL '1 minute' PRECEDING AND CURRENT ROW) AS n,
+  sum(amount) OVER (PARTITION BY region ORDER BY ts RANGE BETWEEN INTERVAL '30 seconds' PRECEDING AND CURRENT ROW) AS recent,
+  count(*) OVER (PARTITION BY region ORDER BY ts RANGE BETWEEN CURRENT ROW AND CURRENT ROW) AS peers
+FROM orders
+----
+1 1 120 1
+10 2 1002.01 2
+2 3 133.49 2
+3 2 46.75 2
+4 2 1002.01 2
+5 2 0.01 1
+6 1 NULL 1
+7 4 140.49 1
+8 3 133.49 2
+9 2 46.75 2
+
+# lag takes the row a number of rows before, or its default.
+onlyif openetl
+query IRRR
+SELECT id, lag(amount) OVER (PARTITION BY region ORDER BY ts) AS before,
+  lag(amount, 2, 0) OVER (PARTITION BY region ORDER BY ts) AS two_before,
+  lag(price, 1, -1.0) OVER (PARTITION BY region ORDER BY ts) AS p
+FROM orders
+----
+1 NULL 0 -1
+10 1000.01 0 10000000000
+2 120 0 1.5
+3 NULL 0 -1
+4 NULL 0 -1
+5 7 3.5 7
+6 1.25 45.5 2
+7 3.5 9.99 0.25
+8 9.99 120 2.5
+9 45.5 0 -0.5
+
+onlyif duckdb
+query IRRR
+SELECT id, lag(amount) OVER (PARTITION BY region ORDER BY ts, rowid) AS before,
+  lag(amount, 2, 0) OVER (PARTITION BY region ORDER BY ts, rowid) AS two_before,
+  lag(price, 1, -1.0) OVER (PARTITION BY region ORDER BY ts, rowid) AS p
+FROM orders
+----
+1 NULL 0 -1
+10 1000.01 0 10000000000
+2 120 0 1.5
+3 NULL 0 -1
+4 NULL 0 -1
+5 7 3.5 7
+6 1.25 45.5 2
+7 3.5 9.99 0.25
+8 9.99 120 2.5
+9 45.5 0 -0.5
+
+# first_value of the whole partition so far, of the last row and the row
+# itself, and of the last 30 seconds.
+onlyif openetl
+query IIII
+SELECT id, first_value(id) OVER (PARTITION BY region ORDER BY ts) AS opening,
+  first_value(id) OVER (PARTITION BY region ORDER BY ts ROWS 1 PRECEDING) AS prev,
+  first_value(id) OVER (PARTITION BY region ORDER BY ts RANGE BETWEEN INTERVAL '30 seconds' PRECEDING AND CURRENT ROW) AS recent,
+  first_value(qty) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS q
+FROM orders
+----
+1 1 1 1 3
+10 4 4 4 12
+2 1 1 1 3
+3 3 3 3 2
+4 4 4 4 12
+5 1 7 5 3
+6 3 9 6 2
+7 1 8 1 3
+8 1 2 1 3
+9 3 3 3 2
+
+onlyif duckdb
+query IIII
+SELECT id, first_value(id) OVER (PARTITION BY region ORDER BY ts, rowid) AS opening,
+  first_value(id) OVER (PARTITION BY region ORDER BY ts, rowid ROWS 1 PRECEDING) AS prev,
+  arg_min(id, {'t': ts, 'r': rowid}) OVER (PARTITION BY region ORDER BY ts RANGE BETWEEN INTERVAL '30 seconds' PRECEDING AND CURRENT ROW) AS recent,
+  first_value(qty) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS q
+FROM orders
+----
+1 1 1 1 3
+10 4 4 4 12
+2 1 1 1 3
+3 3 3 3 2
+4 4 4 4 12
+5 1 7 5 3
+6 3 9 6 2
+7 1 8 1 3
+8 1 2 1 3
+9 3 3 3 2
+
+# FILTER counts some rows, which still take their place in a ROWS frame.
+onlyif openetl
+query III
+SELECT id, count(*) FILTER (WHERE qty > 1) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS big,
+  count(*) FILTER (WHERE qty > 1) OVER (PARTITION BY region ORDER BY ts ROWS 1 PRECEDING) AS recent
+FROM orders
+----
+1 1 1
+10 1 1
+2 1 1
+3 1 1
+4 1 1
+5 3 1
+6 2 1
+7 3 2
+8 2 1
+9 2 2
+
+onlyif duckdb
+query III
+SELECT id, count(*) FILTER (WHERE qty > 1) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS big,
+  count(*) FILTER (WHERE qty > 1) OVER (PARTITION BY region ORDER BY ts, rowid ROWS 1 PRECEDING) AS recent
+FROM orders
+----
+1 1 1
+10 1 1
+2 1 1
+3 1 1
+4 1 1
+5 3 1
+6 2 1
+7 3 2
+8 2 1
+9 2 2
+
+# An aggregate's argument runs only on the rows its FILTER takes, so a row
+# it leaves out keeps its place, as qty = 0 does here. Ours divides
+# integers with /, which DuckDB writes //.
+onlyif openetl
+query III
+SELECT id, sum(10 / qty) FILTER (WHERE qty <> 0) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS tenths,
+  count(10 / qty) FILTER (WHERE qty <> 0) OVER (PARTITION BY region ORDER BY ts) AS n
+FROM orders
+----
+1 3 1
+10 0 1
+2 13 3
+3 5 2
+4 0 1
+5 19 4
+6 7 2
+7 19 4
+8 18 3
+9 7 2
+
+onlyif duckdb
+query III
+SELECT id, sum(10 // qty) FILTER (WHERE qty <> 0) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS tenths,
+  count(10 // qty) FILTER (WHERE qty <> 0) OVER (PARTITION BY region ORDER BY ts) AS n
+FROM orders
+----
+1 3 1
+10 0 1
+2 13 3
+3 5 2
+4 0 1
+5 19 4
+6 7 2
+7 19 4
+8 18 3
+9 7 2
+
+# Without PARTITION BY, every row is one key's.
+query II
+SELECT id, count(*) OVER (ORDER BY ts) AS n FROM orders
+----
+1 1
+10 8
+2 3
+3 6
+4 8
+5 9
+6 10
+7 4
+8 3
+9 6
+
+# A filter on OVER's values, in QUALIFY or in a SELECT that reads them,
+# and OVER over a view's rows.
+query I
+SELECT id FROM orders QUALIFY sum(amount) OVER (PARTITION BY region ORDER BY ts) > 100
+----
+1
+10
+2
+4
+5
+7
+8
+
+query ITR
+SELECT * FROM (SELECT id, area, sum(amount) OVER (PARTITION BY area ORDER BY t) AS total FROM paid) AS s WHERE total < 150
+----
+1 eu 120
+2 eu 133.49
+3 us 46.75
+5 eu 140.5
+7 eu 140.49
+8 eu 133.49
+9 us 46.75
+
+# A float's running sum is exact until it's rounded once, as DuckDB's
+# fsum is; averages of decimals are decimals.
+onlyif openetl
+query IRR
+SELECT id, sum(price) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS total,
+  avg(amount) OVER (PARTITION BY region ORDER BY ts) AS mean
+FROM orders
+----
+1 1.5 120
+10 10000000000 501.005
+2 4 44.496667
+3 -0.5 23.375
+4 10000000000 501.005
+5 11.25 28.1
+6 101.625 23.375
+7 11.25 35.1225
+8 4.25 44.496667
+9 1.5 23.375
+
+onlyif duckdb
+query IRR
+SELECT id, fsum(price) OVER (PARTITION BY region ORDER BY ts, rowid ROWS UNBOUNDED PRECEDING) AS total,
+  CAST(avg(amount) OVER (PARTITION BY region ORDER BY ts) AS DECIMAL(16, 6)) AS mean
+FROM orders
+----
+1 1.5 120
+10 10000000000 501.005
+2 4 44.496667
+3 -0.5 23.375
+4 10000000000 501.005
+5 11.25 28.1
+6 101.625 23.375
+7 11.25 35.1225
+8 4.25 44.496667
+9 1.5 23.375
+
+statement ok
+CREATE TABLE baskets (id BIGINT NOT NULL, region TEXT, items TEXT[], ts TIMESTAMPTZ NOT NULL, PRIMARY KEY (id))
+
+onlyif openetl
+statement ok
+ALTER TABLE baskets SET EVENT TIME ts
+
+statement ok
+INSERT INTO baskets VALUES (1, 'eu', ['a', 'b'], '2024-01-01 00:00:00+00:00'), (2, 'eu', NULL, '2024-01-01 00:00:01+00:00'), (3, 'eu', [], '2024-01-01 00:00:02+00:00'), (4, 'us', ['c'], '2024-01-01 00:00:00+00:00'), (5, 'eu', ['d'], '2024-01-01 00:00:02+00:00')
+
+# count of a list counts the rows where it isn't null, an empty one too,
+# and a list passes through the rows that wait.
+query ITII
+SELECT id, items, count(items) OVER (PARTITION BY region ORDER BY ts) AS n,
+  count(*) OVER (PARTITION BY region ORDER BY ts) AS rows_so_far
+FROM baskets
+----
+1 [a, b] 1 1
+2 NULL 1 2
+3 [] 3 4
+4 [c] 1 1
+5 [d] 3 4
+
+# And over a ROWS frame, which takes peers in turn.
+onlyif openetl
+query II
+SELECT id, count(items) OVER (PARTITION BY region ORDER BY ts ROWS 1 PRECEDING) AS recent FROM baskets
+----
+1 1
+2 1
+3 1
+4 1
+5 2
+
+onlyif duckdb
+query II
+SELECT id, count(items) OVER (PARTITION BY region ORDER BY ts, rowid ROWS 1 PRECEDING) AS recent FROM baskets
+----
+1 1
+2 1
+3 1
+4 1
+5 2
+
+# A function that keeps a value, as max, first_value and lag do, takes the
+# types a group key can be: not a list.
+query error
+SELECT id, max(items) OVER (PARTITION BY region ORDER BY ts) AS most FROM baskets
+----
+unsupported 1:12 max takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)

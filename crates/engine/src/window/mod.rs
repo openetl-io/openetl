@@ -44,12 +44,12 @@
 //! the first time, then updates; each has an ID and a seq from its key and
 //! how many times it has been given, so a replay gives the same rows.
 
-mod accumulate;
-mod codec;
-mod steps;
+pub(crate) mod accumulate;
+pub(crate) mod codec;
+pub(crate) mod steps;
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -60,7 +60,6 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
 use openetl_normalize::{Cause, Code, Control, Typed, key_groups, render_row};
-use openetl_proto::connector::v1::ErrorCode;
 use openetl_sql::{GroupWindow, Window};
 use openetl_state::{KeyRef, OperatorId, StateBackend};
 use twox_hash::XxHash3_128;
@@ -189,7 +188,7 @@ pub struct Out {
 }
 
 impl Out {
-    fn add(&mut self, other: Out) -> Result<(), JobError> {
+    pub(crate) fn add(&mut self, other: Out) -> Result<(), JobError> {
         self.rejected.extend(other.rejected);
         self.failed.extend(other.failed);
         self.rows = match (self.rows.take(), other.rows) {
@@ -370,14 +369,8 @@ impl Operator {
         state: &mut S,
         input: &RecordBatch,
     ) -> Result<Out, JobError> {
-        let mut out = Out::default();
         let plan = self.plan.clone();
-        let (ran, failed) = steps::run_rows(&plan.input.steps, input.clone(), true)
-            .map_err(|e| JobError::internal(self.reason(&e.message)))?;
-        for (r, why) in failed {
-            out.rejected
-                .push((r, self.reason(&why), Cause::new(Code::Statement)));
-        }
+        let (ran, mut out) = steps::before(&plan.input.steps, input, |why| self.reason(why))?;
         let rows = ran.batch;
         if rows.num_rows() == 0 {
             return Ok(out);
@@ -496,80 +489,13 @@ impl Operator {
     /// row by row, and a row it fails on is given with why: no aggregate
     /// takes it.
     fn arguments(&self, rows: &RecordBatch) -> Result<(Arguments, Vec<(usize, String)>), JobError> {
-        let n = rows.num_rows();
-        let all: Vec<usize> = (0..n).collect();
-        let mut bad = BTreeMap::new();
-        let mut args = Vec::with_capacity(self.plan.aggregates.len());
-        let mut filters = Vec::with_capacity(self.plan.aggregates.len());
-        for a in &self.plan.aggregates {
-            let filter = match &a.filter {
-                None => None,
-                Some(e) => {
-                    let got = self.each(
-                        rows,
-                        &all,
-                        |b| e.eval_predicate(b).map(|p| Arc::new(p) as ArrayRef),
-                        &mut bad,
-                    )?;
-                    Some(arrow_array::cast::AsArray::as_boolean(got.as_ref()).clone())
-                }
-            };
-            let arg = match &a.arg {
-                None => None,
-                Some(e) => {
-                    let admitted: Vec<usize> =
-                        (0..n).filter(|&r| passes(filter.as_ref(), r)).collect();
-                    Some(self.each(rows, &admitted, |b| e.eval(b), &mut bad)?)
-                }
-            };
-            filters.push(filter);
-            args.push(arg);
-        }
+        let aggregates = self
+            .plan
+            .aggregates
+            .iter()
+            .map(|a| (a.arg.as_ref(), a.filter.as_ref()));
+        let (args, filters, bad) = steps::arguments(rows, aggregates, &|why| self.reason(why))?;
         Ok(((args, filters), bad.into_iter().collect()))
-    }
-
-    /// `f` on the rows `at` of `rows`, as a column of all of them: null at
-    /// the others, and at a row it fails on, which `bad` gets with why.
-    fn each(
-        &self,
-        rows: &RecordBatch,
-        at: &[usize],
-        f: impl Fn(&RecordBatch) -> Result<ArrayRef, openetl_sql::Error>,
-        bad: &mut BTreeMap<usize, String>,
-    ) -> Result<ArrayRef, JobError> {
-        let internal = |e: openetl_sql::Error| JobError::internal(e.message);
-        let some = steps::take(rows, at).map_err(internal)?;
-        let (got, ok) = match f(&some) {
-            Ok(a) => (a, at.to_vec()),
-            Err(_) => {
-                let mut ok = Vec::with_capacity(at.len());
-                for (i, &r) in at.iter().enumerate() {
-                    match f(&some.slice(i, 1)) {
-                        Ok(_) => ok.push(r),
-                        Err(e) => {
-                            bad.entry(r).or_insert_with(|| self.reason(&e.message));
-                        }
-                    }
-                }
-                let kept = steps::take(rows, &ok).map_err(internal)?;
-                let got = f(&kept).map_err(|e| {
-                    JobError::new(
-                        ErrorCode::DataInvalid,
-                        self.reason(&format!(
-                            "rows that it evaluates one at a time fail together ({})",
-                            e.kind.code()
-                        )),
-                    )
-                })?;
-                (got, ok)
-            }
-        };
-        let mut index = vec![None; rows.num_rows()];
-        for (i, &r) in ok.iter().enumerate() {
-            index[r] = Some(i as u64);
-        }
-        arrow_select::take::take(got.as_ref(), &arrow_array::UInt64Array::from(index), None)
-            .map_err(|e| JobError::internal(e.to_string()))
     }
 
     /// The starts of a tumbling or hopping window that `t` falls in.
@@ -1425,7 +1351,7 @@ fn parse_timer(k: &[u8]) -> Result<(u8, Vec<u8>, i64), JobError> {
     Ok((kind, key.to_vec(), start))
 }
 
-fn is_json(f: &Field) -> bool {
+pub(crate) fn is_json(f: &Field) -> bool {
     f.metadata()
         .get(openetl_normalize::EXTENSION_NAME_KEY)
         .map(String::as_str)
@@ -1433,7 +1359,7 @@ fn is_json(f: &Field) -> bool {
 }
 
 /// A JSON column's values as keys take them: one text for equal JSON.
-fn canonical_json(a: &ArrayRef) -> ArrayRef {
+pub(crate) fn canonical_json(a: &ArrayRef) -> ArrayRef {
     let Some(s) = arrow_array::cast::AsArray::as_string_opt::<i32>(a.as_ref()) else {
         return a.clone();
     };
