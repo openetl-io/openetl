@@ -2,7 +2,6 @@ package engineclient
 
 import (
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -196,14 +195,15 @@ func TestEngineRunsAGroupWindow(t *testing.T) {
 	if len(ready) != 2 {
 		t.Fatalf("ready: %+v", ready)
 	}
-	// Epoch 5 names the lane's run of what it changed; epoch 6 is at the
-	// end of input, which closed every window, and names no state.
+	// Epoch 5 carries what the lane changed, which is small, and writes no
+	// run; epoch 6 is at the end of input, which closed every window, and
+	// names no state.
 	s := ready[0].Ready.Snapshots
-	if len(s) != 1 || s[0].Operator != a.Statements[0].Operator || len(s[0].Runs) != 1 || len(s[0].Data) == 0 {
+	if len(s) != 1 || s[0].Operator != a.Statements[0].Operator || len(s[0].Runs) != 0 || len(s[0].Data) == 0 || len(s[0].Pending) == 0 {
 		t.Fatalf("epoch %d's snapshots: %+v", ready[0].Epoch, s)
 	}
-	if _, err := os.Stat(filepath.Join(state, s[0].Runs[0])); err != nil {
-		t.Errorf("epoch %d names %s: %v", ready[0].Epoch, s[0].Runs[0], err)
+	if files, err := os.ReadDir(state); err != nil || len(files) != 0 {
+		t.Errorf("epoch %d wrote %v: %v", ready[0].Epoch, files, err)
 	}
 	if s := ready[1].Ready.Snapshots; len(s) != 0 {
 		t.Fatalf("epoch %d's snapshots: %+v", ready[1].Epoch, s)

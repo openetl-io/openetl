@@ -51,7 +51,7 @@ page_views (exact)
 
 - It stages records and applies them in one step (**stage and apply**). Exact replay gives `exactly_once`. Superset replay with merge gives `effectively_once`, because repeated versions update the same row. Superset replay with append or overwrite gives `at_least_once` unless the destination can skip existing `_openetl_id` values. That capability gives `exactly_once` through **deduplication at apply** when the stream requires more than at least once.
 - It writes each commit in a transaction (**transactional stream**). An exact stream gets `exactly_once`, and a superset stream `at_least_once`.
-- It delivers records as they're read and waits for each to be acknowledged (**deliver and acknowledge**). A delivery can be retried and land twice, so every stream gets `at_least_once`.
+- It delivers records as they are read and waits for each to be acknowledged (**deliver and acknowledge**). A delivery can be retried and land twice, so every stream gets `at_least_once`.
 
 **The stream: its write mode and its key.** Merge needs a primary key. A stream without one is covered [below](#streams-without-a-primary-key).
 
@@ -59,7 +59,7 @@ page_views (exact)
 
 `delivery.require` sets the minimum guarantee for the pipeline. The default is `exactly_once`. A stream's `require` overrides that requirement for the stream. Deduplication needs an index on `_openetl_id` and a lookup for each row. OpenETL enables it only when the stream requires more than at least once.
 
-Here's an incremental read written with merge:
+Here is an incremental read written with merge:
 
 ```yaml
 apiVersion: openetl.io/v1alpha1
@@ -95,7 +95,7 @@ workspaces/default/pipelines/shop-orders (version 3714e5de146d)
 openetl: the plan has problems, so apply would refuse it
 ```
 
-The stream can't have exactly once, so the plan fails, and `openetl apply` would refuse the file. Either accept what merge gives, which makes the plan's streams section read:
+The stream cannot have exactly once, so the plan fails, and `openetl apply` would refuse the file. Either accept what merge gives, which makes the plan's streams section read:
 
 ```yaml
   delivery:
@@ -127,11 +127,11 @@ Or write with append, the default, which Postgres dedupes at apply, for this str
 | `superset replay, no primary key: collapsed within each epoch` | `at_least_once` | Rows with the same content become one row within each commit, but a repeat of a row an earlier commit wrote lands again. |
 | `superset replay, no primary key, and not collapsed` | `at_least_once` | Every row lands, repeats included. |
 | `superset replay, not deduped under at_least_once` | `at_least_once` | The destination could dedupe, but the stream requires only at least once. |
-| `superset replay, and the destination can't dedupe` | `at_least_once` | Repeats land, since the destination can't skip them. |
+| `superset replay, and the destination can't dedupe` | `at_least_once` | Repeats land, since the destination cannot skip them. |
 | `the destination delivers and acknowledges` | `at_least_once` | A retried delivery can land twice. |
 | `a transform's output over exact inputs` | `exactly_once` | A [transform](../integrate/index.md)'s output, when every stream it reads replays exactly. |
 | `a transform's output over superset inputs, written with merge` | `effectively_once` | As for merge above. |
-| `a transform's output over superset inputs, which isn't deduped unless written with merge` | `at_least_once` | Once your code has changed the rows, an `_openetl_id` can't tell a repeated input from a new one. |
+| `a transform's output over superset inputs, which isn't deduped unless written with merge` | `at_least_once` | Once your code has changed the rows, an `_openetl_id` cannot tell a repeated input from a new one. |
 
 ## Commits, as a reader sees them
 
@@ -158,7 +158,7 @@ Without a primary key, a row's identity depends on its whole content. A repeated
 | `false` | `at_least_once` | Every row, repeats included. | Nothing |
 | `false` | Above at least once | The plan fails, so nothing is applied. | |
 
-`collapse` is `true` by default for a stream that may replay a superset and requires more than at least once, and `false` otherwise. Only a destination that dedupes at apply can collapse rows; for any other, the plan fails a stream with `collapse: true`. On a stream with a primary key, `collapse` does nothing, and the plan warns that it's ignored.
+`collapse` is `true` by default for a stream that may replay a superset and requires more than at least once, and `false` otherwise. Only a destination that dedupes at apply can collapse rows; for any other, the plan fails a stream with `collapse: true`. On a stream with a primary key, `collapse` does nothing, and the plan warns that it is ignored.
 
 The plan warns about each stream without a primary key, with what its settings cost and what the others would. This pipeline reads `page_views` incrementally and keeps every row:
 
@@ -233,7 +233,7 @@ from shop.orders
 order by _openetl_id;
 ```
 
-To keep the latest version of each order, keep the row with the highest `_openetl_seq` for each primary key. This gives 100 rows, with order 5 as it was last updated. Don't use `_openetl_id` for this: each version has an ID of its own.
+To keep the latest version of each order, keep the row with the highest `_openetl_seq` for each primary key. This gives 100 rows, with order 5 as it was last updated. Do not use `_openetl_id` for this: each version has an ID of its own.
 
 ```sql
 select distinct on (id) *
@@ -250,7 +250,7 @@ from shop.orders
 order by id, _openetl_seq desc;
 ```
 
-[Reading what OpenETL writes](../integrate/index.md#reading-what-openetl-writes) has every `_openetl_*` column, and the same queries with `row_number()` for engines without `distinct on`.
+[Reading what OpenETL writes](../integrate/read-data.md#reading-what-openetl-writes) has every `_openetl_*` column, and the same queries with `row_number()` for engines without `distinct on`.
 
 ### Which commits were read again
 
@@ -262,4 +262,4 @@ After recovery from a forced barrier, an entry can show a guarantee below the pl
 
 The plan needs the source's latest catalog and the destination connector's capabilities. `openetl discover` refreshes the catalog. The destination connector's package supplies its capabilities.
 
-For a local executable without a package, the plan reports that it cannot check guarantees in advance. The console's **Delivery** column shows **Checked when it syncs**. The runner checks before each sync. [Package and publish](../build-connectors/index.md#package-and-publish) explains connector packages; `openetl connector apply` installs them.
+For a local executable without a package, the plan reports that it cannot check guarantees in advance. The console's **Delivery** column shows **Checked when it syncs**. The runner checks before each sync. [Package and publish](../build-connectors/publish.md#package-and-publish) explains connector packages; `openetl connector apply` installs them.

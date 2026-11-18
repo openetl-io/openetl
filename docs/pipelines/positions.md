@@ -16,7 +16,7 @@ openetl reset --stream public.orders orders-to-warehouse
 
 A continuous pipeline restarts at a checkpoint to apply the reset. A paused pipeline applies it after you resume the pipeline. A separately paused stream applies it after you resume that stream.
 
-A reset also drops the state of each SQL [group window](../reference/sql.md#group-windows) that reads a reset stream, and any state that no statement keeps now, such as a changed statement's. A reset stream also starts with no watermark. The window builds its state again only from the rows that the new read returns, so a read that starts partway through a window writes that window's row from part of its rows ([State](../reference/sql.md#state)).
+A reset also drops the state of each SQL [group window](../reference/sql-windows.md#group-windows) that reads a reset stream, and any state that no statement keeps now, such as a changed statement's. A reset stream also starts with no watermark. The window builds its state again only from the rows that the new read returns, so a read that starts partway through a window writes that window's row from part of its rows ([State](../reference/sql-windows.md#state)).
 
 A reset does not directly delete destination data. The next write depends on the write mode:
 
@@ -28,7 +28,7 @@ A reset does not directly delete destination data. The next write depends on the
 
 After a CDC reset, a new snapshot contains current rows. It does not recover intermediate changes. An appended change log therefore has a gap.
 
-A pipeline with a Flink transform can't be reset, since Flink keeps state of its own; delete it and apply it again.
+A pipeline with a Flink transform cannot be reset, since Flink keeps state of its own; delete it and apply it again.
 
 ### After a lost position
 
@@ -48,7 +48,7 @@ If the connector shares a source position across streams, follow its recovery in
 Each commit writes a checkpoint record under `_checkpoints` in the data plane's storage. If the latest record is missing or damaged, recovery can use the preceding record. This reads an already delivered **epoch**, the data between two checkpoints, again. The pipeline's policy and delivery guarantees determine whether recovery is automatic:
 
 - With `heal.mode: auto_safe` (the default) or `auto`, recovery is automatic only where it preserves each stream's [delivery guarantee](./delivery.md). This includes merge writes, deduplication at apply and streams already delivered at least once. A **Checkpoint corrupt** incident records the recovery and resolves after the next commit.
-- Otherwise the sync fails with `CHECKPOINT_CORRUPT`, the incident pauses the pipeline, and its error says why the attempt didn't restart. To restart anyway, accepting that streams written with `append` and not deduped get the epoch's rows twice:
+- Otherwise the sync fails with `CHECKPOINT_CORRUPT`, the incident pauses the pipeline, and its error says why the attempt did not restart. To restart anyway, accepting that streams written with `append` and not deduped get the epoch's rows twice:
 
   ```sh
   openetl rewind --yes orders-to-warehouse

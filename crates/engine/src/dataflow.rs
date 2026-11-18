@@ -3022,6 +3022,15 @@ pub(crate) mod tests {
         job: tokio::task::JoinHandle<Result<(), JobError>>,
     }
 
+    /// `req`, whose lanes write a run at every barrier that changed
+    /// something, as records carry none of their changes.
+    pub(crate) fn with_runs(
+        mut req: openetl_proto::engine::v1::StartJobRequest,
+    ) -> openetl_proto::engine::v1::StartJobRequest {
+        req.state_pending_bytes = Some(0);
+        req
+    }
+
     pub(crate) fn start_lanes(req: openetl_proto::engine::v1::StartJobRequest) -> LaneHarness {
         let plan = Arc::new(Plan::from_request(req).unwrap());
         let (mut ins, mut readers, mut outs, mut writers) = (vec![], vec![], vec![], vec![]);
@@ -5829,14 +5838,23 @@ pub(crate) mod tests {
     /// no second exchange: each key on one writer lane. A window closes once
     /// every lane's watermark has passed its end, in the epoch that happens
     /// in, and the rest at the end of input. Each epoch names each keyed
-    /// lane's state: a run of what the lane changed in it, while a window is
-    /// open; at the end of input, every window has gone, and no lane names
-    /// any.
+    /// lane's state while a window is open: what the lane changed, which
+    /// the record carries, or with `runs` a run of it; at the end of input,
+    /// every window has gone, and no lane names any.
     #[tokio::test]
     async fn a_window_closes_once_every_lanes_watermark_passes_it() {
+        for runs in [true, false] {
+            window_closes_once_every_lanes_watermark_passes_it(runs).await;
+        }
+    }
+
+    async fn window_closes_once_every_lanes_watermark_passes_it(runs: bool) {
         let state = tempfile::tempdir().unwrap();
         let req = window_request(state.path(), MINUTES, 2, 1, 1);
-        let mut h = start_lanes(req);
+        let mut h = match runs {
+            true => start_lanes(with_runs(req)),
+            false => start_lanes(req),
+        };
         for (l, w) in h.ins.iter_mut().enumerate() {
             let l = i64::try_from(l).unwrap();
             put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
@@ -5881,11 +5899,12 @@ pub(crate) mod tests {
             assert_eq!(lanes, 1, "{e} on {lanes} writer lanes");
         }
         assert_eq!(ready.len(), 2);
-        let mut named: Vec<BTreeSet<String>> = Vec::new();
+        let mut all_named: Vec<BTreeSet<String>> = Vec::new();
         for (n, r) in ready.iter().enumerate() {
             let epoch = n as u64 + 1;
             assert_eq!(r.snapshots.len(), [2, 0][n], "epoch {epoch}");
-            let mut runs = BTreeSet::new();
+            assert!(r.snapshots.iter().all(|s| s.pending.is_empty() == runs));
+            let mut named = BTreeSet::new();
             for s in &r.snapshots {
                 let range = s.key_groups.unwrap();
                 for run in &s.runs {
@@ -5898,19 +5917,25 @@ pub(crate) mod tests {
                         (range.first, range.last)
                     );
                     assert!(state.path().join(run).is_file(), "{run} is written");
-                    runs.insert(run.clone());
+                    named.insert(run.clone());
                 }
             }
-            named.push(runs);
+            all_named.push(named);
         }
-        assert!(named[0].iter().any(|r| r.contains("/e1/")), "{named:?}");
+        let named = all_named;
+        assert_eq!(
+            named[0].iter().any(|r| r.contains("/e1/")),
+            runs,
+            "{named:?}"
+        );
         // The second minute's state and timers were all the first epoch's
-        // run held, and its deletes leave nothing to write.
+        // run held, or its record, and its deletes leave nothing to write.
         assert!(named[1].is_empty(), "{named:?}");
         let dir = state
             .path()
             .join(crate::state::dir(&ready[0].snapshots[0].operator));
         assert!(!dir.join("g1/e2").exists(), "epoch 2 wrote a run");
+        assert_eq!(dir.exists(), runs);
         // Both lanes' parts of the operator add up to one report an epoch:
         // twelve rows in, three windows written each epoch, six opened in
         // the first and every one dropped once it closed, with no lateness.
@@ -6027,14 +6052,25 @@ pub(crate) mod tests {
     /// another job, on another number of lanes, from the record's
     /// watermarks: a window that closed before it stays closed, and a row of
     /// it is late. While windows are open, the restored lanes name the runs
-    /// they read on, beside their own; once all have closed, nothing.
+    /// they read on, beside their own, or with no runs carry on the
+    /// record's changes with theirs; once all have closed, nothing.
     #[tokio::test]
     async fn a_restored_window_goes_on_and_a_closed_one_stays_closed() {
+        for runs in [true, false] {
+            restored_window_goes_on(runs).await;
+        }
+    }
+
+    async fn restored_window_goes_on(runs: bool) {
+        let start = |req| match runs {
+            true => start_lanes(with_runs(req)),
+            false => start_lanes(req),
+        };
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
         let mut req = window_request(&state, MINUTES, 2, 1, 1);
         req.quarantine_url = format!("file://{}", dir.path().display());
-        let mut h = start_lanes(req);
+        let mut h = start(req);
         for (l, w) in h.ins.iter_mut().enumerate() {
             put(w, FrameKind::Split, 0, split(&format!("s{l}"), None)).await;
             let later = match l {
@@ -6065,12 +6101,13 @@ pub(crate) mod tests {
         // its time, starts each split at its watermark, and the lanes past
         // the exchange at the least of them.
         let restored: BTreeSet<String> = snapshots.iter().flat_map(|s| s.runs.clone()).collect();
-        assert!(!restored.is_empty());
+        assert_eq!(!restored.is_empty(), runs);
+        assert!(snapshots.iter().all(|s| s.pending.is_empty() == runs));
         let mut req = window_request(&state, MINUTES, 3, 2, 2);
         req.quarantine_url = format!("file://{}", dir.path().display());
         req.restored_snapshots = snapshots;
         event_time(&mut req).floor = Some(70 * SEC);
-        let mut h = start_lanes(req);
+        let mut h = start(req);
         for (l, w) in h.ins.iter_mut().enumerate() {
             let rs = match l {
                 0 => vec![minute_row(4, "x", 30), minute_row(5, "y", 80)],
@@ -6102,7 +6139,13 @@ pub(crate) mod tests {
             .flat_map(|s| s.runs.clone())
             .collect();
         assert!(open.is_superset(&restored), "{open:?}");
-        assert!(open.iter().any(|r| r.contains("/g2/e2/")), "{open:?}");
+        assert_eq!(open.iter().any(|r| r.contains("/g2/e2/")), runs, "{open:?}");
+        if !runs {
+            // Each lane with an open minute carries it on.
+            let carrying = ready[0].snapshots.iter().filter(|s| !s.pending.is_empty());
+            assert!(carrying.count() >= 1, "{:?}", ready[0].snapshots);
+            assert_eq!(ready[0].operators[0].barrier.unwrap().count, 0);
+        }
         // At the end of input every window has gone, and no lane names
         // any of the window's state.
         assert!(ready[1].snapshots.is_empty(), "{:?}", ready[1].snapshots);
@@ -6190,12 +6233,19 @@ pub(crate) mod tests {
 
     /// The first job of the spanning rows: two lanes, a split each, part 0
     /// in epoch 1, which closes no window; part 1 in epoch 2 with the end of
-    /// input, if `both`. Its window rows and EpochReadys.
+    /// input, if `both`. With `runs`, its lanes write a run at each barrier;
+    /// else its records carry their changes. Its window rows and
+    /// EpochReadys.
     async fn first_spanning_job(
         state: &std::path::Path,
         both: bool,
+        runs: bool,
     ) -> (Vec<(i64, String, i64)>, Vec<EpochReady>) {
-        let mut h = start_lanes(window_request(state, MINUTES, 2, 1, 1));
+        let req = window_request(state, MINUTES, 2, 1, 1);
+        let mut h = match runs {
+            true => start_lanes(with_runs(req)),
+            false => start_lanes(req),
+        };
         for (l, w) in h.ins.iter_mut().enumerate() {
             let id = format!("s{l}");
             put(w, FrameKind::Split, 0, split(&id, None)).await;
@@ -6217,6 +6267,9 @@ pub(crate) mod tests {
             all_rows(&outs, 1).iter().all(|r| r.epoch == 2),
             "no window closes in epoch 1"
         );
+        let named = ready[0].snapshots.iter().any(|s| !s.runs.is_empty());
+        let carried = ready[0].snapshots.iter().any(|s| !s.pending.is_empty());
+        assert_eq!((named, carried), (runs, !runs), "{:?}", ready[0].snapshots);
         (counts(&outs, 1), ready)
     }
 
@@ -6265,32 +6318,35 @@ pub(crate) mod tests {
 
     /// State written by one job's lanes, which ended, restores in other
     /// jobs on one, two and four lanes, each lane opening the part of the
-    /// record's runs its key groups hold: each gives every window whole, as
-    /// one job reading every row does.
+    /// record's runs its key groups hold, or of the pending sets it
+    /// carries: each gives every window whole, as one job reading every row
+    /// does.
     #[tokio::test]
     async fn state_restores_onto_any_number_of_lanes() {
         let dir = tempfile::tempdir().unwrap();
         let want = spanning_counts(&[0, 1]);
         let starts: BTreeSet<i64> = want.iter().map(|(s, _, _)| *s).collect();
         assert_eq!(starts, BTreeSet::from([60, 120]), "{want:?}");
-        let (whole, _) = first_spanning_job(&dir.path().join("whole"), true).await;
+        let (whole, _) = first_spanning_job(&dir.path().join("whole"), true, true).await;
         assert_eq!(whole, want, "in one job");
 
-        let state = dir.path().join("state");
-        let (_, first) = first_spanning_job(&state, false).await;
-        assert_eq!(first[0].snapshots.len(), 2);
         let mut compared = 0;
-        for (generation, lanes) in [(2, 1), (3, 2), (4, 4)] {
-            let (got, ready) =
-                restored_spanning_job(&state, &first[0], lanes, generation, |_| {}).await;
-            assert_eq!(got, want, "on {lanes} lanes");
-            assert!(
-                ready[0].snapshots.is_empty(),
-                "the end of input leaves no state"
-            );
-            compared += 1;
+        for runs in [true, false] {
+            let state = dir.path().join(format!("state-{runs}"));
+            let (_, first) = first_spanning_job(&state, false, runs).await;
+            assert_eq!(first[0].snapshots.len(), 2);
+            for (generation, lanes) in [(2, 1), (3, 2), (4, 4)] {
+                let (got, ready) =
+                    restored_spanning_job(&state, &first[0], lanes, generation, |_| {}).await;
+                assert_eq!(got, want, "on {lanes} lanes, runs {runs}");
+                assert!(
+                    ready[0].snapshots.is_empty(),
+                    "the end of input leaves no state"
+                );
+                compared += 1;
+            }
         }
-        assert_eq!(compared, 3);
+        assert_eq!(compared, 6);
     }
 
     /// A run a lane wrote at a barrier whose record never landed is an
@@ -6300,7 +6356,7 @@ pub(crate) mod tests {
     async fn a_failed_epochs_run_is_an_orphan_and_isnt_read() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
-        let (_, first) = first_spanning_job(&state, false).await;
+        let (_, first) = first_spanning_job(&state, false, true).await;
         let one = &first[0];
         // An attempt restored from epoch 1 reads part 1 and passes epoch
         // 2's barrier with the third minute open, and its record never
@@ -6309,7 +6365,7 @@ pub(crate) mod tests {
         req.restored_snapshots = one.snapshots.clone();
         event_time(&mut req).floor = Some(least_mark(one));
         let marks: BTreeMap<String, i64> = split_marks(one, "a").into_iter().collect();
-        let mut h = start_lanes(req);
+        let mut h = start_lanes(with_runs(req));
         for (l, w) in h.ins.iter_mut().enumerate() {
             let id = format!("s{l}");
             put(w, FrameKind::Split, 0, split(&id, marks.get(&id).copied())).await;
@@ -6336,12 +6392,19 @@ pub(crate) mod tests {
     }
 
     /// A redo of an epoch starts from the state of the record before it,
-    /// writes none and names none: its rows are the epoch's.
+    /// its runs or the pending sets it carries, writes none and names none:
+    /// its rows are the epoch's.
     #[tokio::test]
     async fn a_redo_reads_the_state_before_its_epoch_and_writes_none() {
+        for runs in [true, false] {
+            redo_reads_the_state_before_its_epoch(runs).await;
+        }
+    }
+
+    async fn redo_reads_the_state_before_its_epoch(runs: bool) {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
-        let (_, first) = first_spanning_job(&state, true).await;
+        let (_, first) = first_spanning_job(&state, true, runs).await;
         let files = |d: &std::path::Path| -> usize {
             let mut n = 0;
             let mut stack = vec![d.to_path_buf()];
@@ -6356,8 +6419,8 @@ pub(crate) mod tests {
             }
             n
         };
-        let before = files(&state);
-        assert!(before > 0);
+        let before = if state.exists() { files(&state) } else { 0 };
+        assert_eq!(before > 0, runs);
         let (got, ready) = restored_spanning_job(&state, &first[0], 1, 2, |r| {
             r.state_read_only = true;
             r.first_lane = 1;
@@ -6365,7 +6428,8 @@ pub(crate) mod tests {
         .await;
         assert_eq!(got, spanning_counts(&[0, 1]));
         assert!(ready.iter().all(|r| r.snapshots.is_empty()));
-        assert_eq!(files(&state), before, "a redo writes no run");
+        let after = if state.exists() { files(&state) } else { 0 };
+        assert_eq!(after, before, "a redo writes no run");
     }
 
     /// A job with a group window keeps its state at the job's state URL, and
@@ -6390,7 +6454,7 @@ pub(crate) mod tests {
     async fn state_the_record_names_in_part_fails_the_job() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
-        let (_, first) = first_spanning_job(&state, false).await;
+        let (_, first) = first_spanning_job(&state, false, false).await;
         assert_eq!(first[0].snapshots.len(), 2);
         let mut failed = 0;
         for lanes in [1, 2] {
@@ -6421,7 +6485,7 @@ pub(crate) mod tests {
     async fn a_missing_run_fails_the_job_as_corrupt() {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
-        let (_, first) = first_spanning_job(&state, false).await;
+        let (_, first) = first_spanning_job(&state, false, true).await;
         let run = first[0]
             .snapshots
             .iter()
@@ -6654,7 +6718,7 @@ pub(crate) mod tests {
             }),
             layout: openetl_state::LAYOUT,
             data: openetl_state::runs::encode(&[]).to_vec(),
-            runs: Vec::new(),
+            ..Default::default()
         }];
         let Err(e) = Plan::from_request(req) else {
             panic!("planned");

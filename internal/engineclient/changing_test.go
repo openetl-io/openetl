@@ -170,6 +170,10 @@ func leaveAWindowOpen(ctx context.Context, t *testing.T) openWindow {
 func editJob(ctx context.Context, t *testing.T, log *checkpoint.Log, stateURL string, dest destination.Destination, sql string, dropped []string) runner.Job {
 	t.Helper()
 	opts := options(t, nil)
+	// The state is in runs, which the records name and retention deletes,
+	// not in the records alone.
+	none := uint64(0)
+	opts.StatePendingBytes = &none
 	s := runner.Stream{
 		Name: "s", Replay: source.Exact, Mode: destination.Append, Read: source.Stream,
 		Schema: arrow.NewSchema([]arrow.Field{

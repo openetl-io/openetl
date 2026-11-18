@@ -140,8 +140,8 @@ Your object store can delete the files itself. On S3, this lifecycle rule delete
 
 If the bucket has versioning, `Expiration` does not remove a file's data. It makes the file a noncurrent version, which keeps the rows. `NoncurrentVersionExpiration` then deletes that version 1 day later. In a bucket without versioning, it does nothing.
 
-> [!WARNING]
-> The command in step 3 replaces every lifecycle rule of the bucket. The bucket loses each rule that is not in `lifecycle.json`.
+> [!CAUTION]
+> Applying this file replaces all bucket lifecycle rules. Include every rule you need to keep in `lifecycle.json`.
 
 1. Save the rule as `lifecycle.json`.
 2. If the bucket has other lifecycle rules, add them to `Rules`.

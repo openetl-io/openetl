@@ -189,6 +189,8 @@ type windowNumbers struct {
 	dir string
 	mu  sync.Mutex
 	ops []checkpoint.Operator
+	// Records whose snapshots carried the lanes' changes.
+	carried int
 }
 
 // watch checks each record j commits: the rows the window took in are
@@ -236,7 +238,19 @@ func (w *windowNumbers) check(rec *checkpoint.Record) {
 	if op.StoredBytes != stored {
 		w.t.Errorf("epoch %d: the window stores %d bytes; its record's runs are %d", rec.Epoch, op.StoredBytes, stored)
 	}
+	// Every worker's lanes' changes ride in the coordinator's record, within
+	// what a record carries of them.
+	var carried uint64
+	for _, sn := range rec.Snapshots {
+		carried += uint64(len(sn.Pending))
+	}
+	if op.CheckpointBytes != carried || carried > 1<<20 {
+		w.t.Errorf("epoch %d: the window's record carries %d bytes of it; its snapshots %d", rec.Epoch, op.CheckpointBytes, carried)
+	}
 	w.mu.Lock()
+	if carried > 0 {
+		w.carried++
+	}
 	w.ops = append(w.ops, op)
 	w.mu.Unlock()
 }
@@ -333,6 +347,11 @@ func TestAGroupWindowOnWorkersThroughTheEngine(t *testing.T) {
 	}
 	if n := len(numbers.ops); n == 0 || written != uint64(len(want)) || numbers.ops[n-1].Windows != 0 {
 		t.Errorf("%d records' numbers wrote %d windows' rows, of %d, and keep %v at the end", n, written, len(want), numbers.ops)
+	}
+	// The windows' state is small: the records carry it, and the attempts
+	// after a kill restore it from them.
+	if numbers.carried == 0 {
+		t.Error("no record carried the lanes' changes")
 	}
 }
 

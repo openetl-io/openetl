@@ -3,7 +3,7 @@ title: Aggregate by windows of time
 description: Add up a stream's rows by minutes, hours or sessions of their own time with a SQL group window, and know when each window's row is written, what happens to late rows, and where the state is kept.
 ---
 
-A group window is a SQL statement that adds up a stream's rows by windows of time, such as the revenue of each region in each minute. It writes one row for each window and key. This page explains the time that windows use, when each window's row is written, what happens to rows that come late, and how to change a window's statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [Group windows](../reference/sql.md#group-windows) in the SQL reference lists every window, aggregate and rule.
+A group window is a SQL statement that adds up a stream's rows by windows of time, such as the revenue of each region in each minute. It writes one row for each window and key. This page explains the time that windows use, when each window's row is written, what happens to rows that come late, and how to change a window's statement. [Write a SQL transform](./sql-transforms.md) explains statements in general. [Group windows](../reference/sql-windows.md#group-windows) in the SQL reference lists every window, aggregate and rule.
 
 ## Before you start
 
@@ -79,7 +79,7 @@ FROM page_views
 GROUP BY tumble(viewed_at, INTERVAL '1 minute'), page;
 ```
 
-- `tumble` makes windows of one size, one after another. `hop` makes windows that overlap, and `session` groups a key's rows with gaps no longer than a size. [Windows](../reference/sql.md#windows) in the reference lists them.
+- `tumble` makes windows of one size, one after another. `hop` makes windows that overlap, and `session` groups a key's rows with gaps no longer than a size. [Windows](../reference/sql-windows.md#windows) in the reference lists them.
 - The output's primary key is `window_start` and the group keys, here `page`.
 - `HAVING` keeps only the windows where its condition is true.
 
@@ -108,7 +108,7 @@ A late row that comes after its window's lateness is quarantined as a row of the
 openetl quarantine --stream views_by_minute PIPELINE
 ```
 
-The list adds up rows by cause, so late rows show as the code `late`. In the console, the output's **Quarantined** number opens the same files ([Quarantined rows](../use/index.md#quarantined-rows)). The **SQL** tab's **At the last checkpoint** table shows how many the last epoch quarantined, and the `openetl.operator.rows.late` metric counts them ([Watch a window](#watch-a-window)).
+The list adds up rows by cause, so late rows show as the code `late`. In the console, the output's **Quarantined** number opens the same files ([Quarantined rows](../use/held-data.md#quarantined-rows)). The **SQL** tab's **At the last checkpoint** table shows how many the last epoch quarantined, and the `openetl.operator.rows.late` metric counts them ([Watch a window](#watch-a-window)).
 
 ## Windows across syncs
 
@@ -121,23 +121,30 @@ So a sync of a stream read in event-time order leaves its newest windows open un
 
 ## Where the state is kept
 
-A group window keeps state for each window that is open, or closed and within its lateness: the window's aggregates, and the values of the row it wrote. OpenETL keeps it in the runners' checkpoint store (`--checkpoints`), in a `_state/` folder next to the pipeline's checkpoints. At each checkpoint, the engine writes what the state changed since the last one, and the checkpoint names the files that hold the state.
+A group window keeps state for each window that is open, or closed and within its lateness: the window's aggregates, and the values of the row it wrote. OpenETL keeps it in the runners' checkpoint store (`--checkpoints`). Each lane of the engine keeps the changes to its state since it last wrote them to a file. At each checkpoint, the lane keeps those changes in one of two places:
+
+- If the changes are small, the checkpoint record holds them, and the lane writes no file. The windows of a pipeline share up to 1 MiB of each record, or a 64th of the engine's memory if that is less. Each window gets an equal part, and each of its lanes gets the fraction that the lane's key groups are of the pipeline's.
+- If the changes are larger than the lane's share, the lane writes them as a file in a `_state/` folder next to the pipeline's checkpoints. The checkpoint names the file, and the lane starts again with no changes.
+
+Each record holds a lane's changes again until the lane writes them to a file. So a pipeline that keeps little state, or whose windows open and close between files, writes few files of state, or none.
 
 - A file counts only once a checkpoint that names it commits. A file of an epoch that failed is never read.
-- After a failure, or between syncs, the next run opens the state that its checkpoint names, and reads each file when it first needs it.
+- After a failure, or between syncs, the next run opens the state that its checkpoint names. It takes the changes that the record holds at the start, and reads each file when it first needs it.
 - The engine stops keeping a window's state when the watermark passes the window's end plus the lateness.
 - Each lane merges some of its files in the background, once it holds more than 8 files of windows' values. A checkpoint names the merged file in place of the files it replaces.
 - A checkpoint names only the files that hold state still in use. When every window that a file holds has closed and its lateness has passed, or newer files hold all of it, the next checkpoints stop naming it. When every window has closed and its lateness has passed, a checkpoint names no file of the window's state.
 - A run keeps the last 10 checkpoints. When it starts, and every 10 checkpoints after, it deletes each file of state that none of those checkpoints names. So the files of state follow how long windows stay open, and do not grow with the number of checkpoints.
 
-[State](../reference/sql.md#state) in the reference has the rest.
+[State](../reference/sql-windows.md#state) in the reference has the rest.
 
 ### Build the state again
 
 To build a window's state again from the stream, reset the stream that the window reads. The reset drops the stream's position, its watermark and the state of every statement that reads it. The next run reads the stream again from where the source starts a new read, and builds the state from those rows. The files of the dropped state are deleted once no kept checkpoint names them.
 
-> [!WARNING]
-> A reset reads the stream again for every statement that reads it, and each of their outputs gets the stream's rows again. If the new read starts partway through a window, that window's row is written again from only part of its rows, and under `merge` it replaces the row that had all of them. [Read streams again from the start](./positions.md#read-streams-again-from-the-start) has what the destination gets.
+> [!CAUTION]
+> A reset rereads data for every statement that uses the stream. With `merge`, a partial window can replace a complete destination row.
+
+If a new read starts partway through a window, OpenETL rebuilds that window from only the rows it reads. With `merge`, this partial result replaces the earlier row. [Read streams again from the start](./positions.md#read-streams-again-from-the-start) explains the destination effects.
 
 ```sh
 openetl reset --stream page_views PIPELINE
@@ -145,7 +152,7 @@ openetl reset --stream page_views PIPELINE
 
 ## Change a window's statement
 
-A group window keeps its state under an ID that the plan shows. Some edits keep the ID, and with it the state: other names for columns, a new column through a view, and a `HAVING` over the aggregates that the statement computes. Another output name, window size, key or aggregate gives the window a new ID, and its state starts empty. [Changing a query](../reference/sql.md#changing-a-query) lists the edits that keep the ID.
+A group window keeps its state under an ID that the plan shows. Some edits keep the ID, and with it the state: other names for columns, a new column through a view, and a `HAVING` over the aggregates that the statement computes. Another output name, window size, key or aggregate gives the window a new ID, and its state starts empty. [Changing a query](../reference/sql-windows.md#changing-a-query) lists the edits that keep the ID.
 
 1. Edit the statement.
 2. Run `openetl plan -f FILE`, and read the `state` section of `transform.sql`. Each window shows `kept`, `new`, `changed` or `dropped`. The plan has a warning for each changed window, and for each new one over a stream that the pipeline has read, unless each sync reads the stream whole.
@@ -174,10 +181,11 @@ A change of the lateness never deletes or rewrites a row that a window wrote. To
 
 ## Watch a window
 
-The console's **SQL** tab shows, under **At the last checkpoint**, what each window's statement did in the last epoch, on every worker: its watermark, how far it was behind the commit, the windows it keeps, the rows it took in and wrote, its late rows, its state's size and its requests to object storage. [SQL](../use/index.md#sql) describes the table.
+The console's **SQL** tab shows, under **At the last checkpoint**, what each window's statement did in the last epoch, on every worker: its watermark, how far it was behind the commit, the windows it keeps, the rows it took in and wrote, its late rows, its state's size and its requests to object storage. [SQL](../use/sql.md#sql) describes the table.
 
 The same numbers are metrics, with the operator's ID as `openetl.operator` ([Monitoring](../self-host/monitoring.md#stateful-operators)). Watch these:
 
 - `openetl.operator.watermark.lag` grows when a split is behind the others. A window's row waits until the watermark reaches the window's end, so a growing lag delays the rows.
 - `openetl.operator.rows.late` counts late rows that came after their window's lateness, which OpenETL quarantined. If it grows, raise `watermark.delay` or `watermark.lateness`. A raised lateness applies to the windows that are still kept and to new windows. The late rows of windows that were gone before the change still go to quarantine, as [Change the lateness](#change-the-lateness) describes.
 - `openetl.operator.windows` and `openetl.operator.state.memory` grow with the keys and the lateness.
+- `openetl.operator.state.checkpoint` is the part of the state that the checkpoint record holds, and `openetl.operator.state.stored` the files that it names.

@@ -1,7 +1,9 @@
 package engineclient
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -352,28 +354,47 @@ func TestARetryKeepsACompletedStreamsWindowsOpen(t *testing.T) {
 
 // A group window's state outlives the engine that kept it. An attempt
 // whose engine ends while the minute is open leaves its state in the
-// state's storage, named by its records; the next attempt, in an engine
-// of its own, opens it from the record it restores, reads on from the
-// record's position, and closes the minute with every row of it, each
-// once. Then the minute's state is dead, and the record names none of the
-// first attempt's runs.
+// state's storage, named by its records, or in the records themselves
+// while it's small; the next attempt, in an engine of its own, opens it
+// from the record it restores, reads on from the record's position, and
+// closes the minute with every row of it, each once. Then the minute's
+// state is dead, and the record names none of the first attempt's runs.
 func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
+	for _, runs := range []bool{true, false} {
+		t.Run(map[bool]string{true: "runs", false: "in the record"}[runs], func(t *testing.T) {
+			stateOutlivesItsEngine(t, runs)
+		})
+	}
+}
+
+func stateOutlivesItsEngine(t *testing.T, runs bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
 	minute := minutes + 60_000_000
-	job := spanJob(ctx, t, source.Stream, 0)
+	span := spanJob(ctx, t, source.Stream, 0)
+	job := func(owner, sync string, src source.Reader, stateURL string, dest destination.Destination) runner.Job {
+		j := span(owner, sync, src, stateURL, dest)
+		if runs {
+			j = withRuns(j)
+		}
+		return j
+	}
 	state, dest := "file://"+t.TempDir(), newKeyDest(2)
 
-	// The first attempt's engine ends once a record names state, with the
+	// The first attempt's engine ends once a record holds state, with the
 	// minute open.
 	first, stop := context.WithCancel(ctx)
 	var once sync.Once
 	var named []string
+	var held *checkpoint.Record
+	var wrote bool
 	j := job("a1", "s1", &spanSource{minute: minute, pause: 12}, state, dest)
 	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
-		if r := stateRuns(rec); len(r) > 0 {
+		r := stateRuns(rec)
+		wrote = wrote || len(r) > 0
+		if len(r) > 0 || !runs && carried(rec) > 0 {
 			once.Do(func() {
-				named = r
+				named, held = r, rec
 				stop()
 			})
 		}
@@ -381,8 +402,14 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	if _, err := runner.RunAttempt(first, j); !errors.Is(err, context.Canceled) {
 		t.Fatalf("the first attempt ended with %v", err)
 	}
-	if len(named) == 0 {
-		t.Fatal("no record of the first attempt named state")
+	if held == nil {
+		t.Fatal("no record of the first attempt held state")
+	}
+	if !runs && windowEntries(t, held, minute) == 0 {
+		t.Fatal("the record that held state carries none of the open minute's")
+	}
+	if wrote != runs {
+		t.Fatalf("the first attempt's records named runs: %t", wrote)
 	}
 	if got := minuteRows(dest); len(got) != 0 {
 		t.Fatalf("the minute closed in the first attempt: %v", got)
@@ -392,12 +419,16 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 	drain := make(chan struct{})
 	var mu sync.Mutex
 	var last []string
+	var lastRec *checkpoint.Record
 	var done sync.Once
 	j = job("a2", "s1", &spanSource{minute: minute, pause: spanRows, closer: 140}, state, dest)
 	j.Drain = drain
 	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
 		mu.Lock()
-		last = stateRuns(rec)
+		last, lastRec = stateRuns(rec), rec
+		if !runs && carried(rec) > 0 {
+			last = append(last, "the record's own")
+		}
 		mu.Unlock()
 		if len(minuteRows(dest)) > 0 {
 			done.Do(func() { close(drain) })
@@ -415,8 +446,85 @@ func TestAGroupWindowsStateOutlivesItsEngine(t *testing.T) {
 		t.Error("the second attempt's last record names no state, though the closing row's minute is open")
 	}
 	for _, r := range last {
-		if slices.Contains(named, r) || !strings.Contains(r, "/g2/") {
+		if !runs && r == "the record's own" {
+			continue
+		}
+		if !runs || slices.Contains(named, r) || !strings.Contains(r, "/g2/") {
 			t.Errorf("the second attempt's last record names %s of the closed minute", r)
 		}
 	}
+	// The closed minute's value and timers left the pending sets, with no
+	// run to hold them, once the horizon passed them.
+	if n := windowEntries(t, lastRec, minute); !runs && n > 0 {
+		t.Errorf("the second attempt's last record carries %d entries of the closed minute", n)
+	} else if !runs {
+		t.Logf("the first attempt's record carried %d entries of the open minute; the last record carries none", windowEntries(t, held, minute))
+	}
+}
+
+// windowEntries counts the entries of rec's pending sets of a group
+// window's window starting at start, in microseconds: a window's value and
+// its timers have keys that end with its start, big-endian. A pending set
+// is a tag, a version, a count, each entry's key and then a delete (0) or a
+// value (1 and the value), as varint lengths and bytes, and a checksum.
+func windowEntries(t *testing.T, rec *checkpoint.Record, start int64) int {
+	t.Helper()
+	end := binary.BigEndian.AppendUint64(nil, uint64(start))
+	n := 0
+	for _, s := range rec.Snapshots {
+		b := s.Pending
+		if len(b) == 0 {
+			continue
+		}
+		if len(b) < 10 || b[0] != 'P' || b[1] != 1 {
+			t.Fatalf("a pending set of %d bytes that isn't one", len(b))
+		}
+		r := b[2 : len(b)-8]
+		next := func() []byte {
+			l, k := binary.Uvarint(r)
+			if k <= 0 || l > uint64(len(r)-k) {
+				t.Fatalf("a pending set that doesn't read")
+			}
+			v := r[k : k+int(l)]
+			r = r[k+int(l):]
+			return v
+		}
+		count, k := binary.Uvarint(r)
+		r = r[k:]
+		for range count {
+			key := next()
+			if len(r) == 0 {
+				t.Fatal("a pending entry without its flag")
+			}
+			flag := r[0]
+			r = r[1:]
+			if flag == 1 {
+				next()
+			}
+			if bytes.HasSuffix(key, end) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// carried is the bytes of their state rec's snapshots carry.
+func carried(rec *checkpoint.Record) int {
+	n := 0
+	for _, sn := range rec.Snapshots {
+		n += len(sn.Pending)
+	}
+	return n
+}
+
+// withRuns is j with engines whose lanes write a run at every barrier that
+// changed something, as records carry none of their changes.
+func withRuns(j runner.Job) runner.Job {
+	if df, ok := j.Dataflow.(*Dataflow); ok {
+		cp, none := *df, uint64(0)
+		cp.Options.StatePendingBytes = &none
+		j.Dataflow = &cp
+	}
+	return j
 }
