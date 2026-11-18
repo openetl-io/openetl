@@ -205,6 +205,7 @@ func TestWorkersOnKubernetes(t *testing.T) {
 	workerDocs := func(name, faker, dst, res string) []string {
 		d := docs(name, fmt.Sprintf(`{"connector": "faker", "config": %s}`, faker), dst, `{"commit": {"interval": "1s"}}`)
 		d[2] = strings.Replace(d[2], `"source":`, fmt.Sprintf(`"dataPlane": %q, "resources": %s, "source":`, p.plane, res), 1)
+		d[2] = strings.Replace(d[2], `}, "delivery":`, s3Append+`}, "delivery":`, 1)
 		return d
 	}
 	remove := func(name string) {
