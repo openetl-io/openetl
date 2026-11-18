@@ -130,6 +130,34 @@ impl LaneClock {
     }
 }
 
+/// A job's lanes, once it runs, for tests to watch.
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Lanes(Arc<std::sync::OnceLock<std::sync::Weak<Flow>>>);
+
+#[cfg(test)]
+impl Lanes {
+    /// Each of the engine's lanes' clocks, not its keyed lanes': what it's
+    /// doing and since when, which changes whenever it starts doing
+    /// something else; none before the job runs or after it's done.
+    pub(crate) fn clocks(&self) -> Option<Vec<u64>> {
+        let flow = self.0.get()?.upgrade()?;
+        let lanes = flow.plan.inbound.len();
+        Some(
+            flow.lanes[..lanes]
+                .iter()
+                .map(|c| c.now.load(Ordering::Acquire))
+                .collect(),
+        )
+    }
+
+    /// Whether a lane whose clock is `clock` waits for a writer lane, a
+    /// keyed lane or a link to take what it made.
+    pub(crate) fn backpressured(clock: u64) -> bool {
+        clock >> 62 == Doing::Backpressured as u64
+    }
+}
+
 fn nanos(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_nanos()).unwrap_or(SINCE) & SINCE
 }
@@ -835,6 +863,8 @@ where
         events: events.clone(),
         plan: plan.clone(),
     });
+    #[cfg(test)]
+    let _ = plan.lanes.0.set(Arc::downgrade(&flow));
     let mut senders = Vec::with_capacity(plan.writer_lanes);
     let mut feeds = Vec::with_capacity(plan.writer_lanes);
     for w in 0..plan.writer_lanes {

@@ -1,7 +1,10 @@
 //! Engines of one attempt in one process, over loopback TLS.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, OnceLock, Weak};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use arrow_array::cast::AsArray;
@@ -12,7 +15,7 @@ use openetl_proto::engine::v1::{
     events_response,
 };
 use prost::Message;
-use tokio::io::{AsyncWriteExt, BufReader, DuplexStream, duplex};
+use tokio::io::{AsyncRead, AsyncWriteExt, BufReader, DuplexStream, ReadBuf, duplex};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -37,11 +40,130 @@ fn der(b64: &str) -> Vec<u8> {
         .unwrap()
 }
 
+/// What an edge holds, in bytes, while its reader doesn't read.
+const EDGE: usize = 1 << 16;
+
 struct Engine {
     ins: Vec<DuplexStream>,
     outs: Vec<BufReader<DuplexStream>>,
     events: mpsc::Receiver<Result<EventsResponse, Status>>,
     job: JoinHandle<Result<(), JobError>>,
+    /// The bytes each lane has read of its edge.
+    read: Vec<Arc<AtomicU64>>,
+    /// The bytes each writer lane has written to its edge.
+    wrote: Vec<Arc<AtomicU64>>,
+    links: Arc<OnceLock<Weak<Links>>>,
+    lanes: crate::dataflow::Lanes,
+}
+
+impl Engine {
+    /// Its links, while it runs with them.
+    fn links(&self) -> Option<Arc<Links>> {
+        self.links.get().and_then(Weak::upgrade)
+    }
+}
+
+/// Whether every lane of the clocks waits for a channel or a link to take
+/// what it made.
+fn held(clocks: &[u64]) -> bool {
+    clocks
+        .iter()
+        .all(|c| crate::dataflow::Lanes::backpressured(*c))
+}
+
+/// An edge's end, counting the bytes that go through it.
+struct Counted<T> {
+    inner: T,
+    bytes: Arc<AtomicU64>,
+}
+
+impl<T> Counted<T> {
+    fn new(inner: T) -> Self {
+        Counted {
+            inner,
+            bytes: Arc::default(),
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for Counted<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        let res = Pin::new(&mut this.inner).poll_read(cx, buf);
+        this.bytes
+            .fetch_add((buf.filled().len() - before) as u64, Ordering::Relaxed);
+        res
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for Counted<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let res = Pin::new(&mut this.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(n)) = res {
+            this.bytes.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        res
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// Waits until `held` is true; fails the test, saying `never`, if it isn't
+/// within two minutes.
+async fn until(never: &str, mut held: impl FnMut() -> bool) {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        while !held() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect(never);
+}
+
+/// Waits until `sample` gives the same values twice running, 5 ms apart,
+/// and `held` is true of them. A sample holds the lanes' clocks, which
+/// change whenever a lane starts doing something else, counts that only
+/// grow, and counts that change only with a lane's clock, so each value
+/// stood from its read in the first sample to its read in the second:
+/// they all stood together once the first was taken.
+async fn until_stalled<S: PartialEq>(
+    mut sample: impl FnMut() -> Option<S>,
+    held: impl Fn(&S) -> bool,
+) {
+    let mut last = None;
+    until("the engines never stalled", || {
+        let now = sample();
+        let stood = now.is_some() && now == last && now.as_ref().is_some_and(&held);
+        last = now;
+        stood
+    })
+    .await;
+}
+
+/// Waits until every engine's links are up, so that what a test then gives
+/// them can't hold up their connecting within the mesh's timeout.
+async fn connected(es: &[Engine]) {
+    until("the engines never connected", || {
+        es.iter()
+            .all(|e| e.links().is_some_and(|l| l.connected().iter().all(|c| *c)))
+    })
+    .await;
 }
 
 /// The request of engine `me` of a mesh of `parts`, each its lanes and
@@ -90,15 +212,25 @@ fn start(req: StartJobRequest, listener: TcpListener, timeout: Duration) -> Engi
     if let Some(m) = plan.mesh.as_mut() {
         m.timeout = timeout;
     }
+    let links = plan
+        .mesh
+        .as_ref()
+        .map_or_else(Default::default, |m| m.links.clone());
+    let lanes = plan.lanes.clone();
     let plan = Arc::new(plan);
     let (mut ins, mut readers, mut outs, mut writers) = (vec![], vec![], vec![], vec![]);
+    let (mut read, mut wrote) = (vec![], vec![]);
     for _ in 0..plan.inbound.len() {
-        let (w, r) = duplex(1 << 16);
+        let (w, r) = duplex(EDGE);
+        let r = Counted::new(r);
+        read.push(r.bytes.clone());
         ins.push(w);
         readers.push(BufReader::new(r));
     }
     for _ in 0..plan.writer_lanes {
-        let (w, r) = duplex(1 << 16);
+        let (w, r) = duplex(EDGE);
+        let w = Counted::new(w);
+        wrote.push(w.bytes.clone());
         writers.push(w);
         outs.push(BufReader::new(r));
     }
@@ -109,6 +241,10 @@ fn start(req: StartJobRequest, listener: TcpListener, timeout: Duration) -> Engi
         outs,
         events,
         job,
+        read,
+        wrote,
+        links,
+        lanes,
     }
 }
 
@@ -125,7 +261,7 @@ async fn mesh(parts: &[(u32, u32)], change: impl Fn(usize, &mut StartJobRequest)
         .collect()
 }
 
-async fn put(w: &mut DuplexStream, kind: FrameKind, payload: Vec<u8>) {
+async fn put(w: &mut (impl AsyncWrite + Unpin), kind: FrameKind, payload: Vec<u8>) {
     frame::write(w, kind, 0, &payload).await.unwrap();
 }
 
@@ -146,7 +282,7 @@ fn barrier(generation: u64, n: u64) -> Vec<u8> {
     .encode_to_vec()
 }
 
-async fn end(w: &mut DuplexStream) {
+async fn end(w: &mut (impl AsyncWrite + Unpin)) {
     put(w, FrameKind::EndOfStream, vec![]).await;
     w.shutdown().await.unwrap();
 }
@@ -265,57 +401,100 @@ async fn rows_cross_engines_and_barriers_align_on_every_lane() {
 }
 
 /// A writer lane that isn't read holds its senders up: the link to it
-/// queues no more than its bound, the sending lane stops reading its edge,
-/// and once the writer lane is read again every row lands, once.
+/// queues no more than its bound, the sending lane waits for room on it
+/// and stops reading its edge, and once the writer lane is read again every
+/// row lands, once. The feeder gives rows until that's so, however much the
+/// channels, the link and the sockets between hold.
 #[tokio::test]
 async fn a_slow_writer_lane_slows_its_senders_within_the_links_bound() {
+    const MEMORY: u64 = 16 << 20;
+    const ROWS: i64 = 500;
     let mut es = mesh(&[(1, 1), (1, 1)], |_, req| {
         req.limits = Some(openetl_proto::engine::v1::Limits {
-            memory_bytes: 16 << 20,
+            memory_bytes: MEMORY,
             ..Default::default()
         });
     })
     .await;
+    // An eighth of the job's memory, for its one link.
+    let bound = MEMORY / BUFFER_SHARE;
     let d0 = drain(std::mem::take(&mut es[0].outs));
-    let mut stalled = std::mem::take(&mut es[1].outs);
-    let mut w = std::mem::take(&mut es[0].ins).pop().unwrap();
-    let (sent_tx, mut sent) = mpsc::unbounded_channel();
-    const BATCHES: i64 = 1000;
-    let feeder = tokio::spawn(async move {
-        for i in 0..BATCHES {
-            put(&mut w, FrameKind::Rows, rows(i * 500..(i + 1) * 500)).await;
-            let _ = sent_tx.send(i);
+    let stalled = std::mem::take(&mut es[1].outs);
+    let mut w = Counted::new(std::mem::take(&mut es[0].ins).pop().unwrap());
+    let fed = w.bytes.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    connected(&es).await;
+    let feeder = tokio::spawn({
+        let stop = stop.clone();
+        async move {
+            let mut batches = 0;
+            while !stop.load(Ordering::Relaxed) {
+                let first = batches * ROWS;
+                put(&mut w, FrameKind::Rows, rows(first..first + ROWS)).await;
+                batches += 1;
+            }
+            put(&mut w, FrameKind::Barrier, barrier(1, 1)).await;
+            end(&mut w).await;
+            batches
         }
-        put(&mut w, FrameKind::Barrier, barrier(1, 1)).await;
-        end(&mut w).await;
     });
-    let mut last = 0;
-    loop {
-        match tokio::time::timeout(Duration::from_secs(1), sent.recv()).await {
-            Ok(Some(i)) => last = i,
-            Ok(None) => panic!("every batch went in with a writer lane not read"),
-            Err(_) => break,
-        }
-    }
-    assert!(last < BATCHES - 1, "{last}");
+    until_stalled(
+        || {
+            let links = es[0].links()?;
+            let queued = links.queued()[1];
+            assert!(
+                queued <= bound,
+                "the link queued {queued} bytes, past {bound}"
+            );
+            Some((
+                es[0].lanes.clocks()?,
+                links.waiting()[1],
+                fed.load(Ordering::Relaxed),
+                es[0].read[0].load(Ordering::Relaxed),
+                es[1].wrote[0].load(Ordering::Relaxed),
+            ))
+        },
+        |(clocks, waiting, fed, read, wrote): &(Vec<u64>, u64, u64, u64, u64)| {
+            held(clocks)
+                && *waiting > 0
+                && fed.saturating_sub(*read) == EDGE as u64
+                && *wrote == EDGE as u64
+        },
+    )
+    .await;
+    stop.store(true, Ordering::Relaxed);
     put(&mut es[1].ins[0], FrameKind::Barrier, barrier(1, 1)).await;
     end(&mut es[1].ins[0]).await;
-    let d1 = drain(std::mem::take(&mut stalled));
-    feeder.await.unwrap();
-    let mut all = BTreeSet::new();
-    for d in d0.into_iter().chain(d1) {
-        for f in d.await.unwrap() {
+    let d1 = drain(stalled);
+    let run = async {
+        let batches = feeder.await.unwrap();
+        let mut outs = Vec::new();
+        for d in d0.into_iter().chain(d1) {
+            outs.push(d.await.unwrap());
+        }
+        for e in es {
+            e.job.await.unwrap().unwrap();
+        }
+        (batches, outs)
+    };
+    let (batches, outs) = tokio::time::timeout(Duration::from_secs(120), run)
+        .await
+        .expect("the engines stopped moving");
+    let mut seen = vec![false; usize::try_from(batches * ROWS).unwrap()];
+    for frames in outs {
+        for f in frames {
             if f.kind == FrameKind::Batch {
                 for id in ids(&f) {
-                    assert!(all.insert(id), "{id} twice");
+                    let at = usize::try_from(id).unwrap();
+                    assert!(!std::mem::replace(&mut seen[at], true), "{id} twice");
                 }
             }
         }
     }
-    assert_eq!(all.len(), 500 * BATCHES as usize);
-    for e in es {
-        e.job.await.unwrap().unwrap();
-    }
+    assert!(
+        seen.iter().all(|s| *s),
+        "a row of {batches} batches was lost"
+    );
 }
 
 /// What a link queues waits for room, which its bound holds.
@@ -342,7 +521,7 @@ async fn a_link_queues_within_its_bound() {
                 pushed += frame.2.len() as u64;
                 links.push(0, Target::Writer(1), frame, r).unwrap();
             }
-            Room::Wait(..) => break,
+            Room::Wait { .. } => break,
         }
         assert!(pushed <= bound);
     }
@@ -350,7 +529,7 @@ async fn a_link_queues_within_its_bound() {
     assert!(pushed + (100 << 10) > bound);
     // A frame larger than the bound takes all of it.
     assert!(
-        matches!(links.room(Target::Writer(1), 64 << 20).unwrap(), Room::Wait(_, n) if u64::from(n) == bound)
+        matches!(links.room(Target::Writer(1), 64 << 20).unwrap(), Room::Wait { n, .. } if u64::from(n) == bound)
     );
     tasks.abort_all();
 }
@@ -960,18 +1139,23 @@ mod windows {
             .collect()
     }
 
-    async fn put_on(w: &mut DuplexStream, kind: FrameKind, stream: u32, payload: Vec<u8>) {
+    async fn put_on(
+        w: &mut (impl AsyncWrite + Unpin),
+        kind: FrameKind,
+        stream: u32,
+        payload: Vec<u8>,
+    ) {
         frame::write(w, kind, stream, &payload).await.unwrap();
     }
 
     /// Barrier n of both streams.
-    async fn barriers(w: &mut DuplexStream, generation: u64, n: u64) {
+    async fn barriers(w: &mut (impl AsyncWrite + Unpin), generation: u64, n: u64) {
         put_on(w, FrameKind::Barrier, 0, barrier_of(generation, n)).await;
         put_on(w, FrameKind::Barrier, 1, barrier_of(generation, n)).await;
     }
 
     /// The end of both streams.
-    async fn end_both(w: &mut DuplexStream) {
+    async fn end_both(w: &mut (impl AsyncWrite + Unpin)) {
         put_on(w, FrameKind::EndOfStream, 0, vec![]).await;
         put_on(w, FrameKind::EndOfStream, 1, vec![]).await;
         w.shutdown().await.unwrap();
@@ -1653,20 +1837,27 @@ mod windows {
 
     /// Two engines of three lanes each send a window's rows to each other's
     /// keyed lanes at once, over links of the least room, while nothing
-    /// reads their writer lanes for a while. The windows are a second long,
-    /// so the keyed lanes write a row for each key every second, and every
-    /// channel, link and socket between the engines fills: the lanes stop
-    /// reading their edges. Each lane passes its barriers at another point of
-    /// its rows, so keyed lanes wait at barriers with rows of senders past
-    /// them, and of others not there yet, behind each other on one
-    /// connection. A keyed lane keeps reading while it aligns, and sends only
-    /// to its own engine's writer lane, so once the writer lanes are read
-    /// every window comes out once, with every row: no wait goes in a circle.
+    /// reads their writer lanes. The windows are a second long, so the keyed
+    /// lanes write a row for each key every second, and the lanes take rows
+    /// until a writer lane's edge is full and every lane has stopped reading
+    /// its own, held by a keyed lane's channel or a link, however much the
+    /// sockets between hold. Each lane passes a barrier every PERIOD batches,
+    /// at a point of its own, so keyed lanes wait at barriers with rows of
+    /// senders past them, and of others not there yet, behind each other on
+    /// one connection. A keyed lane keeps reading while it aligns, and sends
+    /// only to its own engine's writer lane, so once the writer lanes are
+    /// read every window comes out once, with every row, and every epoch is
+    /// ready: no wait goes in a circle.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn windows_flow_both_ways_under_backpressure_with_barriers_in_flight() {
-        const BATCHES: i64 = 120;
         const ROWS: i64 = 100;
         const KEYS: i64 = 64;
+        // Lane l passes barrier n after batch (n - 1) * PERIOD + l * STAGGER.
+        const PERIOD: i64 = 40;
+        const STAGGER: i64 = 7;
+        const LANES: usize = 6;
+        // An eighth of it for the one link: its least, MIN_BUFFER.
+        const MEMORY: u64 = 2 << 20;
         const SECONDS: &str = "INSERT INTO minutes SELECT window_start, email, count(*) AS n \
                                FROM a GROUP BY tumble(at, INTERVAL '1 second'), email";
         let state = tempfile::tempdir().unwrap();
@@ -1674,9 +1865,8 @@ mod windows {
         let mut es = start_mesh(
             |me, addrs| {
                 let mut req = window_mesh_of(state.path(), SECONDS, &parts, me, addrs, 1, 1);
-                // An eighth of it for the one link: its least, MIN_BUFFER.
                 req.limits = Some(openetl_proto::engine::v1::Limits {
-                    memory_bytes: 2 << 20,
+                    memory_bytes: MEMORY,
                     ..Default::default()
                 });
                 req
@@ -1684,6 +1874,7 @@ mod windows {
             2,
         )
         .await;
+        let bound = (MEMORY / BUFFER_SHARE).max(MIN_BUFFER);
         // Nothing reads the writer lanes until the lanes have stalled.
         let (go, read) = tokio::sync::watch::channel(false);
         let drains: Vec<JoinHandle<Vec<Frame>>> = es
@@ -1692,8 +1883,10 @@ mod windows {
             .map(|mut r| {
                 let mut read = read.clone();
                 tokio::spawn(async move {
-                    read.wait_for(|go| *go).await.unwrap();
                     let mut out = Vec::new();
+                    if read.wait_for(|go| *go).await.is_err() {
+                        return out;
+                    }
                     while let Some(f) = frame::read(&mut r).await.unwrap() {
                         out.push(f);
                     }
@@ -1701,33 +1894,36 @@ mod windows {
                 })
             })
             .collect();
+        // The runner takes each EpochReady as it comes.
+        let ready: Vec<JoinHandle<Vec<EpochReady>>> = es
+            .iter_mut()
+            .map(|e| {
+                let mut events = std::mem::replace(&mut e.events, mpsc::channel(1).1);
+                tokio::spawn(async move { super::ready(&mut events).await })
+            })
+            .collect();
+        let stop = Arc::new(AtomicBool::new(false));
+        // Stopped, the lanes meet to pass the same barriers.
+        let meet = Arc::new(tokio::sync::Barrier::new(LANES));
+        let last = Arc::new(AtomicU64::new(0));
         let mut feeders = Vec::new();
-        let mut lane = 0i64;
-        let mut want: BTreeMap<(i64, String), i64> = BTreeMap::new();
-        let sent = Arc::new(std::sync::atomic::AtomicI64::new(0));
-        for e in &mut es {
-            for mut w in std::mem::take(&mut e.ins) {
-                let l = lane;
-                lane += 1;
-                let sent = sent.clone();
-                // Lane l passes barrier 1 after batch l * 17, and barrier 2
-                // after batch 60 + l * 9.
-                let (b1, b2) = (l * 17, 60 + l * 9);
-                for b in 0..BATCHES {
-                    for r in 0..ROWS {
-                        *want
-                            .entry((b, format!("k{}", (b * ROWS + r) % KEYS)))
-                            .or_default() += 1;
-                    }
-                }
+        let mut edges = Vec::new();
+        connected(&es).await;
+        for (e, engine) in es.iter_mut().enumerate() {
+            for (i, w) in std::mem::take(&mut engine.ins).into_iter().enumerate() {
+                let l = feeders.len() as i64;
+                let mut w = Counted::new(w);
+                edges.push((e, i, w.bytes.clone()));
+                let (stop, meet, last) = (stop.clone(), meet.clone(), last.clone());
                 feeders.push(tokio::spawn(async move {
                     let id = format!("s{l}");
                     put_on(&mut w, FrameKind::Split, 0, split(&id, None)).await;
-                    for b in 0..BATCHES {
+                    let (mut b, mut passed) = (0, 0);
+                    while !stop.load(Ordering::Relaxed) {
                         let rs: Vec<String> = (0..ROWS)
                             .map(|r| {
                                 minute_row(
-                                    l * 1_000_000 + b * ROWS + r,
+                                    (l << 40) + b * ROWS + r,
                                     &format!("k{}", (b * ROWS + r) % KEYS),
                                     b,
                                 )
@@ -1735,40 +1931,78 @@ mod windows {
                             .collect();
                         let refs: Vec<&str> = rs.iter().map(String::as_str).collect();
                         put_on(&mut w, FrameKind::Rows, 0, json_rows(&refs)).await;
-                        sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if b == b1 {
-                            barriers(&mut w, 1, 1).await;
+                        if b >= l * STAGGER && (b - l * STAGGER) % PERIOD == 0 {
+                            passed += 1;
+                            barriers(&mut w, 1, passed).await;
                         }
-                        if b == b2 {
-                            barriers(&mut w, 1, 2).await;
-                        }
+                        b += 1;
+                    }
+                    last.fetch_max(passed, Ordering::Relaxed);
+                    meet.wait().await;
+                    let to = last.load(Ordering::Relaxed);
+                    for n in passed + 1..=to {
+                        barriers(&mut w, 1, n).await;
                     }
                     put_on(&mut w, FrameKind::Split, 0, split(&id, Some(END))).await;
-                    barriers(&mut w, 1, 3).await;
+                    barriers(&mut w, 1, to + 1).await;
                     end_both(&mut w).await;
+                    (b, to + 1)
                 }));
             }
         }
-        // The engines hold their lanes back while the writer lanes aren't
-        // read: no batch goes in for half a second, short of the last.
-        let mut last = -1;
-        loop {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let now = sent.load(std::sync::atomic::Ordering::Relaxed);
-            assert!(
-                now < 6 * BATCHES,
-                "every lane's rows went in with nothing reading the writer lanes"
-            );
-            if now == last {
-                break;
-            }
-            last = now;
+        /// Each engine's lanes' clocks, the bytes each edge took and gave,
+        /// and those each writer lane wrote.
+        #[derive(PartialEq)]
+        struct Sample {
+            clocks: Vec<Vec<u64>>,
+            edges: Vec<(u64, u64)>,
+            wrote: Vec<u64>,
         }
-        assert!(last > 0, "no batch went in");
+        until_stalled(
+            || {
+                for links in es.iter().filter_map(Engine::links) {
+                    for queued in links.queued() {
+                        assert!(
+                            queued <= bound,
+                            "a link queued {queued} bytes, past {bound}"
+                        );
+                    }
+                }
+                let clocks: Option<Vec<Vec<u64>>> = es.iter().map(|e| e.lanes.clocks()).collect();
+                let fed = edges
+                    .iter()
+                    .map(|(e, i, fed)| {
+                        (
+                            fed.load(Ordering::Relaxed),
+                            es[*e].read[*i].load(Ordering::Relaxed),
+                        )
+                    })
+                    .collect();
+                let wrote = es
+                    .iter()
+                    .map(|e| e.wrote[0].load(Ordering::Relaxed))
+                    .collect();
+                Some(Sample {
+                    clocks: clocks?,
+                    edges: fed,
+                    wrote,
+                })
+            },
+            |s: &Sample| {
+                s.clocks.iter().all(|c| held(c))
+                    && s.edges
+                        .iter()
+                        .all(|(f, r)| f.saturating_sub(*r) == EDGE as u64)
+                    && s.wrote.contains(&(EDGE as u64))
+            },
+        )
+        .await;
+        stop.store(true, Ordering::Relaxed);
         go.send(true).unwrap();
         let run = async {
+            let mut fed = Vec::new();
             for f in feeders {
-                f.await.unwrap();
+                fed.push(f.await.unwrap());
             }
             let mut outs = Vec::new();
             for d in drains {
@@ -1777,11 +2011,30 @@ mod windows {
             for e in es {
                 e.job.await.unwrap().unwrap();
             }
-            outs
+            let mut epochs = Vec::new();
+            for r in ready {
+                epochs.push(r.await.unwrap());
+            }
+            (fed, outs, epochs)
         };
-        let outs = tokio::time::timeout(Duration::from_secs(120), run)
+        let (fed, outs, epochs) = tokio::time::timeout(Duration::from_secs(120), run)
             .await
             .expect("the engines stopped moving");
+        let last = fed[0].1;
+        for r in &epochs {
+            let ns: Vec<u64> = r.iter().map(|r| r.epoch.unwrap().n).collect();
+            assert_eq!(ns, (1..=last).collect::<Vec<_>>());
+        }
+        let mut want: BTreeMap<(i64, String), i64> = BTreeMap::new();
+        for &(batches, _) in &fed {
+            for b in 0..batches {
+                for r in 0..ROWS {
+                    *want
+                        .entry((b, format!("k{}", (b * ROWS + r) % KEYS)))
+                        .or_default() += 1;
+                }
+            }
+        }
         let mut got: BTreeMap<(i64, String), i64> = BTreeMap::new();
         for r in window_rows(&outs, 1).into_iter().flatten() {
             assert!(
