@@ -117,9 +117,12 @@ type worker struct {
 	calls, called map[uint64]bool
 	// Requests not yet taken.
 	queue []*attemptv1.AttendResponse
-	over  bool
-	err   error
-	done  chan struct{}
+	// The PeerLost the worker reported, which waits for the coordinator's
+	// End; nil if none.
+	lost error
+	over bool
+	err  error
+	done chan struct{}
 }
 
 type workerCommit struct {
@@ -240,6 +243,11 @@ func (w *worker) end(err error, failure, abort bool) {
 	if w.over {
 		w.mu.Unlock()
 		return
+	}
+	// After a PeerLost, what the coordinator ends with but the attempt's
+	// finish, or its loss, is the lost peer the worker reported.
+	if err != nil && !failure && w.lost != nil {
+		err = w.lost
 	}
 	w.over, w.err = true, err
 	var peer *PeerLost
@@ -569,6 +577,16 @@ func (w *worker) Fail(err error) {
 		err = errs.New(errs.Internal, "attempt: the worker failed without a reason")
 	}
 	w.end(err, true, false)
+}
+
+func (w *worker) LostPeer(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.over || w.lost != nil {
+		return
+	}
+	w.lost = err
+	w.out.push(&attemptv1.AttendRequest{Message: &attemptv1.AttendRequest_PeerLost{PeerLost: errs.ToProto(err)}})
 }
 
 func (w *worker) Done() <-chan struct{} { return w.done }

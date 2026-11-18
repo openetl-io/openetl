@@ -191,6 +191,13 @@ type Worker interface {
 	// Fail tells the coordinator the worker failed, which fails the
 	// attempt, and ends the worker's part in it.
 	Fail(err error)
+	// LostPeer tells the coordinator, as Fail does, that the worker's
+	// engine lost another worker's, err a PeerLost, and leaves the part to
+	// the coordinator's End. Engines stop once the attempt finishes, so an
+	// End that says it finished ends the part with Err nil: the other
+	// engine stopped with it. An End that says it failed, or the
+	// coordinator's loss, ends it with err.
+	LostPeer(err error)
 	// Done is closed once the worker's part in the attempt is over.
 	Done() <-chan struct{}
 	// Err is why: nil once the coordinator ended the attempt as finished.
