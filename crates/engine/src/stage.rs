@@ -947,6 +947,7 @@ mod tests {
             event_time: None,
             lateness: 0,
             dedupe: None,
+            full_read: false,
         }
     }
 
@@ -1631,6 +1632,7 @@ mod tests {
                     event_time: None,
                     lateness: 0,
                     dedupe: None,
+                    full_read: false,
                 }],
             )
             .unwrap(),

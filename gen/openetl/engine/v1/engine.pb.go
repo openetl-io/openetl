@@ -1503,8 +1503,13 @@ type EventTime struct {
 	// microseconds of event time from that row's; the largest int64 for good.
 	// Unset: the stream sets none, and such a dedupe over it is refused.
 	DedupeRetentionMicros *int64 `protobuf:"varint,7,opt,name=dedupe_retention_micros,json=dedupeRetentionMicros,proto3,oneof" json:"dedupe_retention_micros,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Each sync reads the stream whole, with full_refresh, and each read
+	// starts with no state for the statements that read it. A dedupe that
+	// keeps each key's latest row then deletes a key its filters drop where
+	// its state doesn't know whether the output has the key's row.
+	FullRead      bool `protobuf:"varint,8,opt,name=full_read,json=fullRead,proto3" json:"full_read,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *EventTime) Reset() {
@@ -1584,6 +1589,13 @@ func (x *EventTime) GetDedupeRetentionMicros() int64 {
 		return *x.DedupeRetentionMicros
 	}
 	return 0
+}
+
+func (x *EventTime) GetFullRead() bool {
+	if x != nil {
+		return x.FullRead
+	}
+	return false
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -4554,7 +4566,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"key_groups\x18\x0e \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12;\n" +
 	"\n" +
-	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\"\xb1\x02\n" +
+	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\"\xce\x02\n" +
 	"\tEventTime\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12!\n" +
 	"\fdelay_micros\x18\x02 \x01(\x03R\vdelayMicros\x12\x12\n" +
@@ -4562,7 +4574,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x05floor\x18\x04 \x01(\x03H\x00R\x05floor\x88\x01\x01\x12'\n" +
 	"\x0flateness_micros\x18\x05 \x01(\x03R\x0elatenessMicros\x12 \n" +
 	"\tcloses_at\x18\x06 \x01(\x03H\x01R\bclosesAt\x88\x01\x01\x12;\n" +
-	"\x17dedupe_retention_micros\x18\a \x01(\x03H\x02R\x15dedupeRetentionMicros\x88\x01\x01B\b\n" +
+	"\x17dedupe_retention_micros\x18\a \x01(\x03H\x02R\x15dedupeRetentionMicros\x88\x01\x01\x12\x1b\n" +
+	"\tfull_read\x18\b \x01(\bR\bfullReadB\b\n" +
 	"\x06_floorB\f\n" +
 	"\n" +
 	"_closes_atB\x1a\n" +

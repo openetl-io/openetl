@@ -35,6 +35,9 @@ pub struct Input {
     /// in microseconds of event time; `openetl_state::NEVER` for good, and
     /// None where the stream sets none.
     pub dedupe: Option<i64>,
+    /// It's read whole each sync, each read with no state for the
+    /// statements that read it.
+    pub full_read: bool,
 }
 
 impl Input {
@@ -79,6 +82,7 @@ impl Input {
                 .event_time
                 .as_ref()
                 .and_then(|e| e.dedupe_retention_micros),
+            full_read: s.event_time.as_ref().is_some_and(|e| e.full_read),
         })
     }
 }
@@ -596,6 +600,7 @@ mod tests {
             event_time: None,
             lateness: 0,
             dedupe: None,
+            full_read: false,
         }
     }
 
@@ -817,6 +822,7 @@ mod tests {
             event_time: None,
             lateness: 0,
             dedupe: None,
+            full_read: false,
         };
         let t = Transform::plan(
             r#"INSERT INTO c SELECT id, lower("Email Address") AS e FROM a"#,
