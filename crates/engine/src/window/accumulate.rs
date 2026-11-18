@@ -309,8 +309,14 @@ impl Acc {
 
 /// Row `i`'s value of `a` as `count(a)` takes it: whether the row has
 /// one, of whatever type, so a value [`Value::read`] doesn't decode counts.
+/// A null is logical: every row of a `Null` array is one, though it has no
+/// null buffer.
 pub fn present(a: &dyn Array, i: usize) -> Option<Value> {
-    a.is_valid(i).then_some(Value::Bool(true))
+    let valid = match a.data_type() {
+        DataType::Null => false,
+        _ => a.logical_nulls().is_none_or(|n| n.is_valid(i)),
+    };
+    valid.then_some(Value::Bool(true))
 }
 
 /// Whether row `i` counts for an aggregate with a `FILTER`: its predicate
@@ -782,6 +788,12 @@ mod tests {
         }
         assert_eq!(star, Acc::Count(3));
         assert_eq!(present(&lists, 1), None);
+        let nulls = arrow_array::NullArray::new(2);
+        let mut none = Acc::new(&spec);
+        for i in 0..2 {
+            none.update(Some(&nulls), i);
+        }
+        assert_eq!(none, Acc::Count(0));
     }
 
     #[test]

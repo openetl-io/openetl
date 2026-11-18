@@ -379,6 +379,16 @@ FROM baskets
 4 [c] 1 1
 5 [d] 3 4
 
+# count of a null counts no row.
+query II
+SELECT id, count(NULL) OVER (PARTITION BY region ORDER BY ts) AS none FROM baskets
+----
+1 0
+2 0
+3 0
+4 0
+5 0
+
 # And over a ROWS frame, which takes peers in turn.
 onlyif openetl
 query II

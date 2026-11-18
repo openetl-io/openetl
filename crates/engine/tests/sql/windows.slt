@@ -206,6 +206,23 @@ FROM baskets GROUP BY 1, region
 2024-01-01 00:00:00+00 us 1 1 1
 2024-01-01 01:00:00+00 us 0 1 0
 
+# count of a null counts no row.
+onlyif openetl
+query TII
+SELECT window_start, count(NULL) AS none, count(*) AS all_rows
+FROM baskets GROUP BY tumble(ts, INTERVAL '1 hour')
+----
+2024-01-01 00:00:00+00 0 5
+2024-01-01 01:00:00+00 0 1
+
+onlyif duckdb
+query TII
+SELECT time_bucket(INTERVAL '1 hour', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS window_start, count(NULL) AS none, count(*) AS all_rows
+FROM baskets GROUP BY 1
+----
+2024-01-01 00:00:00+00 0 5
+2024-01-01 01:00:00+00 0 1
+
 # And in a session.
 onlyif openetl
 query TTI
