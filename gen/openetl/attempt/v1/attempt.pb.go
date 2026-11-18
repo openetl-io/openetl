@@ -223,9 +223,9 @@ type AttendRequest_PeerLost struct {
 	// another worker's engine (openetl.engine.v1.PeerLost): the coordinator
 	// waits a moment for another worker's failure or loss, which says why,
 	// and fails the attempt with this only if none comes. A coordinator
-	// that has ended the attempt ignores it. The worker may go on sending
-	// until the coordinator's End, which says how its part ended, or end
-	// its call after it.
+	// that has ended the attempt ignores it. After sending it, the worker
+	// may close its send side, or go on sending until the coordinator's End,
+	// which says how its part ended.
 	PeerLost *v1.Error `protobuf:"bytes,10,opt,name=peer_lost,json=peerLost,proto3,oneof"`
 }
 
