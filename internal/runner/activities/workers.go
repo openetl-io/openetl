@@ -168,14 +168,14 @@ func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 	engine.Logger = log.With("component", "engine")
 	engine.Meter, engine.Size = meter, size
 	job.Meter, job.Dataflow, job.Logger = meter, &engineclient.Dataflow{Options: engine}, log
-	listen, advertise, err := attempt.ExchangeAddresses(ctx, a.ExchangeListen, a.ExchangeAdvertise)
+	listen, advertise, held, err := attempt.ExchangeAddresses(ctx, a.ExchangeListen, a.ExchangeAdvertise)
 	if err != nil {
 		return err
 	}
 	t := attempt.Target{
 		Address: j.GetAddress(), Certificate: j.GetCertificate(), Token: j.GetToken(),
 		Attempt: j.GetOwner(), Generation: j.GetGeneration(), Worker: int(j.GetWorker()),
-		Exchange: advertise, Listen: listen,
+		Exchange: advertise, Listen: listen, Held: held,
 	}
 	err = runner.RunWorker(ctx, job, t, attempt.Options{})
 	if err == nil {

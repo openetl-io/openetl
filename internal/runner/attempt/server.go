@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"strings"
@@ -225,23 +226,26 @@ func certificate(name string) ([]byte, *ecdsa.PrivateKey, error) {
 // workers' engines, and where they reach it: a host alone takes the listen
 // address's port, and none is the listen address. An empty listen address
 // is 127.0.0.1, which only workers on this machine reach. Port 0 takes a
-// free one now, which the engine binds once the attempt is assigned.
-func ExchangeAddresses(ctx context.Context, listen, advertise string) (string, string, error) {
+// free one now, which held listens on until it's closed, just before the
+// engine binds it once the attempt is assigned: a port closed as soon as
+// it's taken is free for the next taker, such as the attempt's next
+// worker on this machine, whose engine would then be this one's. Held is
+// nil for any other port.
+func ExchangeAddresses(ctx context.Context, listen, advertise string) (_, _ string, held io.Closer, _ error) {
 	if listen == "" {
 		listen = "127.0.0.1:0"
 	}
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		return "", "", errs.Wrap(errs.ConfigInvalid, err, "attempt: where the worker's engine listens for the others")
+		return "", "", nil, errs.Wrap(errs.ConfigInvalid, err, "attempt: where the worker's engine listens for the others")
 	}
 	if port == "0" {
 		l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listen)
 		if err != nil {
-			return "", "", errs.Wrap(errs.Transient, err, "attempt: a port for the worker's engine")
+			return "", "", nil, errs.Wrap(errs.Transient, err, "attempt: a port for the worker's engine")
 		}
 		_, port, _ = net.SplitHostPort(l.Addr().String())
-		_ = l.Close()
-		listen = net.JoinHostPort(host, port)
+		held, listen = l, net.JoinHostPort(host, port)
 	}
 	switch _, _, err := net.SplitHostPort(advertise); {
 	case advertise == "":
@@ -249,7 +253,7 @@ func ExchangeAddresses(ctx context.Context, listen, advertise string) (string, s
 	case err != nil:
 		advertise = net.JoinHostPort(advertise, port)
 	}
-	return listen, advertise, nil
+	return listen, advertise, held, nil
 }
 
 // exchangeName is the name in the certificate an attempt's engines share,

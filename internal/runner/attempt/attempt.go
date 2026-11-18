@@ -13,6 +13,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	attemptv1 "github.com/openetl-io/openetl/gen/openetl/attempt/v1"
@@ -239,6 +240,9 @@ type Target struct {
 	// Where this worker's engine listens for theirs, as host:port; empty:
 	// Exchange.
 	Listen string
+	// Holds Listen's port, as ExchangeAddresses took it, until the
+	// worker's engine is about to bind it; nil: nothing holds it.
+	Held io.Closer
 }
 
 func lost(who string, cause error) error {

@@ -43,8 +43,9 @@ var errFinished = errors.New("runner: the attempt finished")
 // coordinator ends the attempt as finished. The job is the coordinator's,
 // whose Log, Sync, Paused, Resets, Rewind, KeepRecords, Drain, Workers and
 // On callbacks it doesn't use. A target without an exchange address has its
-// engine listen on 127.0.0.1, at a free port.
+// engine listen on 127.0.0.1, at a free port. RunWorker closes t.Held.
 func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Options) error {
+	defer func() { releaseHeld(t) }()
 	if err := job.validateRun(false); err != nil {
 		return err
 	}
@@ -58,7 +59,7 @@ func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Opti
 	log = log.With("pipeline", job.Pipeline, "owner", job.Owner, "generation", t.Generation, "worker", t.Worker+1)
 	if t.Exchange == "" {
 		var err error
-		if t.Listen, t.Exchange, err = attempt.ExchangeAddresses(ctx, t.Listen, ""); err != nil {
+		if t.Listen, t.Exchange, t.Held, err = attempt.ExchangeAddresses(ctx, t.Listen, ""); err != nil {
 			return err
 		}
 	}
@@ -539,6 +540,9 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 	if x := a.GetExchange(); x != nil {
 		plan.Mesh, plan.Exchanges = p.mesh(a, x), job.exchanges(len(a.GetWriterLanes()))
 	}
+	// Every worker has joined, with its port held, so none can have taken
+	// this one's. The engine binds it.
+	releaseHeld(p.t)
 	plan.Floors = floors(job.Streams, all)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -632,6 +636,14 @@ func (p *workerPart) mesh(a *attemptv1.Assignment, x *attemptv1.Exchange) *Mesh 
 		m.Engines[l.GetWorker()].WriterLanes++
 	}
 	return m
+}
+
+// releaseHeld frees the port t holds for its engine, if any; again is a
+// no-op.
+func releaseHeld(t attempt.Target) {
+	if t.Held != nil {
+		_ = t.Held.Close()
+	}
 }
 
 // usageEvery is how often a worker tells its coordinator what it has used
