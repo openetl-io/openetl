@@ -297,9 +297,10 @@ func deliveryStream(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream, read apiv
 }
 
 var levels = map[delivery.Level]apiv1.DeliveryLevel{
-	delivery.AtLeastOnce:     apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE,
-	delivery.EffectivelyOnce: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
-	delivery.ExactlyOnce:     apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE,
+	delivery.AtLeastOnce:       apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE,
+	delivery.ExactlyOnceWithin: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN,
+	delivery.EffectivelyOnce:   apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
+	delivery.ExactlyOnce:       apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE,
 }
 
 // Pipeline plans each stream the spec reads, and returns every check a sync

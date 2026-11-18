@@ -395,6 +395,9 @@ func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlp
 		o := Output{Name: st.Output, PrimaryKey: st.Key, Exact: len(ins) > 0, Engine: "sql"}
 		if s := st.State; s != nil && s.Guarantee != "" {
 			o.Deduped = true
+			if len(st.Inputs) > 0 {
+				o.DedupeOf = st.Inputs[0]
+			}
 			if r := s.RetentionMicros; r != nil {
 				o.Remembers = time.Duration(*r) * time.Microsecond
 			}

@@ -794,11 +794,16 @@ message Delivery {
   google.protobuf.Duration resume_point_timeout = 3;
 }
 
+// From lowest to highest: at least once, exactly once within, effectively
+// once, exactly once.
 enum DeliveryLevel {
   DELIVERY_LEVEL_UNSPECIFIED = 0;
   DELIVERY_LEVEL_AT_LEAST_ONCE = 1;
   DELIVERY_LEVEL_EFFECTIVELY_ONCE = 2;
   DELIVERY_LEVEL_EXACTLY_ONCE = 3;
+  // A first-row dedupe's output with a retention: nothing repeats within
+  // the retention, and a repeat after it is written again.
+  DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN = 4;
 }
 
 // Commit is when a pipeline commits what it has read.

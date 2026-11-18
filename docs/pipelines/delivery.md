@@ -9,17 +9,27 @@ The examples use the [official Postgres connector](https://github.com/openetl-io
 
 Check the capabilities documented for your connector version. OpenETL determines guarantees from those capabilities, rather than from the system's name.
 
-## The three guarantees
+## The guarantees
 
-A row inserted and then updated twice has three **versions**. Each version has an `_openetl_seq` that identifies its source order and an `_openetl_id` that identifies the change. A delivery guarantee concerns repeated writes of the same version:
+A row inserted and then updated twice has three **versions**. Each version has an `_openetl_seq` that identifies its source order and an `_openetl_id` that identifies the change. A delivery guarantee concerns repeated writes of the same version. From the strongest to the weakest:
 
 | Guarantee | What can happen | What you do when reading |
 |---|---|---|
 | `exactly_once` | Each version is committed once, including after failures and retries. | No deduplication is required. |
 | `effectively_once` | A repeated version updates the same row. The final row is equivalent to one write, but `_openetl_synced_at` changes with each write. | No deduplication is required. Do not use `_openetl_synced_at` as the source change time. |
+| `exactly_once_within` | Only the output of a [dedupe](./dedupe.md) with a retention gets it. A repeat that comes within the retention is not written. A repeat that comes later is written again, as a row of its own. | A key can have a second row after the retention. To keep one row per key, keep the earliest row of each key of the dedupe's `PARTITION BY`. |
 | `at_least_once` | Duplicate rows can contain the same version and `_openetl_id`. | Keep one row per `_openetl_id`. See [reading a stream delivered at least once](#reading-a-stream-delivered-at-least-once). |
 
 Append writes store each version as a separate row under every guarantee. Different versions of the same source row are separate changes. To select only the latest version, [group by primary key](#reading-a-stream-delivered-at-least-once).
+
+### How the guarantees rank
+
+A `require` accepts its own guarantee and every guarantee above it in the table, and refuses those below it. `exactly_once_within` ranks below `effectively_once` and above `at_least_once`:
+
+- **Below `effectively_once`.** After the retention, a repeat is a second row. `effectively_once` never gives a second row of one version.
+- **Above `at_least_once`.** Within the retention, nothing is repeated. `at_least_once` does not promise that.
+
+So the default `exactly_once` refuses `exactly_once_within`, and so does `effectively_once`. A `require` of `exactly_once_within` or `at_least_once` accepts it. [Accept a dedupe's retention](#accept-a-dedupes-retention) shows how.
 
 ## What decides a stream's guarantee
 
@@ -114,6 +124,31 @@ Or write with append, the default, which Postgres dedupes at apply, for this str
     orders  append  exactly_once  superset replay, deduped at apply
 ```
 
+### Accept a dedupe's retention
+
+A first-row [dedupe](./dedupe.md) with a `dedupe.retention` duration, over a stream that can repeat rows, gets `exactly_once_within`. The default `require` refuses it. The plan's problem names the retention and the two ways to accept it:
+
+```text
+  problems:
+    delivery.require: stream "events_once" gets exactly_once_within (a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again), below exactly_once: to accept that a repeat 24h0m0s or more of event time after a key's first row is written again, set delivery.require: exactly_once_within; to remember every key, set source.streams[events].dedupe.retention: unbounded
+```
+
+Do one of these:
+
+- To accept that a repeat after the retention is written again, set `require: exactly_once_within`. Set it in `delivery.require` for the pipeline. If the statement writes a stream's name and so replaces it, set it in that stream's `require` instead.
+- To drop every repeat, set the stream's `dedupe: { retention: unbounded }`. The output is then `exactly_once`, and the dedupe's state grows with the number of keys.
+- To merge a repeat after the retention onto its key's row, write the output with `merge`. The output is then `effectively_once`, which the default `require` also refuses.
+
+```yaml
+  delivery:
+    require: exactly_once_within
+```
+
+```text
+  streams:
+    events_once  append  exactly_once_within  a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again
+```
+
 ## The plan's reasons
 
 `openetl plan` gives each stream's write mode, guarantee and reason, and the console shows the same under **Delivery** in a pipeline's **Streams** table. Some reasons speak of an **epoch**, which is what one commit makes visible: everything a stream read since the commit before. The reasons are:
@@ -132,8 +167,11 @@ Or write with append, the default, which Postgres dedupes at apply, for this str
 | `a transform's output over exact inputs` | `exactly_once` | A [transform](../integrate/index.md)'s output, when every stream it reads replays exactly. |
 | `a transform's output over superset inputs, written with merge` | `effectively_once` | As for merge above. |
 | `a transform's output over superset inputs, which isn't deduped unless written with merge` | `at_least_once` | Once your code has changed the rows, an `_openetl_id` cannot tell a repeated input from a new one. |
-| `exactly once within 24h0m0s of event time: a dedupe's output over superset inputs, which remembers a key 24h0m0s from its first row and writes a repeat after that again` | `exactly_once` | A SQL [dedupe](./dedupe.md) that keeps each key's first row drops a repeat of a key it keeps, for its retention. A repeat that comes later than the retention is written again. |
+| `a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again` | `exactly_once_within` | A SQL [dedupe](./dedupe.md) that keeps each key's first row drops a repeat of a key it keeps, for its retention. A repeat that comes later than the retention is written again. |
+| `a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, written with merge, which merges a repeat after that onto its key's row` | `effectively_once` | The same dedupe, written with merge into a destination that stages and applies. A repeat that comes later than the retention updates its key's row. |
 | `a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys` | `exactly_once` | A SQL [dedupe](./dedupe.md) with an `unbounded` retention, or one that keeps each key's latest row, drops every repeat. |
+
+A dedupe's output over streams that all replay exactly gets `a transform's output over exact inputs`, whatever its retention: OpenETL never reads a row of such a stream twice. Into a destination that delivers and acknowledges, a dedupe's output gets `at_least_once`, as every stream does.
 
 ## Commits, as a reader sees them
 

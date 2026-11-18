@@ -429,13 +429,18 @@ WHERE rn = 1`, topic))
 	for _, op := range plan.GetTransform().GetOperators() {
 		ops[op.GetOutput()] = op.GetId()
 	}
-	writes := map[string]string{}
+	writes, levels := map[string]string{}, map[string]apiv1.DeliveryLevel{}
 	for _, st := range plan.GetStreams() {
-		writes[st.GetName()] = st.GetWrite().String()
+		writes[st.GetName()], levels[st.GetName()] = st.GetWrite().String(), st.GetLevel()
 	}
 	if len(plan.GetProblems()) > 0 || !strings.HasPrefix(ops["firsts"], "dedupe-") || !strings.HasPrefix(ops["latest"], "dedupe-") ||
 		writes["firsts"] != apiv1.WriteMode_WRITE_MODE_APPEND.String() || writes["latest"] != apiv1.WriteMode_WRITE_MODE_MERGE.String() {
 		t.Fatalf("the plan has problems %v, operators %v and writes %v; want a dedupe for each output, firsts appended and latest merged", plan.GetProblems(), ops, writes)
+	}
+	// The topic replays exactly, so the retention leaves firsts exactly
+	// once, and the default require takes it.
+	if levels["firsts"] != apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE || levels["latest"] != apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE {
+		t.Fatalf("levels %v, want both exactly once", levels)
 	}
 	apply(t, docs...)
 

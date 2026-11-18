@@ -87,7 +87,7 @@ type Stream struct {
 
 func (s Stream) delivery() delivery.Stream {
 	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed,
-		Deduped: s.Deduped, Remembers: s.Remembers}
+		Deduped: s.Deduped, Remembers: s.Remembers, DedupeOf: s.From, Replaces: s.Transformed && s.Name == s.From}
 }
 
 // columns names the columns of Schema; nil without one.

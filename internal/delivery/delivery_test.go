@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -306,9 +307,14 @@ func TestTransformed(t *testing.T) {
 		{"superset inputs, kafka", kafka, Stream{Replay: source.Superset, Mode: destination.Append}, AtLeastOnce, none},
 		{"exact inputs, kafka", kafka, Stream{Replay: source.Exact, Mode: destination.Append}, ExactlyOnce, none},
 		{"exact inputs, webhook", webhook, Stream{Replay: source.Exact, Mode: destination.Append}, AtLeastOnce, none},
-		{"a dedupe's, superset inputs", parquet, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true, Remembers: time.Hour}, ExactlyOnce, none},
+		{"a dedupe's, superset inputs", parquet, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true, Remembers: time.Hour}, ExactlyOnceWithin, none},
+		{"a dedupe's, superset inputs, kafka", kafka, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true, Remembers: time.Hour}, ExactlyOnceWithin, none},
+		{"a dedupe's, superset inputs, merge", postgres, Stream{Replay: source.Superset, Mode: destination.Merge, Keyed: true, Deduped: true, Remembers: time.Hour}, EffectivelyOnce, none},
+		{"a dedupe's, exact inputs", postgres, Stream{Replay: source.Exact, Mode: destination.Append, Keyed: true, Deduped: true, Remembers: time.Hour}, ExactlyOnce, none},
 		{"a dedupe's for good, kafka", kafka, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true}, ExactlyOnce, none},
+		{"a dedupe's for good, merge", postgres, Stream{Replay: source.Superset, Mode: destination.Merge, Keyed: true, Deduped: true}, ExactlyOnce, none},
 		{"a dedupe's, webhook", webhook, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true}, AtLeastOnce, none},
+		{"a dedupe's with a retention, webhook", webhook, Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Deduped: true, Remembers: time.Hour}, AtLeastOnce, none},
 	} {
 		tc.s.Name, tc.s.Transformed = "out", true
 		p := PlanStream(tc.caps, tc.s, ExactlyOnce)
@@ -316,12 +322,9 @@ func TestTransformed(t *testing.T) {
 			t.Errorf("%s: plan = %+v, want %v and %v", tc.name, p, tc.want, tc.dedupe)
 		}
 	}
-	deduped := Stream{Name: "out", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Deduped: true, Remembers: time.Hour}
-	if p := PlanStream(parquet, deduped, ExactlyOnce); !strings.HasPrefix(p.Why, "exactly once within 1h0m0s of event time") {
-		t.Errorf("a dedupe's output: %s", p.Why)
-	}
+	deduped := Stream{Name: "out", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Deduped: true}
 	if !CanForce(parquet, deduped, ExactlyOnce) {
-		t.Error("a dedupe drops what a forced barrier reads again")
+		t.Error("a dedupe that remembers every key drops what a forced barrier reads again")
 	}
 	out := Stream{Name: "out", Replay: source.Exact, Mode: destination.Append, Keyed: true, Transformed: true}
 	if CanForce(postgres, out, ExactlyOnce) || !CanForce(postgres, out, AtLeastOnce) {
@@ -337,5 +340,73 @@ func TestTransformed(t *testing.T) {
 	}
 	if w := Warnings(postgres, Settings{Require: ExactlyOnce}, []Stream{{Name: "out", Replay: source.Superset, Mode: destination.Append, Transformed: true}}); len(w) != 0 {
 		t.Errorf("warnings = %v", w)
+	}
+}
+
+// exactly_once_within ranks above at_least_once and below effectively_once:
+// a require of either end takes or refuses it, and the refusal names the
+// retention and what to set.
+func TestExactlyOnceWithin(t *testing.T) {
+	if !slices.IsSorted([]Level{AtLeastOnce, ExactlyOnceWithin, EffectivelyOnce, ExactlyOnce}) || ExactlyOnceWithin.String() != "exactly_once_within" {
+		t.Fatalf("levels out of order, or %q", ExactlyOnceWithin)
+	}
+	within := Stream{Name: "events_once", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Engine: "sql",
+		Deduped: true, Remembers: 24 * time.Hour, DedupeOf: "events"}
+	p := PlanStream(parquet, within, ExactlyOnce)
+	if want := "a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again"; p.Level != ExactlyOnceWithin || p.Why != want {
+		t.Errorf("plan = %v (%s), want %q", p.Level, p.Why, want)
+	}
+	merged := within
+	merged.Mode = destination.Merge
+	if p := PlanStream(postgres, merged, ExactlyOnce); p.Level != EffectivelyOnce || !strings.Contains(p.Why, "written with merge, which merges a repeat after that onto its key's row") {
+		t.Errorf("merged: %v (%s)", p.Level, p.Why)
+	}
+	if !CanForce(parquet, within, ExactlyOnceWithin) || CanForce(parquet, within, ExactlyOnce) {
+		t.Error("a forced barrier keeps a dedupe's output with a retention at exactly_once_within, and no higher")
+	}
+	compared := 0
+	for _, c := range []struct {
+		name     string
+		pipeline Level
+		s        Stream
+		want     string
+	}{
+		{name: "the default refuses it", pipeline: ExactlyOnce, s: within,
+			want: `delivery.require: stream "events_once" gets exactly_once_within (a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, ` +
+				`and writes a repeat after that again), below exactly_once: to accept that a repeat 24h0m0s or more of event time after a key's first row is written again, ` +
+				`set delivery.require: exactly_once_within; to remember every key, set source.streams[events].dedupe.retention: unbounded`},
+		{name: "effectively_once refuses it", pipeline: EffectivelyOnce, s: within, want: "below effectively_once: to accept that"},
+		{name: "exactly_once_within takes it", pipeline: ExactlyOnceWithin, s: within},
+		{name: "at_least_once takes it", pipeline: AtLeastOnce, s: within},
+		{name: "an output that replaces its stream names the stream's require", pipeline: ExactlyOnce,
+			s:    Stream{Name: "events", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Engine: "sql", Deduped: true, Remembers: time.Hour, DedupeOf: "events", Replaces: true},
+			want: `delivery.require: stream "events" gets exactly_once_within (`},
+		{name: "a stream's require refuses it", pipeline: AtLeastOnce,
+			s:    Stream{Name: "events", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Engine: "sql", Deduped: true, Remembers: time.Hour, DedupeOf: "events", Replaces: true, Require: ExactlyOnce},
+			want: "source.streams[events].require: stream \"events\" gets exactly_once_within"},
+		{name: "a stream's require takes it", pipeline: ExactlyOnce,
+			s: Stream{Name: "events", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Engine: "sql", Deduped: true, Remembers: time.Hour, DedupeOf: "events", Replaces: true, Require: ExactlyOnceWithin}},
+		{name: "a require of exactly_once_within takes higher levels", pipeline: ExactlyOnceWithin,
+			s: Stream{Name: "orders", Replay: source.Exact, Mode: destination.Append, Keyed: true}},
+		{name: "and refuses lower ones", pipeline: ExactlyOnceWithin,
+			s:    Stream{Name: "orders", Replay: source.Superset, Mode: destination.Append, Keyed: true},
+			want: `delivery.require: stream "orders" gets at_least_once (superset replay, and the destination can't dedupe), below exactly_once_within`},
+	} {
+		err := Check(parquet, Settings{Require: c.pipeline, Scope: destination.ScopeStream}, []Stream{c.s})
+		switch {
+		case c.want == "" && err != nil:
+			t.Errorf("%s: %v", c.name, err)
+		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+			t.Errorf("%s: %v, want %q", c.name, err, c.want)
+		}
+		compared++
+	}
+	if compared != 9 {
+		t.Errorf("%d cases compared", compared)
+	}
+	replaces := Stream{Name: "events", Replay: source.Superset, Mode: destination.Append, Keyed: true, Transformed: true, Engine: "sql", Deduped: true, Remembers: time.Hour, DedupeOf: "events", Replaces: true}
+	if err := Check(parquet, Settings{Require: ExactlyOnce, Scope: destination.ScopeStream}, []Stream{replaces}); err == nil ||
+		!strings.Contains(err.Error(), "set source.streams[events].require: exactly_once_within; to remember every key, set source.streams[events].dedupe.retention: unbounded") {
+		t.Errorf("replaces: %v", err)
 	}
 }
