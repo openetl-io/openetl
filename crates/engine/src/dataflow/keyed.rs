@@ -607,6 +607,8 @@ struct Keyed {
     output: usize,
     /// Its operator's ID.
     id: String,
+    /// What it holds as the job's state; it stops counting once dropped.
+    held: Option<crate::state::LaneState>,
     op: Op,
     layer: Layer,
     ls: LaneStream,
@@ -754,6 +756,7 @@ pub(super) async fn run(
             statement: i,
             output,
             id: id.clone(),
+            held: Some(state.lane(id, lane.lane)),
             op,
             layer,
             ls,
@@ -1032,7 +1035,7 @@ impl Keyed {
                 crate::state::state_error(&format!("operator {}'s state", self.id), &e)
             })?;
         }
-        let held = state.hold(&self.id, lane.lane, self.layer.memory().total());
+        let held = self.count();
         let budget = state.budget();
         // As it is now: the flush took a while, and other lanes may have
         // released memory meanwhile.
@@ -1061,11 +1064,12 @@ impl Keyed {
         ))
     }
 
-    /// Counts what the lane's state holds now as the job's.
-    fn held(&self, lane: &Lane, id: &str) {
-        if let Some(state) = &lane.flow.plan.state.job {
-            state.hold(id, lane.lane, self.layer.memory().total());
-        }
+    /// Counts what the lane's state holds now as the job's, and gives the
+    /// job's.
+    fn count(&self) -> u64 {
+        self.held
+            .as_ref()
+            .map_or(0, |h| h.hold(self.layer.memory().total()))
     }
 
     /// Quarantines rows of a batch of the input as the output's.
@@ -1327,7 +1331,7 @@ impl Keyed {
             self.layer.discard();
             self.counts = Counts::default();
             self.op.take_counts();
-            self.held(lane, &id);
+            self.count();
         } else {
             let memory = self.layer.memory().total();
             let snapshots = self.layer.barrier(e.n).await.map_err(|err| {
@@ -1338,7 +1342,7 @@ impl Keyed {
             })?;
             // The barrier released the epoch's changes and the sections
             // that died.
-            self.held(lane, &id);
+            self.count();
             let named = snapshots
                 .iter()
                 .map(|sn| crate::state::named(&id, sn))

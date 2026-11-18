@@ -200,9 +200,30 @@ impl JobState {
     /// Notes that `operator`'s lane `lane` holds `bytes` in memory, and
     /// gives what the job's state holds in all, its block caches with it.
     pub fn hold(&self, operator: &str, lane: usize, bytes: usize) -> u64 {
+        self.count(Some((operator, lane, bytes)), None)
+    }
+
+    /// What `operator`'s lane `lane` holds counts for the job's state while
+    /// the handle lives: dropped, as the lane ends however it ends, the lane
+    /// no longer counts.
+    pub fn lane(self: &Arc<Self>, operator: &str, lane: usize) -> LaneState {
+        LaneState {
+            job: self.clone(),
+            operator: operator.to_owned(),
+            lane,
+        }
+    }
+
+    /// Sets a lane's count, or forgets one, and gives the job's.
+    fn count(&self, set: Option<(&str, usize, usize)>, forget: Option<(&str, usize)>) -> u64 {
         let lanes: usize = {
             let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-            held.insert((operator.to_owned(), lane), bytes);
+            if let Some((operator, lane, bytes)) = set {
+                held.insert((operator.to_owned(), lane), bytes);
+            }
+            if let Some((operator, lane)) = forget {
+                held.remove(&(operator.to_owned(), lane));
+            }
             held.values().sum()
         };
         let caches: usize = self
@@ -268,6 +289,27 @@ impl JobState {
     #[cfg(test)]
     pub fn pending(&self) -> PendingLimit {
         self.pending
+    }
+}
+
+/// A keyed lane's part of what the job's state holds: [`JobState::lane`].
+pub struct LaneState {
+    job: Arc<JobState>,
+    operator: String,
+    lane: usize,
+}
+
+impl LaneState {
+    /// Notes that the lane holds `bytes`, and gives what the job's state
+    /// holds in all.
+    pub fn hold(&self, bytes: usize) -> u64 {
+        self.job.hold(&self.operator, self.lane, bytes)
+    }
+}
+
+impl Drop for LaneState {
+    fn drop(&mut self) {
+        self.job.count(None, Some((&self.operator, self.lane)));
     }
 }
 
@@ -470,6 +512,24 @@ mod tests {
                 assert!(sum + lanes as usize >= limit.bytes, "{sum}");
             }
         }
+    }
+
+    /// A lane that ends, holding state, stops counting toward the job's,
+    /// while one that goes on still counts.
+    #[test]
+    fn a_lane_that_ends_stops_counting() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let state = Arc::new(JobState::open(&url, false, 1, 64 << 20, 16, None, None).unwrap());
+        let (a, b) = (state.lane("window-1", 0), state.lane("window-1", 1));
+        a.hold(300 << 20);
+        assert_eq!(b.hold(260 << 20), 560 << 20);
+        drop(a);
+        assert_eq!(b.hold(260 << 20), 260 << 20);
+        let c = state.lane("window-2", 0);
+        c.hold(5);
+        drop((b, c));
+        assert_eq!(state.hold("probe", 9, 0), 0);
     }
 
     #[test]
