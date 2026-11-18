@@ -138,11 +138,13 @@ func TestARecordHasTheNewestVersionAtItsMerge(t *testing.T) {
 	x, y := schemaX, schemaY
 	h := newOwnerTest(t, nil)
 	h.propose(1, "s", false, 0, x, "c")
-	h.propose(0, "s", false, 1, y, "c")
+	h.propose(0, "s", false, 1, y, "d")
 	h.expect("changes before the first merge", sent{-1, "s", false, 1, x, false}, sent{-1, "s", false, 2, y, false})
 	r := h.own(&Ready{Holds: map[string]*ReadyHolds{"s": {}}})
 	h.expect("the first merge", sent{-1, "s", false, 3, y, true})
-	if !slices.Equal(r.Schemas["s"], y) || len(r.Holds["s"].Holding) != 1 {
-		t.Errorf("the record has s's schema %q and holds %v", r.Schemas["s"], r.Holds["s"].Holding)
+	// The newest version's holds, not the first's.
+	holding := r.Holds["s"].Holding
+	if !slices.Equal(r.Schemas["s"], y) || len(holding) != 1 || holding[0].Column != "d" {
+		t.Errorf("the record has s's schema %q and holds %v", r.Schemas["s"], holding)
 	}
 }

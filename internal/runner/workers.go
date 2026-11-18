@@ -556,9 +556,9 @@ func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
 //   - Every engine shapes by these versions, so all agree on each record.
 //
 // The one exception, as no lane waits for another epoch: a change the owner
-// takes before it takes the shares of the stream's first epoch with columns
-// is part of the first schema, and of that epoch's record, whatever epoch
-// its rows are of. An engine whose lanes had all passed that barrier puts
+// accepts before it merges the shares of the stream's first epoch with
+// columns is part of the first schema, and of that epoch's record, whatever
+// epoch its rows are of. An engine whose lanes had all passed that barrier puts
 // its own such change under the policy.
 type schemaOwner struct {
 	co      attempt.Coordinator

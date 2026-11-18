@@ -99,6 +99,14 @@ pub struct Plan {
     pub probe: Option<crate::stage::Probe>,
     #[cfg(test)]
     pub lanes: crate::dataflow::Lanes,
+    /// Called as an owner follows the remote owner, between taking the
+    /// remote version and publishing it to its lanes.
+    #[cfg(test)]
+    pub park_follow: crate::dataflow::Park,
+    /// A lane returns a batch that needed no change without checking that
+    /// the owner's version is the one it shaped by, as before it did.
+    #[cfg(test)]
+    pub no_recheck: bool,
 }
 
 /// A job's state: where its stateful operators keep it, if it has any,
@@ -802,6 +810,10 @@ impl Plan {
             probe: None,
             #[cfg(test)]
             lanes: Default::default(),
+            #[cfg(test)]
+            park_follow: Default::default(),
+            #[cfg(test)]
+            no_recheck: false,
         };
         // Version 0 of every stream is its restored schema.
         if let Some(r) = &plan.remote {

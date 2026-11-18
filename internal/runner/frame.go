@@ -291,9 +291,11 @@ type SchemaUpdate struct {
 	// An Arrow IPC stream holding only the schema.
 	Schema  []byte
 	Holding []checkpoint.ColumnHold
-	// One of the destination's streams whose columns the coordinator has
-	// recorded: the schema policy applies to the version on every worker,
-	// whether or not its lanes have had rows.
+	// One of the destination's streams that the coordinator has sealed:
+	// every worker's engine shapes by this version and every later one
+	// under the schema policy, whether or not its lanes have had rows. The
+	// coordinator seals a stream as it merges the shares of the first epoch
+	// with its columns, before it writes that epoch's record.
 	Sealed bool
 }
 

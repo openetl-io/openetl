@@ -4,10 +4,10 @@
 //! it holds whole, and each stream a transform reads. A lane that changes a
 //! stream's schema proposes it from the owner's version its engine follows,
 //! one proposal of a stream at a time, and waits for a newer version; its
-//! engine then shapes by the newest. Once the owner has recorded an epoch
-//! whose schema has the stream's columns, its versions are sealed: every
-//! engine shapes by them under the schema policy, whether or not its own
-//! lanes have had rows. Once the call fails, every proposal waiting and
+//! engine then shapes by the newest. Once the owner has sealed a stream, as
+//! it merges the shares of the first epoch with its columns, its versions
+//! are sealed: every engine shapes by them under the schema policy, whether
+//! or not its own lanes have had rows. Once the call fails, every proposal waiting and
 //! every lane that shapes next fails the job with why.
 
 use std::sync::{Arc, Mutex};

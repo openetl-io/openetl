@@ -974,8 +974,8 @@ func TestAChangeBeforeTheFirstMergeIsTheFirstSchema(t *testing.T) {
 			once.Do(func() { close(committed) })
 		}
 	}
-	if _, err := runner.RunAttempt(ctx, j); err == nil {
-		t.Fatal("the attempt went on without the worker that ran ahead")
+	if _, err := runner.RunAttempt(ctx, j); err == nil || !strings.Contains(err.Error(), "the worker that ran ahead is lost") {
+		t.Fatalf("the attempt ended with %v, not the loss of the worker that ran ahead", err)
 	}
 	p.wait("a1")
 	x := xSchema(arrow.PrimitiveTypes.Int64)

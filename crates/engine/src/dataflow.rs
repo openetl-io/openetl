@@ -160,6 +160,18 @@ impl Lanes {
     }
 }
 
+/// A test's hook into an owner's follow.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub(crate) struct Park(pub(crate) Option<Arc<dyn Fn() + Send + Sync>>);
+
+#[cfg(test)]
+impl std::fmt::Debug for Park {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Park")
+    }
+}
+
 fn nanos(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_nanos()).unwrap_or(SINCE) & SINCE
 }
@@ -212,7 +224,7 @@ struct At {
 /// follows the remote owner's newest version, and a lane's change to the
 /// schema is proposed there; the policy applies from the remote owner's
 /// first sealed version too, so an engine whose lanes had no rows guards
-/// the schema the remote owner recorded of the others'. The invariants this
+/// the schema the others' rows set. The invariants this
 /// keeps with the remote owner are schemaOwner's, in internal/runner, and
 /// the schema_model tests check them.
 struct Owner {
@@ -417,6 +429,10 @@ impl Owner {
         o.shaper = sh;
         o.remote_version = v;
         self.remote_version.store(v, Ordering::Release);
+        #[cfg(test)]
+        if let Some(park) = &plan.park_follow.0 {
+            park();
+        }
         o.version += 1;
         self.version.store(o.version, Ordering::Release);
         Ok(())
@@ -1014,6 +1030,14 @@ struct LaneStream {
 }
 
 impl LaneStream {
+    /// Whether the lane's shaper is the owner's newest, the remote owner's
+    /// newest version followed: read from one state of the owner, so a
+    /// follow on another lane is seen whole or not at all.
+    fn current(&self, owner: &Owner, remote: &RemoteStream) -> bool {
+        let o = owner.lock();
+        o.version == self.version && remote.newest() <= o.remote_version
+    }
+
     /// Takes the owner's latest schema, if another lane changed it.
     fn catch_up(&mut self, owner: &Owner) {
         if owner.version.load(Ordering::Acquire) != self.version {
@@ -1081,25 +1105,26 @@ impl LaneStream {
             if out.is_err() {
                 // The owner may have taken a version since follow, which the
                 // batch fits: it's shaped again by that.
-                let behind = remote.newest() > owner.remote_version.load(Ordering::Acquire);
-                if owner.version.load(Ordering::Acquire) == self.version && !behind {
+                if self.current(owner, remote) {
                     return out.map_err(|e| fail(&self.shaper, e));
                 }
                 continue;
             }
-            // A version that came while it was shaped, a seal too, shapes
-            // the batch again.
-            let behind = remote.newest() > owner.remote_version.load(Ordering::Acquire);
-            if !changed && (behind || owner.version.load(Ordering::Acquire) != self.version) {
-                continue;
-            }
             if !changed {
+                // A version that came while it was shaped, a seal too,
+                // shapes the batch again.
+                let current = self.current(owner, remote);
+                #[cfg(test)]
+                let current = current || plan.no_recheck;
+                if !current {
+                    continue;
+                }
                 return out.map_err(|e| fail(&self.shaper, e));
             }
             let schema = self.shaper.schema();
             let base = {
                 let mut o = owner.lock();
-                if o.version != self.version {
+                if o.version != self.version || remote.newest() > o.remote_version {
                     continue;
                 }
                 if o.shaper.schema() == schema && o.shaper.holding() == self.shaper.holding() {
@@ -4088,6 +4113,92 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(
+            x_and_held(&shaped.batch),
+            [r#"{"x":null,"_openetl_held":"[x]"}"#]
+        );
+        assert!(proposals.try_recv().is_err());
+    }
+
+    // Another lane's follow, parked between taking the remote version and
+    // publishing it to the lanes, is seen whole or not at all: a batch that
+    // fits the version its lane shaped by waits for it, and is shaped again
+    // by the version it took, which holds x.
+    #[tokio::test]
+    async fn another_lanes_follow_is_seen_whole() {
+        use openetl_proto::engine::v1::SchemasRequest;
+        use std::sync::atomic::AtomicBool;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = guarded_request(dir.path(), 1);
+        req.remote_schemas = true;
+        let mut plan = Plan::from_request(req).unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (parked, wait) = std::sync::mpsc::sync_channel::<()>(1);
+        {
+            let armed = armed.clone();
+            plan.park_follow = Park(Some(Arc::new(move || {
+                if armed.swap(false, Ordering::SeqCst) {
+                    parked.send(()).unwrap();
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            })));
+        }
+        let plan = Arc::new(plan);
+        let remote = plan.remote.clone().unwrap();
+        let mut proposals = remote.take_proposals().unwrap();
+        let mut other = owned_shaper(&plan, 0, None, None).unwrap();
+        other.rows([br#"{"id": 1, "x": 1}"#.as_slice()]).unwrap();
+        remote
+            .update(&take(
+                1,
+                ipc::encode_schema(&other.schema().unwrap()).unwrap(),
+            ))
+            .unwrap();
+        other.seal();
+        other.rows([br#"{"id": 2, "x": "t"}"#.as_slice()]).unwrap();
+        let held = SchemasRequest {
+            holding: column_holds(&other).unwrap(),
+            sealed: true,
+            ..take(2, ipc::encode_schema(&other.schema().unwrap()).unwrap())
+        };
+        let owner = Arc::new(Owner::new(&plan, 0).unwrap());
+        let mut ls = {
+            let o = owner.lock();
+            LaneStream {
+                stream: 0,
+                shaper: o.shaper.fork(),
+                version: o.version,
+                quarantined: Quarantined::default(),
+                cells: BTreeMap::new(),
+                replay: None,
+            }
+        };
+        let follower = std::sync::Mutex::new(None);
+        let rows = [br#"{"id": 3, "x": 3}"#.as_slice()];
+        let shaped = ls
+            .shape_own(
+                &plan,
+                &owner,
+                |sh| {
+                    let mut follower = follower.lock().unwrap();
+                    if follower.is_none() {
+                        // Version 2 comes as the batch is shaped, and another
+                        // lane follows it, parking halfway.
+                        remote.update(&held).unwrap();
+                        armed.store(true, Ordering::SeqCst);
+                        let (plan, owner) = (plan.clone(), owner.clone());
+                        *follower = Some(std::thread::spawn(move || owner.follow(&plan, 0)));
+                        wait.recv().unwrap();
+                    }
+                    sh.type_rows(rows)
+                },
+                |_, e| shape_error("a", e),
+            )
+            .await
+            .unwrap();
+        let follower = follower.lock().unwrap().take().unwrap();
+        follower.join().unwrap().unwrap();
         assert_eq!(
             x_and_held(&shaped.batch),
             [r#"{"x":null,"_openetl_held":"[x]"}"#]
