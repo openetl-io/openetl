@@ -2855,4 +2855,189 @@ mod tests {
             assert_eq!(still, 1, "{what}");
         }
     }
+
+    /// What a shaped batch gives, as a test compares two: an error, or the
+    /// batch, its held values and rows left out, each batch's fields and
+    /// rows but the times its rows were synced and sequenced at.
+    fn outcome(r: Result<Shaped, Error>) -> String {
+        let comparable = |b: &RecordBatch| {
+            let keep: Vec<usize> = (0..b.num_columns())
+                .filter(|&i| {
+                    !matches!(
+                        b.schema().field(i).name().as_str(),
+                        "_openetl_synced_at" | "_openetl_seq"
+                    )
+                })
+                .collect();
+            let b = b.project(&keep).unwrap();
+            let fields: Vec<(String, DataType)> = b
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| (f.name().clone(), f.data_type().clone()))
+                .collect();
+            let rows: Vec<String> = (0..b.num_rows())
+                .map(|r| crate::render_row(&b, r))
+                .collect();
+            (fields, rows)
+        };
+        match r {
+            Err(e) => format!("error: {e}"),
+            Ok(n) => format!(
+                "{:?}",
+                (
+                    comparable(&n.batch),
+                    n.held.iter().map(comparable).collect::<Vec<_>>(),
+                    n.rejected,
+                    n.cells,
+                    n.versioned,
+                    n.schema_changed
+                )
+            ),
+        }
+    }
+
+    /// A batch for a test to shape: raw rows, or a typed batch.
+    #[derive(Debug)]
+    enum Input {
+        Raw(&'static [&'static str]),
+        Typed(RecordBatch),
+    }
+
+    impl Input {
+        fn shape(&self, s: &mut Shaper) -> Result<Shaped, Error> {
+            match self {
+                Input::Raw(rows) => s.rows(rows.iter().map(|r| r.as_bytes())),
+                Input::Typed(b) => s.batch(b),
+            }
+        }
+    }
+
+    // A lane that starts from a schema another lane sealed, with no rows of
+    // its own, as an engine does from its owner's sealed version, takes,
+    // holds, versions or refuses each change as the lane that wrote those
+    // columns does: under every policy, whether the stream holds columns,
+    // cells or groups, for new columns, widenings, other changes, integers
+    // past 2^53 and values that don't fit their declared type, on raw rows
+    // and typed batches.
+    #[test]
+    fn a_lane_from_a_sealed_schema_shapes_as_the_lane_that_wrote_it() {
+        use Input::{Raw, Typed};
+        use arrow_array::{Float64Array, Int32Array};
+        let declared: SchemaRef =
+            Arc::new(Schema::new(vec![Field::new("d", DataType::Int64, true)]));
+        let id = |i: i64| ("id", Arc::new(Int64Array::from(vec![i])) as ArrayRef);
+        let ints = |v: i64| Arc::new(Int64Array::from(vec![v])) as ArrayRef;
+        let text = |v: &str| Arc::new(StringArray::from(vec![v])) as ArrayRef;
+        let flag = || Arc::new(BooleanArray::from(vec![true])) as ArrayRef;
+        let lanes = [
+            (
+                Raw(&[r#"{"id": 1, "x": 1, "y": "a", "d": 1, "big": 9007199254740993}"#]),
+                vec![
+                    Raw(&[r#"{"id": 2, "x": 2, "z": true}"#]),
+                    Raw(&[r#"{"id": 3, "x": 2.5}"#]),
+                    Raw(&[r#"{"id": 4, "x": "t"}"#]),
+                    Raw(&[r#"{"id": 5, "x": true, "y": "b"}"#]),
+                    Raw(&[r#"{"id": 6, "big": 1.5}"#]),
+                    Raw(&[r#"{"id": 7, "d": "nope", "x": 3}"#]),
+                    Raw(&[r#"{"id": 8, "y": 5}"#, r#"{"id": 9, "x": 4}"#]),
+                    Raw(&[r#"{"id": 10, "x": 5, "y": "c"}"#]),
+                ],
+            ),
+            (
+                Typed(typed(vec![
+                    id(1),
+                    ("x", ints(1)),
+                    ("y", text("a")),
+                    ("d", ints(1)),
+                    ("big", ints((1 << 53) + 1)),
+                ])),
+                vec![
+                    Typed(typed(vec![id(2), ("x", ints(2)), ("z", flag())])),
+                    Typed(typed(vec![
+                        id(3),
+                        ("x", Arc::new(Float64Array::from(vec![2.5]))),
+                    ])),
+                    Typed(typed(vec![id(4), ("x", text("t"))])),
+                    Typed(typed(vec![id(5), ("x", flag())])),
+                    Typed(typed(vec![id(6), ("x", flag()), ("y", text("b"))])),
+                    Typed(typed(vec![
+                        id(7),
+                        ("big", Arc::new(Float64Array::from(vec![1.5]))),
+                    ])),
+                    Typed(typed(vec![
+                        id(8),
+                        ("x", Arc::new(Int32Array::from(vec![3]))),
+                    ])),
+                    Typed(typed(vec![id(9), ("d", text("nope"))])),
+                ],
+            ),
+        ];
+        let configs = [
+            None,
+            Some(HoldConfig::default()),
+            Some(HoldConfig {
+                cells: true,
+                ..Default::default()
+            }),
+            Some(HoldConfig {
+                groups: vec![vec!["x".into(), "y".into()]],
+                ..Default::default()
+            }),
+        ];
+        let make = |policy, restored, config: &Option<HoldConfig>, holding| {
+            let s = keyed(policy, restored, Some(declared.clone()));
+            match config {
+                Some(c) => s
+                    .with_holds(HoldConfig {
+                        holding,
+                        ..c.clone()
+                    })
+                    .unwrap(),
+                None => s,
+            }
+        };
+        let (mut compared, mut kinds) = (0, HashSet::new());
+        let policies = [
+            Policy::AllowAll,
+            Policy::AllowColumns,
+            Policy::Block,
+            Policy::IgnoreNew,
+        ];
+        let mut cases = 0;
+        for (first, changes) in &lanes {
+            cases += changes.len();
+            for policy in policies {
+                for config in &configs {
+                    for change in changes {
+                        let mut writer = make(policy, None, config, Vec::new());
+                        first.shape(&mut writer).unwrap();
+                        assert!(writer.seal());
+                        let mut follower = make(policy, writer.schema(), config, writer.holding());
+                        follower.seal();
+                        assert!(follower.sealed());
+                        let w = outcome(change.shape(&mut writer));
+                        let f = outcome(change.shape(&mut follower));
+                        let case = format!("{policy:?}, {config:?}, {change:?}");
+                        assert_eq!(w, f, "{case}");
+                        assert_eq!(writer.schema(), follower.schema(), "{case}");
+                        assert_eq!(
+                            format!("{:?}", writer.holding()),
+                            format!("{:?}", follower.holding()),
+                            "{case}"
+                        );
+                        compared += 1;
+                        kinds.insert(match w.as_str() {
+                            e if e.starts_with("error") => "refused",
+                            o if o.contains(HELD_COLUMN) => "held",
+                            o if o.contains("__v2") => "versioned",
+                            _ => "taken",
+                        });
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, policies.len() * configs.len() * cases);
+        assert_eq!(kinds.len(), 4, "{kinds:?}");
+    }
 }

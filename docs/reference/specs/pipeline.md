@@ -182,6 +182,8 @@ The plan checks hold requirements:
 | `block` | Held, or fails the sync | Held, or fails the sync | Held, or fails the sync |
 | `ignore_new` | Dropped | Values cast to the column's type | Values cast to the column's type |
 
+A policy applies after the stream's first checkpoint whose rows have columns, or after the checkpoint that a sync restores, on every lane and every worker. The rows up to that checkpoint set the stream's first schema.
+
 Widening lets a column represent a broader range of values. Numeric widening includes these conversions:
 
 | Source type | Wider types |

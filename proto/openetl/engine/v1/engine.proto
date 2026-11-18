@@ -830,6 +830,14 @@ message SchemasRequest {
   // One of the destination's streams that holds: the columns it holds
   // whole, as StreamHolds.holding.
   repeated ColumnHold holding = 5;
+  // One of the destination's streams: the owner has recorded an epoch whose
+  // schema has the stream's columns, at this version or before, or the job
+  // restored such a schema. The engine shapes by the version under the
+  // schema policy, as a lane does once its stream has crossed a barrier
+  // with columns, whether or not its own lanes have had rows. Unset: the
+  // policy applies once the engine's lanes have crossed a barrier with
+  // columns.
+  bool sealed = 6;
 }
 
 // SchemasResponse proposes a lane's change to a stream's schema, or to what

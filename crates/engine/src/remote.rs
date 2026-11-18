@@ -4,8 +4,11 @@
 //! it holds whole, and each stream a transform reads. A lane that changes a
 //! stream's schema proposes it from the owner's version its engine follows,
 //! one proposal of a stream at a time, and waits for a newer version; its
-//! engine then shapes by the newest. Once the call fails, every proposal
-//! waiting and every lane that shapes next fails the job with why.
+//! engine then shapes by the newest. Once the owner has recorded an epoch
+//! whose schema has the stream's columns, its versions are sealed: every
+//! engine shapes by them under the schema policy, whether or not its own
+//! lanes have had rows. Once the call fails, every proposal waiting and
+//! every lane that shapes next fails the job with why.
 
 use std::sync::{Arc, Mutex};
 
@@ -34,6 +37,9 @@ pub struct Owned {
     pub schema: Option<SchemaRef>,
     /// The columns one of the destination's streams holds whole.
     pub holding: Vec<ColumnHold>,
+    /// The schema policy applies to the version, as SchemasRequest.sealed
+    /// says.
+    pub sealed: bool,
 }
 
 /// What a change to one of the destination's streams holds, beside its
@@ -156,6 +162,7 @@ impl Remote {
                 version: u.version,
                 schema: Some(schema),
                 holding: u.holding.clone(),
+                sealed: u.sealed,
             };
             s.newest.send_replace(u.version);
         }
@@ -289,6 +296,22 @@ mod tests {
             .unwrap();
         assert!(proposals.try_recv().is_err());
         assert!(r.update(&update(2, 1, &s)).is_err());
+    }
+
+    // A version says whether the owner has sealed it.
+    #[test]
+    fn a_version_carries_its_seal() {
+        let r = Remote::new(1, 0);
+        let s = schema(&["a"]);
+        let stream = r.stream(0).unwrap();
+        r.update(&update(0, 1, &s)).unwrap();
+        assert!(!stream.latest().sealed);
+        r.update(&SchemasRequest {
+            sealed: true,
+            ..update(0, 2, &s)
+        })
+        .unwrap();
+        assert_eq!((stream.latest().version, stream.latest().sealed), (2, true));
     }
 
     // A stream a transform reads has versions of its own, apart from the

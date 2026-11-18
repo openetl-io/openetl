@@ -4269,7 +4269,15 @@ type SchemasRequest struct {
 	Input       bool   `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
 	// One of the destination's streams that holds: the columns it holds
 	// whole, as StreamHolds.holding.
-	Holding       []*ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	Holding []*ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	// One of the destination's streams: the owner has recorded an epoch whose
+	// schema has the stream's columns, at this version or before, or the job
+	// restored such a schema. The engine shapes by the version under the
+	// schema policy, as a lane does once its stream has crossed a barrier
+	// with columns, whether or not its own lanes have had rows. Unset: the
+	// policy applies once the engine's lanes have crossed a barrier with
+	// columns.
+	Sealed        bool `protobuf:"varint,6,opt,name=sealed,proto3" json:"sealed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4337,6 +4345,13 @@ func (x *SchemasRequest) GetHolding() []*ColumnHold {
 		return x.Holding
 	}
 	return nil
+}
+
+func (x *SchemasRequest) GetSealed() bool {
+	if x != nil {
+		return x.Sealed
+	}
+	return false
 }
 
 // SchemasResponse proposes a lane's change to a stream's schema, or to what
@@ -4791,13 +4806,14 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06staged\x18\x02 \x03(\fR\x06staged\"\x10\n" +
 	"\x0eCommitResponse\"\r\n" +
 	"\vStopRequest\"\x0e\n" +
-	"\fStopResponse\"\xb4\x01\n" +
+	"\fStopResponse\"\xcc\x01\n" +
 	"\x0eSchemasRequest\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\rR\x06stream\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x12!\n" +
 	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
 	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
-	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\"\xcd\x01\n" +
+	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x16\n" +
+	"\x06sealed\x18\x06 \x01(\bR\x06sealed\"\xcd\x01\n" +
 	"\x0fSchemasResponse\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\rR\x06stream\x12\x12\n" +
 	"\x04base\x18\x02 \x01(\x04R\x04base\x12!\n" +
