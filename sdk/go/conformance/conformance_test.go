@@ -157,15 +157,18 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 		seq = 0
 	}
 	s.up.mu.Unlock()
+	var split []source.ConfiguredStream
 	for _, st := range req.Streams {
 		var err error
-		switch st.Name {
-		case "users":
+		switch {
+		case st.Name == "changes" && len(st.Splits) > 0:
+			split = append(split, st)
+		case st.Name == "users":
 			err = s.readUsers(users, seq, st.State, st.Until, out)
-		case "events":
+		case st.Name == "events":
 			err = s.readEvents(events, st.State, s.endOf(st), out)
-		case "changes":
-			err = s.readChanges(ctx, req.Continuous, st.State, st.Until, out)
+		case st.Name == "changes":
+			err = s.readChanges(ctx, req.Continuous, st.State, st.Until, out.Split("changes", source.WholeStream), -1)
 		default:
 			err = fmt.Errorf("no stream %q", st.Name)
 		}
@@ -173,7 +176,50 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 			return err
 		}
 	}
-	return nil
+	if len(split) == 0 {
+		return nil
+	}
+	splits := source.ReadRequest{Streams: split, Continuous: req.Continuous, Lanes: req.Lanes}
+	if s.bug == "continuous-splits-wait" {
+		splits.Continuous = false
+	}
+	return source.ReadSplits(ctx, splits, out, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		k, err := strconv.Atoi(sp.ID)
+		if err != nil {
+			return err
+		}
+		if s.bug == "resume-other-split" && k == 1 {
+			e = resumesAs{e, out.Split("changes", "0")}
+		}
+		return s.readChanges(ctx, req.Continuous, sp.State, sp.Until, e, k)
+	})
+}
+
+// resumesAs sends a split's resume points as another split's.
+type resumesAs struct {
+	source.SplitEmitter
+	other source.SplitEmitter
+}
+
+func (e resumesAs) ResumePoint(state []byte, added ...source.Split) error {
+	return e.other.ResumePoint(state, added...)
+}
+
+// The log of changes splits by id, modulo changeSplits.
+const changeSplits = 3
+
+func (s *memSource) Splits(_ context.Context, stream source.ConfiguredStream, ended []source.Split) ([]source.Split, error) {
+	if stream.Name != "changes" {
+		return source.Whole(ended)
+	}
+	if ended != nil {
+		return ended, nil
+	}
+	var splits []source.Split
+	for k := range changeSplits {
+		splits = append(splits, source.Split{ID: strconv.Itoa(k)})
+	}
+	return splits, nil
 }
 
 // endOf is where a read of the events ends: its until, else its
@@ -318,8 +364,8 @@ func (s *memSource) readEvents(n int64, state, until []byte, out source.Emitter)
 
 // readChanges reads the log from the state, the next id, on: up to until or
 // where it ended when the read started, or, read continuously, until
-// cancelled.
-func (s *memSource) readChanges(ctx context.Context, continuous bool, state, until []byte, out source.Emitter) error {
+// cancelled. With split at 0 or more, it reads that split's ids alone.
+func (s *memSource) readChanges(ctx context.Context, continuous bool, state, until []byte, out source.SplitEmitter, split int) error {
 	var from int64
 	if state != nil {
 		if err := json.Unmarshal(state, &from); err != nil {
@@ -349,28 +395,32 @@ func (s *memSource) readChanges(ctx context.Context, continuous bool, state, unt
 			to := min(from+3, end)
 			b := array.NewInt64Builder(memory.DefaultAllocator)
 			for i := from; i < to; i++ {
-				b.Append(i)
+				if split < 0 || i%changeSplits == int64(split) {
+					b.Append(i)
+				}
 			}
 			col := b.NewArray()
 			b.Release()
-			if err := out.Records("changes", array.NewRecordBatch(changesSchema, []arrow.Array{col}, to-from)); err != nil {
-				return err
+			if n := int64(col.Len()); n > 0 {
+				if err := out.Records(array.NewRecordBatch(changesSchema, []arrow.Array{col}, n)); err != nil {
+					return err
+				}
 			}
 			from = to
 			if s.bug == "continuous-no-resume" && caughtUp {
 				continue
 			}
 			st, _ := json.Marshal(from)
-			if err := out.ResumePoint("changes", st); err != nil {
+			if err := out.ResumePoint(st); err != nil {
 				return err
 			}
 			continue
 		}
 		if !continuous && until != nil {
-			return out.Complete("changes", until)
+			return out.Complete(until)
 		}
 		if !continuous || s.bug == "continuous-completes" {
-			return out.Complete("changes", nil)
+			return out.Complete(nil)
 		}
 		caughtUp = true
 		select {
@@ -438,7 +488,7 @@ func sourceSuite(bug string) conformance.SourceSuite {
 func memSuite(up *upstream, bug string) conformance.SourceSuite {
 	return conformance.SourceSuite{
 		Launch: rewrite(bug, conformance.InProcess(sdk.Connector{
-			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw}, Acknowledges: true,
+			Name: "memory", ConfigSchema: configSchema, Egress: sdk.Egress{Tier: sdk.EgressRaw}, Acknowledges: true, Splits: true,
 			Source: func(config []byte, _ host.Host) (source.Source, error) {
 				c, err := bind(config)
 				return &memSource{c: c, up: up, bug: bug}, err
@@ -485,23 +535,25 @@ func TestSourceSequencesAreNotRecords(t *testing.T) {
 
 func TestSourceBugsFail(t *testing.T) {
 	cases := map[string][]string{
-		"resume-gap":            {"read/resume", "read/until", "read/committed"},
-		"dup-key":               {"read/full"},
-		"batch-after-complete":  {"read/full", "read/until"},
-		"incremental-no-next":   {"read/incremental"},
-		"incremental-skips":     {"read/incremental", "read/complete-at"},
-		"check-internal":        {"errors"},
-		"committed-fails":       {"read/committed"},
-		"ack-trims-too-far":     {"read/committed"},
-		"continuous-completes":  {"read/continuous"},
-		"continuous-no-resume":  {"read/continuous"},
-		"until-ignored":         {"read/until"},
-		"until-no-end":          {"read/until"},
-		"until-completes-first": {"read/until"},
-		"until-after-complete":  {"read/until"},
-		"completion-moves":      {"read/until"},
-		"complete-at-ignored":   {"read/complete-at"},
-		"complete-at-short":     {"read/complete-at"},
+		"resume-gap":             {"read/resume", "read/until", "read/committed"},
+		"dup-key":                {"read/full"},
+		"batch-after-complete":   {"read/full", "read/until"},
+		"incremental-no-next":    {"read/incremental"},
+		"incremental-skips":      {"read/incremental", "read/complete-at"},
+		"check-internal":         {"errors"},
+		"committed-fails":        {"read/committed"},
+		"ack-trims-too-far":      {"read/committed"},
+		"continuous-completes":   {"read/continuous", "read/continuous-splits"},
+		"continuous-no-resume":   {"read/continuous", "read/continuous-splits"},
+		"continuous-splits-wait": {"read/continuous-splits"},
+		"resume-other-split":     {"read/continuous-splits"},
+		"until-ignored":          {"read/until"},
+		"until-no-end":           {"read/until"},
+		"until-completes-first":  {"read/until"},
+		"until-after-complete":   {"read/until"},
+		"completion-moves":       {"read/until"},
+		"complete-at-ignored":    {"read/complete-at"},
+		"complete-at-short":      {"read/complete-at"},
 	}
 	for bug, checks := range cases {
 		t.Run(bug, func(t *testing.T) {

@@ -143,7 +143,9 @@ message ReadRequest {
   // they've caught up with where their source was when the read started.
   bool continuous = 4;
   // How many of its splits the read may read at a time, a whole
-  // stream counting as one, more if they share a connection. Zero: one.
+  // stream counting as one, more if they share a connection. Zero: one. In
+  // a continuous read, the splits of streams that follow their source don't
+  // count: they don't end, so the source reads every one of them at once.
   uint32 lanes = 5;
 }
 

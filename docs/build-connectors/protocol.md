@@ -74,6 +74,14 @@ Sources can also implement these operations:
 | `Retention` | Report retention usage for saved positions while the pipeline is stopped. Set `Retention: true` in `sdk.Connector` to enable checks every 15 minutes. Reports can open a **Retention at risk** incident. |
 | `Setup`, `Teardown` | Create or remove source resources for a pipeline, as described below. |
 
+#### Splits and lanes
+
+A read request's `lanes` is how many of its splits the source can read at a time. A stream read whole counts as one split. Splits that share a connection can count as fewer. When a split completes, its lane goes to a split that waits.
+
+In a continuous read, the splits of streams read with `cdc` or `stream` do not complete. So they do not count against `lanes`: the source reads all of them at once, and also the splits that they add. Records of several splits can come in any order on the read, each marked with its split.
+
+In Go, `source.ReadSplits` reads the splits for you, up to `Lanes` at a time. In a continuous read, it starts each split of a stream that follows its source at once, without a lane. A stream follows its source unless its `SyncMode` is `FullRefresh` or `Incremental`, because `ReadSplits` cannot tell how a source reads a stream without one. If such a stream also has splits that complete and must take turns, such as a snapshot's chunks, read them in a separate `ReadSplits` call without `Continuous`.
+
 ### A destination
 
 A destination declares its **capabilities**, and opens a writer for each writer lane of an attempt. Its capabilities say how it makes an epoch, the data between two checkpoints, visible:

@@ -125,7 +125,9 @@ type ReadRequest struct {
 	// caught up with where their source was when the read started.
 	Continuous bool
 	// How many splits the read may read at a time, a stream read
-	// whole counting as one; 0 is one. ReadSplits follows it.
+	// whole counting as one; 0 is one. In a continuous read, the splits of
+	// streams that follow their source don't count: they don't end, so the
+	// source reads every one of them at once. ReadSplits follows it.
 	Lanes int
 }
 
@@ -316,54 +318,104 @@ type ReadSplit func(ctx context.Context, stream ConfiguredStream, split Split, o
 // a time; a stream without splits is one split, the whole stream. Splits that
 // an emitter's ResumePoint or Complete adds join those waiting. It returns
 // once every split is read, or with the first error, which cancels the rest.
+//
+// In a continuous read, the splits of a stream that follows its source don't
+// end, so a split waiting for one of their lanes would never be read. Each of
+// them starts at once instead, and takes no lane, as do the splits they add.
+// A stream follows its source there unless it's read with FullRefresh or
+// Incremental: ReadSplits can't tell how a source reads a stream without a
+// SyncMode. A followed stream's splits that do end and must take turns, such
+// as a snapshot's chunks, go through a ReadSplits of their own, without
+// Continuous.
 func ReadSplits(ctx context.Context, req ReadRequest, out Emitter, read ReadSplit) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	q := &splitQueue{}
-	q.wake = sync.NewCond(&q.mu)
+	r := &splitReader{ctx: ctx, cancel: cancel, out: out, read: read, continuous: req.Continuous}
+	r.q.wake = sync.NewCond(&r.q.mu)
 	for _, cs := range req.Streams {
 		splits := cs.Splits
 		if len(splits) == 0 {
 			splits = []Split{{ID: WholeStream, State: cs.State, Until: cs.Until, CompleteAt: cs.CompleteAt}}
 		}
-		for _, sp := range splits {
-			q.waiting = append(q.waiting, queuedSplit{stream: cs, split: sp})
-		}
+		r.add(cs, splits)
 	}
 	stop := context.AfterFunc(ctx, func() {
-		q.mu.Lock()
-		q.stopped = true
-		q.wake.Broadcast()
-		q.mu.Unlock()
+		r.q.mu.Lock()
+		r.q.stopped = true
+		r.q.wake.Broadcast()
+		r.q.mu.Unlock()
 	})
 	defer stop()
-	var wg sync.WaitGroup
 	for range max(req.Lanes, 1) {
-		wg.Go(func() {
+		r.wg.Go(func() {
 			for {
-				next, ok := q.next()
+				next, ok := r.q.next()
 				if !ok {
 					return
 				}
-				em := queuedEmitter{SplitEmitter: out.Split(next.stream.Name, next.split.ID), q: q, stream: next.stream}
-				var e SplitEmitter = em
-				if f, ok := em.SplitEmitter.(SplitForwarder); ok {
-					e = queuedForwarder{em, f}
-				}
-				if err := read(ctx, next.stream, next.split, e); err != nil {
-					cancel(err)
-					q.done()
+				ok = r.readSplit(next)
+				r.q.done()
+				if !ok {
 					return
 				}
-				q.done()
 			}
 		})
 	}
-	wg.Wait()
+	r.wg.Wait()
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
 	return nil
+}
+
+// splitReader is a ReadSplits run: its lanes take the splits queued, and
+// the splits of streams that follow their source run beside them.
+type splitReader struct {
+	ctx        context.Context
+	cancel     context.CancelCauseFunc
+	out        Emitter
+	read       ReadSplit
+	continuous bool
+	q          splitQueue
+	wg         sync.WaitGroup
+}
+
+// follows says the stream's splits don't end, so none waits for a lane.
+func (r *splitReader) follows(cs ConfiguredStream) bool {
+	return r.continuous && cs.SyncMode != FullRefresh && cs.SyncMode != Incremental
+}
+
+// add queues a stream's splits for the lanes, or starts each of them if the
+// stream follows its source. It's called before the lanes start, or from a
+// split's read, so the WaitGroup is never at zero when it adds to it.
+func (r *splitReader) add(cs ConfiguredStream, splits []Split) {
+	if len(splits) == 0 {
+		return
+	}
+	if !r.follows(cs) {
+		r.q.add(cs, splits)
+		return
+	}
+	for _, sp := range splits {
+		if r.ctx.Err() != nil {
+			return
+		}
+		r.wg.Go(func() { r.readSplit(queuedSplit{stream: cs, split: sp}) })
+	}
+}
+
+// readSplit reads one split; false if it failed, which cancels the rest.
+func (r *splitReader) readSplit(s queuedSplit) bool {
+	em := queuedEmitter{SplitEmitter: r.out.Split(s.stream.Name, s.split.ID), r: r, stream: s.stream}
+	var e SplitEmitter = em
+	if f, ok := em.SplitEmitter.(SplitForwarder); ok {
+		e = queuedForwarder{em, f}
+	}
+	if err := r.read(r.ctx, s.stream, s.split, e); err != nil {
+		r.cancel(err)
+		return false
+	}
+	return true
 }
 
 type queuedSplit struct {
@@ -371,10 +423,12 @@ type queuedSplit struct {
 	split  Split
 }
 
+// splitQueue holds the splits waiting for a lane.
 type splitQueue struct {
 	mu      sync.Mutex
 	wake    *sync.Cond
 	waiting []queuedSplit
+	// Splits the lanes are reading, which may add some.
 	reading int
 	stopped bool
 }
@@ -407,9 +461,6 @@ func (q *splitQueue) done() {
 }
 
 func (q *splitQueue) add(stream ConfiguredStream, added []Split) {
-	if len(added) == 0 {
-		return
-	}
 	q.mu.Lock()
 	for _, sp := range added {
 		q.waiting = append(q.waiting, queuedSplit{stream: stream, split: sp})
@@ -421,7 +472,7 @@ func (q *splitQueue) add(stream ConfiguredStream, added []Split) {
 // queuedEmitter queues the splits a read adds, once the platform has them.
 type queuedEmitter struct {
 	SplitEmitter
-	q      *splitQueue
+	r      *splitReader
 	stream ConfiguredStream
 }
 
@@ -429,7 +480,7 @@ func (e queuedEmitter) ResumePoint(state []byte, added ...Split) error {
 	if err := e.SplitEmitter.ResumePoint(state, added...); err != nil {
 		return err
 	}
-	e.q.add(e.stream, added)
+	e.r.add(e.stream, added)
 	return nil
 }
 
@@ -437,7 +488,7 @@ func (e queuedEmitter) Complete(next []byte, added ...Split) error {
 	if err := e.SplitEmitter.Complete(next, added...); err != nil {
 		return err
 	}
-	e.q.add(e.stream, added)
+	e.r.add(e.stream, added)
 	return nil
 }
 
