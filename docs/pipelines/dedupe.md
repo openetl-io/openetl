@@ -117,7 +117,7 @@ The dedupe keeps, for each key it has seen, whether the output has the key's row
 
 | Read | Key whose row the dedupe wrote last | Key whose delete the dedupe wrote last | Key it has not seen, or saw only in quarantined rows |
 |---|---|---|---|
-| `full_refresh` | Writes the delete | Writes nothing: the output has no row of the key | Writes the delete: each sync's read starts with no state, and the output can have the key's row from an earlier sync |
+| `full_refresh` | Writes the delete | Writes nothing: the dedupe already wrote a delete for the key | Writes the delete: each sync's read starts with no state, and the output can have the key's row from an earlier sync |
 | `incremental` or `stream` | Writes the delete | Writes nothing | Writes nothing: its state holds every key since its state began |
 
 For example, with the filter `amount < 50`, a key's rows with the amounts 20, 90 and 95, which come one after another in that order of time, write an insert, then one delete, then nothing for 95.
