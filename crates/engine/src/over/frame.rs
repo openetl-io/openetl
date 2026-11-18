@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 use openetl_sql::{AggregateKind, Frame, OverFunction, OverKind};
 
 use super::row::put;
-use crate::window::accumulate::{Acc, Spec};
+use crate::window::accumulate::{self, Acc, Spec};
 use crate::window::codec::{self, Value, take};
 
 /// A function as the operator runs it.
@@ -109,9 +109,7 @@ impl Func {
     /// others' the value, of the types they take.
     pub fn value(&self, a: &dyn arrow_array::Array, r: usize) -> Option<Value> {
         match &self.kind {
-            Kind::Agg(spec) if spec.kind == AggregateKind::Count => {
-                a.is_valid(r).then_some(Value::Bool(true))
-            }
+            Kind::Agg(spec) if spec.kind == AggregateKind::Count => accumulate::present(a, r),
             _ => Value::read(a, r),
         }
     }
