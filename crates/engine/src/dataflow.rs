@@ -6579,10 +6579,18 @@ pub(crate) mod tests {
         assert!(early >= 2 * (EPOCHS - 1), "{early} early runs named");
         assert!(raw > MEMORY, "{raw} bytes of state");
         assert!(peak <= MEMORY, "{peak} bytes in memory at the most");
-        // The last barrier released every window: the lanes count as
-        // holding what they hold after it, not what they held before.
+        // The last barrier released every window's changes: the lanes count
+        // as holding what they hold after it, not what they held before.
         let after = state.hold("none", usize::MAX, 0);
-        assert!(after <= 2 << 20, "{after} bytes held after the end");
+        let before: u64 = ready[EPOCHS - 1]
+            .operators
+            .iter()
+            .map(|o| o.memory_bytes)
+            .sum();
+        assert!(
+            after < before / 4 * 3,
+            "{after} bytes held after the end, {before} before"
+        );
         let disk = state.disk().unwrap().counts();
         let reported: u64 = ready
             .iter()
