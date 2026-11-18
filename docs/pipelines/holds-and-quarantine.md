@@ -94,6 +94,10 @@ A stream without a primary key cannot set `hold`. The streams of a pipeline with
 - the schema policy does not take the change: `allow_columns` for a type change that is not a widening, and `block` for any change;
 - the destination cannot add more columns.
 
+The schema policy applies to a stream's rows after the first checkpoint that records a schema with the stream's columns. That schema is the stream's first schema. If a sync restores a checkpoint that has the stream's columns, the policy applies from the start of the sync. The schema policy holds none of the changes in the first schema. Holds that the destination causes still apply to them: a type change that the destination refuses, or a new column that the destination has no room for.
+
+On [workers](./workers.md#schema-changes-and-holds), the policy applies on every worker after that checkpoint, also on a worker that has not read any of the stream's rows yet. The first schema can have a change from rows after that checkpoint. [Schema changes and holds](./workers.md#schema-changes-and-holds) says when, and what a worker does until it receives the first schema.
+
 A column hold needs what a cell hold needs: a primary key and a destination that patches the stream's write mode. If OpenETL cannot hold the column, the sync fails with `SCHEMA_DRIFT`. A change to a column does not quarantine rows. [Handle schema changes and holds](./schema-changes.md) walks through a column hold and its release.
 
 ## An example

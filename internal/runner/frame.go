@@ -291,6 +291,12 @@ type SchemaUpdate struct {
 	// An Arrow IPC stream holding only the schema.
 	Schema  []byte
 	Holding []checkpoint.ColumnHold
+	// One of the destination's streams that the coordinator has sealed:
+	// every worker's engine shapes by this version and every later one
+	// under the schema policy, whether or not its lanes have had rows. The
+	// coordinator seals a stream as it merges the shares of the first epoch
+	// with its columns, before it writes that epoch's record.
+	Sealed bool
 }
 
 func (p Plan) lanes() int       { return max(p.Lanes, 1) }

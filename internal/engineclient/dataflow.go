@@ -287,7 +287,7 @@ func relaySchemas(ctx context.Context, st enginev1.EngineService_SchemasClient, 
 				if !ok {
 					continue
 				}
-				req := &enginev1.SchemasRequest{Stream: i, Input: u.Input, Version: u.Version, ArrowSchema: u.Schema}
+				req := &enginev1.SchemasRequest{Stream: i, Input: u.Input, Version: u.Version, ArrowSchema: u.Schema, Sealed: u.Sealed}
 				for _, c := range u.Holding {
 					req.Holding = append(req.Holding, attempt.ColumnHold(c))
 				}

@@ -356,7 +356,9 @@ func (f *fleet) merge(shares []*attemptv1.Share) (*shared, error) {
 			return f.place(name, a.ID) - f.place(name, b.ID)
 		})
 	}
-	f.schemas.own(sh.flow, f.job.SQL != nil)
+	if err := f.schemas.own(sh.flow, f.job.SQL != nil); err != nil {
+		return nil, err
+	}
 	return sh, nil
 }
 
@@ -532,7 +534,32 @@ func coverageOf(refs []*attemptv1.SplitRef) checkpoint.Coverage {
 // change proposed from the version it holds, and sends every worker the new
 // one; a proposal from an older version gets the proposer the one it holds.
 // The destination's streams and the streams a SQL transform reads have
-// versions apart.
+// versions apart. As it takes the shares of the first epoch at which one of
+// the destination's streams has columns, it seals the stream in a version
+// of its own, with the same schema: from then on, every engine shapes by
+// it, and every change any lane makes, under the schema policy. An engine
+// also seals a stream once its lanes all pass a barrier with the stream's
+// columns, as on one pod, which puts only its own later changes under the
+// policy sooner.
+//
+// With the engines' Owner and LaneStream (crates/engine/src/dataflow.rs),
+// it keeps, for each of the destination's streams:
+//   - The record of epoch n has the newest version as the owner takes the
+//     epoch's shares. It covers every row of the epoch: each was shaped by
+//     that version or an older one, which it extends.
+//   - No change taken after the seal was made without the policy: a lane
+//     that shaped by an older version proposes from it, and shapes its
+//     batch again by the sealed one. So under block, the schema the
+//     destination gets keeps the first record's columns and types.
+//   - A restore from the record of epoch n starts the stream sealed exactly
+//     where that record has its columns, and by its schema.
+//   - Every engine shapes by these versions, so all agree on each record.
+//
+// The one exception, as no lane waits for another epoch: a change the owner
+// accepts before it merges the shares of the stream's first epoch with
+// columns is part of the first schema, and of that epoch's record, whatever
+// epoch its rows are of. An engine whose lanes had all passed that barrier puts
+// its own such change under the policy.
 type schemaOwner struct {
 	co      attempt.Coordinator
 	mu      sync.Mutex
@@ -551,15 +578,23 @@ type ownedSchema struct {
 	// destination gets, nil where it's schema, and the columns held whole.
 	delivered []byte
 	holding   []checkpoint.ColumnHold
+	// One of the destination's streams whose columns a record has: the
+	// attempt restored them, or the owner has taken an epoch's shares since
+	// it had some.
+	sealed bool
 }
 
 // newSchemaOwner starts each stream at version 0, which restored holds.
 func newSchemaOwner(co attempt.Coordinator, restored map[ownedKey][]byte) *schemaOwner {
 	o := &schemaOwner{co: co, streams: map[ownedKey]*ownedSchema{}}
 	for k, s := range restored {
-		o.streams[k] = &ownedSchema{schema: s}
+		o.streams[k] = &ownedSchema{schema: s, sealed: !k.input && len(s) > 0}
 	}
 	return o
+}
+
+func (s *ownedSchema) message(k ownedKey) *attemptv1.StreamSchema {
+	return &attemptv1.StreamSchema{Stream: k.name, Input: k.input, Version: s.version, ArrowSchema: s.schema, Holding: attempt.ColumnHolds(s.holding), Sealed: s.sealed}
 }
 
 func (o *schemaOwner) propose(worker int, p *attemptv1.SchemaProposal) error {
@@ -577,25 +612,40 @@ func (o *schemaOwner) propose(worker int, p *attemptv1.SchemaProposal) error {
 		s.schema, s.delivered, s.holding = p.GetArrowSchema(), p.GetDelivered(), attempt.ColumnHoldsOf(p.GetHolding())
 		to = -1
 	}
-	return o.co.Schema(to, &attemptv1.StreamSchema{Stream: p.GetStream(), Input: p.GetInput(), Version: s.version, ArrowSchema: s.schema, Holding: attempt.ColumnHolds(s.holding)})
+	return o.co.Schema(to, s.message(k))
 }
 
 // own sets in r what changed in the attempt as the owner has it: each
 // stream's newest schema, and of each of the destination's streams, what
 // it holds whole and the schema the destination gets. With a SQL transform,
 // r's Schemas are its inputs', and its OutputSchemas the destination's
-// streams'.
-func (o *schemaOwner) own(r *Ready, sql bool) {
+// streams'. r is an epoch's shares, taken in order, so it seals each of the
+// destination's streams that has columns and isn't yet, and sends every
+// worker the sealed version. A stream at version 0 keeps the schema the
+// attempt restored, and what the shares say it holds.
+func (o *schemaOwner) own(r *Ready, sql bool) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for k, s := range o.streams {
-		if s.version == 0 {
+		if len(s.schema) == 0 {
 			continue
 		}
 		if sql && !k.input {
 			r.OutputSchemas = setIn(r.OutputSchemas, k.name, s.schema)
 		} else {
 			r.Schemas = setIn(r.Schemas, k.name, s.schema)
+		}
+		if s.version == 0 {
+			continue
+		}
+		// A version past 0 has columns: an engine proposes only a schema
+		// with some.
+		if !k.input && !s.sealed {
+			s.version++
+			s.sealed = true
+			if err := o.co.Schema(-1, s.message(k)); err != nil {
+				return err
+			}
 		}
 		if k.input {
 			continue
@@ -609,6 +659,7 @@ func (o *schemaOwner) own(r *Ready, sql bool) {
 			delete(r.Delivered, k.name)
 		}
 	}
+	return nil
 }
 
 func setIn(m map[string][]byte, k string, v []byte) map[string][]byte {

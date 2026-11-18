@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -736,5 +737,318 @@ func TestHoldsOnWorkersThroughTheEngine(t *testing.T) {
 	}
 	if h := head.Streams["s"].Holds; h != nil && len(h.Columns) > 0 {
 		t.Errorf("the hold didn't end: %+v", h)
+	}
+}
+
+// heldOn is a holds-on-workers job of attempt owner, on stream s keyed by
+// id, under block, into dest: a changed type holds its column.
+func heldOn(owner string, log *checkpoint.Log, root string, src source.Reader, dest destination.Destination, opts Options) runner.Job {
+	return runner.Job{
+		Pipeline: "p", Owner: owner, Log: log, Source: src, HeldURL: "file://" + filepath.Join(root, "org", "p", checkpoint.HeldDir), SchemaPolicy: runner.Block,
+		Streams: []runner.Stream{{
+			Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Partitioning: partition.SourcePartitioning([]string{"id"}, true, false),
+			Holds: &runner.StreamHolds{},
+		}},
+		Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 2, Logger: opts.Logger.With("job", owner),
+		Settings: delivery.Settings{Require: delivery.AtLeastOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
+	}
+}
+
+// A worker whose splits start only once a record has the first worker's
+// rows crosses its first barriers with none. It then reads two chunks of
+// split 1, whose x is an integer in the first and text in the second, in
+// what may be one epoch, its first with rows. The coordinator sealed the
+// stream's schema as it took the first worker's epoch, so under block the
+// late worker holds x, as a worker that had written x itself would: the
+// destination never gets x at two types, and every row after the hold
+// holds it.
+func TestALateWorkerHoldsByTheRecordedSchema(t *testing.T) {
+	opts := options(t, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	store, err := checkpoint.NewFSStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := checkpoint.NewLog(store, "org", "p")
+	dest := newKeyDest(16)
+	// Split 0 is worker 0's, and splits 1 and 3 worker 1's. Every split but
+	// split 0 reads its chunk 0 once a record has x, so worker 1 has read
+	// nothing until then. Chunk 2 waits until a record has every split's
+	// chunk 1, which holds x, or without a hold doesn't.
+	hasX, read := make(chan struct{}), newChunksRecorded(4)
+	src := &splitSource{splits: 4, chunks: 3, rows: 10, row: heldRow, before: func(ctx context.Context, split, chunk int) error {
+		switch {
+		case chunk == 2:
+			return read.wait(ctx, 2)
+		case chunk == 0 && split != 0:
+			select {
+			case <-hasX:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}}
+	srv := listen(t)
+	p := &inProcess{ctx: ctx, mk: func() runner.Job { return heldOn("a1", log, root, src, dest, opts) }}
+	j := p.mk()
+	p.on(&j, srv, 2)
+	var once sync.Once
+	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
+		read.committed(rec)
+		names, err := fieldNames(rec.Streams["s"].Schema)
+		if err != nil || !slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, "x:") }) {
+			return
+		}
+		once.Do(func() {
+			for _, sp := range rec.Splits("s") {
+				if sp.ID != "0" && sp.State != nil {
+					t.Errorf("split %s was read before the first record with x: %+v", sp.ID, sp)
+				}
+			}
+			close(hasX)
+		})
+	}
+	if _, err := runner.RunAttempt(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	for i, err := range p.wait() {
+		if err != nil {
+			t.Errorf("worker %d: %v", i, err)
+		}
+	}
+	if types := dest.types["s"]["x"]; !slices.Equal(types, []string{"int64"}) {
+		t.Errorf("x was delivered as %v", types)
+	}
+	byID := map[int64][]destRow{}
+	for _, r := range dest.applied("s") {
+		byID[r.id()] = append(byID[r.id()], r)
+	}
+	checked := 0
+	for split := range 4 {
+		for chunk := range 3 {
+			for i := range 10 {
+				id := int64(split*10000 + chunk*100 + i)
+				got := byID[id]
+				if len(got) != 1 {
+					t.Errorf("row %d of split %d's chunk %d landed %d times", id, split, chunk, len(got))
+					continue
+				}
+				checked++
+				r := got[0]
+				isHeld := strings.Contains(r.cols["_openetl_held"], "x")
+				// Split 1's chunk 1 changes x, and chunk 2 comes after
+				// the hold. Split 0's chunk 0 comes before any hold; the
+				// other rows with x as an integer may come after it.
+				mustHold := chunk == 2 || split == 1 && chunk == 1
+				switch {
+				case mustHold && (!isHeld || r.cols["x"] != "null"):
+					t.Errorf("row %d of split %d's chunk %d isn't held: %v", id, split, chunk, r.cols)
+				case split == 0 && chunk == 0 && isHeld,
+					!isHeld && r.cols["x"] != strconv.FormatInt(id, 10),
+					isHeld && r.cols["x"] != "null":
+					t.Errorf("row %d of split %d's chunk %d: %v", id, split, chunk, r.cols)
+				}
+			}
+		}
+	}
+	if checked != 120 || len(byID) != 120 {
+		t.Fatalf("checked %d rows, of %d that landed", checked, len(byID))
+	}
+	head, err := log.Latest(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := head.Streams["s"].Holds
+	if h == nil || len(h.Columns) != 1 || h.Columns[0].Column != "x" {
+		t.Fatalf("holds = %+v", h)
+	}
+	kept, err := fieldNames(h.Columns[0].Delivered)
+	if err != nil || !slices.Equal(kept, []string{"x:int64"}) {
+		t.Fatalf("x is held at %v (%v), want int64", kept, err)
+	}
+	delivered, err := fieldNames(head.Streams["s"].Delivered)
+	if err != nil || !slices.Contains(delivered, "x:int64") {
+		t.Fatalf("the schema the destination gets: %v (%v)", delivered, err)
+	}
+}
+
+// A late worker, as above, into a destination whose writer lanes commit on
+// their own, under ignore_new: its first rows bring a new column, z, in
+// split 3, and x as text in split 1. The coordinator's sealed schema takes
+// neither, so z is dropped, and the rows whose x doesn't fit are
+// quarantined. Its commit of that part of the epoch is lost, and the next
+// attempt writes the part again from the source by the record's schema, as
+// the lost commit had it: every other row lands once, none with z or with
+// x at another type.
+func TestARedoOfALateWorkersLaneThroughTheEngine(t *testing.T) {
+	opts := options(t, nil)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+	// Each row as "id x type", and " z" where the batch has z.
+	dest := newTxnRows(t, func(b arrow.RecordBatch) []string {
+		s := b.Schema()
+		id, x := b.Column(s.FieldIndices("id")[0]), b.Column(s.FieldIndices("x")[0])
+		z := len(s.FieldIndices("z")) > 0
+		out := make([]string, b.NumRows())
+		for i := range out {
+			out[i] = fmt.Sprintf("%s %s %s", id.ValueStr(i), x.ValueStr(i), x.DataType())
+			if z {
+				out[i] += " z"
+			}
+		}
+		return out
+	})
+	row := func(split, chunk int, id int64) string {
+		switch {
+		case split == 1 && chunk == 1:
+			return fmt.Sprintf(`{"id": %d, "x": "t%d"}`, id, id)
+		case split == 3 && chunk == 1:
+			return fmt.Sprintf(`{"id": %d, "x": %d, "z": true}`, id, id)
+		}
+		return fmt.Sprintf(`{"id": %d, "x": %d}`, id, id)
+	}
+	hasX := make(chan struct{})
+	src := &splitSource{splits: 4, chunks: 3, rows: 10, row: row, before: func(ctx context.Context, split, chunk int) error {
+		if split == 0 || chunk > 0 {
+			return nil
+		}
+		select {
+		case <-hasX:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}}
+	quarantine := "file://" + t.TempDir()
+	job := func(owner string) runner.Job {
+		return runner.Job{
+			Pipeline: "p", Owner: owner, Sync: "s1", Log: log, Source: src, SchemaPolicy: runner.IgnoreNew, QuarantineURL: quarantine,
+			Streams: []runner.Stream{{
+				Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Partitioning: partition.SourcePartitioning([]string{"id"}, true, false),
+			}},
+			Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 2, Logger: opts.Logger.With("job", owner),
+			Settings: delivery.Settings{Require: delivery.ExactlyOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
+		}
+	}
+	// Split 3's chunk 1, as the lane that wrote it in attempt 1 has it open.
+	late := func(rows []string) bool {
+		return slices.ContainsFunc(rows, func(r string) bool { return strings.HasPrefix(r, "301") })
+	}
+	var failed atomic.Pointer[txnMark]
+	dest.before = func(gen uint64, m txnMark, _ int) error {
+		if gen != 1 {
+			return nil
+		}
+		dest.mu.Lock()
+		open := dest.open[m.Lane][m]
+		dest.mu.Unlock()
+		if late(open) {
+			failed.CompareAndSwap(nil, &m)
+		}
+		if f := failed.Load(); f != nil && *f == m {
+			return errors.New("the lane's commit is lost")
+		}
+		return nil
+	}
+	srv := listen(t)
+	var once sync.Once
+	// The quarantine files the records name, by URL: those of every record
+	// committed, and of the one attempt 1 left with a lane lost.
+	var mu sync.Mutex
+	files := map[string]checkpoint.QuarantineFile{}
+	keep := func(rec *checkpoint.Record) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, f := range rec.Quarantine {
+			files[f.URL] = f
+		}
+	}
+	for i, owner := range []string{"a1", "a2"} {
+		p := &inProcess{ctx: ctx, mk: func() runner.Job { return job(owner) }}
+		j := p.mk()
+		p.on(&j, srv, 2)
+		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
+			keep(rec)
+			if names, err := fieldNames(rec.Streams["s"].Schema); err == nil && slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, "x:") }) {
+				once.Do(func() { close(hasX) })
+			}
+		}
+		_, err := runner.RunAttempt(ctx, j)
+		p.wait()
+		switch {
+		case i == 0 && (err == nil || failed.Load() == nil):
+			t.Fatalf("attempt 1 ended with %v, its commit of split 3's chunk 1 failing at %v", err, failed.Load())
+		case i == 1 && err != nil:
+			t.Fatal(err)
+		}
+		if i == 0 {
+			head, err := log.Latest(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keep(head)
+		}
+	}
+	// Each row of split 1's chunk 1 is quarantined once, as x doesn't fit
+	// its integer type, and the records count each file's lines.
+	quarantined := map[int64]int{}
+	for url, f := range files {
+		raw, err := os.ReadFile(strings.TrimPrefix(url, "file://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		if f.Stream != "s" || uint64(len(lines)) != f.Rows {
+			t.Errorf("%s: %d lines, of stream %q, the record says %d", url, len(lines), f.Stream, f.Rows)
+		}
+		for _, l := range lines {
+			var line struct{ Stream, Code, Column, Record string }
+			var rec struct{ ID int64 }
+			if err := json.Unmarshal([]byte(l), &line); err != nil || json.Unmarshal([]byte(line.Record), &rec) != nil {
+				t.Fatalf("%s: line %q", url, l)
+			}
+			if line.Stream != "s" || line.Code != "type" || line.Column != "x" {
+				t.Errorf("%s: line %q", url, l)
+			}
+			quarantined[rec.ID]++
+		}
+	}
+	want := map[int64]int{}
+	for r := range 10 {
+		want[int64(10100+r)] = 1
+	}
+	if !maps.Equal(quarantined, want) {
+		t.Errorf("quarantined %v, want each of split 1's chunk 1 once", quarantined)
+	}
+	dest.mu.Lock()
+	defer dest.mu.Unlock()
+	if dest.redone == 0 {
+		t.Error("no lane was written again")
+	}
+	seen := map[int64]bool{}
+	for _, r := range dest.rows {
+		f := strings.Fields(r)
+		id, err := strconv.ParseInt(f[0], 10, 64)
+		switch {
+		case err != nil || len(f) != 3 || f[1] != f[0] || f[2] != "int64":
+			t.Errorf("row %q", r)
+		case seen[id]:
+			t.Errorf("row %d landed twice", id)
+		}
+		seen[id] = true
+	}
+	for k := range 4 {
+		for c := range 3 {
+			for r := range 10 {
+				id := int64(k*10000 + c*100 + r)
+				if quarantined := k == 1 && c == 1; seen[id] == quarantined {
+					t.Errorf("row %d of split %d's chunk %d: landed %v", id, k, c, seen[id])
+				}
+			}
+		}
 	}
 }

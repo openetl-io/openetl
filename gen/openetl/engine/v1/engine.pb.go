@@ -4281,7 +4281,16 @@ type SchemasRequest struct {
 	Input       bool   `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
 	// One of the destination's streams that holds: the columns it holds
 	// whole, as StreamHolds.holding.
-	Holding       []*ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	Holding []*ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	// One of the destination's streams that the owner has sealed: every lane
+	// of the engine shapes by this version and every later one under the
+	// schema policy, whether or not the engine's lanes have had rows of the
+	// stream. The owner seals a stream in a version of its own, with the same
+	// schema, as it takes the shares of the first epoch at which the stream
+	// has columns. Unset: the policy applies once the engine's lanes have
+	// passed a barrier with the stream's columns, or from the start where the
+	// job restored them.
+	Sealed        bool `protobuf:"varint,6,opt,name=sealed,proto3" json:"sealed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4351,9 +4360,18 @@ func (x *SchemasRequest) GetHolding() []*ColumnHold {
 	return nil
 }
 
+func (x *SchemasRequest) GetSealed() bool {
+	if x != nil {
+		return x.Sealed
+	}
+	return false
+}
+
 // SchemasResponse proposes a lane's change to a stream's schema, or to what
 // it holds, made from the owner's version base. The engine sends one
-// proposal of a stream at a time, and waits for a newer version.
+// proposal of a stream at a time, and waits for a newer version. The owner
+// takes the change only if base is its newest version, and otherwise
+// answers with that version, which the lane shapes its batch again by.
 type SchemasResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// As SchemasRequest's.
@@ -4804,13 +4822,14 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06staged\x18\x02 \x03(\fR\x06staged\"\x10\n" +
 	"\x0eCommitResponse\"\r\n" +
 	"\vStopRequest\"\x0e\n" +
-	"\fStopResponse\"\xb4\x01\n" +
+	"\fStopResponse\"\xcc\x01\n" +
 	"\x0eSchemasRequest\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\rR\x06stream\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x12!\n" +
 	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
 	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
-	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\"\xcd\x01\n" +
+	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x16\n" +
+	"\x06sealed\x18\x06 \x01(\bR\x06sealed\"\xcd\x01\n" +
 	"\x0fSchemasResponse\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\rR\x06stream\x12\x12\n" +
 	"\x04base\x18\x02 \x01(\x04R\x04base\x12!\n" +

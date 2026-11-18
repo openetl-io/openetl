@@ -479,4 +479,9 @@ message StreamSchema {
   bytes arrow_schema = 3;
   bool input = 4;
   repeated openetl.engine.v1.ColumnHold holding = 5;
+  // As openetl.engine.v1.SchemasRequest's: a worker's engine shapes by this
+  // version and every later one under the schema policy. The coordinator
+  // seals one of the destination's streams as it takes the shares of the
+  // first epoch at which the stream has columns.
+  bool sealed = 6;
 }

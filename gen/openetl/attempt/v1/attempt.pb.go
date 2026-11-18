@@ -2713,9 +2713,14 @@ type StreamSchema struct {
 	Stream  string                 `protobuf:"bytes,1,opt,name=stream,proto3" json:"stream,omitempty"`
 	Version uint64                 `protobuf:"varint,2,opt,name=version,proto3" json:"version,omitempty"`
 	// As SchemaProposal's.
-	ArrowSchema   []byte            `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
-	Input         bool              `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
-	Holding       []*v11.ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	ArrowSchema []byte            `protobuf:"bytes,3,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
+	Input       bool              `protobuf:"varint,4,opt,name=input,proto3" json:"input,omitempty"`
+	Holding     []*v11.ColumnHold `protobuf:"bytes,5,rep,name=holding,proto3" json:"holding,omitempty"`
+	// As openetl.engine.v1.SchemasRequest's: a worker's engine shapes by this
+	// version and every later one under the schema policy. The coordinator
+	// seals one of the destination's streams as it takes the shares of the
+	// first epoch at which the stream has columns.
+	Sealed        bool `protobuf:"varint,6,opt,name=sealed,proto3" json:"sealed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2783,6 +2788,13 @@ func (x *StreamSchema) GetHolding() []*v11.ColumnHold {
 		return x.Holding
 	}
 	return nil
+}
+
+func (x *StreamSchema) GetSealed() bool {
+	if x != nil {
+		return x.Sealed
+	}
+	return false
 }
 
 var File_openetl_attempt_v1_attempt_proto protoreflect.FileDescriptor
@@ -2986,13 +2998,14 @@ const file_openetl_attempt_v1_attempt_proto_rawDesc = "" +
 	"\x15backpressured_seconds\x18\n" +
 	" \x01(\x01R\x14backpressuredSeconds\x12!\n" +
 	"\fidle_seconds\x18\v \x01(\x01R\vidleSeconds\x12\x1b\n" +
-	"\tlane_rows\x18\f \x01(\x04R\blaneRows\"\xb2\x01\n" +
+	"\tlane_rows\x18\f \x01(\x04R\blaneRows\"\xca\x01\n" +
 	"\fStreamSchema\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\x04R\aversion\x12!\n" +
 	"\farrow_schema\x18\x03 \x01(\fR\varrowSchema\x12\x14\n" +
 	"\x05input\x18\x04 \x01(\bR\x05input\x127\n" +
-	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding2e\n" +
+	"\aholding\x18\x05 \x03(\v2\x1d.openetl.engine.v1.ColumnHoldR\aholding\x12\x16\n" +
+	"\x06sealed\x18\x06 \x01(\bR\x06sealed2e\n" +
 	"\x0eAttemptService\x12S\n" +
 	"\x06Attend\x12!.openetl.attempt.v1.AttendRequest\x1a\".openetl.attempt.v1.AttendResponse(\x010\x01B@Z>github.com/openetl-io/openetl/gen/openetl/attempt/v1;attemptv1b\x06proto3"
 
