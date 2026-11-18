@@ -91,12 +91,19 @@ func s3DestAt(t *testing.T, endpoint string) (string, *blob.Bucket) {
 		"accessKeyId": {"secret": %q}, "secretAccessKey": {"secret": %q}}}`, "s3://s3-destination/"+prefix, endpoint, key, key), b
 }
 
+// s3Append is the destination setting of the pipelines whose tables the
+// tests read with s3IDs, which counts the rows in the files under a table's
+// name as they land. An overwrite, which the S3 destination defaults to for
+// a full read, keeps a read's files below that, in the read's directory, and
+// lists them in a manifest once the read ends.
+const s3Append = `, "write": "append"`
+
 func s3Docs(name, src, dst string) []string {
 	return []string{
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Source", "metadata": {"name": %q}, "spec": %s}`, name, src),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Destination", "metadata": {"name": %q}, "spec": %s}`, name, dst),
 		fmt.Sprintf(`{"apiVersion": "openetl.io/v1alpha1", "kind": "Pipeline", "metadata": {"name": %q},
-			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q}, "destination": {"ref": %q}, "delivery": {"commit": {"interval": "1s"}}}}`, name, name, name),
+			"spec": {"schedule": {"every": "720h"}, "source": {"ref": %q}, "destination": {"ref": %q%s}, "delivery": {"commit": {"interval": "1s"}}}}`, name, name, name, s3Append),
 	}
 }
 
