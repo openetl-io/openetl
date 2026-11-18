@@ -204,7 +204,7 @@ func TestWorkersInPods(t *testing.T) {
 		dst, b := s3Dest(t)
 		const rows = 30_000
 		workerTables(t, name, rows, "items")
-		apply(t, workersDocs(name, plane, dst, "", 0)...)
+		apply(t, workersDocs(name, plane, dst, s3Append, 0)...)
 		status, stats := waitSync(t, name, 3*time.Minute)
 		if status != "succeeded" {
 			t.Fatalf("sync on one pod: %s %s", status, stats)
@@ -215,7 +215,7 @@ func TestWorkersInPods(t *testing.T) {
 			t.Errorf("the first sync ran on %d workers (%q), want one pod", a.GetWorkers(), a.GetOnePod())
 		}
 
-		res := applyAll(t, false, workersDocs(name, plane, dst, "", 3)...)
+		res := applyAll(t, false, workersDocs(name, plane, dst, s3Append, 3)...)
 		if j := res.GetPlans()[0].GetJob(); j.GetWorkers() != 3 {
 			t.Errorf("the plan runs the job on %d workers, want 3; warnings %v", j.GetWorkers(), res.GetPlans()[0].GetWarnings())
 		}
@@ -239,7 +239,7 @@ func TestWorkersInPods(t *testing.T) {
 			t.Errorf("on workers: generation %d restored epoch %d, after generation %d ended at epoch %d", second.Generation, second.Restored, first.Generation, first.Last)
 		}
 
-		apply(t, workersDocs(name, plane, dst, "", 0)...)
+		apply(t, workersDocs(name, plane, dst, s3Append, 0)...)
 		status, stats = syncNow(t, name)
 		if status != "succeeded" {
 			t.Fatalf("sync back on one pod: %s %s", status, stats)
@@ -341,7 +341,7 @@ func TestWorkersInPods(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		d := workersDocs(name, plane, dst, "", 3)
+		d := workersDocs(name, plane, dst, s3Append, 3)
 		d[2] = strings.Replace(d[2], `"delivery":`, fmt.Sprintf(`"transform": {"sql": %s}, "delivery":`, sql), 1)
 		apply(t, d...)
 		status, stats := waitSync(t, name, 3*time.Minute)
