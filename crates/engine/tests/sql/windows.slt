@@ -175,3 +175,78 @@ FROM orders GROUP BY tumble(ts, INTERVAL '1 minute'), region
 n Int64 not null
 region Utf8 null key
 window_start Timestamp(µs, "UTC") null key
+
+statement ok
+CREATE TABLE baskets (id BIGINT NOT NULL, region TEXT, items TEXT[], ts TIMESTAMPTZ NOT NULL, PRIMARY KEY (id))
+
+onlyif openetl
+statement ok
+ALTER TABLE baskets SET EVENT TIME ts
+
+statement ok
+INSERT INTO baskets VALUES (1, 'eu', ['a', 'b'], '2024-01-01 00:00:00+00:00'), (2, 'eu', NULL, '2024-01-01 00:00:01+00:00'), (3, 'eu', [], '2024-01-01 00:00:02+00:00'), (4, 'us', ['c'], '2024-01-01 00:00:00+00:00'), (5, 'eu', ['d'], '2024-01-01 00:00:02+00:00'), (6, 'us', NULL, '2024-01-01 01:00:00+00:00')
+
+# count of a list counts the rows where it isn't null, an empty one too,
+# with a FILTER as without.
+onlyif openetl
+query TTIII
+SELECT window_start, region, count(items) AS n, count(*) AS all_rows, count(items) FILTER (WHERE id > 2) AS later
+FROM baskets GROUP BY tumble(ts, INTERVAL '1 hour'), region
+----
+2024-01-01 00:00:00+00 eu 3 4 2
+2024-01-01 00:00:00+00 us 1 1 1
+2024-01-01 01:00:00+00 us 0 1 0
+
+onlyif duckdb
+query TTIII
+SELECT time_bucket(INTERVAL '1 hour', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS window_start, region, count(items) AS n, count(*) AS all_rows, count(items) FILTER (WHERE id > 2) AS later
+FROM baskets GROUP BY 1, region
+----
+2024-01-01 00:00:00+00 eu 3 4 2
+2024-01-01 00:00:00+00 us 1 1 1
+2024-01-01 01:00:00+00 us 0 1 0
+
+# count of a null counts no row.
+onlyif openetl
+query TII
+SELECT window_start, count(NULL) AS none, count(*) AS all_rows
+FROM baskets GROUP BY tumble(ts, INTERVAL '1 hour')
+----
+2024-01-01 00:00:00+00 0 5
+2024-01-01 01:00:00+00 0 1
+
+onlyif duckdb
+query TII
+SELECT time_bucket(INTERVAL '1 hour', ts, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS window_start, count(NULL) AS none, count(*) AS all_rows
+FROM baskets GROUP BY 1
+----
+2024-01-01 00:00:00+00 0 5
+2024-01-01 01:00:00+00 0 1
+
+# And in a session.
+onlyif openetl
+query TTI
+SELECT window_start, region, count(items) AS n
+FROM baskets GROUP BY session(ts, INTERVAL '30 seconds'), region
+----
+2024-01-01 00:00:00+00 eu 3
+2024-01-01 00:00:00+00 us 1
+2024-01-01 01:00:00+00 us 0
+
+onlyif duckdb
+query TTI
+SELECT min(ts) AS window_start, region, count(items) AS n
+FROM (SELECT *, sum(fresh) OVER (PARTITION BY region ORDER BY ts ROWS UNBOUNDED PRECEDING) AS session
+      FROM (SELECT *, CASE WHEN ts - lag(ts) OVER (PARTITION BY region ORDER BY ts) <= INTERVAL '30 seconds' THEN 0 ELSE 1 END AS fresh FROM baskets))
+GROUP BY region, session
+----
+2024-01-01 00:00:00+00 eu 3
+2024-01-01 00:00:00+00 us 1
+2024-01-01 01:00:00+00 us 0
+
+# An aggregate that keeps a value takes the types a group key can be: not
+# a list.
+query error
+SELECT window_start, max(items) AS most FROM baskets GROUP BY tumble(ts, INTERVAL '1 hour')
+----
+unsupported 1:1 max takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)

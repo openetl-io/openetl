@@ -96,7 +96,11 @@ impl Acc {
 
     /// Takes row `i`: of `arg`, the argument's values, unless `count(*)`.
     pub fn update(&mut self, arg: Option<&dyn Array>, i: usize) {
-        self.take(arg.map(|a| Value::read(a, i)));
+        let counts = matches!(self, Acc::Count(_));
+        self.take(arg.map(|a| match counts {
+            true => present(a, i),
+            false => Value::read(a, i),
+        }));
     }
 
     /// Takes a row's argument: `None` for `count(*)`'s, which has none.
@@ -301,6 +305,18 @@ impl Acc {
             other => return Err(format!("an accumulator of kind {other}")),
         })
     }
+}
+
+/// Row `i`'s value of `a` as `count(a)` takes it: whether the row has
+/// one, of whatever type, so a value [`Value::read`] doesn't decode counts.
+/// A null is logical: every row of a `Null` array is one, though it has no
+/// null buffer.
+pub fn present(a: &dyn Array, i: usize) -> Option<Value> {
+    let valid = match a.data_type() {
+        DataType::Null => false,
+        _ => a.logical_nulls().is_none_or(|n| n.is_valid(i)),
+    };
+    valid.then_some(Value::Bool(true))
 }
 
 /// Whether row `i` counts for an aggregate with a `FILTER`: its predicate
@@ -742,6 +758,42 @@ mod tests {
             assert_eq!(Acc::decode(&mut at).unwrap(), acc);
             assert!(at.is_empty());
         }
+    }
+
+    /// count of an argument counts a row where it isn't null, of a type no
+    /// other aggregate takes too, as a list, an empty one as well.
+    #[test]
+    fn count_takes_whether_a_row_has_its_argument() {
+        let mut b =
+            arrow_array::builder::ListBuilder::new(arrow_array::builder::Int64Builder::new());
+        b.values().append_value(1);
+        b.append(true);
+        b.append_null();
+        b.append(true);
+        let lists = b.finish();
+        let spec = Spec {
+            kind: AggregateKind::Count,
+            arg: Some(lists.data_type().clone()),
+            out: DataType::Int64,
+        };
+        let mut acc = Acc::new(&spec);
+        for i in 0..3 {
+            acc.update(Some(&lists), i);
+        }
+        assert_eq!(acc, Acc::Count(2));
+        assert_eq!(acc.value(&spec).unwrap(), Some(Value::Int(2)));
+        let mut star = Acc::new(&spec);
+        for i in 0..3 {
+            star.update(None, i);
+        }
+        assert_eq!(star, Acc::Count(3));
+        assert_eq!(present(&lists, 1), None);
+        let nulls = arrow_array::NullArray::new(2);
+        let mut none = Acc::new(&spec);
+        for i in 0..2 {
+            none.update(Some(&nulls), i);
+        }
+        assert_eq!(none, Acc::Count(0));
     }
 
     #[test]
