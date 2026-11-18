@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -41,10 +42,67 @@ type splitSource struct {
 	splits, chunks, rows int
 	upTo                 int
 	row                  func(split, chunk int, id int64) string
-	// Called before each chunk of a split but its first; nil: nothing.
+	// Called before each chunk a split reads; nil: nothing.
 	before func(ctx context.Context, split, chunk int) error
 	// Splits that have no chunks yet, whatever upTo says.
 	held map[int]bool
+}
+
+// chunksRecorded is what a splitSource's chunks can wait on: the chunk every
+// one of its splits is at, at least, in the last record committed; -1
+// before the first.
+type chunksRecorded struct {
+	splits int
+	mu     sync.Mutex
+	at     int
+	// Closed, and another made, as at moves.
+	moved chan struct{}
+}
+
+func newChunksRecorded(splits int) *chunksRecorded {
+	return &chunksRecorded{splits: splits, at: -1, moved: make(chan struct{})}
+}
+
+// committed takes a record an attempt committed.
+func (r *chunksRecorded) committed(rec *checkpoint.Record) {
+	at := 0
+	if splits := rec.Splits("s"); len(splits) == r.splits {
+		at = math.MaxInt
+		for _, sp := range splits {
+			n := 0
+			if sp.State != nil {
+				var err error
+				if n, err = strconv.Atoi(string(sp.State)); err != nil {
+					return
+				}
+			}
+			at = min(at, n)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if at > r.at {
+		r.at = at
+		close(r.moved)
+		r.moved = make(chan struct{})
+	}
+}
+
+// wait waits until a committed record has every split at chunk c or past it.
+func (r *chunksRecorded) wait(ctx context.Context, c int) error {
+	for {
+		r.mu.Lock()
+		ok, moved := r.at >= c, r.moved
+		r.mu.Unlock()
+		if ok {
+			return nil
+		}
+		select {
+		case <-moved:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (s *splitSource) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
@@ -76,7 +134,7 @@ func (s *splitSource) Read(ctx context.Context, req source.ReadRequest, out sour
 			upTo = 0
 		}
 		for c := from; c < upTo; c++ {
-			if c > 0 && s.before != nil {
+			if s.before != nil {
 				if err := s.before(ctx, split, c); err != nil {
 					return err
 				}
@@ -123,8 +181,6 @@ type keyDest struct {
 	patched []destRow
 	// The type each column was delivered at, by stream and column.
 	types map[string]map[string][]string
-	// Closed and replaced at every commit.
-	committed chan struct{}
 }
 
 type stageAt struct {
@@ -148,7 +204,7 @@ func (r destRow) id() int64 {
 
 func newKeyDest(lanes int) *keyDest {
 	return &keyDest{lanes: lanes, writing: map[stageAt][]destRow{}, staged: map[stageAt][]destRow{}, marked: map[destination.Epoch]bool{},
-		types: map[string]map[string][]string{}, committed: make(chan struct{})}
+		types: map[string]map[string][]string{}}
 }
 
 func (d *keyDest) Capabilities() destination.Capabilities {
@@ -161,23 +217,6 @@ func (d *keyDest) Capabilities() destination.Capabilities {
 
 func (d *keyDest) Open(_ context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
 	return &keyWriter{d: d, lane: cfg.Lane}, nil
-}
-
-// waitFor waits until ok says yes of what the destination applied.
-func (d *keyDest) waitFor(ctx context.Context, ok func(rows []destRow) bool) error {
-	for {
-		d.mu.Lock()
-		done, ch := ok(d.rows), d.committed
-		d.mu.Unlock()
-		if done {
-			return nil
-		}
-		select {
-		case <-ch:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
 }
 
 // applied are the rows of stream applied, but patches.
@@ -284,8 +323,6 @@ func (d *keyDest) apply(e destination.Epoch, staged []destination.Staged) error 
 	}
 	d.rows = append(d.rows, rows...)
 	d.marked[e] = true
-	close(d.committed)
-	d.committed = make(chan struct{})
 	return nil
 }
 
@@ -572,16 +609,19 @@ func TestHoldsOnWorkersThroughTheEngine(t *testing.T) {
 	log := checkpoint.NewLog(store, "org", "p")
 	dest := newKeyDest(16)
 	heldURL := "file://" + filepath.Join(root, "org", "p", checkpoint.HeldDir)
-	// Chunk 1 waits for the first commit, which sets the schema the policy
-	// guards; chunk 2 for the hold, so every worker's chunk 2 comes after.
-	held := func(rows []destRow) bool {
-		return slices.ContainsFunc(rows, func(r destRow) bool { return strings.Contains(r.cols["_openetl_held"], "x") })
-	}
-	src := &splitSource{splits: 4, chunks: 3, rows: 10, row: heldRow, before: func(ctx context.Context, _, chunk int) error {
-		if chunk == 1 {
-			return dest.waitFor(ctx, func(rows []destRow) bool { return len(rows) > 0 })
+	// Split 0 reads its chunk 0 first, and the others theirs once a record
+	// is committed, so a worker can have no rows before its lanes cross
+	// their first barrier. A lane's schema policy applies from its first
+	// barrier with rows, so chunk 1 waits until a committed record has every
+	// split's chunk 0: every worker's lanes then guard the schema. Chunk 2
+	// waits until one has every split's chunk 1, which holds x, so every
+	// worker's chunk 2 comes after the hold.
+	read := newChunksRecorded(4)
+	src := &splitSource{splits: 4, chunks: 3, rows: 10, row: heldRow, before: func(ctx context.Context, split, chunk int) error {
+		if split == 0 && chunk == 0 {
+			return nil
 		}
-		return dest.waitFor(ctx, held)
+		return read.wait(ctx, chunk)
 	}}
 	job := func(owner string) func() runner.Job {
 		return func() runner.Job {
@@ -592,7 +632,8 @@ func TestHoldsOnWorkersThroughTheEngine(t *testing.T) {
 					Holds: &runner.StreamHolds{},
 				}},
 				Destination: dest, Dataflow: &Dataflow{Options: opts}, Lanes: 2,
-				Settings: delivery.Settings{Require: delivery.AtLeastOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
+				Settings:     delivery.Settings{Require: delivery.AtLeastOnce, CommitMaxBytes: 1, Scope: destination.ScopePipeline},
+				OnCheckpoint: func(rec *checkpoint.Record, _, _ map[string]uint64) { read.committed(rec) },
 			}
 		}
 	}

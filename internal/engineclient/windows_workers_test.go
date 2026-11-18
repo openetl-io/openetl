@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,9 +41,9 @@ var regions = func() []string {
 // resume point after each, its state the next chunk. Split k's chunk c
 // holds rows ids (k*chunks+c)*rows+r at minutes+c seconds, a millisecond
 // apart, of region regions[(k+r)%24], so no row is behind its split's
-// watermark. With upTo, a split has only that many chunks so far, and keeps
-// its read open after them until it's cancelled; it waits pause between
-// chunks.
+// watermark. With upTo, a split has only that many chunks so far, and a
+// read that has read them stays open until it's cancelled, every split read
+// up to there; it waits pause between chunks.
 type timedChunks struct {
 	splits, chunks, rows, upTo int
 	pause                      time.Duration
@@ -57,7 +58,8 @@ func (s *timedChunks) Splits(context.Context, source.ConfiguredStream, []source.
 }
 
 func (s *timedChunks) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
-	return source.ReadSplits(ctx, req, out, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+	var open atomic.Bool
+	err := source.ReadSplits(ctx, req, out, func(ctx context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
 		k, err := strconv.Atoi(sp.ID)
 		if err != nil {
 			return err
@@ -91,11 +93,18 @@ func (s *timedChunks) Read(ctx context.Context, req source.ReadRequest, out sour
 			}
 		}
 		if upTo < s.chunks {
-			<-ctx.Done()
-			return ctx.Err()
+			// Its lane goes to a split waiting for one: ReadSplits reads only
+			// as many at a time as the read has lanes.
+			open.Store(true)
+			return nil
 		}
 		return e.Complete([]byte(strconv.Itoa(s.chunks)))
 	})
+	if err != nil || !open.Load() {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // tens counts each region's rows ten seconds at a time.
@@ -547,7 +556,8 @@ func TestAGroupWindowRedoOfLateRowsThroughTheEngine(t *testing.T) {
 // With cue, each scene is an epoch, read by every split: a split starts
 // scene c once a committed record has every split past scene c-1, and
 // split 0 reads its rows after its first once every other split has read
-// its scene's rows. Its padded row is what takes the worker past the job's
+// its scene's rows in the attempt, at least once: an attempt that redoes
+// two writer lanes reads the scene twice. Its padded row is what takes the worker past the job's
 // CommitMaxBytes, pad, which asks for the epoch's barrier: every split
 // places it at the end of its scene.
 type scenes struct {
@@ -637,7 +647,7 @@ func (s *scenes) Read(ctx context.Context, req source.ReadRequest, out source.Em
 				return err
 			}
 			if k == 0 {
-				if err := s.cue.wait(ctx, func(q *cue) bool { return q.read[c] == s.splits-1 }); err != nil {
+				if err := s.cue.wait(ctx, func(q *cue) bool { return q.read[c] >= s.splits-1 }); err != nil {
 					return err
 				}
 			}
