@@ -112,7 +112,6 @@ export function plan(name: string): PipelinePlan | undefined {
           ? "merge on the primary key makes a repeated record land once"
           : "the destination commits each epoch with its checkpoint",
     })),
-    notes: p.spec?.destination?.ref === "raw-archive" ? ["each sync writes a new set of Parquet files under the run's prefix"] : [],
     warnings: p.name.endsWith("/orders-to-warehouse")
       ? [{ stream: "public.order_items", message: "each attempt reads it on one of its 4 workers: it has no cursor to split its reads by" }]
       : [],

@@ -58,8 +58,9 @@ const defs: Def[] = [
     description: "Commits each checkpoint to Iceberg tables through a REST or Glue catalog.", tags: ["lakehouse", "parquet"], license: "Apache-2.0",
   },
   {
-    package: "openetl/s3", source: "official", title: "Amazon S3", version: "0.2.0", roles: ["destination"],
-    description: "Writes Parquet files to S3 or any S3-compatible store, with a manifest per commit.", tags: ["files", "parquet"], license: "Apache-2.0",
+    package: "openetl/s3", source: "official", title: "Amazon S3", version: "0.2.0", roles: ["destination", "source"],
+    description: "Reads and writes Parquet, CSV and JSON Lines files on S3 or an S3-compatible store; by default, a full read replaces a table's files when it ends.",
+    tags: ["files", "parquet"], license: "Apache-2.0",
   },
   {
     package: "openetl/kinesis", source: "official", title: "Amazon Kinesis", version: "0.2.0", roles: ["destination", "source"],
