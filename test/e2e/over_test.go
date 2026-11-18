@@ -223,8 +223,10 @@ func runningTotal(t *testing.T, bin, plane string, workers int) {
 
 	want := duckRows(t, bin, fmt.Sprintf("SELECT k, p, o,\n  %s\nFROM read_csv('%s', header = true, columns = {'k': 'VARCHAR', 'p': 'INTEGER', 'o': 'BIGINT', 'ts': 'TIMESTAMPTZ'})\nORDER BY p, o",
 		overColumns, strings.ReplaceAll(input, "'", "''")))
-	got, err := rowsOf(t, `SELECT k, p::text, o::text, total::text, recent::text, top::text, lowest::text, coalesce(prev::text, 'NULL'), third::text, first_p::text FROM `+
-		pgx.Identifier{out, "running"}.Sanitize()+` ORDER BY p, o`, func(row pgx.CollectableRow) ([]string, error) {
+	// Ordered by the table's numbers, as DuckDB's rows are, not by their
+	// text, which the select list's labels would sort.
+	got, err := rowsOf(t, `SELECT r.k, r.p::text, r.o::text, r.total::text, r.recent::text, r.top::text, r.lowest::text, coalesce(r.prev::text, 'NULL'), r.third::text, r.first_p::text FROM `+
+		pgx.Identifier{out, "running"}.Sanitize()+` AS r ORDER BY r.p, r.o`, func(row pgx.CollectableRow) ([]string, error) {
 		r := make([]string, 10)
 		ptrs := make([]any, len(r))
 		for i := range r {
@@ -261,51 +263,78 @@ func runningTotal(t *testing.T, bin, plane string, workers int) {
 		t.Errorf("quarantined %v", q)
 	}
 	// The operator took in each record once, wrote each once and found none
-	// late, over every checkpoint of the sync.
-	if in, ins, late := operatorTotals(t, name, ""); in != overRecords || ins != overRecords || late != 0 {
-		t.Errorf("the operator took in %d rows and wrote %d, %d late; want %d, %d and none", in, ins, late, overRecords, overRecords)
-	}
-}
-
-// operatorTotals sums what the pipeline's checkpoints say the operator of
-// this ID took in, inserted and found late: of its one operator for "".
-func operatorTotals(t *testing.T, name, id string) (in, inserts, late uint64) {
-	t.Helper()
-	res, err := pipelines().ListCheckpoints(t.Context(), connect.NewRequest(&apiv1.ListCheckpointsRequest{Parent: "workspaces/default/pipelines/" + name, PageSize: 1000}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ids := map[string]bool{}
-	for _, c := range res.Msg.GetCheckpoints() {
-		for _, o := range c.GetOperators() {
-			ids[o.GetOperator()] = true
-			if id == "" || o.GetOperator() == id {
-				in, inserts, late = in+o.GetRowsIn(), inserts+o.GetInserts(), late+o.GetLateRows()
+	// late, over every checkpoint of the sync, once the control plane has
+	// them all: a sync can end before its last checkpoint's report.
+	wantOps := fmt.Sprintf("one operator: in %d, %d inserts, 0 updates, 0 deletes, 0 late", overRecords, overRecords)
+	var gotOps string
+	for deadline := time.Now().Add(30 * time.Second); gotOps != wantOps; time.Sleep(500 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the operator's numbers over every checkpoint: got %s, want %s", gotOps, wantOps)
+		}
+		ops := operatorTotals(t, name)
+		gotOps = fmt.Sprintf("%d operators", len(ops))
+		for _, o := range ops {
+			if len(ops) == 1 {
+				gotOps = fmt.Sprintf("one operator: in %d, %d inserts, %d updates, %d deletes, %d late", o.in, o.inserts, o.updates, o.deletes, o.late)
 			}
 		}
 	}
-	if id == "" && len(ids) != 1 {
-		t.Errorf("the checkpoints name operators %v, want one", ids)
-	}
-	return in, inserts, late
 }
 
-// operatorRepeats sums the updates and repeats the pipeline's checkpoints
-// say the operator of this ID wrote and dropped.
-func operatorRepeats(t *testing.T, name, id string) (updates, repeats uint64) {
+// opTotals are what an operator did over a pipeline's checkpoints.
+type opTotals struct{ in, inserts, updates, deletes, late, repeats uint64 }
+
+// operatorTotals sums, by operator ID, what every checkpoint of the pipeline
+// the control plane has says each operator did, from one listing.
+func operatorTotals(t *testing.T, name string) map[string]opTotals {
 	t.Helper()
-	res, err := pipelines().ListCheckpoints(t.Context(), connect.NewRequest(&apiv1.ListCheckpointsRequest{Parent: "workspaces/default/pipelines/" + name, PageSize: 1000}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range res.Msg.GetCheckpoints() {
-		for _, o := range c.GetOperators() {
-			if o.GetOperator() == id {
-				updates, repeats = updates+o.GetUpdates(), repeats+o.GetRepeats()
+	out := map[string]opTotals{}
+	token := ""
+	for {
+		res, err := pipelines().ListCheckpoints(t.Context(), connect.NewRequest(&apiv1.ListCheckpointsRequest{
+			Parent: "workspaces/default/pipelines/" + name, PageSize: 500, PageToken: token,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range res.Msg.GetCheckpoints() {
+			for _, o := range c.GetOperators() {
+				s := out[o.GetOperator()]
+				s.in += o.GetRowsIn()
+				s.inserts += o.GetInserts()
+				s.updates += o.GetUpdates()
+				s.deletes += o.GetDeletes()
+				s.late += o.GetLateRows()
+				s.repeats += o.GetRepeats()
+				out[o.GetOperator()] = s
 			}
 		}
+		if token = res.Msg.GetNextPageToken(); token == "" {
+			return out
+		}
 	}
-	return updates, repeats
+}
+
+// killEngine kills the engine the runner runs for the pipeline, and fails
+// unless the signal reached a live one.
+func killEngine(t *testing.T, r *runner, name string) int {
+	t.Helper()
+	var pid int
+	eventually(t, 30*time.Second, "a live engine of "+name+" to kill", func() bool {
+		pid = r.engine(t, name)
+		switch err := syscall.Kill(pid, syscall.SIGKILL); {
+		case err == nil:
+			return true
+		case errors.Is(err, syscall.ESRCH):
+			// Gone already: the runner starts another, whose ready line
+			// comes next.
+			return false
+		default:
+			t.Fatal(err)
+			return false
+		}
+	})
+	return pid
 }
 
 // A dedupe test's records: record i is at t0 + i*dedupeStep, of key
@@ -390,7 +419,8 @@ WHERE rn = 1`, topic))
 		_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
 	})
 	apply(t, docs[0])
-	discover(t, name, "default")
+	// On the API's default data plane, which the test's runner serves.
+	discover(t, name, "")
 	plan := planOf(t, docs...)
 	ops := map[string]string{}
 	for _, op := range plan.GetTransform().GetOperators() {
@@ -422,10 +452,8 @@ WHERE rn = 1`, topic))
 		}
 		return false
 	})
-	if err := syscall.Kill(r.engine(t, name), syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		t.Fatal(err)
-	}
-	t.Logf("killed the engine after a record of generation %d, %d records written", killed.Generation, produced)
+	pid := killEngine(t, r, name)
+	t.Logf("killed engine %d after a record of generation %d, %d records written", pid, killed.Generation, produced)
 	// A minute more of event time, past several retentions of each key.
 	for range 12 {
 		produce(20)
@@ -456,8 +484,11 @@ WHERE rn = 1`, topic))
 		last[k] = at
 		wantFirst[r] = true
 	}
+	// The first rows are read whole: the closing records' wait, and a row of
+	// theirs is extra. The latest has theirs, at one time on two
+	// partitions, and leaves it out.
 	read := func(table, where string) []row {
-		got, err := rowsOf(t, `SELECT k, (extract(epoch FROM at) * 1000000)::bigint, p FROM `+pgx.Identifier{out, table}.Sanitize()+` WHERE k <> '`+dedupeEnd+"'"+where,
+		got, err := rowsOf(t, `SELECT k, (extract(epoch FROM at) * 1000000)::bigint, p FROM `+pgx.Identifier{out, table}.Sanitize()+where,
 			func(rows pgx.CollectableRow) (row, error) {
 				var r row
 				return r, rows.Scan(&r.k, &r.at, &r.p)
@@ -497,7 +528,7 @@ WHERE rn = 1`, topic))
 	}
 	var latest []row
 	eventually(t, time.Minute, "every key's latest row", func() bool {
-		latest = read("latest", " AND NOT _openetl_deleted")
+		latest = read("latest", " WHERE k <> '"+dedupeEnd+"' AND NOT _openetl_deleted")
 		got := map[string]row{}
 		for _, r := range latest {
 			got[r.k] = r
@@ -524,12 +555,10 @@ WHERE rn = 1`, topic))
 		if time.Now().After(deadline) {
 			t.Fatalf("the dedupes' numbers over every checkpoint: got %s, want %s", got, want)
 		}
-		in, ins, late := operatorTotals(t, name, ops["firsts"])
-		_, rep := operatorRepeats(t, name, ops["firsts"])
-		lin, lins, llate := operatorTotals(t, name, ops["latest"])
-		lupd, lrep := operatorRepeats(t, name, ops["latest"])
+		totals := operatorTotals(t, name)
+		f, l := totals[ops["firsts"]], totals[ops["latest"]]
 		got = fmt.Sprintf("firsts: in %d, %d written, %d repeats, %d late; latest: in %d, %d inserts, %d updates and repeats, %d late",
-			in, ins, rep, late, lin, lins, lupd+lrep, llate)
+			f.in, f.inserts, f.repeats, f.late, l.in, l.inserts, l.updates+l.repeats, l.late)
 	}
 }
 

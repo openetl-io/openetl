@@ -29,7 +29,7 @@ Use `make sim SEEDS=10000` to run more seeds. Use `go test ./test/sim -run 'Test
 
 [`test/e2e`](../../test/e2e) runs the whole stack against Compose services and official connectors. Tests run one at a time.
 
-`TestRunningTotalFromKafkaMatchesDuckDB` runs `OVER` over a bounded Kafka topic, on one pod and on two workers. DuckDB's CLI runs the same query over the same records, written as CSV, and the output must match it row for row. The test finds the CLI through `OPENETL_DUCKDB` or the `PATH`, and skips without it, except on CI. `TestDedupesThroughAKilledEngine` runs a first-row dedupe with a retention and a latest-row dedupe from Kafka into Postgres, and kills the engine once a checkpoint holds their state. Each key's first rows must be written once each within the retention, and again after it.
+`TestRunningTotalFromKafkaMatchesDuckDB` runs `OVER` over a bounded Kafka topic, on one pod and on two workers. DuckDB's CLI runs the same query over the same records, written as CSV, and the output must match it row for row. The test finds the CLI through `OPENETL_DUCKDB` or the `PATH`, and skips without it, except on CI. `TestDedupesThroughAKilledEngine` runs a first-row dedupe with a retention and a latest-row dedupe from Kafka into Postgres. It kills the engine once a checkpoint holds their state. Each key's first row within each retention must be written once. A row a retention or more after the key's last first row must be written as a new first row. The merged output must hold each key's latest row.
 
 ### Chaos tests
 

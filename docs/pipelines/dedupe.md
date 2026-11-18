@@ -208,7 +208,7 @@ The keys that the dedupe keeps are in the pipeline's checkpoint. So a repeat tha
 
 The console's **SQL** tab shows, under **At the last checkpoint**, what the statement did in the last epoch: its watermark, the keys it keeps, the rows it took in and wrote, the repeats it dropped and its late rows. The same numbers are the `openetl.operator.*` metrics ([Monitoring](../self-host/monitoring.md#over-and-dedupe)):
 
-- `openetl.operator.rows.repeats` counts the rows that the dedupe dropped. The rows taken in are the rows written, the repeats, the late rows and the rows that wait for the watermark. A sudden rise in repeats can mean that a producer sends rows again.
+- `openetl.operator.rows.repeats` counts the rows that the dedupe dropped. Over time, the rows taken in are the rows written, the repeats, the late rows, the rows that the output quarantined and the rows that wait for the watermark. An epoch can write rows that came in an earlier epoch, so compare totals over time, not one epoch's numbers. A sudden rise in repeats can mean that a producer sends rows again.
 - `openetl.operator.windows` is the keys that the dedupe keeps. With a retention, it levels off at about the keys of one retention. With `unbounded`, or for a latest-row dedupe, it grows with the number of keys, and so does `openetl.operator.state.memory`.
 - `openetl.operator.rows.late` counts late rows that the engine quarantined. If it grows, set a longer `watermark.delay`. A latest-row dedupe has no late rows.
-- `openetl.operator.watermark.lag` is how long a first-row dedupe's rows wait before they are written.
+- `openetl.operator.watermark.lag` is how far the watermark was behind the time of the commit. A first-row dedupe writes a row once the watermark passes its time, so a lag that grows means that its rows wait longer. A latest-row dedupe writes rows as they come, whatever the watermark.

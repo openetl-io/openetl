@@ -387,7 +387,7 @@ error bind 1:1 there's no sum(Utf8): CAST the argument to a type it takes
 plan
 INSERT INTO x SELECT id, first_value(tags) OVER (PARTITION BY customer ORDER BY created_at) AS f FROM orders
 ----
-error unsupported 1:26 first_value takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)
+error unsupported 1:26 first_value takes a number, text, binary, a boolean, a date, a time, a timestamp or a UUID, not List(Utf8)
 
 plan
 INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY customer ORDER BY created_at) FROM orders
@@ -475,13 +475,12 @@ INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_
 ----
 error unsupported 1:26 a RANGE frame's offset is whole microseconds
 
-# BUG: a RANGE frame's offset that is a number, not an INTERVAL, is
-# refused as if it were in months; the planner has the message "a RANGE
-# frame's offset is an INTERVAL, such as INTERVAL '1 hour'" for it.
+# A RANGE frame's offset that is a number, not an INTERVAL, which binding
+# would read as months.
 plan
 INSERT INTO x SELECT id, sum(amount) OVER (PARTITION BY region ORDER BY created_at RANGE BETWEEN 5 PRECEDING AND CURRENT ROW) AS total FROM orders
 ----
-error unsupported 1:26 a RANGE frame's offset is in days, hours, minutes or seconds, as a month's length varies
+error unsupported 1:26 a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'
 
 # PARTITION BY a struct, and OVER by an event time that isn't a timestamp.
 stream shapes key(id) time(at)

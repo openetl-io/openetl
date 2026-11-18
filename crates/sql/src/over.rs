@@ -585,7 +585,7 @@ fn function(
             DataType::Int64 | DataType::Float64 | DataType::Decimal128(..)
         )
     };
-    const KEPT: &str = "a number, text, binary, a boolean, a date, a time or a timestamp";
+    const KEPT: &str = "a number, text, binary, a boolean, a date, a time, a timestamp or a UUID";
     let (kind, arg) = match name.as_str() {
         "count" => {
             let arg = match p.args.as_slice() {

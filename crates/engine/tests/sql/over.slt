@@ -481,7 +481,7 @@ SELECT id, count(items) OVER (PARTITION BY region ORDER BY ts, rowid ROWS 1 PREC
 query error
 SELECT id, max(items) OVER (PARTITION BY region ORDER BY ts) AS most FROM baskets
 ----
-unsupported 1:12 max takes a number, text, binary, a boolean, a date, a time or a timestamp, not List(Utf8)
+unsupported 1:12 max takes a number, text, binary, a boolean, a date, a time, a timestamp or a UUID, not List(Utf8)
 
 
 statement ok

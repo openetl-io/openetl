@@ -915,7 +915,19 @@ impl<'a> Check<'a> {
                         let name = function_name(f);
                         match &f.over {
                             Some(w) => {
-                                over_specs.push((f.span(), name, f.filter.is_some(), w.clone()))
+                                // An argument, or DISTINCT without one.
+                                let args = match &f.args {
+                                    ast::FunctionArguments::None => false,
+                                    ast::FunctionArguments::Subquery(_) => true,
+                                    ast::FunctionArguments::List(l) => {
+                                        !l.args.is_empty() || l.duplicate_treatment.is_some()
+                                    }
+                                };
+                                let shape = Called {
+                                    filtered: f.filter.is_some(),
+                                    args,
+                                };
+                                over_specs.push((f.span(), name, shape, w.clone()))
                             }
                             None if AGGREGATES.contains(&name.as_str()) => {
                                 aggregate.get_or_insert(f.span());
@@ -955,8 +967,11 @@ impl<'a> Check<'a> {
         if let Some(span) = subquery {
             self.later_tier(Class::Join, span, "a subquery");
         }
-        for (span, name, filtered, _) in &over_specs {
-            self.over_function(*span, name, *filtered);
+        for (span, name, shape, w) in &over_specs {
+            self.over_function(*span, name, *shape);
+            if let ast::WindowType::WindowSpec(spec) = w {
+                self.range_offset(*span, spec);
+            }
         }
         if let Some((span, name)) = window_only {
             self.unsupported(
@@ -1231,9 +1246,13 @@ impl<'a> Check<'a> {
     }
 
     /// Refuses a function OVER doesn't take.
-    fn over_function(&mut self, span: Span, name: &str, filtered: bool) {
+    fn over_function(&mut self, span: Span, name: &str, shape: Called) {
+        let filtered = shape.filtered;
         match name {
-            "lag" | "first_value" | "row_number" if filtered => self.unsupported(
+            "row_number" if filtered || shape.args => {
+                self.unsupported(span, "ROW_NUMBER() takes nothing but OVER (…)")
+            }
+            "lag" | "first_value" if filtered => self.unsupported(
                 span,
                 format!("{name} takes no FILTER, which is for aggregates"),
             ),
@@ -1250,6 +1269,26 @@ impl<'a> Check<'a> {
                     crate::over::NAMED
                 ),
             ),
+        }
+    }
+
+    /// A RANGE frame's offset written as a number, which binding would read
+    /// as months of an interval.
+    fn range_offset(&mut self, span: Span, spec: &ast::WindowSpec) {
+        let Some(frame) = &spec.window_frame else {
+            return;
+        };
+        let number = |b: &ast::WindowFrameBound| {
+            matches!(b, ast::WindowFrameBound::Preceding(Some(e)) | ast::WindowFrameBound::Following(Some(e))
+                if matches!(e.as_ref(), ast::Expr::Value(v) if matches!(v.value, ast::Value::Number(..))))
+        };
+        if frame.units == ast::WindowFrameUnits::Range
+            && (number(&frame.start_bound) || frame.end_bound.as_ref().is_some_and(number))
+        {
+            self.unsupported(
+                span,
+                "a RANGE frame's offset is an INTERVAL, such as INTERVAL '1 hour'",
+            );
         }
     }
 
@@ -1794,6 +1833,14 @@ fn count_rows(e: &mut ast::Expr) -> ControlFlow<()> {
         *a = ast::FunctionArgExpr::Expr(ast::Expr::value(ast::Value::Number("1".into(), false)));
     }
     ControlFlow::Continue(())
+}
+
+/// How a function OVER a window is called: with FILTER, and with an
+/// argument or DISTINCT.
+#[derive(Clone, Copy)]
+struct Called {
+    filtered: bool,
+    args: bool,
 }
 
 fn function_name(f: &ast::Function) -> String {

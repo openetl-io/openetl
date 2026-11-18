@@ -117,6 +117,7 @@ Before you start:
 
 - You have a Kafka broker and a Postgres database that the runner can reach, and the Kafka and Postgres connectors are installed. The example uses the development stack's: Kafka at `127.0.0.1:9092`, and the secret `local-postgres-dsn` with the database's DSN. Change the brokers and the secret for your own.
 - The Kafka tools, such as `kafka-topics.sh`, are on your `PATH`. A Kafka container has them in `/opt/kafka/bin`.
+- `psql` is installed, and the shell variable `DSN` holds the database's connection string, such as `postgres://openetl:openetl@localhost:5432/openetl` for the development stack.
 
 The statement reads the record's own columns, which the Kafka source gives every record: `_kafka_key`, `_kafka_partition`, `_kafka_offset` and `_kafka_timestamp`. The key is the user, and the record's timestamp is the stream's `eventTime`:
 
@@ -171,7 +172,7 @@ Send more views, and each new row's `views_so_far` goes on from the user's last.
 
 The console's **SQL** tab shows, under **At the last checkpoint**, what the statement did in the last epoch: its watermark, the rows it took in and wrote, its late rows and its state's size. The same numbers are the `openetl.operator.*` metrics ([Monitoring](../self-host/monitoring.md#over-and-dedupe)):
 
-- `openetl.operator.rows.in` and `openetl.operator.rows.written` grow together. Each row is written once, as an insert, so the rows written trail the rows taken in by the rows that wait for the watermark.
-- `openetl.operator.watermark.lag` is how far the rows that wait are behind the commit. If it grows, a split is behind or quiet, and rows wait longer before they are written.
+- `openetl.operator.rows.in` and `openetl.operator.rows.written` grow together. Each row is written once, as an insert. Over time, the rows written trail the rows taken in by the rows that wait for the watermark, the late rows, and the rows that the output quarantined. An epoch can write rows that came in an earlier epoch, so compare totals over time, not one epoch's numbers.
+- `openetl.operator.watermark.lag` is how far the watermark was behind the time of the commit. A row waits until the watermark passes its time, so a lag that grows means that rows wait longer. It does not show that rows are waiting: a stream with no rows can have a lag too.
 - `openetl.operator.rows.late` counts the late rows that the engine quarantined. If it grows, set a longer `watermark.delay`.
 - `openetl.operator.state.memory` grows with the partitions, the bounded frames and the rows that wait. `openetl.operator.windows` is 0 for `OVER`.

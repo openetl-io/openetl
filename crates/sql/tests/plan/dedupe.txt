@@ -207,26 +207,24 @@ INSERT INTO x SELECT * FROM numbered WHERE rn = 1
 ----
 error unsupported 1:35 a view is row-wise, so it can't compute OVER: compute it in the INSERT INTO … SELECT that reads the view
 
-# ROW_NUMBER() takes no argument, FILTER or DISTINCT: an argument, with
-# DISTINCT or without, has no row_number to bind to, and FILTER is refused
-# as on lag.
+# ROW_NUMBER() takes no argument, FILTER or DISTINCT.
 plan
 INSERT INTO x SELECT id, amount FROM orders
 QUALIFY row_number(id) OVER (PARTITION BY id ORDER BY created_at) = 1
 ----
-error bind 1:1 there's no row_number(Int64): CAST the argument to a type it takes
+error unsupported 2:9 ROW_NUMBER() takes nothing but OVER (…)
 
 plan
 INSERT INTO x SELECT id, amount FROM orders
 QUALIFY row_number() FILTER (WHERE amount > 0) OVER (PARTITION BY id ORDER BY created_at) = 1
 ----
-error unsupported 2:9 row_number takes no FILTER, which is for aggregates
+error unsupported 2:9 ROW_NUMBER() takes nothing but OVER (…)
 
 plan
 INSERT INTO x SELECT id, amount FROM orders
 QUALIFY row_number(DISTINCT id) OVER (PARTITION BY id ORDER BY created_at) = 1
 ----
-error bind 1:1 there's no row_number(Int64): CAST the argument to a type it takes
+error unsupported 2:9 ROW_NUMBER() takes nothing but OVER (…)
 
 # A rank compared = 1 is a later tier's, as ROW_NUMBER() compared
 # otherwise is.

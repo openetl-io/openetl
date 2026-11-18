@@ -139,6 +139,8 @@ type windowWork struct {
 	dedupe string
 	// An OVER run's.
 	over bool
+	// The closing records Kafka acknowledged, by topic.
+	ends map[string]map[overRecord]bool
 	keys int
 	cl   *kgo.Client
 	// Each topic's records produced, in the order of their times.
@@ -288,6 +290,13 @@ func (w *windowWork) write(ctx context.Context, rng *rand.Rand) error {
 	if err := w.cl.ProduceSync(end, ends...).FirstErr(); err != nil {
 		return fmt.Errorf("produce the windows' ends: %w", err)
 	}
+	w.ends = map[string]map[overRecord]bool{}
+	for _, r := range ends {
+		if w.ends[r.Topic] == nil {
+			w.ends[r.Topic] = map[overRecord]bool{}
+		}
+		w.ends[r.Topic][overRecord{r.Partition, r.Offset}] = true
+	}
 	return nil
 }
 
@@ -427,7 +436,9 @@ func (w *windowWork) running(i int) map[overRecord]overValues {
 
 // checkOver compares each output's table with its records' running values:
 // each lands once, and a row that differs, or a record's row twice, is
-// extra.
+// extra. The closing records' rows, which wait for good, are left out by
+// their partitions and offsets, so a row of their key at another record's
+// is extra too.
 func (w *windowWork) checkOver(t *testing.T) (missing, extra int, detail string) {
 	t.Helper()
 	type row struct {
@@ -436,7 +447,7 @@ func (w *windowWork) checkOver(t *testing.T) (missing, extra int, detail string)
 	}
 	var details []string
 	for i, tbl := range chaosTables {
-		got, err := rowsOf(t, `SELECT p, o, k, n, total FROM `+pgx.Identifier{w.out, tbl}.Sanitize()+` WHERE k <> `+quote(windowEnd),
+		got, err := rowsOf(t, `SELECT p, o, k, n, total FROM `+pgx.Identifier{w.out, tbl}.Sanitize(),
 			func(rows pgx.CollectableRow) (row, error) {
 				var r row
 				return r, rows.Scan(&r.r.partition, &r.r.offset, &r.v.key, &r.v.n, &r.v.total)
@@ -451,6 +462,9 @@ func (w *windowWork) checkOver(t *testing.T) (missing, extra int, detail string)
 		m, e := 0, 0
 		var differ []string
 		for _, r := range got {
+			if w.ends[w.topics[i]][r.r] {
+				continue
+			}
 			v, ok := want[r.r]
 			switch {
 			case seen[r.r]:
