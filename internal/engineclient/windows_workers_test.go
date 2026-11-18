@@ -556,7 +556,8 @@ func TestAGroupWindowRedoOfLateRowsThroughTheEngine(t *testing.T) {
 // With cue, each scene is an epoch, read by every split: a split starts
 // scene c once a committed record has every split past scene c-1, and
 // split 0 reads its rows after its first once every other split has read
-// its scene's rows. Its padded row is what takes the worker past the job's
+// its scene's rows in the attempt, at least once: an attempt that redoes
+// two writer lanes reads the scene twice. Its padded row is what takes the worker past the job's
 // CommitMaxBytes, pad, which asks for the epoch's barrier: every split
 // places it at the end of its scene.
 type scenes struct {
@@ -646,7 +647,7 @@ func (s *scenes) Read(ctx context.Context, req source.ReadRequest, out source.Em
 				return err
 			}
 			if k == 0 {
-				if err := s.cue.wait(ctx, func(q *cue) bool { return q.read[c] == s.splits-1 }); err != nil {
+				if err := s.cue.wait(ctx, func(q *cue) bool { return q.read[c] >= s.splits-1 }); err != nil {
 					return err
 				}
 			}
