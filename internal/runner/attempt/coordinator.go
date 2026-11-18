@@ -79,8 +79,10 @@ type member struct {
 	commits map[string]*commitState
 	// Closed when its call ends.
 	ended chan struct{}
-	// It reported PeerLost, its last message.
-	peerLost bool
+	// The PeerLost it reported before the attempt ended, which its End
+	// says however the attempt ends; nil if none. It may end its call
+	// after it.
+	peerLost *protocolv1.Error
 }
 
 type commitState struct {
@@ -178,10 +180,18 @@ func (c *coordinator) finish(err error) {
 	}
 	end := &attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_End{End: &attemptv1.End{Error: errs.ToProto(err)}}}
 	for _, m := range c.members {
-		if m != nil {
-			m.out.push(end)
-			m.out.close()
+		if m == nil {
+			continue
 		}
+		// A peer lost before the finish fails the worker that lost it. One
+		// lost after it is the attempt's engines stopping, and reached
+		// nothing: the attempt was over.
+		if err == nil && m.peerLost != nil {
+			m.out.push(&attemptv1.AttendResponse{Message: &attemptv1.AttendResponse_End{End: &attemptv1.End{Error: m.peerLost}}})
+		} else {
+			m.out.push(end)
+		}
+		m.out.close()
 	}
 	joinTimer := c.joinTimer
 	c.mu.Unlock()
@@ -345,11 +355,11 @@ func (c *coordinator) isOver() bool {
 	return c.over
 }
 
-// lostAPeer says m reported PeerLost, after which it ends its call.
+// lostAPeer says m reported PeerLost, after which it may end its call.
 func (c *coordinator) lostAPeer(m *member) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return m.peerLost
+	return m.peerLost != nil
 }
 
 // handle takes a message from a worker that joined, and returns why it
@@ -386,7 +396,7 @@ func (c *coordinator) handle(m *member, msg *attemptv1.AttendRequest) error {
 		// The worker whose engine was lost fails, or is lost, with why.
 		cause := reported(x.PeerLost)
 		err := classedAs(cause, fmt.Errorf("attempt: %s failed: %w", who, cause))
-		m.peerLost = true
+		m.peerLost = x.PeerLost
 		if c.peerLost == nil {
 			c.peerLost = time.AfterFunc(c.opts.peerLostGrace(), func() { c.finish(err) })
 		}

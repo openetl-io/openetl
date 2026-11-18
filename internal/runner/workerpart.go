@@ -568,7 +568,27 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 		return pump.readDone()
 	})
 	g.Go(pump.run)
-	g.Go(func() error { return job.Dataflow.Run(gctx, plan, toFlow, fromFlow) })
+	g.Go(func() error {
+		err := job.Dataflow.Run(gctx, plan, toFlow, fromFlow)
+		var lost *attempt.PeerLost
+		if !errors.As(err, &lost) {
+			return err
+		}
+		// Another worker's engine went: lost, or stopped as the attempt
+		// finished, which the coordinator's End says. Until it comes, the
+		// rest of the worker's part goes on, so what the coordinator sent
+		// before a finish is done.
+		p.w.LostPeer(err)
+		select {
+		case <-p.w.Done():
+		case <-gctx.Done():
+			return err
+		}
+		if p.w.Err() == nil {
+			return nil
+		}
+		return err
+	})
 	g.Go(func() error { return demux(gctx, fromFlow, outs) })
 	g.Go(func() error {
 		p.reportUsage(gctx, job.Meter)

@@ -23,8 +23,15 @@ import (
 // start2 opens a two-worker attempt and assigns it layout(2).
 func start2(t *testing.T, opts Options) (*coordinator, []*worker) {
 	t.Helper()
+	return start2Held(t, opts, nil)
+}
+
+// start2Held is start2, worker 0 receiving an End only once hold is closed;
+// nil: at once.
+func start2Held(t *testing.T, opts Options, hold chan struct{}) (*coordinator, []*worker) {
+	t.Helper()
 	c := coordinatorFor(t, testAttemptOf(2), opts)
-	ws := []*worker{joinPipe(t, c, target(0), opts), joinPipe(t, c, target(1), opts)}
+	ws := []*worker{joinHeld(t, c, target(0), opts, hold), joinPipe(t, c, target(1), opts)}
 	if err := c.Assign(t.Context(), layout(2)); err != nil {
 		t.Fatal(err)
 	}
@@ -658,6 +665,115 @@ func TestALostPeerAloneFailsTheAttemptAfterTheGrace(t *testing.T) {
 		}
 		if err := c.Err(); errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "worker 1 failed: TRANSIENT: engine 1 at w1:7720 was lost") {
 			t.Fatalf("attempt: %v", err)
+		}
+		within(t, ws[1].Done(), time.Second, "worker 1's end")
+		if err := c.End(t.Context(), nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range ws {
+			_ = w.Close()
+		}
+	})
+}
+
+// A worker's engine that loses another's after the coordinator finished the
+// attempt lost it as the engines stopped: the worker's part ends as
+// finished, whether the finish reached the worker first or not. One it lost
+// before the finish fails the worker with it, though the attempt finished,
+// as it does if the attempt fails after the grace.
+func TestALostPeerAfterTheFinishIsTheEnginesStopping(t *testing.T) {
+	lost := func() error {
+		return fmt.Errorf("engine: %w", &PeerLost{Err: errs.New(errs.Transient, "engine 1 at w1:7720 was lost")})
+	}
+	end := func(t *testing.T, c *coordinator, ws []*worker) {
+		t.Helper()
+		ended := make(chan error, 1)
+		go func() { ended <- c.End(t.Context(), nil) }()
+		for i, w := range ws {
+			within(t, w.Done(), time.Second, fmt.Sprintf("worker %d's end", i))
+		}
+		if err := <-ended; err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Err(); err != nil {
+			t.Fatalf("attempt: %v", err)
+		}
+	}
+	// reported fails the test unless w's LostPeer queued its report: it
+	// didn't find the part over already.
+	reported := func(t *testing.T, w *worker) {
+		t.Helper()
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.lost == nil || w.over {
+			t.Fatalf("the worker's part was over (%v) before it reported the lost peer", w.over)
+		}
+	}
+	for name, c := range map[string]struct {
+		// Worker 0 receives End once lose closes hold.
+		hold bool
+		lose func(t *testing.T, c *coordinator, w *worker, hold chan struct{})
+		// The lost worker's part ends with the PeerLost.
+		failed bool
+	}{
+		"after the finish, before it reaches the worker": {hold: true, lose: func(t *testing.T, c *coordinator, w *worker, hold chan struct{}) {
+			c.finish(nil)
+			// End waits at the worker's end of the call.
+			synctest.Wait()
+			w.LostPeer(lost())
+			reported(t, w)
+			synctest.Wait()
+			close(hold)
+		}},
+		"after the finish reached the worker": {lose: func(_ *testing.T, c *coordinator, w *worker, _ chan struct{}) {
+			c.finish(nil)
+			synctest.Wait()
+			w.LostPeer(lost())
+		}},
+		"before the finish": {lose: func(t *testing.T, _ *coordinator, w *worker, _ chan struct{}) {
+			w.LostPeer(lost())
+			reported(t, w)
+			synctest.Wait()
+		}, failed: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				// Made in the bubble, so a wait on it is durable.
+				var hold chan struct{}
+				if c.hold {
+					hold = make(chan struct{})
+				}
+				co, ws := start2Held(t, Options{PeerLostGrace: 3 * time.Second}, hold)
+				c.lose(t, co, ws[0], hold)
+				end(t, co, ws)
+				err := ws[0].Err()
+				switch {
+				case c.failed && (errs.CodeOf(err) != errs.Transient || !errors.As(err, new(*PeerLost)) || !strings.Contains(err.Error(), "engine 1 at w1:7720 was lost")):
+					t.Errorf("the worker that lost its peer before the finish ended with %v, want its PeerLost", err)
+				case !c.failed && err != nil:
+					t.Errorf("the worker that lost its peer after the finish ended with %v", err)
+				}
+				if err := ws[1].Err(); err != nil {
+					t.Errorf("the other worker ended with %v", err)
+				}
+				for _, w := range ws {
+					_ = w.Close()
+				}
+			})
+		})
+	}
+	// With no finish within the grace, the lost peer fails the attempt, and
+	// the worker that lost it with it.
+	synctest.Test(t, func(t *testing.T) {
+		c, ws := start2(t, Options{PeerLostGrace: 3 * time.Second})
+		ws[0].LostPeer(lost())
+		within(t, c.Done(), 10*time.Second, "the attempt's failure")
+		if err := c.Err(); errs.CodeOf(err) != errs.Transient || !strings.Contains(err.Error(), "worker 1 failed: TRANSIENT: engine: TRANSIENT: engine 1 at w1:7720 was lost") {
+			t.Fatalf("attempt: %v", err)
+		}
+		within(t, ws[0].Done(), time.Second, "worker 0's end")
+		if err := ws[0].Err(); errs.CodeOf(err) != errs.Transient || !errors.As(err, new(*PeerLost)) {
+			t.Errorf("the worker that lost its peer ended with %v, want its PeerLost", err)
 		}
 		within(t, ws[1].Done(), time.Second, "worker 1's end")
 		if err := c.End(t.Context(), nil); err != nil {

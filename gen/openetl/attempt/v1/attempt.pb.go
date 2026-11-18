@@ -222,7 +222,10 @@ type AttendRequest_PeerLost struct {
 	// As failure, where the worker failed only because its engine lost
 	// another worker's engine (openetl.engine.v1.PeerLost): the coordinator
 	// waits a moment for another worker's failure or loss, which says why,
-	// and fails the attempt with this only if none comes. Its last message.
+	// and fails the attempt with this only if none comes. A coordinator
+	// that has ended the attempt ignores it. After sending it, the worker
+	// may close its send side, or go on sending until the coordinator's End,
+	// which says how its part ended.
 	PeerLost *v1.Error `protobuf:"bytes,10,opt,name=peer_lost,json=peerLost,proto3,oneof"`
 }
 
@@ -1485,7 +1488,9 @@ func (x *Heartbeat) GetCalling() bool {
 
 type End struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Why the attempt failed; unset: it finished.
+	// Why the worker's part failed: why the attempt failed, or the
+	// worker's own peer_lost, which the coordinator took before the attempt
+	// finished. Unset: the attempt finished, and the worker's part with it.
 	Error         *v1.Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

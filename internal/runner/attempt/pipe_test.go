@@ -32,6 +32,8 @@ type pipe struct {
 	endOnce  sync.Once
 	gone     chan struct{}
 	goneOnce sync.Once
+	// Set: the worker receives an End only once it's closed.
+	holdEnd chan struct{}
 }
 
 func newPipe() *pipe {
@@ -68,6 +70,13 @@ func (p workerEnd) Send(m *attemptv1.AttendRequest) error {
 func (p workerEnd) Recv() (*attemptv1.AttendResponse, error) {
 	select {
 	case m := <-p.down:
+		if m.GetEnd() != nil && p.holdEnd != nil {
+			select {
+			case <-p.holdEnd:
+			case <-p.gone:
+				return nil, errHungUp
+			}
+		}
 		return m, nil
 	case <-p.ended:
 		if p.endErr != nil {
@@ -132,7 +141,14 @@ func coordinatorFor(t *testing.T, a Attempt, opts Options) *coordinator {
 // joinPipe starts a worker's part over a call to c, and closes it once the
 // test is over.
 func joinPipe(t *testing.T, c *coordinator, tg Target, opts Options) *worker {
+	return joinHeld(t, c, tg, opts, nil)
+}
+
+// joinHeld is joinPipe, its worker receiving an End only once hold is
+// closed; nil: at once.
+func joinHeld(t *testing.T, c *coordinator, tg Target, opts Options, hold chan struct{}) *worker {
 	p := connect(c)
+	p.holdEnd = hold
 	w := start(workerEnd{p}, p.hangUp, tg, opts)
 	t.Cleanup(func() { _ = w.Close() })
 	return w
