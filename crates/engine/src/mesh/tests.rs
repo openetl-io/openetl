@@ -61,14 +61,14 @@ impl Engine {
     fn links(&self) -> Option<Arc<Links>> {
         self.links.get().and_then(Weak::upgrade)
     }
+}
 
-    /// Whether every lane waits for a channel or a link to take what it
-    /// made.
-    fn held(&self) -> bool {
-        self.lanes
-            .backpressured()
-            .is_some_and(|b| b.iter().all(|b| *b))
-    }
+/// Whether every lane of the clocks waits for a channel or a link to take
+/// what it made.
+fn held(clocks: &[u64]) -> bool {
+    clocks
+        .iter()
+        .all(|c| crate::dataflow::Lanes::backpressured(*c))
 }
 
 /// An edge's end, counting the bytes that go through it.
@@ -134,6 +134,26 @@ async fn until(never: &str, mut held: impl FnMut() -> bool) {
     })
     .await
     .expect(never);
+}
+
+/// Waits until `sample` gives the same values twice running, 5 ms apart,
+/// and `held` is true of them. A sample holds the lanes' clocks, which
+/// change whenever a lane starts doing something else, counts that only
+/// grow, and counts that change only with a lane's clock, so each value
+/// stood from its read in the first sample to its read in the second:
+/// they all stood together once the first was taken.
+async fn until_stalled<S: PartialEq>(
+    mut sample: impl FnMut() -> Option<S>,
+    held: impl Fn(&S) -> bool,
+) {
+    let mut last = None;
+    until("the engines never stalled", || {
+        let now = sample();
+        let stood = now.is_some() && now == last && now.as_ref().is_some_and(&held);
+        last = now;
+        stood
+    })
+    .await;
 }
 
 /// Waits until every engine's links are up, so that what a test then gives
@@ -418,31 +438,51 @@ async fn a_slow_writer_lane_slows_its_senders_within_the_links_bound() {
             batches
         }
     });
-    until("the engines never stalled", || {
-        let Some(links) = es[0].links() else {
-            return false;
-        };
-        let queued = links.queued()[1];
-        assert!(
-            queued <= bound,
-            "the link queued {queued} bytes, past {bound}"
-        );
-        let unread = fed
-            .load(Ordering::Relaxed)
-            .saturating_sub(es[0].read[0].load(Ordering::Relaxed));
-        links.waiting()[1] > 0
-            && unread == EDGE as u64
-            && es[1].wrote[0].load(Ordering::Relaxed) == EDGE as u64
-    })
+    until_stalled(
+        || {
+            let links = es[0].links()?;
+            let queued = links.queued()[1];
+            assert!(
+                queued <= bound,
+                "the link queued {queued} bytes, past {bound}"
+            );
+            Some((
+                es[0].lanes.clocks()?,
+                links.waiting()[1],
+                fed.load(Ordering::Relaxed),
+                es[0].read[0].load(Ordering::Relaxed),
+                es[1].wrote[0].load(Ordering::Relaxed),
+            ))
+        },
+        |(clocks, waiting, fed, read, wrote): &(Vec<u64>, u64, u64, u64, u64)| {
+            held(clocks)
+                && *waiting > 0
+                && fed.saturating_sub(*read) == EDGE as u64
+                && *wrote == EDGE as u64
+        },
+    )
     .await;
     stop.store(true, Ordering::Relaxed);
     put(&mut es[1].ins[0], FrameKind::Barrier, barrier(1, 1)).await;
     end(&mut es[1].ins[0]).await;
     let d1 = drain(stalled);
-    let batches = feeder.await.unwrap();
+    let run = async {
+        let batches = feeder.await.unwrap();
+        let mut outs = Vec::new();
+        for d in d0.into_iter().chain(d1) {
+            outs.push(d.await.unwrap());
+        }
+        for e in es {
+            e.job.await.unwrap().unwrap();
+        }
+        (batches, outs)
+    };
+    let (batches, outs) = tokio::time::timeout(Duration::from_secs(120), run)
+        .await
+        .expect("the engines stopped moving");
     let mut seen = vec![false; usize::try_from(batches * ROWS).unwrap()];
-    for d in d0.into_iter().chain(d1) {
-        for f in d.await.unwrap() {
+    for frames in outs {
+        for f in frames {
             if f.kind == FrameKind::Batch {
                 for id in ids(&f) {
                     let at = usize::try_from(id).unwrap();
@@ -455,9 +495,6 @@ async fn a_slow_writer_lane_slows_its_senders_within_the_links_bound() {
         seen.iter().all(|s| *s),
         "a row of {batches} batches was lost"
     );
-    for e in es {
-        e.job.await.unwrap().unwrap();
-    }
 }
 
 /// What a link queues waits for room, which its bound holds.
@@ -1913,25 +1950,52 @@ mod windows {
                 }));
             }
         }
-        until("the engines never stalled", || {
-            for links in es.iter().filter_map(Engine::links) {
-                for queued in links.queued() {
-                    assert!(
-                        queued <= bound,
-                        "a link queued {queued} bytes, past {bound}"
-                    );
+        /// Each engine's lanes' clocks, the bytes each edge took and gave,
+        /// and those each writer lane wrote.
+        #[derive(PartialEq)]
+        struct Sample {
+            clocks: Vec<Vec<u64>>,
+            edges: Vec<(u64, u64)>,
+            wrote: Vec<u64>,
+        }
+        until_stalled(
+            || {
+                for links in es.iter().filter_map(Engine::links) {
+                    for queued in links.queued() {
+                        assert!(
+                            queued <= bound,
+                            "a link queued {queued} bytes, past {bound}"
+                        );
+                    }
                 }
-            }
-            let unread = |&(e, i, ref fed): &(usize, usize, Arc<AtomicU64>)| {
-                fed.load(Ordering::Relaxed)
-                    .saturating_sub(es[e].read[i].load(Ordering::Relaxed))
-            };
-            es.iter().all(Engine::held)
-                && edges.iter().all(|edge| unread(edge) == EDGE as u64)
-                && es
+                let clocks: Option<Vec<Vec<u64>>> = es.iter().map(|e| e.lanes.clocks()).collect();
+                let fed = edges
                     .iter()
-                    .any(|e| e.wrote[0].load(Ordering::Relaxed) == EDGE as u64)
-        })
+                    .map(|(e, i, fed)| {
+                        (
+                            fed.load(Ordering::Relaxed),
+                            es[*e].read[*i].load(Ordering::Relaxed),
+                        )
+                    })
+                    .collect();
+                let wrote = es
+                    .iter()
+                    .map(|e| e.wrote[0].load(Ordering::Relaxed))
+                    .collect();
+                Some(Sample {
+                    clocks: clocks?,
+                    edges: fed,
+                    wrote,
+                })
+            },
+            |s: &Sample| {
+                s.clocks.iter().all(|c| held(c))
+                    && s.edges
+                        .iter()
+                        .all(|(f, r)| f.saturating_sub(*r) == EDGE as u64)
+                    && s.wrote.contains(&(EDGE as u64))
+            },
+        )
         .await;
         stop.store(true, Ordering::Relaxed);
         go.send(true).unwrap();
