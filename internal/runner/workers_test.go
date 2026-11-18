@@ -886,6 +886,134 @@ func TestOneSchemaOwnerAcrossWorkers(t *testing.T) {
 	}
 }
 
+// aheadFlow passes rows through on each worker of an attempt whose stream s
+// has one owner, and records the schema of s each worker's plan restored,
+// by attempt. The worker with the attempt's later lanes runs ahead. In
+// attempt a1, before its share of epoch 1 goes, it proposes s's first
+// columns as a change made without the policy in epoch 2, and its share
+// waits for the owner to take it; it then fails at its share of epoch 2,
+// once epoch 1 is committed. In later attempts, it proposes them in the
+// attempt's first epoch, before its share of it.
+type aheadFlow struct {
+	mu       *sync.Mutex
+	restored map[string][][]byte
+	// Closed once a1 has committed epoch 1.
+	committed <-chan struct{}
+}
+
+func (f aheadFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.Frame, out chan<- runner.Frame) error {
+	f.mu.Lock()
+	f.restored[plan.Owner] = append(f.restored[plan.Owner], plan.Schemas["s"])
+	f.mu.Unlock()
+	ahead := plan.FirstLane > 0
+	propose := func(epoch uint64) error {
+		o := plan.SchemaOwner
+		if err := o.Propose(runner.SchemaProposal{Stream: "s", Schema: xSchema(arrow.PrimitiveTypes.Int64), Epoch: epoch}); err != nil {
+			return err
+		}
+		for {
+			select {
+			case u := <-o.Updates():
+				if u.Stream == "s" && u.Version > 0 {
+					return nil
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	mid := make(chan runner.Frame)
+	done := make(chan error, 1)
+	go func() { done <- runner.Passthrough{Convert: idRows}.Run(ctx, plan, in, mid) }()
+	defer close(out)
+	first := true
+	for fr := range mid {
+		if fr.Kind == runner.FrameReady && ahead {
+			switch {
+			case plan.Owner == "a1" && fr.Epoch == 1:
+				if err := propose(2); err != nil {
+					return err
+				}
+			case plan.Owner == "a1":
+				select {
+				case <-f.committed:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				return errors.New("the worker that ran ahead is lost")
+			case first:
+				if err := propose(fr.Epoch); err != nil {
+					return err
+				}
+			}
+			first = false
+		}
+		select {
+		case out <- fr:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return <-done
+}
+
+// A change of a later epoch than the one whose shares the coordinator
+// merges stays out of that epoch's record. A worker whose lane runs ahead
+// proposes s's first columns in epoch 2 before its share of epoch 1 goes,
+// and the record of epoch 1 has no schema of s, so an attempt restored from
+// it starts s with none, as it starts a stream whose first columns come
+// later. The record of the epoch whose change it is has them.
+func TestARecordHasNoChangeOfALaterEpoch(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	committed := make(chan struct{})
+	// Each split's pages past its first wait for epoch 1's commit, so the
+	// worker that runs ahead has a share of epoch 2 to fail at.
+	p := newPool(t, func() *rangeSource {
+		return &rangeSource{splits: 2, rows: 30, page: 5, pause: 2 * time.Millisecond, gate: committed}
+	})
+	flow := aheadFlow{mu: &sync.Mutex{}, restored: map[string][][]byte{}, committed: committed}
+	p.flow = flow
+	j := p.workers("a1", 2)
+	var once sync.Once
+	j.OnCommit = func(n uint64) {
+		if n == 1 {
+			once.Do(func() { close(committed) })
+		}
+	}
+	if _, err := runner.RunAttempt(ctx, j); err == nil {
+		t.Fatal("the attempt went on without the worker that ran ahead")
+	}
+	p.wait("a1")
+	if head := p.head(); head.Epoch != 1 || len(head.Streams["s"].Schema) != 0 {
+		t.Fatalf("HEAD is epoch %d, with s's schema %q", head.Epoch, head.Streams["s"].Schema)
+	}
+	var mu sync.Mutex
+	recorded := map[uint64][]byte{}
+	j = p.workers("a2", 2)
+	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
+		mu.Lock()
+		recorded[rec.Epoch] = rec.Streams["s"].Schema
+		mu.Unlock()
+	}
+	if _, err := runner.RunAttempt(ctx, j); err != nil {
+		t.Fatal(err)
+	}
+	p.wait("a2")
+	flow.mu.Lock()
+	restored := flow.restored["a2"]
+	flow.mu.Unlock()
+	if len(restored) != 2 || slices.ContainsFunc(restored, func(s []byte) bool { return len(s) > 0 }) {
+		t.Errorf("the second attempt's workers restored s's schema as %q", restored)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(recorded[2], xSchema(arrow.PrimitiveTypes.Int64)) {
+		t.Errorf("epoch 2's record has s's schema %q", recorded[2])
+	}
+	p.store.check(t, 60)
+}
+
 // holdingFlow plays the engine of each worker of an attempt whose stream s
 // holds. Unless s holds x already, worker 1 starts holding it, proposing the
 // change to the coordinator, and every worker waits until it hears that x

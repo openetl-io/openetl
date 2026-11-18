@@ -902,7 +902,7 @@ func (r *schemaRelay) Updates() <-chan SchemaUpdate {
 }
 
 func (r *schemaRelay) update(s *attemptv1.StreamSchema) {
-	r.updates.push(SchemaUpdate{Stream: s.GetStream(), Input: s.GetInput(), Version: s.GetVersion(), Schema: s.GetArrowSchema(), Holding: attempt.ColumnHoldsOf(s.GetHolding()), Sealed: s.GetSealed()})
+	r.updates.push(SchemaUpdate{Stream: s.GetStream(), Input: s.GetInput(), Version: s.GetVersion(), Schema: s.GetArrowSchema(), Holding: attempt.ColumnHoldsOf(s.GetHolding()), SealedAfter: s.GetSealedAfter()})
 }
 
 func (r *schemaRelay) close() { r.stop() }

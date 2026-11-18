@@ -482,8 +482,11 @@ message StreamSchema {
   bytes arrow_schema = 3;
   bool input = 4;
   repeated openetl.engine.v1.ColumnHold holding = 5;
-  // As openetl.engine.v1.SchemasRequest's: the coordinator seals one of the
-  // destination's streams as it takes the shares of the first epoch whose
-  // schema has the stream's columns.
-  bool sealed = 6;
+  // As openetl.engine.v1.SchemasRequest's: a worker's engine shapes its
+  // rows of the stream of every epoch after this one under the schema
+  // policy. The coordinator seals one of the destination's streams when a
+  // worker proposes a change made without the policy in a later epoch than
+  // such a change it took, or as it takes the shares of an epoch, not
+  // before the first with the stream's columns; 0 until then.
+  uint64 sealed_after = 6;
 }

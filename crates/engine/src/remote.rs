@@ -4,11 +4,11 @@
 //! it holds whole, and each stream a transform reads. A lane that changes a
 //! stream's schema proposes it from the owner's version its engine follows,
 //! one proposal of a stream at a time, and waits for a newer version; its
-//! engine then shapes by the newest. Once the owner has recorded an epoch
-//! whose schema has the stream's columns, its versions are sealed: every
-//! engine shapes by them under the schema policy, whether or not its own
-//! lanes have had rows. Once the call fails, every proposal waiting and
-//! every lane that shapes next fails the job with why.
+//! engine then shapes by the newest. Once the owner has sealed a stream
+//! after an epoch, every engine shapes its rows of later epochs under the
+//! schema policy, whether or not its own lanes have had rows. Once the call
+//! fails, every proposal waiting and every lane that shapes next fails the
+//! job with why.
 
 use std::sync::{Arc, Mutex};
 
@@ -37,9 +37,9 @@ pub struct Owned {
     pub schema: Option<SchemaRef>,
     /// The columns one of the destination's streams holds whole.
     pub holding: Vec<ColumnHold>,
-    /// The schema policy applies to the version, as SchemasRequest.sealed
-    /// says.
-    pub sealed: bool,
+    /// SchemasRequest.sealed_after: the epoch after which every lane shapes
+    /// by the version under the schema policy; 0 for none.
+    pub sealed_after: u64,
 }
 
 /// What a change to one of the destination's streams holds, beside its
@@ -162,7 +162,7 @@ impl Remote {
                 version: u.version,
                 schema: Some(schema),
                 holding: u.holding.clone(),
-                sealed: u.sealed,
+                sealed_after: u.sealed_after,
             };
             s.newest.send_replace(u.version);
         }
@@ -300,20 +300,21 @@ mod tests {
         assert!(r.update(&update(2, 1, &s)).is_err());
     }
 
-    // A version says whether the owner has sealed it.
+    // A version says after which epoch the owner has sealed the stream.
     #[test]
     fn a_version_carries_its_seal() {
         let r = Remote::new(1, 0);
         let s = schema(&["a"]);
         let stream = r.stream(0).unwrap();
         r.update(&update(0, 1, &s)).unwrap();
-        assert!(!stream.latest().sealed);
+        assert_eq!(stream.latest().sealed_after, 0);
         r.update(&SchemasRequest {
-            sealed: true,
+            sealed_after: 3,
             ..update(0, 2, &s)
         })
         .unwrap();
-        assert_eq!((stream.latest().version, stream.latest().sealed), (2, true));
+        let latest = stream.latest();
+        assert_eq!((latest.version, latest.sealed_after), (2, 3));
     }
 
     // A stream a transform reads has versions of its own, apart from the

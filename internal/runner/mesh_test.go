@@ -259,7 +259,7 @@ func TestAGroupWindowLaysOutItsKeyGroups(t *testing.T) {
 		}
 	}
 	f := &fleet{job: j, writers: 2, ranges: []plan.KeyGroupRange{{First: 0, Last: 127}, {First: 128, Last: 255}}, schemas: newSchemaOwner(nil, nil)}
-	sh, err := f.merge(nil)
+	sh, err := f.merge(1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

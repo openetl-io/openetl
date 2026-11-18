@@ -208,9 +208,11 @@ struct At {
 /// barrier with the stream's columns, and to every lane alike, those that
 /// had no rows yet too. Where the plan's schemas are remote, the owner
 /// follows the remote owner's newest version, and a lane's change to the
-/// schema is proposed there; the policy applies from the remote owner's
-/// first sealed version too, so an engine whose lanes had no rows guards
-/// the schema the remote owner recorded of the others'.
+/// schema is proposed there. The policy then applies from the start where
+/// the job restored the stream's columns, and otherwise once the remote
+/// owner has sealed the stream after an epoch, to a lane's rows of later
+/// epochs: an engine whose lanes had no rows guards the schema the other
+/// engines' earlier rows set.
 struct Owner {
     version: AtomicU64,
     /// The remote owner's version the shaper is; 0 where there's none.
@@ -219,7 +221,18 @@ struct Owner {
 }
 
 struct OwnerState {
+    /// Under the schema policy exactly where `sealed` is.
     shaper: Shaper,
+    /// The policy applies to every lane: the job restored the stream's
+    /// columns, or every lane has passed a barrier with them, rows of this
+    /// engine's lanes with them before it where the schema is remote.
+    sealed: bool,
+    /// Where the schema is remote, the first epoch of a batch with columns
+    /// this engine's lanes shaped; 0 for none.
+    rows_from: u64,
+    /// The remote owner's SchemasRequest.sealed_after: the epoch after which
+    /// a lane's rows are shaped under the policy too; 0 for none.
+    sealed_after: u64,
     version: u64,
     remote_version: u64,
     /// By epoch, until it's ready.
@@ -371,6 +384,9 @@ impl Owner {
             version: AtomicU64::new(0),
             remote_version: AtomicU64::new(0),
             state: Mutex::new(OwnerState {
+                sealed: shaper.sealed(),
+                sealed_after: 0,
+                rows_from: 0,
                 shaper,
                 version: 0,
                 remote_version: 0,
@@ -384,11 +400,24 @@ impl Owner {
     fn lock(&self) -> MutexGuard<'_, OwnerState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
 
+impl OwnerState {
+    /// Takes sh as the stream's shaper, under the schema policy exactly
+    /// where the owner is, whatever the lane that made it shaped under.
+    fn publish(&mut self, mut sh: Shaper) {
+        if !self.sealed {
+            sh.unseal();
+        }
+        self.shaper = sh;
+    }
+}
+
+impl Owner {
     /// Takes the remote owner's newest schema of stream s, and what it holds,
     /// if the plan's schemas are remote and it's newer than the shaper's:
-    /// lanes then shape by it. The schema policy applies as it did, or from
-    /// a sealed version on.
+    /// lanes then shape by it. The schema policy applies as it did, and to
+    /// rows of the epochs after the one the version is sealed after.
     fn follow(&self, plan: &Plan, s: usize) -> Result<(), JobError> {
         let Some(r) = plan.remote.as_ref().and_then(|r| r.stream(s)) else {
             return Ok(());
@@ -403,14 +432,9 @@ impl Owner {
         if v <= o.remote_version {
             return Ok(());
         }
-        let mut sh = owned_shaper(plan, s, owned.schema, Some(&owned.holding))?;
-        if owned.sealed {
-            sh.seal();
-        } else if !o.shaper.sealed() {
-            sh.unseal();
-        }
-        sh.take_changed();
-        o.shaper = sh;
+        let sh = owned_shaper(plan, s, owned.schema, Some(&owned.holding))?;
+        o.publish(sh);
+        o.sealed_after = owned.sealed_after;
         o.remote_version = v;
         self.remote_version.store(v, Ordering::Release);
         o.version += 1;
@@ -419,7 +443,10 @@ impl Owner {
     }
 
     /// A lane passed the stream's barrier n. The last to pass it fixes the
-    /// stream's state there: from then on, the schema policy applies.
+    /// stream's state there: from then on, the schema policy applies. Where
+    /// the schema is remote, only if this engine's lanes had rows with
+    /// columns by then: its version at the barrier can have them from a
+    /// later epoch's change, which the remote owner seals the stream after.
     fn cross(
         &self,
         plan: &Plan,
@@ -445,7 +472,10 @@ impl Owner {
         if c.lanes < plan.inbound.len() {
             return Ok(());
         }
-        if o.shaper.seal() {
+        let remote = plan.remote.as_ref().and_then(|r| r.stream(stream));
+        let had_rows = o.rows_from != 0 && o.rows_from <= n;
+        if (remote.is_none() || had_rows) && o.shaper.seal() {
+            o.sealed = true;
             o.version += 1;
             self.version.store(o.version, Ordering::Release);
         }
@@ -1009,6 +1039,11 @@ struct LaneStream {
     replay: Option<Replayer>,
     /// The epoch its rows are in: one past the last barrier it passed.
     epoch: u64,
+    /// The owner's sealed and sealed_after, as of version.
+    owner_sealed: bool,
+    sealed_after: u64,
+    /// It has told the owner of its first batch with columns.
+    noted: bool,
 }
 
 impl LaneStream {
@@ -1018,6 +1053,36 @@ impl LaneStream {
             let o = owner.lock();
             self.shaper = o.shaper.fork();
             self.version = o.version;
+            self.owner_sealed = o.sealed;
+            self.sealed_after = o.sealed_after;
+        }
+    }
+
+    /// Tells the owner of the lane's first batch with columns, once.
+    fn note(&mut self, o: &mut OwnerState, out: &Result<Shaped, NormalizeError>) {
+        let rows = out.as_ref().is_ok_and(|s| s.batch.num_rows() > 0);
+        if self.noted || !rows || self.shaper.schema().is_none() {
+            return;
+        }
+        self.noted = true;
+        if o.rows_from == 0 || self.epoch < o.rows_from {
+            o.rows_from = self.epoch;
+        }
+    }
+
+    /// Shapes its rows under the schema policy where the owner does, and
+    /// where the remote owner sealed the stream after an earlier epoch than
+    /// theirs; rows of that epoch or one before it join without the policy,
+    /// whatever the other lanes do.
+    fn guard(&mut self) {
+        if self.sealed_after == 0 {
+            return;
+        }
+        match self.owner_sealed || self.epoch > self.sealed_after {
+            true => {
+                self.shaper.seal();
+            }
+            false => self.shaper.unseal(),
         }
     }
 
@@ -1074,6 +1139,7 @@ impl LaneStream {
         loop {
             owner.follow(plan, self.stream)?;
             self.catch_up(owner);
+            self.guard();
             let out = f(&mut self.shaper).and_then(|t| self.shaper.shape(t));
             let changed = self.shaper.take_changed();
             if out.is_err() {
@@ -1086,6 +1152,9 @@ impl LaneStream {
                 continue;
             }
             if !changed {
+                if !self.noted {
+                    self.note(&mut owner.lock(), &out);
+                }
                 return out.map_err(|e| fail(&self.shaper, e));
             }
             let schema = self.shaper.schema();
@@ -1097,8 +1166,9 @@ impl LaneStream {
                 if o.shaper.schema() == schema && o.shaper.holding() == self.shaper.holding() {
                     o.version += 1;
                     self.version = o.version;
-                    o.shaper = self.shaper.fork();
+                    o.publish(self.shaper.fork());
                     owner.version.store(o.version, Ordering::Release);
+                    self.note(&mut o, &out);
                     return out.map_err(|e| fail(&self.shaper, e));
                 }
                 o.remote_version
@@ -1335,6 +1405,9 @@ where
             cells: BTreeMap::new(),
             replay,
             epoch: plan.first_epoch,
+            owner_sealed: o.sealed,
+            sealed_after: o.sealed_after,
+            noted: false,
         })
     };
     let mut streams = Vec::with_capacity(plan.inbound[lane.lane].streams.len());
@@ -3683,6 +3756,9 @@ pub(crate) mod tests {
                     cells: BTreeMap::new(),
                     replay: None,
                     epoch: 1,
+                    owner_sealed: o.sealed,
+                    sealed_after: 0,
+                    noted: false,
                 }
             })
             .collect();
@@ -3977,6 +4053,9 @@ pub(crate) mod tests {
                 cells: BTreeMap::new(),
                 replay: None,
                 epoch: 1,
+                owner_sealed: o.sealed,
+                sealed_after: 0,
+                noted: false,
             }
         };
         let rows = [br#"{"x": 4, "y": 5}"#.as_slice()];
@@ -4144,9 +4223,10 @@ pub(crate) mod tests {
             (1, 3, DataType::Utf8)
         );
         assert!(p.holding.is_empty(), "{:?}", p.holding);
-        // The owner sealed version 1 before it got the proposal.
+        // The owner sealed version 1 after epoch 1, its change's, before it
+        // got the proposal.
         let sealed = SchemasRequest {
-            sealed: true,
+            sealed_after: 1,
             ..take(2, v1)
         };
         remote.update(&sealed).unwrap();
@@ -4157,7 +4237,7 @@ pub(crate) mod tests {
         assert_eq!(x(&p.delivered), DataType::Int64);
         remote
             .update(&SchemasRequest {
-                sealed: true,
+                sealed_after: 1,
                 holding: p.holding.clone(),
                 ..take(3, p.arrow_schema.clone())
             })
@@ -4170,6 +4250,156 @@ pub(crate) mod tests {
         let b = batches(&frames, 0);
         assert_eq!(b.len(), 1);
         assert_eq!(x_and_held(&b[0]), [r#"{"x":null,"_openetl_held":"[x]"}"#]);
+        assert!(proposals.try_recv().is_err());
+    }
+
+    // A seal after the epoch a lane's rows are in leaves them to join:
+    // another engine's change of epoch 3 is the stream's first, and the
+    // lane's first rows, of epoch 3 too, make x text without the policy.
+    // Past barrier 3, the lane's rows are under it, and block holds a new
+    // column.
+    #[tokio::test]
+    async fn a_lane_in_the_epoch_a_seal_is_after_joins_its_change() {
+        use openetl_proto::engine::v1::SchemasRequest;
+        let dir = tempfile::tempdir().unwrap();
+        let RemoteHarness {
+            plan,
+            remote,
+            mut proposals,
+            mut w,
+            mut out,
+            job,
+        } = start_remote_with(guarded_request(dir.path(), 1));
+        for n in [1, 2] {
+            put(&mut w, FrameKind::Barrier, 0, barrier(n)).await;
+        }
+        let mut other = shaper(&plan, 0, None).unwrap();
+        other.rows([br#"{"id": 1, "x": 1}"#.as_slice()]).unwrap();
+        let v1 = ipc::encode_schema(&other.schema().unwrap()).unwrap();
+        remote
+            .update(&SchemasRequest {
+                sealed_after: 3,
+                ..take(1, v1)
+            })
+            .unwrap();
+        put(
+            &mut w,
+            FrameKind::Rows,
+            0,
+            rows(&[r#"{"id": 2, "x": "t"}"#]),
+        )
+        .await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        let schema = ipc::decode_schema(&p.arrow_schema).unwrap();
+        let x = schema.field_with_name("x").unwrap().data_type().clone();
+        assert_eq!((p.base, p.epoch, x), (1, 3, DataType::Utf8));
+        assert!(p.holding.is_empty(), "{:?}", p.holding);
+        remote
+            .update(&SchemasRequest {
+                sealed_after: 3,
+                ..take(2, p.arrow_schema.clone())
+            })
+            .unwrap();
+        put(&mut w, FrameKind::Barrier, 0, barrier(3)).await;
+        let late = rows(&[r#"{"id": 3, "x": "u", "z": 1}"#]);
+        put(&mut w, FrameKind::Rows, 0, late).await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        let held: Vec<&str> = p.holding.iter().map(|h| h.column.as_str()).collect();
+        assert_eq!((p.base, p.epoch, held), (2, 0, vec!["z"]));
+        remote
+            .update(&SchemasRequest {
+                sealed_after: 3,
+                holding: p.holding.clone(),
+                ..take(3, p.arrow_schema.clone())
+            })
+            .unwrap();
+        put(&mut w, FrameKind::Barrier, 0, barrier(4)).await;
+        put(&mut w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut out).await;
+        job.await.unwrap().unwrap();
+        let b = batches(&frames, 0);
+        assert_eq!(b.len(), 2);
+        assert_eq!(column_strings(&b[0], "x"), [Some("t".to_owned())]);
+        assert!(b[1].schema().field_with_name("z").is_err());
+        assert_eq!(column_strings(&b[1], "x"), [Some("u".to_owned())]);
+        assert!(proposals.try_recv().is_err());
+    }
+
+    // Where the schema is remote, an engine seals a stream at a barrier only
+    // once its own lanes had rows with columns by then. Lane 0's first rows
+    // are of epoch 2, and lane 1 passes barrier 1 last, as the engine's
+    // version has x from them: lane 1's first rows, of epoch 2 too, join
+    // without the policy. Past barrier 2, both lanes are under it.
+    #[tokio::test]
+    async fn a_remote_engine_seals_after_its_own_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = guarded_request(dir.path(), 2);
+        req.remote_schemas = true;
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let remote = plan.remote.clone().unwrap();
+        let mut proposals = remote.take_proposals().unwrap();
+        let mut h = start_plan(plan);
+        let x = |schema: &[u8]| {
+            let s = ipc::decode_schema(schema).unwrap();
+            s.field_with_name("x").unwrap().data_type().clone()
+        };
+        put(&mut h.ins[0], FrameKind::Barrier, 0, barrier(1)).await;
+        let one = rows(&[r#"{"id": 1, "x": 1}"#]);
+        put(&mut h.ins[0], FrameKind::Rows, 0, one).await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        assert_eq!(
+            (p.base, p.epoch, x(&p.arrow_schema)),
+            (0, 2, DataType::Int64)
+        );
+        remote.update(&take(1, p.arrow_schema)).unwrap();
+        let mut early = vec![to_barrier(&mut h.outs[0]).await];
+        while early[0].last().unwrap().kind != FrameKind::Batch {
+            early[0].push(frame::read(&mut h.outs[0]).await.unwrap().unwrap());
+        }
+        put(&mut h.ins[1], FrameKind::Barrier, 0, barrier(1)).await;
+        early.push(to_barrier(&mut h.outs[1]).await);
+        let text = rows(&[r#"{"id": 2, "x": "t"}"#]);
+        put(&mut h.ins[1], FrameKind::Rows, 0, text).await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        assert_eq!(
+            (p.base, p.epoch, x(&p.arrow_schema)),
+            (1, 2, DataType::Utf8)
+        );
+        assert!(p.holding.is_empty(), "{:?}", p.holding);
+        remote.update(&take(2, p.arrow_schema)).unwrap();
+        for w in &mut h.ins {
+            put(w, FrameKind::Barrier, 0, barrier(2)).await;
+        }
+        // Both lanes have passed barrier 2, so the engine has sealed x.
+        for (e, r) in early.iter_mut().zip(&mut h.outs) {
+            e.extend(to_barrier(r).await);
+        }
+        let late = rows(&[r#"{"id": 3, "x": "u", "z": 1}"#]);
+        put(&mut h.ins[1], FrameKind::Rows, 0, late).await;
+        let p = proposals.recv().await.unwrap().unwrap();
+        let held: Vec<&str> = p.holding.iter().map(|h| h.column.as_str()).collect();
+        assert_eq!((p.base, p.epoch, held), (2, 0, vec!["z"]));
+        remote
+            .update(&openetl_proto::engine::v1::SchemasRequest {
+                holding: p.holding.clone(),
+                ..take(3, p.arrow_schema.clone())
+            })
+            .unwrap();
+        for w in &mut h.ins {
+            put(w, FrameKind::Barrier, 0, barrier(3)).await;
+        }
+        h.end_all(1).await;
+        let (out, _) = h.finish().await;
+        let lane1: Vec<RecordBatch> = early[1]
+            .iter()
+            .chain(&out[1])
+            .filter(|f| f.kind == FrameKind::Batch)
+            .map(|f| ipc::decode_batch(f.payload.clone()).unwrap())
+            .collect();
+        assert_eq!(lane1.len(), 2);
+        assert_eq!(column_strings(&lane1[0], "x"), [Some("t".to_owned())]);
+        assert!(lane1[1].schema().field_with_name("z").is_err());
         assert!(proposals.try_recv().is_err());
     }
 

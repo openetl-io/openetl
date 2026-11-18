@@ -772,6 +772,9 @@ pub(super) async fn run(
                 cells: Default::default(),
                 replay: None,
                 epoch: plan.first_epoch,
+                owner_sealed: o.sealed,
+                sealed_after: o.sealed_after,
+                noted: false,
             }
         };
         let n = senders.len();

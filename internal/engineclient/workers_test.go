@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -821,30 +822,40 @@ func TestALateWorkerHoldsByTheRecordedSchema(t *testing.T) {
 	if types := dest.types["s"]["x"]; !slices.Equal(types, []string{"int64"}) {
 		t.Errorf("x was delivered as %v", types)
 	}
-	held, after := 0, map[int]int{}
+	byID := map[int64][]destRow{}
 	for _, r := range dest.applied("s") {
-		id := r.id()
-		chunk, split := int(id%10000)/100, int(id/10000)
-		isHeld := strings.Contains(r.cols["_openetl_held"], "x")
-		switch {
-		case (chunk == 2 || split == 1 && chunk == 1) && (!isHeld || r.cols["x"] != "null"):
-			t.Errorf("row %d of split %d's chunk %d isn't held: %v", id, split, chunk, r.cols)
-		// Split 0's chunk 0 comes before any hold; the other rows with x
-		// as an integer may come after it.
-		case split == 0 && chunk == 0 && isHeld,
-			!isHeld && r.cols["x"] != strconv.FormatInt(id, 10),
-			isHeld && r.cols["x"] != "null":
-			t.Errorf("row %d of split %d's chunk %d: %v", id, split, chunk, r.cols)
-		}
-		if isHeld {
-			held++
-		}
-		if chunk == 2 {
-			after[split]++
+		byID[r.id()] = append(byID[r.id()], r)
+	}
+	checked := 0
+	for split := range 4 {
+		for chunk := range 3 {
+			for i := range 10 {
+				id := int64(split*10000 + chunk*100 + i)
+				got := byID[id]
+				if len(got) != 1 {
+					t.Errorf("row %d of split %d's chunk %d landed %d times", id, split, chunk, len(got))
+					continue
+				}
+				checked++
+				r := got[0]
+				isHeld := strings.Contains(r.cols["_openetl_held"], "x")
+				// Split 1's chunk 1 changes x, and chunk 2 comes after
+				// the hold. Split 0's chunk 0 comes before any hold; the
+				// other rows with x as an integer may come after it.
+				mustHold := chunk == 2 || split == 1 && chunk == 1
+				switch {
+				case mustHold && (!isHeld || r.cols["x"] != "null"):
+					t.Errorf("row %d of split %d's chunk %d isn't held: %v", id, split, chunk, r.cols)
+				case split == 0 && chunk == 0 && isHeld,
+					!isHeld && r.cols["x"] != strconv.FormatInt(id, 10),
+					isHeld && r.cols["x"] != "null":
+					t.Errorf("row %d of split %d's chunk %d: %v", id, split, chunk, r.cols)
+				}
+			}
 		}
 	}
-	if len(after) != 4 || held < 50 {
-		t.Fatalf("rows after the hold, by split: %v; %d rows held", after, held)
+	if checked != 120 || len(byID) != 120 {
+		t.Fatalf("checked %d rows, of %d that landed", checked, len(byID))
 	}
 	head, err := log.Latest(ctx)
 	if err != nil {
@@ -945,11 +956,23 @@ func TestARedoOfALateWorkersLaneThroughTheEngine(t *testing.T) {
 	}
 	srv := listen(t)
 	var once sync.Once
+	// The quarantine files the records name, by URL: those of every record
+	// committed, and of the one attempt 1 left with a lane lost.
+	var mu sync.Mutex
+	files := map[string]checkpoint.QuarantineFile{}
+	keep := func(rec *checkpoint.Record) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, f := range rec.Quarantine {
+			files[f.URL] = f
+		}
+	}
 	for i, owner := range []string{"a1", "a2"} {
 		p := &inProcess{ctx: ctx, mk: func() runner.Job { return job(owner) }}
 		j := p.mk()
 		p.on(&j, srv, 2)
 		j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
+			keep(rec)
 			if names, err := fieldNames(rec.Streams["s"].Schema); err == nil && slices.ContainsFunc(names, func(n string) bool { return strings.HasPrefix(n, "x:") }) {
 				once.Do(func() { close(hasX) })
 			}
@@ -962,6 +985,44 @@ func TestARedoOfALateWorkersLaneThroughTheEngine(t *testing.T) {
 		case i == 1 && err != nil:
 			t.Fatal(err)
 		}
+		if i == 0 {
+			head, err := log.Latest(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			keep(head)
+		}
+	}
+	// Each row of split 1's chunk 1 is quarantined once, as x doesn't fit
+	// its integer type, and the records count each file's lines.
+	quarantined := map[int64]int{}
+	for url, f := range files {
+		raw, err := os.ReadFile(strings.TrimPrefix(url, "file://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		if f.Stream != "s" || uint64(len(lines)) != f.Rows {
+			t.Errorf("%s: %d lines, of stream %q, the record says %d", url, len(lines), f.Stream, f.Rows)
+		}
+		for _, l := range lines {
+			var line struct{ Stream, Code, Column, Record string }
+			var rec struct{ ID int64 }
+			if err := json.Unmarshal([]byte(l), &line); err != nil || json.Unmarshal([]byte(line.Record), &rec) != nil {
+				t.Fatalf("%s: line %q", url, l)
+			}
+			if line.Stream != "s" || line.Code != "type" || line.Column != "x" {
+				t.Errorf("%s: line %q", url, l)
+			}
+			quarantined[rec.ID]++
+		}
+	}
+	want := map[int64]int{}
+	for r := range 10 {
+		want[int64(10100+r)] = 1
+	}
+	if !maps.Equal(quarantined, want) {
+		t.Errorf("quarantined %v, want each of split 1's chunk 1 once", quarantined)
 	}
 	dest.mu.Lock()
 	defer dest.mu.Unlock()
