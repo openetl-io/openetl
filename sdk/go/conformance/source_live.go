@@ -468,8 +468,8 @@ func unresumed(events []event, seen multiset) []string {
 		}
 	}
 	var out []string
-	for split := range fresh {
-		if open[split] {
+	for split, f := range fresh {
+		if f && open[split] {
 			out = append(out, split)
 		}
 	}
