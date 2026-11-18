@@ -89,7 +89,7 @@ type Stream struct {
 	// first-row dedupe keeps a key Remembers of event time from its first
 	// row; 0: for good, as a latest-row dedupe keeps its keys. Refreshed:
 	// its stream is read with full_refresh, so each sync starts it with no
-	// keys kept and writes every key's rows again.
+	// keys kept and writes every key again, whatever the replay.
 	Deduped   bool
 	Remembers time.Duration
 	Refreshed bool
@@ -178,20 +178,22 @@ func PlanStream(caps destination.Capabilities, s Stream, require Level) Plan {
 	switch {
 	case caps.Class == destination.DeliverAndAck:
 		p.Collapse, p.Why = false, "the destination delivers and acknowledges"
+	// A dedupe promises one row a key, and each full read starts with no
+	// keys kept, whatever the replay.
+	case s.Deduped && s.Refreshed && s.Mode == destination.Overwrite:
+		p.Collapse, p.Level = false, ExactlyOnce
+		p.Why = "a dedupe's output read with full_refresh, overwritten with each sync's read, in which it drops every repeat"
+	case s.Deduped && s.Refreshed && s.Mode == destination.Merge && caps.Class == destination.StageAndApply:
+		p.Collapse, p.Level = false, EffectivelyOnce
+		p.Why = "a dedupe's output read with full_refresh: each full read starts with no keys kept, so every sync writes every key again, " +
+			"written with merge, which merges it onto its key's row"
+	case s.Deduped && s.Refreshed:
+		p.Collapse = false
+		p.Why = "a dedupe's output read with full_refresh: each full read starts with no keys kept, so every sync writes every key again"
 	case s.Transformed && s.Replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
 		p.Collapse, p.Level, p.Why = false, ExactlyOnce, "a transform's output over exact inputs"
 	case s.Replay == source.Exact && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
 		p.Level, p.Why = ExactlyOnce, "exact replay"
-	case s.Deduped && s.Refreshed && s.Mode == destination.Overwrite && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
-		p.Collapse, p.Level = false, ExactlyOnce
-		p.Why = "a dedupe's output over superset inputs read with full_refresh, which drops every repeat within a sync's read, overwritten with each sync's"
-	case s.Deduped && s.Refreshed && s.Mode == destination.Merge && caps.Class == destination.StageAndApply:
-		p.Collapse, p.Level = false, EffectivelyOnce
-		p.Why = "a dedupe's output over superset inputs read with full_refresh, which starts each sync with no keys kept, written with merge, " +
-			"which merges each sync's rows onto their keys' rows"
-	case s.Deduped && s.Refreshed && (caps.Class == destination.StageAndApply || caps.Class == destination.TransactionalStream):
-		p.Collapse = false
-		p.Why = "a dedupe's output over superset inputs read with full_refresh, which starts each sync with no keys kept, so writes every key's rows again in each sync"
 	case s.Deduped && s.Remembers > 0 && caps.Class == destination.StageAndApply && s.Mode == destination.Merge:
 		p.Collapse, p.Level = false, EffectivelyOnce
 		p.Why = fmt.Sprintf("a dedupe's output over superset inputs, which remembers a key %v of event time from its first row, "+

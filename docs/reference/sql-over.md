@@ -183,12 +183,12 @@ A dedupe that keeps each key's first row needs its stream's `source.streams[].de
 - A latest-row dedupe's rows are upserts keyed by the `PARTITION BY` columns: an insert, then updates. They need `merge`: without `destination.write`, the output is merged where the destination merges, and another write mode is a problem in the plan.
 - Where a filter after a latest-row dedupe drops a key's latest row, and the output has the key's row, the dedupe writes a delete of the key, which `destination.deletes` applies. The delete has the key's columns, and nulls in the others, or their type's zero where a column cannot be null: the steps after the filter do not run on the row. A row that the filter cannot evaluate is quarantined, with the code `statement`, and the output keeps the key's row.
 - Each row's `_openetl_id` is its input row's, and its `_openetl_seq` is its event time.
-- A dedupe drops what a source repeats after a failure. Into a destination that stages and applies, or that writes each commit in a transaction, its output over a stream that can repeat rows is:
+- A dedupe drops what a source repeats after a failure. Into a destination that stages and applies, or that writes each commit in a transaction, its output over a stream read with `full_refresh` is, for every dedupe, whatever its retention and whatever the stream's replay, as each full read starts with no keys kept: `exactly_once` overwritten, `effectively_once` merged into a destination that stages and applies, and otherwise `at_least_once`, appended included.
+- Into the same destinations, its output over a stream that can repeat rows, read another way, is:
   - `exactly_once_within` for a first-row dedupe with a retention, with the reason `a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again`. The default `delivery.require` refuses it: set `require: exactly_once_within`, or `dedupe.retention: unbounded`, which remembers every key from then on but not a key already forgotten ([Accept a dedupe's retention](../pipelines/delivery.md#accept-a-dedupes-retention)).
   - `effectively_once` for the same dedupe written with `merge` into a destination that stages and applies.
   - `exactly_once` for a first-row dedupe with `unbounded`, and for a latest-row dedupe.
-  - For any dedupe over a stream read with `full_refresh`, which starts each sync with no keys kept: `exactly_once` overwritten, `effectively_once` merged into a destination that stages and applies, and `at_least_once` appended.
-- Over streams that all replay exactly, the output is `exactly_once`, as any transform's output is. Into a destination that delivers and acknowledges, it is `at_least_once` ([The plan's reasons](../pipelines/delivery.md#the-plans-reasons)).
+- Over streams that all replay exactly, read another way than with `full_refresh`, the output is `exactly_once`, as any transform's output is. Into a destination that delivers and acknowledges, it is `at_least_once` ([The plan's reasons](../pipelines/delivery.md#the-plans-reasons)).
 
 ### Dedupe state
 

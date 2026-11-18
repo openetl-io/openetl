@@ -46,28 +46,35 @@ func TestLowered(t *testing.T) {
 // destination that dedupes at apply, it's exactly once, as the default
 // require needs. A statement's output over it isn't deduped.
 // A job checks a dedupe's output as the plan does: with a retention it's
-// exactly_once_within, and read with full_refresh and appended, every
-// sync writes its keys again.
+// exactly_once_within, and read with full_refresh and appended, every sync
+// writes its keys again, whatever the replay. An output that replaces
+// another stream than the one it reads names that stream's require.
 func TestAJobChecksADedupesLevel(t *testing.T) {
-	events := Stream{Name: "events", Replay: source.Superset, Read: source.Stream, Mode: destination.Append, PrimaryKey: []string{"id"}}
+	const again = "gets at_least_once (a dedupe's output read with full_refresh: each full read starts with no keys kept, so every sync writes every key again)"
 	compared := 0
 	for _, c := range []struct {
-		name    string
-		read    source.SyncMode
-		require delivery.Level
-		want    string
+		name     string
+		replay   source.Replay
+		read     source.SyncMode
+		output   string
+		replaces bool
+		require  delivery.Level
+		want     string
 	}{
-		{"with a retention", source.Stream, delivery.ExactlyOnce,
-			"gets exactly_once_within (a dedupe's output over superset inputs, which remembers a key 1h0m0s of event time from its first row, and writes a repeat after that again), " +
-				"below exactly_once: to accept that a key is written again by a row 1h0m0s or more of event time after its first row, set delivery.require: exactly_once_within; " +
-				"to remember every key from then on, set source.streams[events].dedupe.retention: unbounded"},
-		{"accepted", source.Stream, delivery.ExactlyOnceWithin, ""},
-		{"read whole, appended", source.FullRefresh, delivery.ExactlyOnceWithin, "gets at_least_once (a dedupe's output over superset inputs read with full_refresh"},
+		{"with a retention", source.Superset, source.Stream, "events_once", false, delivery.ExactlyOnce,
+			"delivery.require: stream \"events_once\" gets exactly_once_within (a dedupe's output over superset inputs, which remembers a key 1h0m0s of event time from its first row, " +
+				"and writes a repeat after that again), below exactly_once: to accept that a key is written again by a row 1h0m0s or more of event time after its first row, " +
+				"set delivery.require: exactly_once_within; to remember every key from then on, set source.streams[events].dedupe.retention: unbounded"},
+		{"accepted", source.Superset, source.Stream, "events_once", false, delivery.ExactlyOnceWithin, ""},
+		{"exact", source.Exact, source.Stream, "events_once", false, delivery.ExactlyOnce, ""},
+		{"read whole, appended", source.Superset, source.FullRefresh, "events_once", false, delivery.ExactlyOnceWithin, again},
+		{"read whole, exact, appended", source.Exact, source.FullRefresh, "events_once", false, delivery.ExactlyOnce, again},
+		{"replacing another stream", source.Superset, source.Stream, "daily", true, delivery.ExactlyOnce,
+			"set source.streams[daily].require: exactly_once_within; to remember every key from then on, set source.streams[events].dedupe.retention: unbounded"},
 	} {
-		in := events
-		in.Read = c.read
+		in := Stream{Name: "events", Replay: c.replay, Read: c.read, Mode: destination.Append, PrimaryKey: []string{"id"}}
 		out := in
-		out.Name, out.From, out.Transformed, out.Deduped, out.Remembers = "events_once", "events", true, true, time.Hour
+		out.Name, out.From, out.Replaces, out.Transformed, out.Deduped, out.Remembers = c.output, "events", c.replaces, true, true, time.Hour
 		j := Job{
 			Owner:       "a",
 			Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "o", "p"),
@@ -75,7 +82,7 @@ func TestAJobChecksADedupesLevel(t *testing.T) {
 			Dataflow:    Passthrough{},
 			Streams:     []Stream{in},
 			Outputs:     []Stream{out},
-			SQL:         &SQLTransform{SQL: "INSERT INTO events_once SELECT id FROM events"},
+			SQL:         &SQLTransform{SQL: "INSERT INTO " + c.output + " SELECT id FROM events"},
 			Destination: capsDest{caps: destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}}},
 			Settings:    delivery.Settings{Require: c.require, Scope: destination.ScopeStream},
 		}
@@ -88,7 +95,7 @@ func TestAJobChecksADedupesLevel(t *testing.T) {
 		}
 		compared++
 	}
-	if compared != 3 {
+	if compared != 6 {
 		t.Errorf("%d cases compared", compared)
 	}
 }

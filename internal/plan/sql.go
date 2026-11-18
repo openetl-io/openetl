@@ -410,7 +410,7 @@ func SQLOutputs(spec *apiv1.PipelineSpec, caps destination.Capabilities, a *sqlp
 		}
 		o.Refreshed = o.Deduped && refresh
 		if i := slices.IndexFunc(inputs, func(in Input) bool { return in.Name == st.Output }); st.Replaces && i >= 0 {
-			o.Require, o.Spec = Level(inputs[i].Spec.GetRequire()), inputs[i].Spec
+			o.Require, o.Spec, o.Replaces = Level(inputs[i].Spec.GetRequire()), inputs[i].Spec, true
 		}
 		switch {
 		case WriteMode(spec) != 0:

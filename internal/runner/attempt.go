@@ -77,6 +77,9 @@ type Stream struct {
 	// One of a SQL transform's outputs: the stream its statement reads, or
 	// the stream itself where it passes through.
 	From string
+	// A SQL statement's output that replaces a source's stream, of its own
+	// name, and so takes that stream's require.
+	Replaces bool
 	// A stream a SQL transform reads whose rows' time is a column's; nil
 	// for none.
 	EventTime *EventTime
@@ -87,7 +90,7 @@ type Stream struct {
 
 func (s Stream) delivery() delivery.Stream {
 	return delivery.Stream{Name: s.Name, Replay: s.Replay, Mode: s.Mode, Keyed: len(s.PrimaryKey) > 0, Require: s.Require, Collapse: s.Collapse, Transformed: s.Transformed,
-		Deduped: s.Deduped, Remembers: s.Remembers, Refreshed: s.Deduped && s.Read == source.FullRefresh, DedupeOf: s.From, Replaces: s.Transformed && s.Name == s.From}
+		Deduped: s.Deduped, Remembers: s.Remembers, Refreshed: s.Deduped && s.Read == source.FullRefresh, DedupeOf: s.From, Replaces: s.Replaces}
 }
 
 // columns names the columns of Schema; nil without one.

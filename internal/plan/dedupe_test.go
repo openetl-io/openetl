@@ -139,7 +139,7 @@ func TestDedupeOperators(t *testing.T) {
 // exact stream, exactly_once. An output that replaces its stream takes that
 // stream's require. Over full_refresh, which starts each sync with no keys
 // kept, any dedupe is exactly_once overwritten, effectively_once merged and
-// at_least_once appended.
+// at_least_once appended, whatever the replay.
 func TestDedupeLevels(t *testing.T) {
 	day := (24 * time.Hour).Microseconds()
 	statement := func(output, keep string, retention *int64, guarantee string) sqlplan.Statement {
@@ -172,7 +172,11 @@ func TestDedupeLevels(t *testing.T) {
 	none, within := apiv1.DeliveryLevel_DELIVERY_LEVEL_UNSPECIFIED, apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE_WITHIN
 	superset, exact := apiv1.Replay_REPLAY_SUPERSET, apiv1.Replay_REPLAY_EXACT
 	const remembers = "a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, "
-	const refreshed = "a dedupe's output over superset inputs read with full_refresh, "
+	const (
+		overwritten = "a dedupe's output read with full_refresh, overwritten with each sync's read, in which it drops every repeat"
+		again       = "a dedupe's output read with full_refresh: each full read starts with no keys kept, so every sync writes every key again"
+		merged      = again + ", written with merge, which merges it onto its key's row"
+	)
 	whole := apiv1.SyncMode_SYNC_MODE_FULL_REFRESH
 	overwrite, appended := apiv1.WriteMode_WRITE_MODE_OVERWRITE, apiv1.WriteMode_WRITE_MODE_APPEND
 	compared := 0
@@ -213,24 +217,34 @@ func TestDedupeLevels(t *testing.T) {
 		{name: "taking its stream's require", st: statement("events", "first", &day, "exactly_once_within"), ps: &apiv1.PipelineStream{Dedupe: retention(), Require: within},
 			require: none, write: unset, replay: superset, level: within, reason: remembers + "and writes a repeat after that again"},
 		{name: "read whole, overwritten", st: first, ps: &apiv1.PipelineStream{Sync: whole, Dedupe: retention()}, require: none, write: unset, replay: superset,
-			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, reason: refreshed + "which drops every repeat within a sync's read, overwritten with each sync's"},
+			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, reason: overwritten},
 		{name: "read whole, merged", st: first, ps: &apiv1.PipelineStream{Sync: whole, Dedupe: retention()}, require: none, write: merge, replay: superset,
-			level:   apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
-			reason:  refreshed + "which starts each sync with no keys kept, written with merge, which merges each sync's rows onto their keys' rows",
-			problem: `delivery.require: stream "events_once" gets effectively_once (` + refreshed + "which starts each sync with no keys kept, written with merge"},
+			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE, reason: merged,
+			problem: `delivery.require: stream "events_once" gets effectively_once (` + merged + "), below exactly_once"},
 		{name: "read whole, appended", st: first, ps: &apiv1.PipelineStream{Sync: whole, Dedupe: retention()}, require: none, write: appended, replay: superset,
-			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, reason: refreshed + "which starts each sync with no keys kept, so writes every key's rows again in each sync",
-			problem: `delivery.require: stream "events_once" gets at_least_once (` + refreshed + "which starts each sync with no keys kept, so writes every key's rows again in each sync), below exactly_once"},
+			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, reason: again,
+			problem: `delivery.require: stream "events_once" gets at_least_once (` + again + "), below exactly_once"},
 		{name: "unbounded, read whole, appended", st: statement("events_once", "first", nil, "exactly_once"), ps: &apiv1.PipelineStream{Sync: whole, Dedupe: &apiv1.Dedupe{Unbounded: true}},
-			require: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, write: appended, replay: superset,
-			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, reason: refreshed + "which starts each sync with no keys kept, so writes every key's rows again in each sync"},
+			require: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, write: appended, replay: superset, level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, reason: again},
 		{name: "unbounded, read whole, overwritten", st: statement("events_once", "first", nil, "exactly_once"), ps: &apiv1.PipelineStream{Sync: whole, Dedupe: &apiv1.Dedupe{Unbounded: true}},
-			require: none, write: overwrite, replay: superset,
-			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, reason: refreshed + "which drops every repeat within a sync's read, overwritten with each sync's"},
+			require: none, write: overwrite, replay: superset, level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, reason: overwritten},
 		{name: "latest, read whole", st: statement("events_once", "latest", nil, "exactly_once"), ps: &apiv1.PipelineStream{Sync: whole}, require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
-			write: unset, replay: superset, level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
-			reason: refreshed + "which starts each sync with no keys kept, written with merge, which merges each sync's rows onto their keys' rows"},
-		{name: "read whole, exact", st: first, ps: &apiv1.PipelineStream{Sync: whole, Dedupe: retention()}, require: none, write: appended, replay: exact,
+			write: unset, replay: superset, level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE, reason: merged},
+		// Exact replay doesn't keep the next full read from writing every key
+		// again.
+		{name: "read whole, exact, appended", st: first, ps: &apiv1.PipelineStream{Sync: whole, Dedupe: retention()}, require: none, write: appended, replay: exact,
+			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE, reason: again,
+			problem: `delivery.require: stream "events_once" gets at_least_once (` + again + "), below exactly_once"},
+		{name: "read whole, exact, overwritten", st: first, ps: &apiv1.PipelineStream{Sync: whole, Dedupe: retention()}, require: none, write: unset, replay: exact,
+			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, reason: overwritten},
+		{name: "read whole, exact, merged", st: first, ps: &apiv1.PipelineStream{Sync: whole, Dedupe: retention()}, require: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE,
+			write: merge, replay: exact, level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE, reason: merged},
+		{name: "latest, read whole, exact", st: statement("events_once", "latest", nil, "exactly_once"), ps: &apiv1.PipelineStream{Sync: whole}, require: none,
+			write: unset, replay: exact, level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EFFECTIVELY_ONCE, reason: merged,
+			problem: `delivery.require: stream "events_once" gets effectively_once (` + merged + "), below exactly_once"},
+		// A row-wise statement over an exact full read keeps its level.
+		{name: "row-wise, read whole, exact, appended", st: sqlplan.Statement{At: sqlplan.Position{Line: 1, Column: 1}, Output: "events_copy", Class: "row_wise",
+			Inputs: []string{"events"}, Key: []string{"event_id"}}, ps: &apiv1.PipelineStream{Sync: whole}, require: none, write: appended, replay: exact,
 			level: apiv1.DeliveryLevel_DELIVERY_LEVEL_EXACTLY_ONCE, reason: "a transform's output over exact inputs"},
 	} {
 		plans, problems, _ := PipelineSQL(spec(c.ps, c.require, c.write), cat(c.replay), warehouse, &sqlplan.Answer{Statements: []sqlplan.Statement{c.st}})
@@ -246,7 +260,7 @@ func TestDedupeLevels(t *testing.T) {
 		}
 		compared++
 	}
-	if compared != 17 {
+	if compared != 21 {
 		t.Errorf("%d cases compared", compared)
 	}
 }

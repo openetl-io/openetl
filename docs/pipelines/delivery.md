@@ -126,7 +126,7 @@ Or write with append, the default, which Postgres dedupes at apply, for this str
 
 ### Accept a dedupe's retention
 
-A first-row [dedupe](./dedupe.md) with a `dedupe.retention` duration, over a stream that can repeat rows, gets `exactly_once_within`. The default `require` refuses it. The plan's problem names the retention and the two ways to accept it:
+A first-row [dedupe](./dedupe.md) with a `dedupe.retention` duration gets `exactly_once_within` over a stream that can repeat rows and is not read with `full_refresh`, into a destination that stages and applies or writes each commit in a transaction, unless it is merged into a destination that stages and applies. The default `require` refuses it. The plan's problem names the retention and the two ways to accept it:
 
 ```text
   problems:
@@ -174,11 +174,13 @@ Run `openetl plan` again. The problem is gone, and the streams section shows the
 | `a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, and writes a repeat after that again` | `exactly_once_within` | A SQL [dedupe](./dedupe.md) that keeps each key's first row drops a row of a key whose event time is less than the retention after the key's first row. A row at or after the first row's time plus the retention can be written as the key's next first row. |
 | `a dedupe's output over superset inputs, which remembers a key 24h0m0s of event time from its first row, written with merge, which merges a repeat after that onto its key's row` | `effectively_once` | The same dedupe, written with merge into a destination that stages and applies. A row at or after the first row's time plus the retention updates its key's row. |
 | `a dedupe's output over superset inputs, which remembers every key, so its state grows with the number of keys` | `exactly_once` | A SQL [dedupe](./dedupe.md) with an `unbounded` retention, or one that keeps each key's latest row, drops every repeat. |
-| `a dedupe's output over superset inputs read with full_refresh, which drops every repeat within a sync's read, overwritten with each sync's` | `exactly_once` | A dedupe over a stream read with `full_refresh`, overwritten: each sync replaces the table with its own read, in which the dedupe drops every repeat. |
-| `a dedupe's output over superset inputs read with full_refresh, which starts each sync with no keys kept, written with merge, which merges each sync's rows onto their keys' rows` | `effectively_once` | The same, merged into a destination that stages and applies. Each sync starts with no keys kept and writes every key's rows again, onto their own rows. |
-| `a dedupe's output over superset inputs read with full_refresh, which starts each sync with no keys kept, so writes every key's rows again in each sync` | `at_least_once` | The same, appended: each sync adds every key's rows again. |
+| `a dedupe's output read with full_refresh, overwritten with each sync's read, in which it drops every repeat` | `exactly_once` | A dedupe over a stream read with `full_refresh`, overwritten: each sync replaces the table with its own read, in which the dedupe drops every repeat. |
+| `a dedupe's output read with full_refresh: each full read starts with no keys kept, so every sync writes every key again, written with merge, which merges it onto its key's row` | `effectively_once` | The same, merged into a destination that stages and applies. |
+| `a dedupe's output read with full_refresh: each full read starts with no keys kept, so every sync writes every key again` | `at_least_once` | The same, appended, or merged into a destination that writes each commit in a transaction: each sync adds every key's rows again. |
 
-A stream that its source replays exactly returns, after a restore, exactly the records after the saved position, and the dedupe's state is restored at that position. So a dedupe's output over streams that all replay exactly gets `a transform's output over exact inputs`, whatever its retention, into a destination that stages and applies or writes each commit in a transaction. Read with `full_refresh` and appended, such an output still gets every key's rows again in each sync, as any stream read with `full_refresh` and appended does. Into a destination that delivers and acknowledges, a dedupe's output gets `at_least_once`, as every stream does.
+The three `full_refresh` reasons apply to every dedupe, whatever its retention and whatever the stream's replay. A dedupe's output promises one row for each key, and each full read starts with no keys kept.
+
+A stream that its source replays exactly returns, after a restore, exactly the records after the saved position, and the dedupe's state is restored at that position. So a dedupe's output over streams that all replay exactly, and that are not read with `full_refresh`, gets `a transform's output over exact inputs`, whatever its retention, into a destination that stages and applies or writes each commit in a transaction. Into a destination that delivers and acknowledges, a dedupe's output gets `at_least_once`, as every stream does.
 
 ## Commits, as a reader sees them
 
