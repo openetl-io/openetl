@@ -155,7 +155,7 @@ export function Overview({
                   return [{ name: s.step.value.project, detail: `dbt ${enumLabel(DbtCommand[s.step.value.command]).toLowerCase() || "build"}` }];
                 case "spark": {
                   const file = s.step.value.code?.file?.value ?? "";
-                  return [{ name: file.replace(/\?.*$/, "").split("/").pop() ?? "", detail: "Spark on", link: clusterName(workspace, "spark", s.step.value.cluster) }];
+                  return [{ name: (file.split("?")[0] ?? "").split("/").pop() ?? "", detail: "Spark on", link: clusterName(workspace, "spark", s.step.value.cluster) }];
                 }
                 default:
                   return [];

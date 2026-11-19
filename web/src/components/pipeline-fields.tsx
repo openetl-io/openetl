@@ -31,7 +31,7 @@ export function Schedule({ pipeline, className }: { pipeline: Pipeline; classNam
   if (every && !cron) {
     return (
       <span className={className} title="Heal widened it after syncs kept failing rate limited">
-        Every {interval(parseFloat(JSON.parse(every.value)) * 1000)}, by heal
+        Every {interval(Number.parseFloat(JSON.parse(every.value)) * 1000)}, by heal
       </span>
     );
   }

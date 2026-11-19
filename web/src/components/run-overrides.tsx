@@ -16,7 +16,7 @@ const refresh = [PipelineService, IncidentService];
 export function overrideText(o: PipelineOverride): { label: string; value: string; spec: string } {
   switch (o.field) {
     case "schedule.every": {
-      const every = (v: string) => (v ? `Every ${interval(parseFloat(JSON.parse(v)) * 1000)}` : "Unset");
+      const every = (v: string) => (v ? `Every ${interval(Number.parseFloat(JSON.parse(v)) * 1000)}` : "Unset");
       return { label: "Schedule", value: every(o.value), spec: every(o.specValue) };
     }
     case "source.rate_limit_scale":
