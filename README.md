@@ -2,6 +2,12 @@
 
 [![OpenETL — Move more data. Use less compute. Open-source data movement, batch and streaming, on your infrastructure.](.github/assets/readme-header.svg)](https://openetl.io)
 
+[![nightly](https://github.com/openetl-io/openetl/actions/workflows/nightly.yml/badge.svg?event=schedule)](https://github.com/openetl-io/openetl/actions/workflows/nightly.yml?query=event%3Aschedule)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
+
 OpenETL copies tables, changes and events from databases and event streams into warehouses, data lakes and other streams. Pipelines run on a schedule or continuously. OpenETL checks each stream's delivery guarantee and can commit each change exactly once when the connectors support it.
 
 You run OpenETL on your own infrastructure. It is open source under Apache 2.0.
