@@ -1,12 +1,12 @@
-# OpenETL
-
 [![OpenETL — Move more data. Use less compute. Open-source data movement, batch and streaming, on your infrastructure.](.github/assets/readme-header.svg)](https://openetl.io)
 
-[![nightly](https://github.com/openetl-io/openetl/actions/workflows/nightly.yml/badge.svg?event=schedule)](https://github.com/openetl-io/openetl/actions/workflows/nightly.yml?query=event%3Aschedule)
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=openetl-io_openetl)
+<p align="center">
+  <a href="https://github.com/openetl-io/openetl/actions/workflows/nightly.yml?query=event%3Aschedule"><img src="https://github.com/openetl-io/openetl/actions/workflows/nightly.yml/badge.svg?event=schedule" alt="nightly"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=openetl-io_openetl"><img src="https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=alert_status" alt="Quality Gate Status"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=openetl-io_openetl"><img src="https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=security_rating" alt="Security Rating"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=openetl-io_openetl"><img src="https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=reliability_rating" alt="Reliability Rating"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=openetl-io_openetl"><img src="https://sonarcloud.io/api/project_badges/measure?project=openetl-io_openetl&metric=sqale_rating" alt="Maintainability Rating"></a>
+</p>
 
 OpenETL copies tables, changes and events from databases and event streams into warehouses, data lakes and other streams. Pipelines run on a schedule or continuously. OpenETL checks each stream's delivery guarantee and can commit each change exactly once when the connectors support it.
 
