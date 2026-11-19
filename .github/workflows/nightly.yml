@@ -1,5 +1,5 @@
 name: nightly
-run-name: nightly (${{ github.event_name == 'workflow_dispatch' && inputs.suites || github.event.schedule == '41 4 * * 0' && 'cleanup' || 'all' }})
+run-name: nightly (${{ github.event_name == 'workflow_dispatch' && inputs.suites || 'all' }})
 
 # The heavy suites: integration, every end-to-end test on DBOS and on
 # Temporal, kind, a short chaos run, and cargo-deny's advisories.
@@ -14,13 +14,9 @@ run-name: nightly (${{ github.event_name == 'workflow_dispatch' && inputs.suites
 #   gh workflow run nightly.yml --ref BRANCH -f suites="e2e-dbos kind"
 #
 # and opens no issue. suites=all runs every suite, as a release needs.
-#
-# Each Sunday, a second schedule deletes the image's untagged versions that
-# are older than 14 days and that no tagged image holds.
 on:
   schedule:
     - cron: "17 23 * * *"
-    - cron: "41 4 * * 0"
   workflow_dispatch:
     inputs:
       suites:
@@ -41,7 +37,6 @@ defaults:
 
 jobs:
   plan:
-    if: github.event.schedule != '41 4 * * 0'
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -278,7 +273,7 @@ jobs:
   # it, or comments on it, and a green run closes it.
   report:
     needs: [plan, engine, integration, e2e-dbos, e2e-temporal, kind, chaos, deny]
-    if: always() && github.event_name == 'schedule' && needs.plan.result != 'skipped'
+    if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -301,33 +296,3 @@ jobs:
           elif [ -n "$issue" ]; then
             gh issue close "$issue" -R "$GITHUB_REPOSITORY" --comment "nightly passed on $GITHUB_SHA. $RUN"
           fi
-
-  # Untagged versions of ghcr.io/OWNER/openetl older than 14 days: what edge
-  # left behind. A tagged image's own platform images are untagged too, so
-  # those are kept.
-  cleanup:
-    if: github.event.schedule == '41 4 * * 0'
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      PACKAGE: /orgs/${{ github.repository_owner }}/packages/container/openetl
-      IMAGE: ghcr.io/${{ github.repository_owner }}/openetl
-    steps:
-      - name: Delete untagged versions older than 14 days
-        run: |
-          gh api --paginate "$PACKAGE/versions?per_page=100" \
-            --jq '.[] | {id, name, updated_at, tags: .metadata.container.tags}' | jq -s . > versions.json
-          held=$(jq -r '.[] | select(.tags | length > 0) | .name' versions.json | while read -r digest; do
-            docker buildx imagetools inspect --raw "$IMAGE@$digest" | jq -r '.manifests[]?.digest'
-          done | sort -u)
-          cutoff=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)
-          deleted=0
-          while read -r id digest; do
-            [ -n "$id" ] || continue
-            ! grep -qx "$digest" <<<"$held" || continue
-            gh api -X DELETE "$PACKAGE/versions/$id" --silent
-            deleted=$((deleted + 1))
-          done < <(jq -r --arg cutoff "$cutoff" '.[] | select((.tags | length) == 0 and .updated_at < $cutoff) | "\(.id) \(.name)"' versions.json)
-          echo "Deleted $deleted untagged versions of $IMAGE." >> "$GITHUB_STEP_SUMMARY"
