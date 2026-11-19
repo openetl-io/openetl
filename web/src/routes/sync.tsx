@@ -47,7 +47,7 @@ function useSyncLog(name: string) {
     setEntries([]);
     setError(undefined);
     setDone(false);
-    (async () => {
+    void (async () => {
       while (!stop) {
         try {
           const res = await client.readSyncLog({ name, pageToken: token });

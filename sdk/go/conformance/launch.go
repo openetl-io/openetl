@@ -92,7 +92,7 @@ func ExecWith(exe string, o Options) Launcher {
 		}
 		// The process outlives ctx: Close kills it if closing its stdin
 		// doesn't end it.
-		life, kill := context.WithCancel(context.Background())
+		life, kill := context.WithCancel(context.WithoutCancel(ctx))
 		cmd := exec.CommandContext(life, exe)
 		for _, k := range passEnv {
 			if v, ok := os.LookupEnv(k); ok {
@@ -148,7 +148,7 @@ func InProcess(c sdk.Connector) Launcher {
 		if err != nil {
 			return nil, err
 		}
-		cctx, cancel := context.WithCancel(context.Background())
+		cctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		ready := make(chan struct{})
 		done := make(chan struct{})
 		var runErr error

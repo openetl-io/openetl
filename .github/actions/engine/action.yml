@@ -45,7 +45,7 @@ runs:
         python3 -m venv "$RUNNER_TEMP/zig"
         "$RUNNER_TEMP/zig/bin/pip" install --quiet cargo-zigbuild==0.24.1 ziglang==0.17.1
     - if: steps.cache.outputs.cache-hit != 'true'
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       with:
         key: ${{ steps.where.outputs.target }}
         save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}

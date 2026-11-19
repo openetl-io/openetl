@@ -116,7 +116,7 @@ func Container(engine, image string, command []string, res Resources, o Options)
 		}
 		// The engine's client outlives ctx: Close kills it if stopping the
 		// container doesn't end it.
-		life, kill := context.WithCancel(context.Background())
+		life, kill := context.WithCancel(context.WithoutCancel(ctx))
 		cmd := exec.CommandContext(life, engine, args...)
 		cmd.Env = env
 		stdout, err := cmd.StdoutPipe()
