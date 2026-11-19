@@ -19,17 +19,43 @@ Its [Rust data engine](docs/internals/engine.md) uses Apache Arrow and runs SQL 
 > [!NOTE]
 > OpenETL is in alpha. The pipeline format and the API can change between releases.
 
-## What you can do with it
+## Why OpenETL?
 
-- **Batch and streaming in one platform.** Run scheduled full refreshes and incremental syncs, or continuous CDC and event streams, with [compatible connectors](docs/pipelines/connectors.md).
-- **Stateful SQL transforms.** Filter and reshape rows, aggregate [event-time windows](docs/pipelines/windows.md), compute [running totals](docs/pipelines/over.md), and [deduplicate by key](docs/pipelines/dedupe.md). Checkpointed state survives retries.
-- **Checked delivery guarantees.** Require exactly-once delivery where supported. OpenETL [checks each stream](docs/pipelines/delivery.md) and refuses pipelines that cannot meet their required guarantee.
-- **Controlled schema evolution.** Add new columns by default and require permission for destination type changes. [Hold affected values and release them after repair](docs/pipelines/schema-changes.md), where supported, or [quarantine invalid rows](docs/pipelines/holds-and-quarantine.md).
-- **Resource sizing and distributed jobs.** Size CPU and memory automatically within your limits. Spread [compatible jobs across Kubernetes workers](docs/pipelines/workers.md), with [KEDA runner scaling and spot-node support](docs/self-host/kubernetes.md).
-- **dbt, Spark and Flink integrations.** Run [dbt after a scheduled sync](docs/integrate/dbt.md), [Spark batch transforms](docs/integrate/spark.md), or [Flink streaming jobs](docs/integrate/flink.md) coordinated with destination commits.
-- **Recovery and visibility.** Resume from checkpoints after failures. Run [connection checks and pipeline preflights](docs/use/checks.md). Monitor freshness and incidents in the console, with [OpenTelemetry](docs/integrate/telemetry.md) and signed [webhooks](docs/integrate/webhooks.md).
-- **Pipelines as code.** Keep YAML in git. Review changes with `openetl plan` before `openetl apply`, or automate through the [REST and gRPC API](docs/integrate/api.md).
-- **Connectors you can extend.** Install official, community or private connectors. Define [HTTP API sources as manifests](docs/reference/manifest.md), or [build a connector](docs/build-connectors/index.md) with the Go SDK or gRPC.
+### Designed for high throughput per core
+
+The Rust engine processes columnar Apache Arrow batches. Transfers between engines reuse Arrow buffers, avoiding an extra payload copy. [Job presets](docs/reference/specs/pipeline.md#resources) start at **0.5 vCPU and 1 GiB**, excluding runner overhead. Jobs share runners or get their own Kubernetes pods. [How the engine works](docs/internals/engine.md).
+
+### Stateless compute, durable progress
+
+With shared object storage, runners keep checkpoints and SQL state outside their processes. Replace a runner or change a compatible job's worker count, and the next attempt restores from its checkpoint.
+
+```mermaid
+flowchart LR
+  sources[Databases, HTTP APIs, events] --> compute[Replaceable runners: Rust + Arrow + SQL]
+  compute --> destinations[Tables, data lakes, streams]
+  compute -. checkpoints and SQL state .-> storage[(Shared object storage)]
+```
+
+Metadata and workflow state live in Postgres or the configured orchestration backend. Local scratch is a disposable cache. [Stateless compute and elastic scaling](docs/self-host/index.md#stateless-compute-and-elastic-scaling) explains what to persist and how capacity changes.
+
+### Elastic capacity as workloads change
+
+- **Size each job.** Choose CPU and memory automatically within your limits; adjust continuous-job parallelism from utilization and source lag.
+- **Scale the fleet.** Use KEDA for shared runners and Karpenter for nodes. Compatible jobs can span [several workers](docs/pipelines/workers.md).
+- **Use spot capacity.** Resume interrupted jobs from checkpoints, preserving their delivery guarantee. [Kubernetes deployment and scaling](docs/self-host/kubernetes.md).
+
+## From ingestion to recovery
+
+| What you need | What OpenETL provides |
+|---|---|
+| Batch and streaming ingestion | Full refreshes, incremental syncs, CDC database replication and event streams through [compatible connectors](docs/pipelines/connectors.md). |
+| SQL stream processing | Filters and reshaping, [event-time windows](docs/pipelines/windows.md), [running totals](docs/pipelines/over.md) and [deduplication by key](docs/pipelines/dedupe.md), with checkpointed state. |
+| Delivery you can require | [Per-stream delivery checks](docs/pipelines/delivery.md), including exactly once where supported. Pipelines that cannot meet their required guarantee are refused. |
+| Controlled schema evolution | New columns by default, permission for destination type changes, [releasable holds](docs/pipelines/schema-changes.md) where supported, and [quarantine](docs/pipelines/holds-and-quarantine.md) for invalid rows. |
+| Transforms across your stack | [dbt after a sync](docs/integrate/dbt.md), [Spark batch transforms](docs/integrate/spark.md) and [Flink streaming jobs](docs/integrate/flink.md) coordinated with destination commits. |
+| Operations with evidence | [Preflight checks](docs/use/checks.md), freshness and incidents in the [console](docs/use/index.md), [OpenTelemetry](docs/integrate/telemetry.md) and signed [webhooks](docs/integrate/webhooks.md). |
+| Automation and extensibility | YAML plans, a [REST and gRPC API](docs/integrate/api.md), [HTTP source manifests](docs/reference/manifest.md), and a [Go SDK and connector protocol](docs/build-connectors/index.md). |
+| Team access | [Workspace roles, service accounts and audit logs](docs/self-host/access.md), with [encrypted secrets or cloud secret references](docs/self-host/secrets.md). |
 
 ## Get started
 
@@ -64,10 +90,6 @@ For example, capture changes from [PostgreSQL](https://github.com/openetl-io/ope
 ### Does OpenETL support both ETL and ELT?
 
 Yes. For extract, transform, load (ETL), transform data before loading with SQL, Spark or Flink. For extract, load, transform (ELT), run dbt after a scheduled sync. See the [SQL transform guide](docs/pipelines/sql-transforms.md) and [integration guides](docs/integrate/index.md).
-
-### How can I deploy OpenETL for a team?
-
-Use [Docker Compose](docs/self-host/compose.md) or [Kubernetes](docs/self-host/kubernetes.md). Place runners near your data in separate data planes and pools. Manage [workspace roles, service accounts and audit logs](docs/self-host/access.md), with [encrypted secrets or cloud secret references](docs/self-host/secrets.md).
 
 ## Documentation
 
