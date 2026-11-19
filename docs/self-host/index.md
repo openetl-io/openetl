@@ -21,6 +21,26 @@ The `openetld` program runs each component through a separate role:
 
 Runners communicate with the control plane through the API. They can run in the same cluster or on another network near your databases. Each runner needs access to the API and the data systems used by its pipelines.
 
+## Stateless compute and elastic scaling
+
+OpenETL separates compute from durable state. API servers keep their records in Postgres. Orchestration uses the DBOS databases or the configured Temporal backend. Runners keep checkpoints, staged data, held values and SQL operator state in their data plane's storage.
+
+With shared object storage, runners are stateless compute: a replacement restores progress from that storage. The engine's local scratch cache is disposable. The default Compose installation uses a local runner volume instead, which you must preserve. [Back up and restore](./backup-and-restore.md) lists the complete state and credential inventory.
+
+Capacity changes at several levels:
+
+| Level | How it changes | What controls it |
+|---|---|---|
+| Job size | Automatic sizing uses connector hints and measured CPU and memory. | The pipeline's `resources.size`, `min` and `max`. |
+| Continuous-job parallelism | The autoscaler raises parallelism when source lag grows and utilization calls for more capacity. It lowers parallelism after sustained low utilization. | Automatic sizing and the pipeline's resource limits. A fixed size or manual rescale disables this adjustment. |
+| Shared runners | KEDA adds or removes runners from placement demand. Jobs on a removed runner move after a checkpoint. | The optional [KEDA component](./kubernetes.md#runners-with-keda). |
+| Kubernetes nodes | Karpenter supplies capacity for runners and job pods. | The optional [Karpenter component](./kubernetes.md#nodes-with-karpenter). |
+| Workers within one job | Compatible jobs distribute reads, SQL processing and writes across workers. Checkpointed state restores under a changed worker count. | The explicit `resources.workers` setting; OpenETL does not choose this count automatically. |
+
+The continuous-job autoscaler observes lane utilization and source lag. If lanes spend most of their time waiting for the destination, it leaves parallelism unchanged. More lanes would add load without resolving that bottleneck.
+
+See [pipeline resources](../reference/specs/pipeline.md#resources) for sizing fields, [workers](../pipelines/workers.md) for compatibility, and [Kubernetes](./kubernetes.md) for runner and node scaling.
+
 ## What you need
 
 - **Postgres** stores pipelines, versions, syncs, encrypted secrets, users and audit records. The default DBOS backend stores workflows in a second database on the same server. Its name is the metadata database name with `_dbos` appended. Orchestrators create it if the database user has permission.

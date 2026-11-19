@@ -9,6 +9,8 @@ This page assumes knowledge of distributed data processing. First, read [Control
 
 [`openetl-engine`](../../crates/engine) is the Rust data engine. The runner starts one engine process per job and communicates through two socket types. The control channel uses `EngineService` from [`proto/openetl/engine/v1`](../../proto/openetl/engine/v1). Data edges carry frames with a 12-byte header and Arrow IPC payload.
 
+The engine can encode an Arrow batch as metadata and references to the batch's existing buffers ([`crates/engine/src/ipc.rs`](../../crates/engine/src/ipc.rs)). Vectored writes send the frame header and those buffers without combining them into an additional payload buffer ([`crates/engine/src/frame.rs`](../../crates/engine/src/frame.rs)).
+
 The runner sits between the connectors and the engine. Its source pump is the source connector's emitter, and sends what the source reads to the engine's inbound edges. On each lane, the engine:
 
 - turns raw rows into Arrow, inferring each stream's schema from what it sees and only ever widening it, and coerces values to the types a source declares ([`crates/normalize`](../../crates/normalize));
