@@ -125,6 +125,11 @@ WHERE p.org_id = @org_id AND lower(p.email) = lower(@email) AND p.type = 'user' 
 -- name: GetPassword :one
 SELECT hash, locked_until FROM passwords WHERE org_id = @org_id AND principal_id = @principal_id;
 
+-- name: LockPassword :one
+-- Holds a password while a sign-in it allowed starts a session, so a reset
+-- or a lock can't land between the two.
+SELECT hash, locked_until FROM passwords WHERE org_id = @org_id AND principal_id = @principal_id FOR UPDATE;
+
 -- Sets a password and clears its failures and lock.
 -- name: SetPassword :exec
 INSERT INTO passwords (org_id, principal_id, hash)

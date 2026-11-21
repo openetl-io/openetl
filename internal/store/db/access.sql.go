@@ -825,6 +825,29 @@ func (q *Queries) LockOrgOwners(ctx context.Context, orgID uuid.UUID) ([]uuid.UU
 	return items, nil
 }
 
+const lockPassword = `-- name: LockPassword :one
+SELECT hash, locked_until FROM passwords WHERE org_id = $1 AND principal_id = $2 FOR UPDATE
+`
+
+type LockPasswordParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+}
+
+type LockPasswordRow struct {
+	Hash        string
+	LockedUntil *time.Time
+}
+
+// Holds a password while a sign-in it allowed starts a session, so a reset
+// or a lock can't land between the two.
+func (q *Queries) LockPassword(ctx context.Context, arg LockPasswordParams) (LockPasswordRow, error) {
+	row := q.db.QueryRow(ctx, lockPassword, arg.OrgID, arg.PrincipalID)
+	var i LockPasswordRow
+	err := row.Scan(&i.Hash, &i.LockedUntil)
+	return i, err
+}
+
 const pipelineOnDataPlane = `-- name: PipelineOnDataPlane :one
 SELECT
     EXISTS (SELECT 1 FROM pipelines p WHERE p.org_id = $1 AND p.id = $2) AS found,

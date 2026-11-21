@@ -351,7 +351,16 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[apiv1.C
 	}
 	res := connect.NewResponse(&apiv1.CreateSessionResponse{})
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
-		var err error
+		// The password may have been set or locked since it was read; a
+		// reset has deleted the sessions, and this one mustn't follow them.
+		cur, err := q.LockPassword(ctx, db.LockPasswordParams{OrgID: s.Tenant.Org, PrincipalID: u.ID})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && (cur.Hash != *u.Hash || cur.LockedUntil != nil && time.Now().Before(*cur.LockedUntil)) {
+			s.log().Info("sign-in refused", "email", email, "peer", req.Peer().Addr, "changed", true)
+			return unauthenticated("%s", refusedSignIn)
+		}
+		if err != nil {
+			return err
+		}
 		if newHash != "" {
 			err = q.SetPassword(ctx, db.SetPasswordParams{OrgID: s.Tenant.Org, PrincipalID: u.ID, Hash: newHash})
 		} else {
