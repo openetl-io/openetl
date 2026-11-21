@@ -46,6 +46,8 @@ final class OpenEtlEnumerator implements SplitEnumerator<StreamSplit, Enumerator
         this.bridge = bridge;
         this.streams = streams;
         this.assigned = new TreeSet<>(state.assigned);
+        // A stream the job no longer reads isn't any reader's, so one added back is assigned again.
+        this.assigned.retainAll(streams);
         this.restored = state.checkpoint;
     }
 

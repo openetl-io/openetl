@@ -600,6 +600,25 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 	return err
 }
 
+const keepPrincipal = `-- name: KeepPrincipal :one
+SELECT id FROM principals WHERE org_id = $1 AND id = $2 FOR KEY SHARE
+`
+
+type KeepPrincipalParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+// Keeps a principal until the transaction ends. Taken before its password,
+// in the order a delete locks them, which locks the principal and then
+// cascades.
+func (q *Queries) KeepPrincipal(ctx context.Context, arg KeepPrincipalParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, keepPrincipal, arg.OrgID, arg.ID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listAPIKeys = `-- name: ListAPIKeys :many
 SELECT id, prefix, expire_time, last_used_time, create_time FROM api_keys
 WHERE org_id = $1 AND principal_id = $2
@@ -823,6 +842,29 @@ func (q *Queries) LockOrgOwners(ctx context.Context, orgID uuid.UUID) ([]uuid.UU
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockPassword = `-- name: LockPassword :one
+SELECT hash, locked_until FROM passwords WHERE org_id = $1 AND principal_id = $2 FOR UPDATE
+`
+
+type LockPasswordParams struct {
+	OrgID       uuid.UUID
+	PrincipalID uuid.UUID
+}
+
+type LockPasswordRow struct {
+	Hash        string
+	LockedUntil *time.Time
+}
+
+// Holds a password while a sign-in it allowed starts a session, so a reset
+// or a lock can't land between the two.
+func (q *Queries) LockPassword(ctx context.Context, arg LockPasswordParams) (LockPasswordRow, error) {
+	row := q.db.QueryRow(ctx, lockPassword, arg.OrgID, arg.PrincipalID)
+	var i LockPasswordRow
+	err := row.Scan(&i.Hash, &i.LockedUntil)
+	return i, err
 }
 
 const pipelineOnDataPlane = `-- name: PipelineOnDataPlane :one

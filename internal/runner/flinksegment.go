@@ -921,10 +921,8 @@ func cmp0(d, def time.Duration) time.Duration {
 // output.
 func (s *flinkSegment) connected() error {
 	var missing []string
-	for name := range s.streams {
-		if !s.readers[name] {
-			missing = append(missing, "stream "+name)
-		}
+	for _, name := range s.unread() {
+		missing = append(missing, "stream "+name)
 	}
 	for name := range s.outputs {
 		if _, ok := s.parallelism[name]; !ok {
@@ -936,6 +934,18 @@ func (s *flinkSegment) connected() error {
 	}
 	slices.Sort(missing)
 	return errs.New(errs.ConfigInvalid, "runner: the Flink job has run for %s without reading or writing %v; every stream needs openetl-flink's source and every output its sink", cmp0(s.a.job.FlinkConnectTimeout, defaultFlinkConnectTimeout), missing)
+}
+
+// unread is the streams, in order, whose reader hasn't called.
+func (s *flinkSegment) unread() []string {
+	var u []string
+	for name := range s.streams {
+		if !s.readers[name] {
+			u = append(u, name)
+		}
+	}
+	slices.Sort(u)
+	return u
 }
 
 func (s *flinkSegment) stopCheckpoint() int64 {
@@ -1176,6 +1186,10 @@ func (s *flinkSegment) progress(ctx context.Context) error {
 		cut := s.cuts[s.order[0]]
 		if !cut.placed || cut.ready == nil || !cut.aborted && !s.allSinks(cut.barriers) {
 			break
+		}
+		// Its record would hold the resume points of rows no reader took.
+		if u := s.unread(); len(u) > 0 && !cut.aborted {
+			return errs.New(errs.ConfigInvalid, "runner: Flink checkpoint %d completed while no reader read %v; every stream needs openetl-flink's source", cut.c, u)
 		}
 		s.order = s.order[1:]
 		delete(s.cuts, cut.c)

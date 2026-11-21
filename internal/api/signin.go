@@ -351,7 +351,15 @@ func (s *Server) CreateSession(ctx context.Context, req *connect.Request[apiv1.C
 	}
 	res := connect.NewResponse(&apiv1.CreateSessionResponse{})
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
-		var err error
+		// A reset has deleted the sessions, and this one mustn't follow them.
+		changed, err := s.passwordChanged(ctx, q, u.ID, *u.Hash)
+		if err != nil {
+			return err
+		}
+		if changed {
+			s.log().Info("sign-in refused", "email", email, "peer", req.Peer().Addr, "changed", true)
+			return unauthenticated("%s", refusedSignIn)
+		}
 		if newHash != "" {
 			err = q.SetPassword(ctx, db.SetPasswordParams{OrgID: s.Tenant.Org, PrincipalID: u.ID, Hash: newHash})
 		} else {
@@ -499,6 +507,26 @@ func (s *Server) SetPassword(ctx context.Context, req *connect.Request[apiv1.Set
 	return res, nil
 }
 
+// passwordChanged says whether principal's password was set or locked since
+// hash was read, and holds it for the rest of q's transaction.
+func (s *Server) passwordChanged(ctx context.Context, q *db.Queries, principal uuid.UUID, hash string) (bool, error) {
+	_, err := q.KeepPrincipal(ctx, db.KeepPrincipalParams{OrgID: s.Tenant.Org, ID: principal})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	p, err := q.LockPassword(ctx, db.LockPasswordParams{OrgID: s.Tenant.Org, PrincipalID: principal})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return p.Hash != hash || p.LockedUntil != nil && time.Now().Before(*p.LockedUntil), nil
+}
+
 func (s *Server) ChangePassword(ctx context.Context, req *connect.Request[apiv1.ChangePasswordRequest]) (*connect.Response[apiv1.ChangePasswordResponse], error) {
 	c := callerOf(ctx)
 	if c.principalID == uuid.Nil {
@@ -541,6 +569,14 @@ func (s *Server) ChangePassword(ctx context.Context, req *connect.Request[apiv1.
 		return nil, err
 	}
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
+		// A reset since the check wins over the password it checked.
+		changed, err := s.passwordChanged(ctx, q, p.ID, cur.Hash)
+		if err != nil {
+			return err
+		}
+		if changed {
+			return failedPrecondition("the password was reset or locked while this was checked; sign in again")
+		}
 		if err := q.SetPassword(ctx, db.SetPasswordParams{OrgID: s.Tenant.Org, PrincipalID: p.ID, Hash: pw}); err != nil {
 			return err
 		}
