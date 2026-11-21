@@ -189,5 +189,6 @@ Use OpenETL to manage the pipeline's lifecycle so it can coordinate the Flink jo
 | A stream cannot replay exactly | Choose a source mode and connector with exact resume behavior, or use a scheduled Spark pipeline where appropriate. |
 | The sink rejects a row type | Supply the correct `RowType` and `InternalTypeInfo`; preserve changelog row kinds. |
 | A job repeatedly fails | Read the application exception in Flink and the pipeline log. Repair the cause before resuming a paused pipeline. |
+| A run fails because no reader read a stream | Read every input through openetl-flink's source. If an earlier openetl-flink ran when you removed the stream and added it back, the job's state still names the stream. Rebuild the job with the current openetl-flink. Remove the stream, wait for a commit, and then add it back. |
 
 Flink can recover task failures within a run. A terminal application failure reports `FLINK_FAILED` and fails the run. Correct the code or configuration and apply the change to start a new run. Resume the pipeline if an incident paused it. Use [Troubleshoot a pipeline](../pipelines/troubleshooting.md) to inspect attempts and incidents.
