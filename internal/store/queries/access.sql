@@ -125,6 +125,12 @@ WHERE p.org_id = @org_id AND lower(p.email) = lower(@email) AND p.type = 'user' 
 -- name: GetPassword :one
 SELECT hash, locked_until FROM passwords WHERE org_id = @org_id AND principal_id = @principal_id;
 
+-- Keeps a principal until the transaction ends. Taken before its password,
+-- in the order a delete locks them, which locks the principal and then
+-- cascades.
+-- name: KeepPrincipal :one
+SELECT id FROM principals WHERE org_id = @org_id AND id = @id FOR KEY SHARE;
+
 -- name: LockPassword :one
 -- Holds a password while a sign-in it allowed starts a session, so a reset
 -- or a lock can't land between the two.

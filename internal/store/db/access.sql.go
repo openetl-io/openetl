@@ -600,6 +600,25 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 	return err
 }
 
+const keepPrincipal = `-- name: KeepPrincipal :one
+SELECT id FROM principals WHERE org_id = $1 AND id = $2 FOR KEY SHARE
+`
+
+type KeepPrincipalParams struct {
+	OrgID uuid.UUID
+	ID    uuid.UUID
+}
+
+// Keeps a principal until the transaction ends. Taken before its password,
+// in the order a delete locks them, which locks the principal and then
+// cascades.
+func (q *Queries) KeepPrincipal(ctx context.Context, arg KeepPrincipalParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, keepPrincipal, arg.OrgID, arg.ID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listAPIKeys = `-- name: ListAPIKeys :many
 SELECT id, prefix, expire_time, last_used_time, create_time FROM api_keys
 WHERE org_id = $1 AND principal_id = $2

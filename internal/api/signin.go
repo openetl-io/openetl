@@ -510,6 +510,13 @@ func (s *Server) SetPassword(ctx context.Context, req *connect.Request[apiv1.Set
 // passwordChanged says whether principal's password was set or locked since
 // hash was read, and holds it for the rest of q's transaction.
 func (s *Server) passwordChanged(ctx context.Context, q *db.Queries, principal uuid.UUID, hash string) (bool, error) {
+	_, err := q.KeepPrincipal(ctx, db.KeepPrincipalParams{OrgID: s.Tenant.Org, ID: principal})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	p, err := q.LockPassword(ctx, db.LockPasswordParams{OrgID: s.Tenant.Org, PrincipalID: principal})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return true, nil
