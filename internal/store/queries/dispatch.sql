@@ -79,7 +79,7 @@ WHERE org_id = @org_id AND sync_id = ANY(@sync_ids::uuid[])
 ORDER BY sync_id, attempt, create_time;
 
 -- name: GetDispatchOutcome :one
-SELECT state, outcome FROM dispatches WHERE org_id = @org_id AND id = @id;
+SELECT state, outcome, epoch FROM dispatches WHERE org_id = @org_id AND id = @id;
 
 -- name: TryLockPlacement :one
 -- Passes of a data plane run one at a time, each until its transaction ends.

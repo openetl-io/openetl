@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,7 +47,9 @@ type Activities struct {
 	// How RefreshCatalog reaches registries and GitHub. Nil: it lists
 	// nothing.
 	Catalog *CatalogOptions
-	Logger  *slog.Logger
+	// The StreamState.FailureLimit GetStreamState gives; 0 for the default.
+	FailureLimit int32
+	Logger       *slog.Logger
 }
 
 // CatalogOptions are how RefreshCatalog lists connected sources.
@@ -311,6 +314,9 @@ func (a *Activities) FinishSync(ctx context.Context, in contract.FinishSyncInput
 				Pipeline: row.PipelineID, Version: row.Version, Stream: heal.StreamOf(class, in.Error), Class: class,
 				Code: in.Code, Message: in.Error, Sync: &row.ID, Key: row.ID.String(),
 			}
+			if in.Failures > 0 {
+				o.Details = map[string]string{"failures": strconv.Itoa(int(in.Failures))}
+			}
 			if row.EndTime != nil {
 				o.Ran = row.EndTime.Sub(row.StartTime)
 			}
@@ -419,7 +425,7 @@ func (a *Activities) GetStreamState(ctx context.Context, in contract.StreamInput
 		Continuous: spec.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS,
 		Paused:     p.Paused, Version: p.Version, DataPlane: p.DataPlaneID,
 		WorkspaceID: p.WorkspaceID.String(), Connectors: connectors, Releases: releases, PausedStreams: strings.Join(streams, ","),
-		Pool: spec.GetResources().GetPool(), Left: left,
+		Pool: spec.GetResources().GetPool(), Left: left, FailureLimit: a.FailureLimit,
 	}, nil
 }
 

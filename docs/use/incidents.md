@@ -51,6 +51,8 @@ For **Rate limited**, automatic recovery reduces the request rate where supporte
 
 The pipeline's **Overview** shows these changes under **Not as the spec says**. The available actions let an operator undo them.
 
+For **Crash loop**, OpenETL keeps retrying the pipeline's job, up to every 5 minutes. If the job keeps failing with the same error code, such as `DATA_INVALID`, OpenETL stops after about 30 minutes, because another retry would most likely fail the same way. The run fails, and a **Sync failed** incident opens. Its **Details** shows the number of failures in a row under `failures`. Errors that an outage causes, such as `TRANSIENT`, are retried until the outage ends. After the cause is corrected, select **Pause** and then **Resume** to start the pipeline again.
+
 The pipeline definition controls automatic recovery. It can permit actions, request proposals, or disable recovery actions.
 
 Most incidents resolve automatically when the pipeline makes progress. If you repaired a condition that OpenETL cannot detect, an operator can select **Resolve**. An optional **Comment** records the repair.

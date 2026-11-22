@@ -126,6 +126,9 @@ type WorkRef struct {
 type WorkStatus struct {
 	Done    bool
 	Outcome WorkOutcome `json:",omitzero"`
+	// The last epoch a stream job or sync attempt committed, as its runner's
+	// reports had it; 0 for none.
+	Epoch uint64 `json:",omitempty"`
 }
 
 // WorkOutcome is how work ended. It failed if it has a code, and stopped when
@@ -428,6 +431,9 @@ type FinishSyncInput struct {
 	// A continuous pipeline's run that stopped when asked to, for a new
 	// version, a pause or a change of mode.
 	Stopped bool
+	// The times in a row its job failed with Code, which ended the run as
+	// StreamState.FailureLimit says; 0 if that didn't end it.
+	Failures int32 `json:",omitempty"`
 	// The attempt that committed the sync's data; nil if none did.
 	Result *AttemptResult
 	// The post-sync steps that succeeded.
@@ -466,6 +472,11 @@ type StreamState struct {
 	PausedStreams string `json:",omitempty"`
 	// The pool its jobs go to; empty for the default.
 	Pool string `json:",omitempty"`
+	// How many times in a row a run's job fails with the same code that
+	// doesn't recur (errs.Code.Recurs), counted once its retries wait the
+	// longest, before the run fails; 0 for the default, 5. The run keeps
+	// the limit it started with.
+	FailureLimit int32 `json:",omitempty"`
 	// A run still running, which an earlier supervisor left behind if this
 	// one didn't start it.
 	Left *LeftRun `json:",omitempty"`
@@ -503,6 +514,11 @@ type StreamRun struct {
 	// workflow run waits for, and when it started.
 	Job      string    `json:",omitempty"`
 	JobStart time.Time `json:",omitzero"`
+	// The jobs in a row that failed with the code Failed, counted once the
+	// wait before a retry is the longest; zero after a job that was healthy
+	// or committed, or that failed with another code.
+	Failures int32  `json:",omitempty"`
+	Failed   string `json:",omitempty"`
 }
 
 type StartRunInput struct {

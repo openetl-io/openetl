@@ -207,9 +207,10 @@ func TestAttemptPlacedPolledReportedFinished(t *testing.T) {
 	if !f.waker.has("a") {
 		t.Error("the workflow wasn't woken")
 	}
+	// With the epoch its runner last reported it committed.
 	st := f.status("a")
 	var res contract.AttemptResult
-	if !st.Done || json.Unmarshal(st.Outcome.Result, &res) != nil || res.Committed != 1 {
+	if !st.Done || json.Unmarshal(st.Outcome.Result, &res) != nil || res.Committed != 1 || st.Epoch != 3 {
 		t.Fatalf("status %+v", st)
 	}
 	// A result sent again is fine; another runner's isn't.

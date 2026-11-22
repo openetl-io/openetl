@@ -93,6 +93,25 @@ For a `SCHEMA_DRIFT` or `RESOURCE_EXHAUSTED` from a group window, `OVER` or a de
 
 For a continuous pipeline, repeated failures without a commit can open a **Crash loop** incident. Investigate its attempts' errors and runner health before resuming. Closing an incident by hand does not repair the failure or resume a paused pipeline.
 
+### A continuous pipeline stops retrying
+
+OpenETL retries a continuous pipeline's failed job. The wait before each retry doubles from 5 seconds up to 5 minutes. If the job keeps failing with the same error code, OpenETL stops retrying it and fails the run:
+
+- A failure counts after the retries are 5 minutes apart. With the default limit of 5, the run fails after about 30 minutes of the same failure.
+- OpenETL compares the error code only, not the message. A message can name something that changes on each attempt, such as the epoch.
+- A failure with another code starts the count again. So does a job that commits or runs for 10 minutes.
+- These codes never count, because an outage or a stop causes them and they pass when it ends: `TRANSIENT`, `RATE_LIMITED`, `AUTH_EXPIRED`, `DESTINATION_UNAVAILABLE`, `RESOURCE_EXHAUSTED`, `DRAINING` and `FENCED`. OpenETL retries them for as long as they last.
+
+The run's error starts with `the job failed with CODE N times in a row, so OpenETL stopped retrying it`, and a **Sync failed** incident opens. The pipeline is not paused, but it reads nothing until it starts again. Correct the cause, then start it:
+
+```sh
+openetl resume PIPELINE
+```
+
+Applying the pipeline again also starts it. The orchestrators' setting [`--continuous-failure-limit`](../reference/openetld.md#orchestration) sets the limit. A change applies to runs that start after it.
+
+`DATA_INVALID` is retried, under this limit, because some of its failures pass on a retry. Rows of a SQL transform can pass one at a time and fail together in a batch, and a staging file can fail to write on the runner's own disk. A fix outside OpenETL, such as a raised size limit or a replaced file, takes effect at the next retry, without a resume.
+
 ## A stateful SQL statement fails or quarantines rows
 
 A group window, an `OVER` statement and a dedupe keep state between rows ([Aggregate by windows of time](./windows.md), [Compute running totals with OVER](./over.md), [Deduplicate rows with ROW_NUMBER](./dedupe.md)). Find your case:
@@ -125,4 +144,4 @@ openetl resume PIPELINE
 openetl resume --stream STREAM PIPELINE
 ```
 
-For an unpaused scheduled pipeline, start a sync with `openetl sync PIPELINE`. Check that the next attempt commits, the affected stream makes progress, and the incident resolves. Inspect the delivered rows when the failure involved a hold, reset or rewind. Leave any remaining incident open until its cause is understood, or resolve it with a comment recording the repair.
+For an unpaused scheduled pipeline, start a sync with `openetl sync PIPELINE`. For an unpaused continuous pipeline whose run failed, `openetl resume PIPELINE` starts a new run. Check that the next attempt commits, the affected stream makes progress, and the incident resolves. Inspect the delivered rows when the failure involved a hold, reset or rewind. Leave any remaining incident open until its cause is understood, or resolve it with a comment recording the repair.

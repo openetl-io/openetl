@@ -113,4 +113,14 @@ func TestDescribe(t *testing.T) {
 	if !strings.Contains(next, "openetl logs --sync "+sync.String()+" shop") {
 		t.Errorf("sync_failed's next steps %q", next)
 	}
+	// A continuous run whose job failed the same way too often in a row.
+	repeated := Observation{Class: SyncFailed, Code: "DATA_INVALID", Details: map[string]string{"failures": "5"}}
+	if summary, next := describe(repeated, tg); !strings.Contains(summary, "failed with DATA_INVALID 5 times in a row, so OpenETL stopped retrying it") ||
+		!strings.Contains(next, "openetl resume --workspace analytics shop") {
+		t.Errorf("a run that stopped retrying: %q, %q", summary, next)
+	}
+	_, next = describe(Observation{Class: CrashLoop, Code: "DATA_INVALID"}, tg)
+	if !strings.Contains(next, "--continuous-failure-limit") || !strings.Contains(next, "openetl resume --workspace analytics shop") {
+		t.Errorf("crash_loop's next steps %q", next)
+	}
 }
