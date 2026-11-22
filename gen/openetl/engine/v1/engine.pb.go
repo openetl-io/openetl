@@ -1329,7 +1329,14 @@ type StreamPlan struct {
 	// A stream a transform reads whose rows' time is a column's: how its
 	// watermarks go. Its edges' Split frames say which split each batch is
 	// of. Unset: it has none, and neither do the outputs it feeds.
-	EventTime     *EventTime `protobuf:"bytes,15,opt,name=event_time,json=eventTime,proto3" json:"event_time,omitempty"`
+	EventTime *EventTime `protobuf:"bytes,15,opt,name=event_time,json=eventTime,proto3" json:"event_time,omitempty"`
+	// The destination replaces its table with what each of the stream's reads
+	// writes (overwrite). If the stream has a declared schema and no schema
+	// when every lane has passed the barrier that ends its read
+	// (Barrier.ends_read), as when the read has no rows, the stream takes the
+	// schema an empty batch of its declared columns shapes to, in that
+	// epoch's EpochReady. Unset with a transform.
+	Overwrite     bool `protobuf:"varint,16,opt,name=overwrite,proto3" json:"overwrite,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1467,6 +1474,13 @@ func (x *StreamPlan) GetEventTime() *EventTime {
 		return x.EventTime
 	}
 	return nil
+}
+
+func (x *StreamPlan) GetOverwrite() bool {
+	if x != nil {
+		return x.Overwrite
+	}
+	return false
 }
 
 // EventTime is how a stream's watermarks are made. A split's watermark is
@@ -2850,9 +2864,9 @@ type EpochReady struct {
 	Staged    [][]byte         `protobuf:"bytes,2,rep,name=staged,proto3" json:"staged,omitempty"`
 	Snapshots []*StateSnapshot `protobuf:"bytes,3,rep,name=snapshots,proto3" json:"snapshots,omitempty"`
 	// Each stream's schema at its barrier, as an Arrow IPC stream holding only
-	// the schema. Streams without one yet are missing. With a transform, a
-	// stream's is as its statements read it: source names and logical types,
-	// without metadata columns.
+	// the schema. Streams without one yet are missing (see
+	// StreamPlan.overwrite). With a transform, a stream's is as its statements
+	// read it: source names and logical types, without metadata columns.
 	Schemas map[string][]byte `protobuf:"bytes,4,rep,name=schemas,proto3" json:"schemas,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Records quarantined in the epoch, one file per stream that had any.
 	Quarantine []*QuarantineFile `protobuf:"bytes,5,rep,name=quarantine,proto3" json:"quarantine,omitempty"`
@@ -4545,7 +4559,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xff\x04\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\x9d\x05\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -4566,7 +4580,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"key_groups\x18\x0e \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12;\n" +
 	"\n" +
-	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\"\xce\x02\n" +
+	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\x12\x1c\n" +
+	"\toverwrite\x18\x10 \x01(\bR\toverwrite\"\xce\x02\n" +
 	"\tEventTime\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12!\n" +
 	"\fdelay_micros\x18\x02 \x01(\x03R\vdelayMicros\x12\x12\n" +

@@ -278,6 +278,7 @@ fn rows(ids: impl IntoIterator<Item = i64>) -> Vec<u8> {
 fn barrier(generation: u64, n: u64) -> Vec<u8> {
     Barrier {
         epoch: Some(Epoch { generation, n }),
+        ..Default::default()
     }
     .encode_to_vec()
 }

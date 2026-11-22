@@ -39,6 +39,9 @@ pub struct Plan {
     pub soft_deletes: Vec<bool>,
     /// Each stream's: whether it's a changelog.
     pub changelog: Vec<bool>,
+    /// Each stream's: whether the destination replaces its table with what
+    /// each read writes. False with a transform.
+    pub overwrite: Vec<bool>,
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
     /// Batches skip shaping, for measuring the boundary.
     pub passthrough: bool,
@@ -509,6 +512,10 @@ impl Plan {
         }
         let soft_deletes = sinks.iter().map(|s| s.soft_deletes).collect();
         let changelog = sinks.iter().map(|s| s.changelog).collect();
+        let overwrite = sinks
+            .iter()
+            .map(|s| s.overwrite && transform.is_none())
+            .collect();
         let naming = req.naming.map_or_else(Naming::default, |n| Naming {
             keep_source: n.keep_source_names,
             max_len: n.max_length as usize,
@@ -769,6 +776,7 @@ impl Plan {
             identities,
             soft_deletes,
             changelog,
+            overwrite,
             passthrough: req.passthrough,
             inbound,
             sink,

@@ -532,6 +532,26 @@ impl Shaper {
         self.typer.batch(batch)
     }
 
+    /// The first half for an empty batch of the declared columns, which
+    /// gives a stream without rows the schema its declared types shape to.
+    /// Without declared columns, the batch has none, and shapes to nothing.
+    pub fn type_declared(&self) -> Result<Typed, Error> {
+        let declared = self
+            .declared
+            .clone()
+            .unwrap_or_else(|| Arc::new(Schema::empty()));
+        let empty = RecordBatch::new_empty(declared.clone());
+        let (batch, _) = coerce::conform_cells(&empty, Some(&declared), self.types)?;
+        Ok(Typed {
+            batch,
+            ids: FixedSizeBinaryArray::try_new(16, Vec::<u8>::new().into(), None)?,
+            control: Control::default(),
+            cells: Vec::new(),
+            rejected: Vec::new(),
+            rows: None,
+        })
+    }
+
     /// The second half: conforms a batch to the stream's schema under its
     /// policy, renames its columns, adds the metadata columns, with a
     /// changelog stream's op, seq and unchanged columns from its control

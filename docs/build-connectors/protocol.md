@@ -101,6 +101,8 @@ A writer's calls are the commit protocol:
 3. **Commit** runs after the checkpoint record is written. For stage-and-apply destinations, it makes the epoch visible with stream markers protected by the destination's fence. It must be idempotent.
 4. **Recover** runs when an attempt starts. It raises the fence to the attempt's generation, preventing older attempts from committing. It reports whether the recorded epoch was already applied, was applied during recovery, or is lost.
 
+A stream written with `overwrite` gets **EndRead** in the epoch where its read ends, before that epoch's **PreCommit**. That epoch's **Commit** replaces the stream's table with what the read wrote. By then, lane 0's writer, which commits, has the stream's schema, from its batches or from **ApplySchema**, which comes before **Commit**. A read with no rows gets the schema from **ApplySchema** alone: replace the table with an empty one, or create it empty. Some streams get no schema from a read with no rows, and their tables stay as they are: a stream that has never had rows and whose source does not declare its column types, or its cursor's type, and a transform's output that has never had rows.
+
 A reply to **PreCommit** or **Commit** names the epoch of the request it answers, and each request gets one reply. OpenETL fails the attempt on a reply for another epoch, or one it did not ask for. `sdk.Serve` does this for you.
 
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.

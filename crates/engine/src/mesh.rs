@@ -244,7 +244,11 @@ pub fn wire(out: Out) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
         Out::Barrier(s, e) => (
             FrameKind::Barrier,
             index(s)?,
-            Barrier { epoch: Some(e) }.encode_to_vec(),
+            Barrier {
+                epoch: Some(e),
+                ..Default::default()
+            }
+            .encode_to_vec(),
         ),
         Out::Watermark(s, micros) => (
             FrameKind::Watermark,

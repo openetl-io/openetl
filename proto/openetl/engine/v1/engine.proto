@@ -317,6 +317,13 @@ message StreamPlan {
   // watermarks go. Its edges' Split frames say which split each batch is
   // of. Unset: it has none, and neither do the outputs it feeds.
   EventTime event_time = 15;
+  // The destination replaces its table with what each of the stream's reads
+  // writes (overwrite). If the stream has a declared schema and no schema
+  // when every lane has passed the barrier that ends its read
+  // (Barrier.ends_read), as when the read has no rows, the stream takes the
+  // schema an empty batch of its declared columns shapes to, in that
+  // epoch's EpochReady. Unset with a transform.
+  bool overwrite = 16;
 }
 
 // EventTime is how a stream's watermarks are made. A split's watermark is
@@ -586,9 +593,9 @@ message EpochReady {
   repeated bytes staged = 2;
   repeated StateSnapshot snapshots = 3;
   // Each stream's schema at its barrier, as an Arrow IPC stream holding only
-  // the schema. Streams without one yet are missing. With a transform, a
-  // stream's is as its statements read it: source names and logical types,
-  // without metadata columns.
+  // the schema. Streams without one yet are missing (see
+  // StreamPlan.overwrite). With a transform, a stream's is as its statements
+  // read it: source names and logical types, without metadata columns.
   map<string, bytes> schemas = 4;
   // Records quarantined in the epoch, one file per stream that had any.
   repeated QuarantineFile quarantine = 5;
