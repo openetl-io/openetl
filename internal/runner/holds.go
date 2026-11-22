@@ -277,10 +277,13 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		}
 		// A hold in force on a column that can't be held, as one recorded
 		// before the runner checked, stops the attempt until it's released.
+		// A discarded one has no values left, so it goes, and the destination
+		// gets the column as the stream has it.
 		var raw []byte
 		if restored != nil {
 			raw = j.recordedSchemas(restored)[s.Name]
 		}
+		kept := h.Columns[:0]
 		for _, c := range h.Columns {
 			var src string
 			if c.Cause != nil {
@@ -293,9 +296,14 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				}
 			}
 			if why := notHeld(s, limits[s.Name], c.Column, src); why != "" {
+				if c.Discarded {
+					continue
+				}
 				return nil, nil, heldUnholdable(s.Name, c, why)
 			}
+			kept = append(kept, c)
 		}
+		h.Columns = kept
 		for _, r := range j.refused {
 			if r.Stream != s.Name {
 				continue

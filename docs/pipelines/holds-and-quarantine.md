@@ -109,10 +109,10 @@ OpenETL cannot hold these columns whole:
 
 If the destination refuses a change to one of these columns, the sync fails with `SCHEMA_DRIFT`. The error includes the destination's reason and its repair statement. Run the repair, or change the column back at the source. Then start a sync.
 
-A hold can be in force on such a column, such as a hold that a sync recorded before OpenETL checked these cases. Each sync then fails with `SCHEMA_DRIFT` until you release the hold. Discarding the hold does not help, because a discarded column stays held. To release it:
+A hold can be in force on such a column, such as a hold that a sync recorded before OpenETL checked these cases. Each sync then fails with `SCHEMA_DRIFT` until you release or discard the hold. Either way, the destination then gets the column as the stream has it. To end the hold:
 
 1. Run the destination's repair from the error, or change the column back at the source.
-2. Release the hold with `openetl holds release PIPELINE STREAM COLUMN`.
+2. Release the hold with `openetl holds release PIPELINE STREAM COLUMN`, which patches its held values in. Or discard it with `openetl holds discard PIPELINE STREAM COLUMN`, which drops them.
 3. Start a sync.
 
 If the destination still refuses the column, the sync fails with `SCHEMA_DRIFT` and the repair statement.

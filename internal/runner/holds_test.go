@@ -187,8 +187,9 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 }
 
 // A hold on a column that can't be held, recorded before the runner checked
-// what it holds, stops each attempt with how to release it; released, the
-// attempt holds it no longer. A refusal of it fails with the fix.
+// what it holds, stops each attempt with how to release it; released or
+// discarded, the attempt holds it no longer. A refusal of it fails with the
+// fix.
 func TestAHoldOnAColumnThatCantBeHeldStopsUntilReleased(t *testing.T) {
 	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
 	fix := "aws dynamodb delete-table --table-name s"
@@ -219,10 +220,26 @@ func TestAHoldOnAColumnThatCantBeHeldStopsUntilReleased(t *testing.T) {
 	_, _, err := j.startHolds(t.Context(), record(key), nil)
 	stops(err, "it's part of the stream's key", fix, "openetl holds release PIPELINE s id")
 
-	// Discarded, the column is still held.
-	j.Releases = []Release{{Stream: "s", Column: "id", Since: since, Discard: true}}
-	_, _, err = j.startHolds(t.Context(), record(key), nil)
-	stops(err, "it's part of the stream's key")
+	// Discarded, in this attempt or before it, the hold goes without a
+	// replay: its values are gone.
+	gone := key
+	gone.Discarded = true
+	for _, c := range []struct {
+		releases []Release
+		rec      *checkpoint.Record
+	}{
+		{[]Release{{Stream: "s", Column: "id", Since: since, Discard: true}}, record(key)},
+		{nil, record(gone)},
+	} {
+		j.Releases = c.releases
+		holds, plans, err := j.startHolds(t.Context(), c.rec, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := holds["s"]; len(h.Columns) != 0 || h.Replay != nil || len(plans["s"].Holding) != 0 {
+			t.Errorf("discarded, holds %+v, plan %+v", h, plans["s"])
+		}
+	}
 
 	j.Releases = []Release{{ID: "r1", Stream: "s", Column: "id", Since: since}}
 	holds, plans, err := j.startHolds(t.Context(), record(key), nil)
