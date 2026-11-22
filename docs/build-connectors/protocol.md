@@ -61,7 +61,7 @@ For `stream` mode with a primary key, declare a cursor that distinguishes events
 
 `Read` emits JSON objects or Arrow batches. It marks **resume points**, each with state that lets a later read resume at that position. A bounded stream ends with `Complete`; its state becomes the next sync's starting state. Commits normally align to resume points. A [forced barrier](../pipelines/delivery.md#reading-a-stream-delivered-at-least-once) is permitted only when replay preserves the required delivery guarantee.
 
-Each read request lists the declared `columns`. If the source sends text values for OpenETL to parse, those columns need declared types. If a new column appears, fail the read with a transient error. The next attempt's discovery can declare its type before reading again.
+Each read request lists the declared `columns`. If the source sends text values for OpenETL to parse, those columns need declared types. Declare timestamps in microseconds, inside lists too: OpenETL refuses a stream that declares another unit. If a new column appears, fail the read with a transient error. The next attempt's discovery can declare its type before reading again.
 
 Each read request also gives the declared types of each stream's columns in `arrow_schema`. They are the types that the source's `Discover` returned for that run, without control columns. An empty `arrow_schema` means that the request does not give types. A column's type can change after that discovery and before the read starts. OpenETL then parses values with the old type: for example, it decodes text in a column declared as binary as base64.
 

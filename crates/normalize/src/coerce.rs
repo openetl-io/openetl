@@ -114,13 +114,18 @@ impl Target {
 }
 
 /// A declared schema: every column has a logical type. Timestamps are in
-/// microseconds; a stream's option makes them nanoseconds.
+/// microseconds, in lists too; a stream's option makes top-level ones
+/// nanoseconds.
 pub fn check_declared(schema: &Schema) -> Result<(), Error> {
+    fn declared(f: &Field) -> bool {
+        match (Target::of(f), f.data_type()) {
+            (None | Some(Target::Timestamp { nanos: true, .. }), _) => false,
+            (_, DataType::List(item)) => declared(item),
+            _ => true,
+        }
+    }
     for f in schema.fields() {
-        if matches!(
-            Target::of(f),
-            None | Some(Target::Timestamp { nanos: true, .. })
-        ) {
+        if !declared(f) {
             return Err(Error::Declared(format!(
                 "column {:?} is declared {}, which isn't a logical type",
                 f.name(),
@@ -131,7 +136,8 @@ pub fn check_declared(schema: &Schema) -> Result<(), Error> {
     Ok(())
 }
 
-/// `schema` with its timestamps in nanoseconds.
+/// `schema` with its top-level timestamps in nanoseconds. Timestamps in
+/// lists stay microseconds, as typed batches' lists aren't converted.
 pub fn nanoseconds(schema: &Schema) -> SchemaRef {
     let fields: Vec<Field> = schema
         .fields()
@@ -1556,6 +1562,31 @@ mod tests {
         ] {
             let bad = Schema::new(vec![Field::new("x", dt, true)]);
             assert!(check_declared(&bad).is_err());
+        }
+    }
+
+    #[test]
+    fn declared_timestamps_are_microseconds_at_any_depth() {
+        let list = |dt: DataType| DataType::List(Arc::new(Field::new("item", dt, true)));
+        let ts = |unit, tz: Option<&str>| DataType::Timestamp(unit, tz.map(Arc::from));
+        let ns = ts(TimeUnit::Nanosecond, None);
+        for dt in [
+            list(ns.clone()),
+            list(list(ns.clone())),
+            DataType::Struct(vec![Field::new("at", ns, true)].into()),
+        ] {
+            let bad = Schema::new(vec![Field::new("x", dt, true)]);
+            assert!(
+                matches!(check_declared(&bad), Err(Error::Declared(_))),
+                "{bad}"
+            );
+        }
+        for dt in [
+            list(ts(TimeUnit::Microsecond, None)),
+            list(ts(TimeUnit::Microsecond, Some("UTC"))),
+        ] {
+            let ok = Schema::new(vec![Field::new("x", dt, true)]);
+            assert!(check_declared(&ok).is_ok(), "{ok}");
         }
     }
 }
