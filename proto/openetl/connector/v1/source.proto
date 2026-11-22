@@ -171,6 +171,15 @@ message ConfiguredStream {
   // Where the whole stream's read completes, without splits, as a split's
   // complete_at says.
   optional bytes complete_at = 8;
+  // The types of columns, as this run declared them: the stream's
+  // CatalogStream.arrow_schema as the source's Discover gave it for this
+  // run, without control columns, encoded the same way. A source that
+  // finds a column's type differs from its declared type fails the read,
+  // retryably, as it does for a column outside columns; the next attempt
+  // discovers again. Compare each field by name, its storage type and its
+  // extension's name and metadata. Set on a read. Empty: the request
+  // doesn't say.
+  bytes arrow_schema = 9;
 }
 
 // Split is one of a stream's splits. The whole stream has the empty ID. IDs

@@ -14,7 +14,7 @@ Source checks cover:
 - Specifications and configuration schemas.
 - Connection checks and their items.
 - A preflight of every discovered stream.
-- Discovery, reads and resumption.
+- Discovery, reads and resumption. Reads give each stream the declared types that discovery returned.
 - Reads that stop at a redo's `until` or complete at its `complete_at`.
 - Continuous reads, of streams read whole and of streams in splits.
 

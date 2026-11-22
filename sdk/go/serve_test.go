@@ -21,6 +21,29 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
+// A configured stream's declared types decode to its Schema; none stays nil,
+// and bytes that aren't a schema are an error, not a read without types.
+func TestConfiguredStreamSchema(t *testing.T) {
+	declared := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "amount", Type: &arrow.Decimal128Type{Precision: 38, Scale: 9}, Nullable: true},
+	}, nil)
+	b, err := arrowipc.EncodeSchema(declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs, err := configuredStream(&protocolv1.ConfiguredStream{Name: "s", Columns: []string{"id", "amount"}, ArrowSchema: b})
+	if err != nil || cs.Schema == nil || !cs.Schema.Equal(declared) {
+		t.Errorf("decoded %v, %v; want %v", cs.Schema, err, declared)
+	}
+	if cs, err := configuredStream(&protocolv1.ConfiguredStream{Name: "s"}); err != nil || cs.Schema != nil {
+		t.Errorf("without types: %v, %v", cs.Schema, err)
+	}
+	if _, err := configuredStream(&protocolv1.ConfiguredStream{Name: "s", ArrowSchema: []byte("not arrow")}); err == nil {
+		t.Error("bytes that aren't a schema decoded")
+	}
+}
+
 type preparedDestination struct {
 	destination.Destination
 	calls *[]string

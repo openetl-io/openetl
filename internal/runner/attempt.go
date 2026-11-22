@@ -93,17 +93,19 @@ func (s Stream) delivery() delivery.Stream {
 		Deduped: s.Deduped, Remembers: s.Remembers, Refreshed: s.Deduped && s.Read == source.FullRefresh, DedupeOf: s.From, Replaces: s.Replaces}
 }
 
-// columns names the columns of Schema; nil without one.
-func (s Stream) columns() []string {
-	if s.Schema == nil {
-		return nil
+// configured is how a read of s asks for it, from its start: the columns
+// and types Schema declares, as the source's Discover gave them. Never
+// Declared: a source compares them with what it finds, and an override
+// isn't the source's type.
+func (s Stream) configured() source.ConfiguredStream {
+	cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Schema: s.Schema}
+	if s.Schema != nil {
+		cs.Columns = make([]string, s.Schema.NumFields())
+		for i, f := range s.Schema.Fields() {
+			cs.Columns[i] = f.Name
+		}
 	}
-	fields := s.Schema.Fields()
-	names := make([]string, len(fields))
-	for i, f := range fields {
-		names[i] = f.Name
-	}
-	return names
+	return cs
 }
 
 // Declared is Schema with Overrides applied.
@@ -1147,7 +1149,7 @@ func (j *Job) readRequest(splits map[string][]checkpoint.SplitState, done map[st
 		if done[s.Name] {
 			continue
 		}
-		cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Columns: s.columns()}
+		cs := s.configured()
 		if ss := splits[s.Name]; len(ss) == 1 && ss[0].ID == checkpoint.WholeStream {
 			cs.State = ss[0].State
 		} else {

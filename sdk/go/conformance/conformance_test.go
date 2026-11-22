@@ -75,6 +75,8 @@ type upstream struct {
 	changes, trimmed int64
 	// The streams preflights asked about, as name:mode.
 	preflighted []string
+	// How many streams reads asked for with their declared types.
+	declared int
 }
 
 type memSource struct {
@@ -99,6 +101,8 @@ var eventsSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "id", Type: arrow.PrimitiveTypes.Int64},
 	{Name: "ts", Type: arrow.PrimitiveTypes.Int64},
 }, nil)
+
+var declaredSchemas = map[string]*arrow.Schema{"users": usersSchema, "events": eventsSchema, "changes": changesSchema}
 
 func (s *memSource) Check(context.Context) error {
 	if s.bug == "check-internal" && s.c.Token != "good" {
@@ -159,6 +163,18 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 	s.up.mu.Unlock()
 	var split []source.ConfiguredStream
 	for _, st := range req.Streams {
+		if st.Schema != nil {
+			changed, err := source.ChangedTypes(st.Schema, declaredSchemas[st.Name])
+			if err != nil {
+				return err
+			}
+			if len(changed) > 0 {
+				return sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_TRANSIENT, fmt.Errorf("stream %s: the types of %v changed", st.Name, changed))
+			}
+			s.up.mu.Lock()
+			s.up.declared++
+			s.up.mu.Unlock()
+		}
 		var err error
 		switch {
 		case st.Name == "changes" && len(st.Splits) > 0:
@@ -516,8 +532,14 @@ func memSuite(up *upstream, bug string) conformance.SourceSuite {
 	}
 }
 
+// It passes, and its reads declare their streams' types, which match its
+// catalog's.
 func TestSourcePasses(t *testing.T) {
-	sourceSuite("").Test(t)
+	up := &upstream{users: 23, events: 18, changes: 14}
+	memSuite(up, "").Test(t)
+	if up.declared == 0 {
+		t.Error("no read declared its streams' types")
+	}
 }
 
 // The resume and until checks can start from one resume point.

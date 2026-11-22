@@ -444,6 +444,41 @@ func TestConfiguredStreams(t *testing.T) {
 	}
 }
 
+// The types a read declares cross to the connector as its Discover gave
+// them, extensions included, so the connector finds none changed; and one
+// that differs, it finds.
+func TestConfiguredStreamsDeclareTypes(t *testing.T) {
+	src := NewSource(exe("source-echo"), nil, Options{})
+	defer func() { _ = src.Close() }()
+	cat, err := src.Discover(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovered := cat.Streams[0].Schema
+	if discovered == nil || discovered.NumFields() != 4 {
+		t.Fatalf("discovered %v", discovered)
+	}
+	fields := discovered.Fields()
+	fields[3].Type = arrow.BinaryTypes.String
+	altered := arrow.NewSchema(fields, nil)
+	for _, c := range []struct {
+		schema *arrow.Schema
+		want   string
+	}{
+		{discovered, `null`},
+		{altered, `["amount"]`},
+	} {
+		var out collect
+		if err := src.Read(t.Context(), source.ReadRequest{Streams: []source.ConfiguredStream{{Name: "echo", Schema: c.schema}}}, &out); err != nil {
+			t.Fatal(err)
+		}
+		var got struct{ Changed json.RawMessage }
+		if len(out.raw) != 1 || json.Unmarshal(out.raw[0], &got) != nil || string(got.Changed) != c.want {
+			t.Errorf("declaring %v, the connector saw %s; want changed %s", c.schema, out.raw, c.want)
+		}
+	}
+}
+
 // Where a read of a whole stream or of a split is to end, or to complete,
 // reaches the connector.
 func TestReadsUntil(t *testing.T) {

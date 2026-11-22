@@ -142,7 +142,11 @@ func (s *Source) PreflightReport(ctx context.Context, req source.PreflightReques
 		pr.Interval = durationpb.New(req.Interval)
 	}
 	for _, cs := range req.Streams {
-		pr.Streams = append(pr.Streams, configuredStream(cs))
+		c, err := configuredStream(cs)
+		if err != nil {
+			return check.Report{}, err
+		}
+		pr.Streams = append(pr.Streams, c)
 	}
 	resp, err := protocolv1.NewSourceServiceClient(p.conn).PreflightSource(ctx, pr)
 	return preflightReport(p, resp, err)
@@ -216,7 +220,11 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 		preq.Lanes = uint32(req.Lanes)
 	}
 	for _, cs := range req.Streams {
-		preq.Streams = append(preq.Streams, configuredStream(cs))
+		c, err := configuredStream(cs)
+		if err != nil {
+			return err
+		}
+		preq.Streams = append(preq.Streams, c)
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -241,8 +249,13 @@ func (s *Source) Read(ctx context.Context, req source.ReadRequest, out source.Em
 	}
 }
 
-func configuredStream(cs source.ConfiguredStream) *protocolv1.ConfiguredStream {
-	return &protocolv1.ConfiguredStream{Name: cs.Name, SyncMode: ints.Enum[protocolv1.SyncMode](cs.SyncMode), Cursor: cs.Cursor, State: cs.State, Splits: splitsProto(cs.Splits), Columns: cs.Columns, Until: cs.Until, CompleteAt: cs.CompleteAt}
+func configuredStream(cs source.ConfiguredStream) (*protocolv1.ConfiguredStream, error) {
+	schema, err := arrowipc.EncodeSchema(cs.Schema)
+	if err != nil {
+		return nil, errs.Wrap(errs.Internal, err, "connector: the schema of "+cs.Name)
+	}
+	return &protocolv1.ConfiguredStream{Name: cs.Name, SyncMode: ints.Enum[protocolv1.SyncMode](cs.SyncMode), Cursor: cs.Cursor, State: cs.State, Splits: splitsProto(cs.Splits),
+		Columns: cs.Columns, ArrowSchema: schema, Until: cs.Until, CompleteAt: cs.CompleteAt}, nil
 }
 
 func splitsProto(ss []source.Split) []*protocolv1.Split {
@@ -357,7 +370,11 @@ func (s *Source) Splits(ctx context.Context, stream source.ConfiguredStream, end
 	if !p.spec.GetSource().GetSplits() {
 		return source.Whole(ended)
 	}
-	resp, err := protocolv1.NewSourceServiceClient(p.conn).Splits(ctx, &protocolv1.SplitsRequest{Config: p.config, Stream: configuredStream(stream), Ended: splitsProto(ended)})
+	cs, err := configuredStream(stream)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := protocolv1.NewSourceServiceClient(p.conn).Splits(ctx, &protocolv1.SplitsRequest{Config: p.config, Stream: cs, Ended: splitsProto(ended)})
 	if err != nil {
 		return nil, fmt.Errorf("connector: splits of %s: %w", stream.Name, p.failure(errs.FromStatus(err)))
 	}

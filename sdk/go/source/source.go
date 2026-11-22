@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/check"
@@ -72,6 +73,13 @@ type ConfiguredStream struct {
 	// one; the next attempt discovers and declares it. Nil: the request
 	// doesn't say.
 	Columns []string
+	// The types of Columns, as this run declared them: the stream's
+	// CatalogStream.Schema as the source's Discover gave it for this run.
+	// A source that finds a column's type differs from its declared type
+	// fails the read, retryably, as it does for a column outside Columns;
+	// the next attempt discovers again. ChangedTypes compares them. Set on
+	// a read. Nil: the request doesn't say.
+	Schema *arrow.Schema
 	// Where the whole stream's read ends, where Splits is nil, as a Split's
 	// Until says.
 	Until []byte
@@ -188,6 +196,58 @@ func SplitDeclared(s *arrow.Schema) (*arrow.Schema, arrow.DataType) {
 	}
 	md := s.Metadata()
 	return arrow.NewSchema(fields, &md), seq
+}
+
+// ChangedTypes names the fields of current whose type differs from the
+// field of the same name in declared, such as a ConfiguredStream's Schema,
+// in current's order. It compares storage types, and extensions' names and
+// metadata: a canonical extension, such as arrow.uuid or arrow.json, as its
+// type, whether a schema has the type or its field metadata (arrowipc
+// registers them), and any other by its field metadata. A field that
+// declared doesn't have isn't a change. Nil declared or current: none.
+func ChangedTypes(declared, current *arrow.Schema) ([]string, error) {
+	if declared == nil || current == nil {
+		return nil, nil
+	}
+	// Both as this process decodes them, so a registered extension is its
+	// type in both, and an unregistered one its field metadata.
+	d, err := decoded(declared)
+	if err != nil {
+		return nil, err
+	}
+	c, err := decoded(current)
+	if err != nil {
+		return nil, err
+	}
+	var changed []string
+	for _, f := range c.Fields() {
+		i := d.FieldIndices(f.Name)
+		if len(i) == 0 {
+			continue
+		}
+		if g := d.Field(i[0]); !arrow.TypeEqual(f.Type, g.Type) || extension(f) != extension(g) {
+			changed = append(changed, f.Name)
+		}
+	}
+	return changed, nil
+}
+
+func decoded(s *arrow.Schema) (*arrow.Schema, error) {
+	b, err := arrowipc.EncodeSchema(s)
+	if err != nil {
+		return nil, err
+	}
+	return arrowipc.DecodeSchema(b)
+}
+
+// extension is a field's extension's name and metadata, empty for none.
+func extension(f arrow.Field) [2]string {
+	if t, ok := f.Type.(arrow.ExtensionType); ok {
+		return [2]string{t.ExtensionName(), t.Serialize()}
+	}
+	name, _ := f.Metadata.GetValue(ipc.ExtensionTypeKeyName)
+	md, _ := f.Metadata.GetValue(ipc.ExtensionMetadataKeyName)
+	return [2]string{name, md}
 }
 
 // Emitter receives what a source reads. Its methods block under

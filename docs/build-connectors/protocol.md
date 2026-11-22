@@ -63,6 +63,10 @@ For `stream` mode with a primary key, declare a cursor that distinguishes events
 
 Each read request lists the declared `columns`. If the source sends text values for OpenETL to parse, those columns need declared types. If a new column appears, fail the read with a transient error. The next attempt's discovery can declare its type before reading again.
 
+Each read request also gives the declared types of each stream's columns in `arrow_schema`. They are the types that the source's `Discover` returned for that run, without control columns. An empty `arrow_schema` means that the request does not give types. A column's type can change after that discovery and before the read starts. OpenETL then parses values with the old type: for example, it decodes text in a column declared as binary as base64.
+
+If a column's current type differs from its declared type, fail the read with a transient error. The next attempt discovers the stream again. Compare each column by name, with its Arrow storage type and its extension's name and metadata, such as `arrow.uuid` or `arrow.json`. OpenETL can send a canonical extension's metadata in a different form that Arrow defines as equal: for example, `arrow.json` with empty metadata instead of `{}`. In Go, `source.ConfiguredStream` has the types in `Schema`, and `source.ChangedTypes` compares them.
+
 Sources can also implement these operations:
 
 | Operation | Contract |

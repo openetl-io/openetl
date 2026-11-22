@@ -699,7 +699,16 @@ type ConfiguredStream struct {
 	Until []byte `protobuf:"bytes,7,opt,name=until,proto3,oneof" json:"until,omitempty"`
 	// Where the whole stream's read completes, without splits, as a split's
 	// complete_at says.
-	CompleteAt    []byte `protobuf:"bytes,8,opt,name=complete_at,json=completeAt,proto3,oneof" json:"complete_at,omitempty"`
+	CompleteAt []byte `protobuf:"bytes,8,opt,name=complete_at,json=completeAt,proto3,oneof" json:"complete_at,omitempty"`
+	// The types of columns, as this run declared them: the stream's
+	// CatalogStream.arrow_schema as the source's Discover gave it for this
+	// run, without control columns, encoded the same way. A source that
+	// finds a column's type differs from its declared type fails the read,
+	// retryably, as it does for a column outside columns; the next attempt
+	// discovers again. Compare each field by name, its storage type and its
+	// extension's name and metadata. Set on a read. Empty: the request
+	// doesn't say.
+	ArrowSchema   []byte `protobuf:"bytes,9,opt,name=arrow_schema,json=arrowSchema,proto3" json:"arrow_schema,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -786,6 +795,13 @@ func (x *ConfiguredStream) GetUntil() []byte {
 func (x *ConfiguredStream) GetCompleteAt() []byte {
 	if x != nil {
 		return x.CompleteAt
+	}
+	return nil
+}
+
+func (x *ConfiguredStream) GetArrowSchema() []byte {
+	if x != nil {
+		return x.ArrowSchema
 	}
 	return nil
 }
@@ -1914,7 +1930,7 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\n" +
 	"continuous\x18\x04 \x01(\bR\n" +
 	"continuous\x12\x14\n" +
-	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\xca\x02\n" +
+	"\x05lanes\x18\x05 \x01(\rR\x05lanes\"\xed\x02\n" +
 	"\x10ConfiguredStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12;\n" +
 	"\tsync_mode\x18\x02 \x01(\x0e2\x1e.openetl.connector.v1.SyncModeR\bsyncMode\x12\x16\n" +
@@ -1924,7 +1940,8 @@ const file_openetl_connector_v1_source_proto_rawDesc = "" +
 	"\acolumns\x18\x06 \x03(\tR\acolumns\x12\x19\n" +
 	"\x05until\x18\a \x01(\fH\x01R\x05until\x88\x01\x01\x12$\n" +
 	"\vcomplete_at\x18\b \x01(\fH\x02R\n" +
-	"completeAt\x88\x01\x01B\b\n" +
+	"completeAt\x88\x01\x01\x12!\n" +
+	"\farrow_schema\x18\t \x01(\fR\varrowSchemaB\b\n" +
 	"\x06_stateB\b\n" +
 	"\x06_untilB\x0e\n" +
 	"\f_complete_at\"\x97\x01\n" +

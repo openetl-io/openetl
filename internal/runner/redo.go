@@ -586,7 +586,7 @@ func (j *Job) replaySplit(ctx context.Context, n uint64, r redoRead, out chan<- 
 	rctx, stop := context.WithCancel(ctx)
 	defer stop()
 	em := &redoEmitter{ctx: rctx, stop: stop, read: r, out: out}
-	cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Columns: s.columns()}
+	cs := s.configured()
 	var until, completeAt []byte
 	switch {
 	case !r.to.Complete:
