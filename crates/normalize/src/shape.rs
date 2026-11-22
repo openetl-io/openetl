@@ -283,6 +283,9 @@ impl Shaper {
             let discarded = config.discarded.contains(&c.column);
             match source(&self.namer, &c.column) {
                 Some(src) => {
+                    if let Some(why) = not_held_whole(&h.unholdable, &config, &src, &c.column) {
+                        return Err(held_unholdable(&self.identity.stream, c, why));
+                    }
                     self.evolver.holding.insert(src.clone());
                     h.columns.insert(
                         src,
@@ -341,14 +344,19 @@ impl Shaper {
 
     /// Before a batch reaches the evolver: held columns it hasn't seen
     /// yet, named by their destination names, become held.
-    fn claim_pending(&mut self, schema: &Schema) {
-        let Some(h) = &mut self.holds else { return };
+    fn claim_pending(&mut self, schema: &Schema) -> Result<(), Error> {
+        let Some(h) = &mut self.holds else {
+            return Ok(());
+        };
         if h.pending.is_empty() {
-            return;
+            return Ok(());
         }
         for f in schema.fields() {
             let dest = self.namer.name(f.name());
             if let Some(c) = h.pending.remove(&dest) {
+                if let Some(why) = not_held_whole(&h.unholdable, &h.config, f.name(), &dest) {
+                    return Err(held_unholdable(&self.identity.stream, &c, why));
+                }
                 self.changed = true;
                 self.evolver.holding.insert(f.name().clone());
                 h.columns.insert(
@@ -363,6 +371,7 @@ impl Shaper {
                 );
             }
         }
+        Ok(())
     }
 
     /// Adds `_openetl_deleted`, true where `_openetl_op` is `delete`, for
@@ -536,7 +545,7 @@ impl Shaper {
             mut rejected,
             rows,
         } = typed;
-        self.claim_pending(&batch.schema());
+        self.claim_pending(&batch.schema())?;
         let c = self.evolver.conform(&batch)?;
         if !c.failed.is_empty() {
             let rows = input_rows(rows, &rejected, batch.num_rows());
@@ -1242,6 +1251,39 @@ fn held_value(f: &Field, text: &str) -> Option<ArrayRef> {
     let t = Target::of(f).filter(|t| *t != Target::TypedOnly)?;
     let (a, failed) = coerce::json(f, t, std::iter::once(Some(&v)), Default::default()).ok()?;
     (failed.is_empty() && !a.is_null(0)).then_some(a)
+}
+
+/// Why source column `src`, `dest` in the destination, can't be held
+/// whole, as the evolver's holds refuse it; None if it can. A column held
+/// whole shows its held value at the type the destination has, so a held
+/// value that doesn't fit the stream's type doesn't stop it.
+fn not_held_whole(
+    unholdable: &HashMap<String, NotHeld>,
+    config: &HoldConfig,
+    src: &str,
+    dest: &str,
+) -> Option<NotHeld> {
+    match unholdable.get(src) {
+        None | Some(NotHeld::HeldValue) => {}
+        Some(why) => return Some(*why),
+    }
+    if config.limits.unholdable.contains(dest) {
+        return Some(NotHeld::Destination);
+    }
+    (config.limits.not_null.contains(dest) && config.show(src).value().is_none())
+        .then_some(NotHeld::NotNull)
+}
+
+/// A hold in force on a column that can't be held, such as one the
+/// destination refused before it said so: releasing it is the way on.
+fn held_unholdable(stream: &str, c: &ColumnHold, why: NotHeld) -> Error {
+    Error::Drift(format!(
+        "column {:?} is held ({}), but it can't be held: {}; once the destination takes the column as the stream has it, release the hold with `openetl holds release PIPELINE {stream} {}`",
+        c.column,
+        c.reason,
+        why.clause(),
+        c.column
+    ))
 }
 
 /// What a held cell or column of `src` shows, as a one-row array of `f`'s
@@ -2560,6 +2602,102 @@ mod tests {
             ("x", Arc::new(arrow_array::BooleanArray::from(vec![true]))),
         ]);
         assert!(matches!(s.batch(&b), Err(Error::Drift(_))));
+    }
+
+    fn refused(column: &str, delivered: DataType) -> ColumnHold {
+        ColumnHold {
+            column: column.into(),
+            delivered: Some(Field::new(column, delivered, true)),
+            reason: "the destination refused it: it's the table's key".into(),
+            why: Why::Refused,
+            source: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_hold_on_a_column_that_cant_be_held_stops() {
+        let limits = |unholdable: &[&str], not_null: &[&str]| crate::hold::Limits {
+            unholdable: unholdable.iter().map(|c| (*c).to_owned()).collect(),
+            not_null: not_null.iter().map(|c| (*c).to_owned()).collect(),
+            ..Default::default()
+        };
+        // Held by the runner after the destination refused it, or restored
+        // from a checkpoint that held it before holds checked.
+        let cases = [
+            ("id", limits(&[], &[]), "it's part of the stream's key"),
+            ("x", limits(&["x"], &[]), "the destination can't hold it"),
+            ("x", limits(&[], &["x"]), "it can't be null"),
+        ];
+        let restored = established(Policy::AllowAll, HoldConfig::default()).schema();
+        for (column, limits, why) in cases {
+            let err = keyed(Policy::AllowAll, restored.clone(), None)
+                .with_holds(HoldConfig {
+                    holding: vec![refused(column, DataType::Int64)],
+                    limits,
+                    ..Default::default()
+                })
+                .err()
+                .unwrap_or_else(|| panic!("{column} was held"));
+            let Error::Drift(msg) = &err else {
+                panic!("{err}");
+            };
+            assert!(msg.contains(why), "{msg}");
+            assert!(msg.contains("it's the table's key"), "{msg}");
+            assert!(
+                msg.contains(&format!("openetl holds release PIPELINE t {column}")),
+                "{msg}"
+            );
+        }
+
+        // A column the restored schema hasn't got stops once a batch has it.
+        let mut s = established(
+            Policy::AllowAll,
+            HoldConfig {
+                holding: vec![refused("y", DataType::Int64)],
+                limits: limits(&["y"], &[]),
+                ..Default::default()
+            },
+        );
+        let err = s
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("x", Arc::new(Int64Array::from(vec![10]))),
+                ("y", Arc::new(StringArray::from(vec!["a"]))),
+            ]))
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Drift(m) if m.contains("the destination can't hold it")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_held_value_that_fits_the_destinations_type_holds_a_column() {
+        // The held value fits the type the destination has, which a column
+        // held whole shows it at, though not the stream's.
+        let mut s = established(
+            Policy::AllowAll,
+            HoldConfig {
+                show: Show::Value("\"none\"".into()),
+                holding: vec![refused("x", DataType::Utf8)],
+                limits: crate::hold::Limits {
+                    not_null: HashSet::from(["x".to_owned()]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let n = s
+            .batch(&typed(vec![
+                ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+                ("x", Arc::new(Int64Array::from(vec![10]))),
+            ]))
+            .unwrap();
+        let x = n.batch.column_by_name("x").unwrap();
+        assert_eq!(
+            x.as_string::<i32>().iter().collect::<Vec<_>>(),
+            [Some("none")]
+        );
     }
 
     #[test]

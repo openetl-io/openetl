@@ -288,7 +288,6 @@ fn owned_shaper(
     schema: Option<SchemaRef>,
     holding: Option<&[ColumnHold]>,
 ) -> Result<Shaper, JobError> {
-    let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
     // The columns the stream added since it was restored that the
     // destination takes: not those held whole that it has no field of, as a
     // column added while held isn't counted where it's added.
@@ -336,7 +335,9 @@ fn owned_shaper(
     };
     let mut shaper = shaper(plan, s, schema)?;
     if let Some(config) = config {
-        shaper = shaper.with_holds(config).map_err(bad)?;
+        shaper = shaper
+            .with_holds(config)
+            .map_err(|e| shape_error(&plan.streams[s], e))?;
     }
     if let (Some(r), Some(_)) = (&plan.replays[s], &plan.held_url) {
         // Patches go out at the types the destination will have. Once a
@@ -3601,6 +3602,29 @@ pub(crate) mod tests {
         assert!(
             openetl_normalize::render_row(last, 0).contains("x"),
             "{held:?}"
+        );
+    }
+
+    // A plan that holds the key, as one recorded before the runner checked
+    // what it holds, stops the stream with SCHEMA_DRIFT.
+    #[test]
+    fn a_hold_on_the_key_is_schema_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = pending_hold_request(dir.path());
+        if let Some(h) = req.streams[0].holds.as_mut() {
+            h.holding[0].column = "id".into();
+        }
+        let plan = Plan::from_request(req).unwrap();
+        let mut first = shaper(&plan, 0, None).unwrap();
+        first.rows([br#"{"id": 1, "a": 1}"#.as_slice()]).unwrap();
+        let Err(err) = owned_shaper(&plan, 0, first.schema(), None) else {
+            panic!("the key was held");
+        };
+        assert_eq!(err.code, ErrorCode::SchemaDrift, "{}", err.message);
+        assert!(
+            err.message.contains("part of the stream's key"),
+            "{}",
+            err.message
         );
     }
 

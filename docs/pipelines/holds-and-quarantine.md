@@ -100,6 +100,23 @@ On [workers](./workers.md#schema-changes-and-holds), the policy applies on every
 
 A column hold needs what a cell hold needs: a primary key and a destination that patches the stream's write mode. If OpenETL cannot hold the column, the sync fails with `SCHEMA_DRIFT`. A change to a column does not quarantine rows. [Handle schema changes and holds](./schema-changes.md) walks through a column hold and its release.
 
+OpenETL cannot hold these columns whole:
+
+- a column of the primary key;
+- the stream's cursor;
+- a column that the destination reports it cannot hold, such as a partition column or the key of the destination's table;
+- a column that cannot be null, unless `heldValue` gives a value to write in its place.
+
+If the destination refuses a change to one of these columns, the sync fails with `SCHEMA_DRIFT`. The error includes the destination's reason and its repair statement. Run the repair, or change the column back at the source. Then start a sync.
+
+A hold can be in force on such a column, such as a hold that a sync recorded before OpenETL checked these cases. Each sync then fails with `SCHEMA_DRIFT` until you release the hold. Discarding the hold does not help, because a discarded column stays held. To release it:
+
+1. Run the destination's repair from the error, or change the column back at the source.
+2. Release the hold with `openetl holds release PIPELINE STREAM COLUMN`.
+3. Start a sync.
+
+If the destination still refuses the column, the sync fails with `SCHEMA_DRIFT` and the repair statement.
+
 ## An example
 
 A stream `orders` has the primary key `id`, and the pipeline writes it with `merge`. Its `price` column is a decimal with two decimal places. The source sends three rows, and row 2's price is `NaN`, which a decimal cannot keep:

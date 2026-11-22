@@ -1971,7 +1971,11 @@ type WriteSchemaApplied struct {
 	// sent again.
 	Error *Error `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
 	// From destinations that take holds: columns it didn't add or change,
-	// having applied the rest. The platform holds them.
+	// having applied the rest. The platform holds them, except one it can't
+	// hold: one the stream's limits list as unholdable or as not_null without
+	// a held value, or one of the stream's key or cursor. A refusal of such a
+	// column fails the attempt with SCHEMA_DRIFT, which gives the refusal's
+	// reason and fix.
 	Refused []*RefusedColumn `protobuf:"bytes,2,rep,name=refused,proto3" json:"refused,omitempty"`
 	// From destinations that take holds: by stream, what its table can't
 	// take as it stands, so the platform holds such a change instead of
@@ -2130,7 +2134,8 @@ type TableLimits struct {
 	// Columns that can't take a null, which a held cell is unless the
 	// pipeline gives a held value.
 	NotNull []string `protobuf:"bytes,1,rep,name=not_null,json=notNull,proto3" json:"not_null,omitempty"`
-	// Columns that can't be held, such as partition columns.
+	// Columns that can't be held, such as partition columns or the table's
+	// key. Refusing one fails the attempt with SCHEMA_DRIFT.
 	Unholdable []string `protobuf:"bytes,2,rep,name=unholdable,proto3" json:"unholdable,omitempty"`
 	// Columns whose type can't change, such as those a view depends on.
 	Fixed []string `protobuf:"bytes,3,rep,name=fixed,proto3" json:"fixed,omitempty"`

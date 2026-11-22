@@ -41,14 +41,11 @@ func Describe(raw []byte) (Description, error) {
 	}
 	defer r.Release()
 	s := r.Schema()
-	md := s.Metadata()
 	var d Description
-	d.Table, _ = md.GetValue(tableKey)
-	var sources map[string]string
-	if v, ok := md.GetValue(sourceNamesKey); ok {
-		if err := json.Unmarshal([]byte(v), &sources); err != nil {
-			return Description{}, err
-		}
+	d.Table, _ = s.Metadata().GetValue(tableKey)
+	sources, err := SourceNames(s)
+	if err != nil {
+		return Description{}, err
 	}
 	d.Columns = Columns(s)
 	for i := range d.Columns {
@@ -61,6 +58,20 @@ func Describe(raw []byte) (Description, error) {
 	sum := sha256.Sum256(append([]byte(d.Table+"\x00"), cols...))
 	d.Digest = hex.EncodeToString(sum[:])
 	return d, nil
+}
+
+// SourceNames maps each column of s the engine renamed, by its destination
+// name, to its source name. A column it doesn't name has its source's name.
+func SourceNames(s *arrow.Schema) (map[string]string, error) {
+	v, ok := s.Metadata().GetValue(sourceNamesKey)
+	if !ok {
+		return nil, nil
+	}
+	var sources map[string]string
+	if err := json.Unmarshal([]byte(v), &sources); err != nil {
+		return nil, err
+	}
+	return sources, nil
 }
 
 // Columns describes a schema's fields.

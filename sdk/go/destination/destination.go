@@ -419,8 +419,11 @@ type Teardowner interface {
 //
 // A destination that takes holds answers with the columns it didn't add or
 // change, having applied the rest, instead of failing, and with what each
-// stream's table can't take as it stands. The platform holds those columns.
-// Others return the zero SchemaApplied.
+// stream's table can't take as it stands. The platform holds those columns,
+// except one it can't hold: one the stream's Limits list as Unholdable or
+// as NotNull without a held value, or one of the stream's key or cursor. A
+// refusal of such a column fails the attempt with SCHEMA_DRIFT, which gives
+// the refusal's Reason and Fix. Others return the zero SchemaApplied.
 type SchemaApplier interface {
 	ApplySchema(ctx context.Context, streams []StreamSchema) (SchemaApplied, error)
 }
@@ -452,7 +455,8 @@ type TableLimits struct {
 	// Columns that can't take a null, which a held cell is unless the
 	// pipeline gives a held value.
 	NotNull []string
-	// Columns that can't be held, such as partition columns.
+	// Columns that can't be held, such as partition columns or the table's
+	// key. Refusing one fails the attempt with SCHEMA_DRIFT.
 	Unholdable []string
 	// Columns whose type can't change, such as those a view depends on.
 	Fixed []string

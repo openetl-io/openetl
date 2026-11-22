@@ -427,7 +427,8 @@ const commitAttempts = 4
 // RunAttempt runs one attempt of a bounded sync: claim, recover HEAD's epoch,
 // then read until every stream is complete, committing along the way. If
 // the destination refuses columns before an epoch is recorded, it runs
-// another attempt at once that holds them; one it refuses again fails it.
+// another attempt at once that holds them; one it refuses again, or one
+// that can't be held, fails it with SCHEMA_DRIFT.
 func RunAttempt(ctx context.Context, job Job) (Result, error) {
 	for {
 		res, err := runAttempt(ctx, job)
@@ -446,6 +447,9 @@ func RunAttempt(ctx context.Context, job Job) (Result, error) {
 			}
 			if !slices.ContainsFunc(job.sinkStreams(), func(s Stream) bool { return s.Name == c.Stream && job.holdsOn(s) }) {
 				return res, errs.Wrap(errs.SchemaDrift, err, "runner: the stream doesn't hold columns")
+			}
+			if c.NotHeld != "" {
+				return res, c.unheld()
 			}
 		}
 		job.refused = append(job.refused, re.Columns...)
@@ -2061,6 +2065,9 @@ func (c *coordinator) applySchemas(ctx context.Context, n uint64, st *epochState
 	}
 	cols, err := refusedColumns(a, before)
 	if err != nil {
+		return fmt.Errorf("runner: epoch %d: %w", n, err)
+	}
+	if err := c.job.markUnheld(cols, a.Limits, sinkSchemas); err != nil {
 		return fmt.Errorf("runner: epoch %d: %w", n, err)
 	}
 	return &RefusedError{Columns: cols}

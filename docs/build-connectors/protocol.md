@@ -115,6 +115,20 @@ A destination must not change an existing column's type unless the pipeline perm
 
 OpenETL holds the affected column where supported, or stops the stream. It shows the repair to the user. New columns can still be added.
 
+A destination that takes holds also answers with each stream's `TableLimits`. The limits name columns by their destination names:
+
+- `Unholdable`: columns that the destination cannot hold, such as a partition column or the key of its table.
+- `NotNull`: columns that cannot be null.
+- `Fixed`: columns whose type cannot change.
+
+OpenETL cannot hold some refused columns:
+
+- a column that the destination lists in `Unholdable`;
+- a column of the stream's primary key, or its cursor;
+- a column in `NotNull`, if the pipeline gives it no `heldValue`.
+
+If the destination refuses one of these columns, the attempt fails with `SCHEMA_DRIFT`. The error includes the refusal's reason and its `Fix`.
+
 ### Checks and preflights
 
 A connector can tell people whether its configuration works before any data moves, and whether a pipeline would run:
