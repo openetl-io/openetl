@@ -103,6 +103,6 @@ In each of these answers, the kit fails:
 - A field that is not a property of the config schema, by its dotted path. A property of an array's items is under the array's path, with or without an index: `tables.name` or `tables.0.name`.
 - A response with an error, no failed item, and no skipped item, when it has items. A response with a failed item but no error.
 - A response's error whose code is not the first failed item's, or whose message is not that item's `title: message: detail`, with the placeholders filled in.
-- Any text, param name or value, detail or error that holds the value of a secret in the suite's config. The kit looks at each template as written and filled in. Its report does not show such a text.
+- Any text, param name or value, detail or error that holds the value of a secret in the suite's config. The kit looks at each template as written and filled in. Its report does not show such a text. The kit refuses a secret value that it cannot tell from other text, as [Secrets in test configs](./test.md#secrets-in-test-configs) describes.
 
 It flags, and does not fail, a placeholder without a param of its name.

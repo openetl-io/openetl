@@ -51,7 +51,7 @@ func newJSONL(config []byte, _ host.Host) (destination.Destination, error) {
 func (d *jsonl) Capabilities() destination.Capabilities { return destination.Capabilities{} }
 
 func (d *jsonl) Check(context.Context) error {
-	if d.token != "s3cr3t" {
+	if d.token != "jsonl-s3cr3t-token" {
 		return sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, errors.New("jsonl: wrong token"))
 	}
 	return nil
