@@ -835,16 +835,39 @@ fn infinity<T>(s: &str, inf: Infinity, max: T, min: T) -> Option<Result<T, Unfit
     }
 }
 
-/// `YYYY-MM-DD`, at least four year digits; days since 1970-01-01.
-fn date_part(s: &str) -> Option<(i64, &str)> {
+/// Postgres's era suffix: the text before a trailing ` BC`, and whether it
+/// had one.
+fn era(s: &str) -> (&str, bool) {
+    match s.len().checked_sub(3).and_then(|i| s.split_at_checked(i)) {
+        Some((head, tail)) if tail.eq_ignore_ascii_case(" bc") => (head, true),
+        _ => (s, false),
+    }
+}
+
+/// `[±]YYYY-MM-DD`, at least four year digits; days since 1970-01-01. A
+/// signed year is astronomical (`-0001` is 2 BC). With `bc`, the year must
+/// be unsigned and at least 1, and year N is N BC.
+fn date_part(s: &str, bc: bool) -> Option<(i64, &str)> {
+    let (sign, s) = match s.as_bytes().first()? {
+        b'+' => (Some(1), &s[1..]),
+        b'-' => (Some(-1), &s[1..]),
+        _ => (None, s),
+    };
     let year_len = s.bytes().take_while(u8::is_ascii_digit).count();
     if year_len < 4 {
         return None;
     }
     let (y, rest) = digits(s, year_len)?;
+    let y = i64::from(y);
+    let y = match (sign, bc) {
+        (None, false) => y,
+        (Some(sign), false) => sign * y,
+        (None, true) if y >= 1 => 1 - y,
+        _ => return None,
+    };
     let (m, rest) = digits(rest.strip_prefix('-')?, 2)?;
     let (d, rest) = digits(rest.strip_prefix('-')?, 2)?;
-    Some((days_from_civil(i64::from(y), m, d)?, rest))
+    Some((days_from_civil(y, m, d)?, rest))
 }
 
 /// Days since 1970-01-01 in the proleptic Gregorian calendar, for years past
@@ -874,7 +897,8 @@ fn date(s: &str, inf: Infinity) -> Result<i32, Unfit> {
     if let Some(d) = infinity(s, inf, MAX_DATE, MIN_DATE) {
         return d;
     }
-    match date_part(s) {
+    let (s, bc) = era(s);
+    match date_part(s, bc) {
         Some((d, "")) => i32::try_from(d).map_err(|_| Unfit::new(Code::Range, "is out of range")),
         _ => Err(not_a("a date")),
     }
@@ -936,7 +960,8 @@ fn timestamp(s: &str, ts: Ts) -> Result<i64, Unfit> {
     if let Some(t) = infinity(s, ts.inf, max, min) {
         return t;
     }
-    let parsed = date_part(s).and_then(|(days, rest)| {
+    let (s, bc) = era(s);
+    let parsed = date_part(s, bc).and_then(|(days, rest)| {
         let rest = rest.strip_prefix(['T', 't', ' '])?;
         let (t, zone) = time_part(rest)?;
         Some((
@@ -1128,6 +1153,80 @@ mod tests {
         assert_eq!(time("24:00:00").ok(), Some(NANOS_PER_DAY / 1_000));
         assert!(reason(time("24:00:01")).starts_with("type:"));
         assert!(reason(time("12:00:00+02")).starts_with("type:"));
+    }
+
+    #[test]
+    fn signed_expanded_and_bc_years() {
+        assert_eq!(date("-0043-03-15", C).ok(), Some(-735_160));
+        assert_eq!(date("0044-03-15 BC", C).ok(), Some(-735_160));
+        assert_eq!(date("0044-03-15 bc", C).ok(), Some(-735_160));
+        assert_eq!(date("-0001-12-31", C).ok(), Some(-719_529));
+        assert_eq!(date("0002-12-31 BC", C).ok(), Some(-719_529));
+        assert_eq!(date("0001-01-01 BC", C).ok(), Some(-719_528));
+        assert_eq!(date("+12345-01-01", C).ok(), Some(3_789_391));
+        assert_eq!(date("+2000-02-29", C).ok(), Some(11_016));
+        assert!(reason(date("-9999999-01-01", C)).starts_with("range:"));
+        assert!(reason(date("+9999999-01-01", C)).starts_with("range:"));
+        for bad in [
+            "-043-03-15",
+            "+043-03-15",
+            "--0043-03-15",
+            "+-0043-03-15",
+            "- 0043-03-15",
+            "0000-03-15 BC",
+            "-0043-03-15 BC",
+            "+0044-03-15 BC",
+            "0044-03-15BC",
+            "0044-03-15  BC",
+            "0044-03-15 AD",
+            "0044-03-15 BC BC",
+            "-0001-02-29",
+        ] {
+            assert!(reason(date(bad, C)).starts_with("type:"), "{bad:?}");
+        }
+
+        let day = 86_400_000_000;
+        let bc = -735_160 * day + 10 * 3_600_000_000;
+        for s in [
+            "-0043-03-15T10:00:00",
+            "-0043-03-15 10:00:00",
+            "0044-03-15 10:00:00 BC",
+        ] {
+            assert_eq!(timestamp(s, us(false)).ok(), Some(bc), "{s:?}");
+        }
+        for s in [
+            "-0043-03-15T10:00:00Z",
+            "-0043-03-15T12:00:00+02:00",
+            "0044-03-15 10:00:00+00 BC",
+            "0044-03-15 12:00:00+02 BC",
+        ] {
+            assert_eq!(timestamp(s, us(true)).ok(), Some(bc), "{s:?}");
+        }
+        assert_eq!(
+            timestamp("+12345-01-01T00:00:00Z", us(true)).ok(),
+            Some(3_789_391 * day)
+        );
+        assert_eq!(
+            timestamp("-0001-12-31 00:00:00", us(false)).ok(),
+            Some(-719_529 * day)
+        );
+        let ns = Ts {
+            nanos: true,
+            ..us(true)
+        };
+        assert!(reason(timestamp("0044-03-15 10:00:00+00 BC", ns)).starts_with("range:"));
+        assert!(reason(timestamp("+300000-01-01T00:00:00Z", us(true))).starts_with("range:"));
+        for bad in [
+            "0000-03-15 10:00:00+00 BC",
+            "-0043-03-15 10:00:00+00 BC",
+            "0044-03-15 BC 10:00:00+00",
+            "0044-03-15 10:00:00+00BC",
+        ] {
+            assert!(
+                reason(timestamp(bad, us(true))).starts_with("type:"),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
