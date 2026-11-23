@@ -541,6 +541,36 @@ async fn versions_cross_engines_with_their_rows() {
     }
 }
 
+/// A key the destination renames, as Id becomes id, in a new stream's
+/// first syncs: the engine that takes rows it read none of names the key as
+/// the rows do.
+#[tokio::test]
+async fn a_renamed_key_crosses_engines() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = format!("file://{}", dir.path().join("state").display());
+    let rows = |name: &str| -> Vec<String> {
+        (0..40)
+            .map(|i| format!(r#"{{"Id": {i}, "name": "{name}", "at": "2024-05-01"}}"#))
+            .collect()
+    };
+    let renamed = |r: &mut StartJobRequest| {
+        r.streams[0].primary_key = vec!["Id".into()];
+        r.streams[0].exchange = exchange_by(&["Id"]);
+    };
+    let v1 = versions_sync(&state, 1, &[], &rows("v1"), renamed).await;
+    let v2 = versions_sync(&state, 2, &v1.snapshots(), &rows("v2"), renamed).await;
+    assert!(
+        v1.ids.values().any(|(e, _)| *e == 1),
+        "no row crossed to engine 1"
+    );
+    for (id, (engine, record)) in &v2.ids {
+        assert_ne!(
+            record, &v1.ids[id].1,
+            "row {id}'s second version, at engine {engine}, kept its ID"
+        );
+    }
+}
+
 /// Stream a with its price declared decimal(`precision`, 2), whose cells
 /// that don't fit are held.
 fn holding(dir: &std::path::Path, precision: u8, req: &mut StartJobRequest) {
