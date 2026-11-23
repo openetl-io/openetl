@@ -446,13 +446,15 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		d := deliveryStream(s.cs, s.ps, read, mode)
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
-		if w := cursorWarning(read, d.Keyed, p.Dedupe, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField()), s.cs.GetColumns()); w != "" {
+		cursor := cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField())
+		versions := !sql && keepsVersions(read, d.Keyed, cursor, p.Dedupe)
+		if w := cursorWarning(read, d.Keyed, p.Dedupe, versions, cursor, s.cs.GetColumns()); w != "" {
 			warnings = append(warnings, &apiv1.PlanWarning{Stream: name, Message: w})
 		}
 		sp := &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
 			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]}
 		w := WriterOperator(s.cs.GetPrimaryKey(), oneLane)
-		w.Need.KeyGroups = !sql && keepsVersions(read, d.Keyed, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField()), p.Dedupe)
+		w.Need.KeyGroups = versions
 		sp.Partitioning, sp.Operators = Place(sourceOf(spec, s.cs, s.ps), w).API()
 		plans = append(plans, sp)
 	}
@@ -608,10 +610,15 @@ func keepsVersions(read apiv1.SyncMode, keyed bool, cursor string, dedupe destin
 
 // cursorWarning warns of a keyed stream read with incremental and deduped at
 // apply whose cursor's type holds whole days or seconds. Two changes of a row
-// inside one such unit give it one cursor value, and so one _openetl_id: once
-// a read has written the first, the apply skips the second as a repeat. Empty
-// means no warning, as for a cursor the catalog gives no type.
-func cursorWarning(read apiv1.SyncMode, keyed bool, dedupe destination.Dedupe, cursor string, columns []*apiv1.CatalogColumn) string {
+// inside one such unit give it one cursor value, and so one _openetl_id.
+// Where the stream's writer lanes keep the versions of its records
+// (versions), the second gets an ID of its own, but a row that changes back
+// within the unit doesn't: its first version holds the ID, so the apply
+// skips the change back, and the table ends with the change between. Where
+// they don't, once a read has written the first, the apply skips the second
+// as a repeat. Empty means no warning, as for a cursor the catalog gives no
+// type.
+func cursorWarning(read apiv1.SyncMode, keyed bool, dedupe destination.Dedupe, versions bool, cursor string, columns []*apiv1.CatalogColumn) string {
 	if read != apiv1.SyncMode_SYNC_MODE_INCREMENTAL || !keyed || dedupe != destination.DedupeTarget {
 		return ""
 	}
@@ -619,9 +626,15 @@ func cursorWarning(read apiv1.SyncMode, keyed bool, dedupe destination.Dedupe, c
 	if i < 0 || !coarse(columns[i].GetType()) {
 		return ""
 	}
+	const finer = "use a cursor that every update changes, at a finer precision, such as a microsecond timestamp, a row version or a sequence"
+	if versions {
+		return fmt.Sprintf("its cursor %q is %s, so two changes of a row can have one cursor value: "+
+			"OpenETL tells the versions apart by their values, but a row that changes back within one cursor value, from A to B and back to A, "+
+			"keeps A's _openetl_id, so the apply skips the change back, and the latest version in the table is B; "+finer, cursor, columns[i].GetType())
+	}
 	return fmt.Sprintf("its cursor %q is %s, so two changes of a row can have one cursor value, and then one _openetl_id: "+
 		"once a read has written the first, the apply skips the second as a repeat, and the table keeps the first until a change moves the cursor; "+
-		"use a cursor that every update changes, at a finer precision, such as a microsecond timestamp, a row version or a sequence", cursor, columns[i].GetType())
+		finer, cursor, columns[i].GetType())
 }
 
 // coarse reports whether an Arrow type, as the catalog names it, holds only

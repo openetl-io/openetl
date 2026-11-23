@@ -216,7 +216,7 @@ The plan warns about a stream that has these properties:
 - It is deduped at apply.
 - The source's catalog gives its cursor one of these types: `date32`, `date64`, `timestamp[s]` with or without a time zone, or `time32[s]`.
 
-The warning starts with `its cursor "updated_at" is timestamp[s, tz=UTC], so two changes of a row can have one cursor value`. The plan cannot see the precision of these cursors, so check them yourself:
+The warning starts with `its cursor "updated_at" is timestamp[s, tz=UTC], so two changes of a row can have one cursor value`. For a stream whose versions OpenETL tells apart, it goes on with the change back: a row that changes from A to B and back to A within one cursor value ends as B. For a stream that a SQL transform reads, where OpenETL keeps no hashes, it says that the apply skips the second version. The plan cannot see the precision of these cursors, so check them yourself:
 
 - an integer that holds seconds since 1970, such as a declarative source's `unix` cursor;
 - a timestamp with microseconds whose values are whole seconds, a type that a source can give to a database column that stores whole seconds;

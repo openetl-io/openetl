@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/sqlplan"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
@@ -110,7 +111,7 @@ var cursors = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 // Two changes of a row inside one unit of a coarse cursor get one record ID,
 // so the plan warns where the apply skips one as a repeat, or a merge may.
 func TestCursorWarning(t *testing.T) {
-	const skips = "the apply skips the second as a repeat"
+	const reverts = "and the latest version in the table is B"
 	orders := func(cursor string) string {
 		return `{"source": {"streams": [{"name": "orders", "cursor": "` + cursor + `"}]}}`
 	}
@@ -119,13 +120,13 @@ func TestCursorWarning(t *testing.T) {
 		caps       destination.Capabilities
 		want, says string
 	}{
-		{name: "a date, by default", spec: `{"source": {"streams": [{"name": "orders"}]}}`, caps: warehouse, want: `orders: its cursor "day" is date32,`, says: skips},
-		{name: "date64", spec: orders("day64"), caps: warehouse, want: `orders: its cursor "day64" is date64,`, says: skips},
-		{name: "seconds", spec: orders("s"), caps: warehouse, want: `orders: its cursor "s" is timestamp[s],`, says: skips},
-		{name: "seconds in UTC", spec: orders("s_utc"), caps: warehouse, want: `orders: its cursor "s_utc" is timestamp[s, tz=UTC],`, says: skips},
-		{name: "a time of day in seconds", spec: orders("clock"), caps: warehouse, want: `orders: its cursor "clock" is time32[s],`, says: skips},
+		{name: "a date, by default", spec: `{"source": {"streams": [{"name": "orders"}]}}`, caps: warehouse, want: `orders: its cursor "day" is date32,`, says: reverts},
+		{name: "date64", spec: orders("day64"), caps: warehouse, want: `orders: its cursor "day64" is date64,`, says: reverts},
+		{name: "seconds", spec: orders("s"), caps: warehouse, want: `orders: its cursor "s" is timestamp[s],`, says: reverts},
+		{name: "seconds in UTC", spec: orders("s_utc"), caps: warehouse, want: `orders: its cursor "s_utc" is timestamp[s, tz=UTC],`, says: reverts},
+		{name: "a time of day in seconds", spec: orders("clock"), caps: warehouse, want: `orders: its cursor "clock" is time32[s],`, says: reverts},
 		{name: "the require of effectively_once still dedupes", spec: `{"source": {"streams": [{"name": "orders", "require": "DELIVERY_LEVEL_EFFECTIVELY_ONCE"}]}}`, caps: warehouse,
-			want: `orders: its cursor "day" is date32,`, says: skips},
+			want: `orders: its cursor "day" is date32,`, says: reverts},
 		{name: "milliseconds", spec: orders("ms"), caps: warehouse},
 		{name: "microseconds", spec: orders("us"), caps: warehouse},
 		{name: "an integer", spec: orders("version"), caps: warehouse},
@@ -162,6 +163,21 @@ func TestCursorWarning(t *testing.T) {
 				t.Errorf("warnings %q, want one starting %q that says %q", got, tc.want, tc.says)
 			}
 		})
+	}
+
+	// A stream that a SQL transform passes through keeps no versions, so
+	// the apply skips its second version.
+	spec := sqlSpec("…", apiv1.Passthrough_PASSTHROUGH_ALL, nil, &apiv1.PipelineStream{Name: "orders"})
+	spec.Delivery = nil
+	_, _, warnings := PipelineSQL(spec, cursors, warehouse, &sqlplan.Answer{})
+	var got []string
+	for _, w := range warnings {
+		if w.GetStream() == "orders" && strings.HasPrefix(w.GetMessage(), "its cursor ") {
+			got = append(got, w.GetMessage())
+		}
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "the apply skips the second as a repeat") {
+		t.Errorf("passed through a SQL transform: %q", got)
 	}
 }
 
