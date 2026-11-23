@@ -184,16 +184,33 @@ A stream that its source replays exactly returns, after a restore, exactly the r
 
 ## Choose a cursor that changes on every update
 
-An incremental read tells the versions of a row apart by its cursor value. For a stream with a primary key, the `_openetl_id` is a hash of the stream, the key and the cursor value. The `_openetl_seq` is the cursor value. So the cursor must have a different value for any two changes of a row.
+An incremental read tells the versions of a row apart by its cursor value. For a stream with a primary key, the `_openetl_id` is a hash of the stream, the key and the cursor value. The `_openetl_seq` is the cursor value. Each read starts at the previous highest cursor value, and includes it.
 
-A date, or a timestamp stored in whole seconds, does not meet this. Two changes of a row in one day, or in one second, give the row one cursor value. If a sync reads the row between the two changes, OpenETL writes the first version. The next sync reads the second version with the same `_openetl_id` and `_openetl_seq`. If the stream is deduped at apply, which `openetl plan` shows as `superset replay, deduped at apply`, the destination skips the second version as a repeat.
+A date, or a timestamp stored in whole seconds, can give two changes of a row one cursor value: two changes in one day, or in one second. If a sync reads the row between the two changes, OpenETL writes the first version, and the next sync reads the second version at the same cursor value.
 
-A skipped version is lost. The table keeps the first version until a later change moves the cursor. `openetl reset --stream` does not help, because a new read gives the version the same ID. A stream that `openetl plan` shows as `superset replay, written with merge` is not deduped at apply: the destination merges each version onto its key's row by `_openetl_seq`.
+In a stream deduped at apply, which `openetl plan` shows as `superset replay, deduped at apply`, OpenETL keeps a hash of the values of each version that a read gives an `_openetl_id`. It keeps them for the rows of the stream's last two reads. A row read again with other values than the version that holds its ID gets an `_openetl_id` of its own, made from that ID and its values, so the destination writes it. A row read again unchanged keeps its ID, and the destination skips it as a repeat. Both versions have the same `_openetl_seq`.
 
-Use a cursor that every update changes, at a finer precision: a timestamp with microseconds, a row version or a sequence. If you cannot change the cursor of an appended stream, set `require: at_least_once` on the stream. The destination then writes the second version too. It also writes again every row that a sync reads again, such as the rows at the previous highest cursor value. With a date cursor, these are all the rows changed on that day. Both versions have the same `_openetl_id` and `_openetl_seq`, so read such a stream in this way:
+The table keeps the first version, and the second is skipped as a repeat, in these cases:
 
-- To read the latest version of each row, order the row's versions by `_openetl_seq` descending, then by `_openetl_synced_at` descending. The second version was written later.
-- Do not keep one row per `_openetl_id`. That drops the second version.
+- **The first read after an upgrade** to a version of OpenETL that keeps these hashes, or after the stream becomes deduped at apply. A second version that was waiting to be read is skipped. Later versions land.
+- **A row that neither of the last two reads gave.** Its hash is gone.
+- **A schema change.** A column that the stream gains or loses, or a column that changes to another kind of value, such as from a number to text, starts the hashes again. A widening, such as from `int32` to `int64`, does not.
+- **A stream that a SQL transform reads, and the outputs of a transform.** OpenETL keeps no hashes for them.
+- **A destination with more than one writer lane, and a source that splits the stream by its primary key,** which `openetl plan` shows as `split by` the key in the stream's [`partitioning`](./plan-and-apply.md#partitioning-in-the-plan). OpenETL keeps the hashes of only part of the rows.
+- **[A job on workers](./workers.md) whose stream has an exchange and can hold columns.** OpenETL keeps no hashes for it.
+
+In these cases, the table ends with another row than the source has:
+
+- **A row that changes back within one cursor value**, from A to B and back to A. A holds the `_openetl_id`, so the destination skips A's second read as a repeat, and the latest version in the table is B.
+- **A column whose value changes on every read** while the row does not change, such as a computed value, the time a source fetched the row, or JSON whose keys come in another order. Each read gives the row new values, so the rows at the previous highest cursor value land again on every sync.
+- **A held cell whose source text differs from its value's shortest form**, such as `1.50` for a decimal that OpenETL compares as `1.5`. While the cell is held, the row's hash is of its text; once it fits, of its value. So after the [release](./schema-changes.md), a read of the row at the previous highest cursor value lands it again once.
+- **A destination with lane commits on workers** reads a lane's part of an epoch again from the source when the lane did not commit ([When a pod fails](./workers.md#when-a-pod-fails)). If the source changed a row since the epoch, the newer version lands, and the version that the epoch read does not. A later read that has no hash for the row lands the newer version again.
+
+Use a cursor that every update changes, at a finer precision: a timestamp with microseconds, a row version or a sequence. Then each version has an `_openetl_id` and an `_openetl_seq` of its own.
+
+Versions of a row at one cursor value have the same `_openetl_seq`. To read the latest version of each row, order the row's versions by `_openetl_seq` descending, then by `_openetl_synced_at` descending. The later version was written later.
+
+Where OpenETL keeps no hashes, a stream deduped at apply skips the second version. If you cannot change the cursor of such a stream, and it is appended, set `require: at_least_once` on it. The destination then writes the second version too. It also writes again every row that a sync reads again, such as the rows at the previous highest cursor value. With a date cursor, these are all the rows changed on that day. Both versions have the same `_openetl_id`, so do not keep one row per `_openetl_id`: that drops the second version.
 
 The plan warns about a stream that has these properties:
 

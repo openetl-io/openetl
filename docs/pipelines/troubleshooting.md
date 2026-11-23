@@ -133,7 +133,7 @@ Separate three questions:
 - **Is it behind the source?** Source-reported lag and retention show whether unread data is accumulating. Not every source reports these metrics.
 - **Did all values land?** Check the stream's **Quarantined** and **Held** counts, paused streams, and the destination's visibility rules.
 
-Confirm which streams and columns the pipeline selects. An incremental read depends on its cursor changing on every relevant update, to a value that differs from the one before. In a stream deduped at apply, a cursor stored as a date or in whole seconds can lose a change. See [Choose a cursor that changes on every update](./delivery.md#choose-a-cursor-that-changes-on-every-update). An incremental read does not see deletes. Check the connector's discovery result and documentation if a table or stream is missing.
+Confirm which streams and columns the pipeline selects. An incremental read depends on its cursor changing on every relevant update, to a value that differs from the one before. A cursor stored as a date or in whole seconds can give two changes of a row one cursor value. In a stream deduped at apply, OpenETL tells such versions apart by their values, except in the cases that [Choose a cursor that changes on every update](./delivery.md#choose-a-cursor-that-changes-on-every-update) lists, where the table keeps the first version. An incremental read does not see deletes. Check the connector's discovery result and documentation if a table or stream is missing.
 
 For a continuous pipeline with growing lag, compare read throughput, commit duration and capacity. If retention is at risk, restore progress before the source drops unread history. Do not treat resetting positions as a throughput fix.
 
