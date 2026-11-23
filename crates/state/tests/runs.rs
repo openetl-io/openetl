@@ -607,23 +607,6 @@ async fn a_restore_refuses_what_it_cant_read() {
     }
 }
 
-/// A restore opens its runs as reads need them, so a run that's gone is
-/// found by a read, or at once by a check; one that's there passes.
-#[tokio::test]
-async fn a_check_finds_a_run_thats_gone() {
-    let bucket = Bucket::new();
-    let s = stores(&bucket, RunConfig::default());
-    let mut ls = open(&s, 1, 1, 1, &[]).await;
-    ls[0].put(OP, KeyRef::new(0, b"k"), b("v"));
-    let all = barrier(&mut ls, 1).await;
-    open(&s, 2, 2, 1, &all).await[0].check().await.unwrap();
-    for name in bucket.names().await {
-        bucket.memory.delete(&Bucket::path(&name)).await.unwrap();
-    }
-    let ls = open(&s, 3, 2, 1, &all).await;
-    assert!(matches!(ls[0].check().await, Err(Error::Corrupt(_))));
-}
-
 /// A row put in place of another reads back by its key, from the open
 /// epoch and from a restore's runs, newest first, until a horizon passes
 /// its time.

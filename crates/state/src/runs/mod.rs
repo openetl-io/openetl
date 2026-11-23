@@ -2099,15 +2099,6 @@ impl Store for RunStore {
         Box::pin(self.lookup(keys))
     }
 
-    fn check(&self) -> BoxFuture<'_, Result<()>> {
-        let runs = self
-            .runs
-            .iter()
-            .map(AsRef::as_ref)
-            .filter(|r| r.open.get().is_none());
-        Box::pin(self.open_runs(runs.collect()))
-    }
-
     fn scan<'a>(
         &'a self,
         start: &'a [u8],

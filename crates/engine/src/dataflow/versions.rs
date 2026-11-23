@@ -16,7 +16,8 @@
 //! key group the writer lane doesn't keep: an entry is missed, and the
 //! version skipped as it was before, but never given two IDs. Versions of a
 //! layout other than this engine's start again, as versions that can't be
-//! read do, and so do versions whose runs are gone.
+//! read do, and so do versions whose runs are gone, at the read that finds
+//! one.
 
 use std::collections::HashMap;
 
@@ -42,6 +43,7 @@ const LAST: OperatorId = OperatorId(1);
 /// and the versions' own in the bits above it, so that an engine that
 /// keeps them otherwise starts them again rather than misread them.
 const LAYOUT: u32 = openetl_state::LAYOUT | (3 << 16);
+const UNREAD: &str = "the record's versions of the stream's records can't be read, so a record read again keeps its ID until they're kept again";
 
 /// A writer lane's versions of each stream that keeps them.
 pub(super) struct Versions {
@@ -149,34 +151,17 @@ impl Versions {
                     "versions of layout {:#x}, where this engine keeps {LAYOUT:#x}",
                     sn.layout
                 ))),
-                // A run that's gone, as a runner from before the versions
-                // deletes, is found here rather than at a later read.
                 None => {
                     for sn in &mut restored {
                         sn.layout = openetl_state::LAYOUT;
                     }
-                    async {
-                        let l = Layer::open(
-                            &stores,
-                            plan.generation,
-                            plan.first_epoch,
-                            open,
-                            &restored,
-                        )
-                        .await?;
-                        l.check().await.map(|()| l)
-                    }
-                    .await
+                    Layer::open(&stores, plan.generation, plan.first_epoch, open, &restored).await
                 }
             };
             let layer = match opened {
                 Ok(l) => l,
                 Err(e @ (StateError::Snapshot(_) | StateError::Corrupt(_))) => {
-                    tracing::warn!(
-                        stream = %plan.streams[s],
-                        error = %e,
-                        "the record's versions of the stream's records can't be read, so a record read again keeps its ID until they're kept again"
-                    );
+                    tracing::warn!(stream = %plan.streams[s], error = %e, "{UNREAD}");
                     Layer::open(&stores, plan.generation, plan.first_epoch, open, &[])
                         .await
                         .map_err(|e| crate::state::state_error("a stream's versions", &e))?
@@ -275,28 +260,32 @@ impl Stream {
         if write {
             self.move_on(range);
         }
+        let reads: Vec<Reads> = rows.iter().map(|&r| self.reads(groups[r])).collect();
         let mut slots = Vec::with_capacity(rows.len() * 2);
-        for &r in &rows {
+        for (&r, reads) in rows.iter().zip(&reads) {
             let g = groups[r];
-            let reads = self.reads(g);
             slots.push((KeyRef::new(g, id_of(r)), reads.last));
             if let Some(b) = reads.before {
                 slots.push((KeyRef::new(g, id_of(r)), b));
             }
         }
-        let found = self
-            .layer
-            .row(ENTRIES, &slots)
-            .await
-            .map_err(|e| self.failed(&e))?;
+        let found = match self.layer.row(ENTRIES, &slots).await {
+            Ok(found) => found,
+            Err(e) => {
+                self.start_again(flow, &e).await?;
+                if write {
+                    self.move_on(range);
+                }
+                vec![None; slots.len()]
+            }
+        };
         let mut found = found.into_iter();
         // This batch's entries, which reads of the layer don't see yet.
         let mut taken: HashMap<(u32, &[u8]), Entry> = HashMap::new();
         let mut out: Vec<u8> = raw.to_vec();
         let mut changed = false;
-        for &r in &rows {
+        for (&r, reads) in rows.iter().zip(reads) {
             let g = groups[r];
-            let reads = self.reads(g);
             let last = found.next().flatten();
             let before = match reads.before {
                 Some(_) => found.next().flatten(),
@@ -338,6 +327,31 @@ impl Stream {
         let mut columns = batch.columns().to_vec();
         columns[at] = std::sync::Arc::new(ids) as ArrayRef;
         RecordBatch::try_new(batch.schema(), columns).map_err(|e| JobError::internal(e.to_string()))
+    }
+
+    /// Starts the versions again, empty, for the rest of the attempt, where
+    /// `e` says the record's can't be read, as a run that's gone: rows keep
+    /// their IDs until they're kept again. A runner from before the
+    /// versions, after a rollback, deletes their runs, which a later one
+    /// restores. Other errors fail the attempt.
+    async fn start_again(&mut self, flow: &Flow, e: &StateError) -> Result<(), JobError> {
+        let plan = &flow.plan;
+        let (StateError::Snapshot(_) | StateError::Corrupt(_), Some(state)) = (e, &plan.state.job)
+        else {
+            return Err(self.failed(e));
+        };
+        tracing::warn!(operator = %self.id, error = %e, "{UNREAD}");
+        let open = self.range.unwrap_or(KeyGroupRange::new(0, 0));
+        let stores = state.stores(&self.id);
+        let mut layer = Layer::open(&stores, plan.generation, self.layer.epoch(), open, &[])
+            .await
+            .map_err(|e| crate::state::state_error("a stream's versions", &e))?;
+        if !state.read_only() {
+            layer.set_flush_at(state.flush_at(plan.writer_lanes));
+        }
+        self.layer = layer;
+        self.moved = false;
+        Ok(())
     }
 
     /// A key group's reads: those its horizons keep, and this one where

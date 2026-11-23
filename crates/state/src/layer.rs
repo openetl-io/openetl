@@ -252,12 +252,6 @@ impl Layer {
         self.commits
     }
 
-    /// Reads now what a read of the store's version needs first, so that
-    /// what it can't read, as a run that's gone, is an error here.
-    pub async fn check(&self) -> Result<()> {
-        self.store.check().await
-    }
-
     /// Puts `row` as the key's one row at `time`, in place of the one put
     /// there before, which [`Layer::row`] reads by its key rather than a
     /// scan. A slot takes these or [`StateBackend::append`]'s, not both. A

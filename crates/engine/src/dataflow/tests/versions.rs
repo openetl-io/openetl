@@ -472,7 +472,8 @@ async fn versions_of_another_layout_start_again() {
 
 /// Versions whose runs are gone, as after a rollback whose runner, from
 /// before them, restored their record and deleted what it didn't know,
-/// start again rather than fail the sync: a second version keeps its ID.
+/// start again at the lookup that finds one, rather than fail the sync: a
+/// second version keeps its ID, and a third, a read later, gets its own.
 #[tokio::test]
 async fn versions_whose_runs_are_gone_start_again() {
     let dir = tempfile::tempdir().unwrap();
@@ -485,8 +486,11 @@ async fn versions_whose_runs_are_gone_start_again() {
         }
     }
     let v2 = r#"{"id": 1, "name": "v2", "at": "2024-05-01"}"#;
-    let (second, _) = sync(d, 2, &r1, &[v2]).await;
+    let (second, r2) = sync(d, 2, &r1, &[v2]).await;
     assert_eq!(record(&second, 1), record(&first, 1));
+    let v3 = r#"{"id": 1, "name": "v3", "at": "2024-05-01"}"#;
+    let (third, _) = sync(d, 3, &r2, &[v3]).await;
+    assert_ne!(record(&third, 1), record(&second, 1), "not kept again");
 }
 
 /// A stream with versions whose job has no state is refused, as is a
