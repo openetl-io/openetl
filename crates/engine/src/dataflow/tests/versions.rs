@@ -271,8 +271,8 @@ async fn an_entry_lives_through_the_read_after_its_own() {
     );
 }
 
-/// An entry the last read didn't give, where it gave a row of the key
-/// group, is gone: its version keeps its ID.
+/// An entry the last read didn't give, where it gave a row of the writer
+/// lane, is gone: its version keeps its ID.
 #[tokio::test]
 async fn an_entry_the_last_read_didnt_give_expires() {
     let dir = tempfile::tempdir().unwrap();
@@ -292,7 +292,8 @@ async fn an_entry_the_last_read_didnt_give_expires() {
 
 /// A read's entries leave the record two reads after it, whichever key
 /// groups those give rows of, where the record carries a lane's changes
-/// and where every barrier writes a run: the record names none of its runs.
+/// and where every barrier writes a run: the record names none of its runs,
+/// and the next read still finds the last two reads' entries.
 #[tokio::test]
 async fn a_reads_runs_go_two_reads_after_it() {
     let all: Vec<String> = (0..20_000)
@@ -300,13 +301,16 @@ async fn a_reads_runs_go_two_reads_after_it() {
         .collect();
     let all: Vec<&str> = all.iter().map(String::as_str).collect();
     let one = r#"{"id": 1, "name": "n1", "at": "2024-05-01"}"#;
+    let changed = r#"{"id": 1, "name": "changed", "at": "2024-05-01"}"#;
     for pending in [None, Some(0)] {
         let dir = tempfile::tempdir().unwrap();
         let mut from = Restored::default();
+        let mut got = Vec::new();
         for (n, rs) in [(1, &all[..]), (2, &[one][..]), (3, &[one][..])] {
             let mut req = users(dir.path(), n, n as i64 * 1000, &from, 1);
             req.state_pending_bytes = pending;
-            let (_, ready) = run_sync(req, &[rs]).await;
+            let (rows, ready) = run_sync(req, &[rs]).await;
+            got.push(rows);
             from = Restored::of(&ready);
         }
         let first: Vec<&String> = from
@@ -319,7 +323,30 @@ async fn a_reads_runs_go_two_reads_after_it() {
             first.is_empty(),
             "pending {pending:?}: the record names the first read's {first:?}"
         );
+        let mut req = users(dir.path(), 4, 4000, &from, 1);
+        req.state_pending_bytes = pending;
+        let (fourth, _) = run_sync(req, &[&[changed]]).await;
+        assert_ne!(
+            record(&fourth, 1),
+            record(&got[0], 1),
+            "pending {pending:?}: the last read's entry was lost"
+        );
     }
+}
+
+/// An attempt that takes a read up again, from a record whose key groups
+/// moved on to it, finds the entries of the read before it.
+#[tokio::test]
+async fn a_read_taken_up_again_finds_the_read_before_its_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let v1 = r#"{"id": 1, "name": "v1", "at": "2024-05-01"}"#;
+    let other = r#"{"id": 2, "name": "o", "at": "2024-05-01"}"#;
+    let v2 = r#"{"id": 1, "name": "v2", "at": "2024-05-01"}"#;
+    let (first, r1) = sync(d, 1, &Restored::default(), &[v1]).await;
+    let (_, r2) = sync(d, 2, &r1, &[other]).await;
+    let (again, _) = run_sync(users(d, 3, 2000, &r2, 1), &[&[v2]]).await;
+    assert_ne!(record(&again, 1), record(&first, 1), "v2 took v1's ID");
 }
 
 #[tokio::test]
