@@ -520,6 +520,85 @@ async fn versions_whose_runs_are_gone_start_again() {
     assert_ne!(record(&third, 1), record(&second, 1), "not kept again");
 }
 
+/// Versions that start again on a lane that flushed early in the epoch
+/// write runs of names it didn't: a run that's gone can be found after an
+/// early flush where a lane holds key groups of two lanes before it, at
+/// different reads, and only the second's runs are gone.
+#[tokio::test]
+async fn versions_that_start_again_after_an_early_flush_write_runs_of_new_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let plan = Plan::from_request(users(d, 1, 1000, &Restored::default(), 2)).unwrap();
+    let of = |w: usize, n: usize| -> Vec<i64> {
+        (0..)
+            .filter(|&id| {
+                let b = RecordBatch::try_from_iter(vec![(
+                    "id",
+                    Arc::new(arrow_array::Int64Array::from(vec![id])) as arrow_array::ArrayRef,
+                )])
+                .unwrap();
+                let g =
+                    openetl_normalize::key_groups(&b, &["id".into()], plan.key_groups).unwrap()[0];
+                plan.layout.writer(w).contains(&g)
+            })
+            .take(n)
+            .collect()
+    };
+    let (mine, other) = (of(0, 6000), of(1, 1));
+    let at = |id: &i64| format!(r#"{{"id": {id}, "name": "n", "at": "2024-05-01"}}"#);
+    let page = |ids: &[i64]| ids.iter().map(at).collect::<Vec<_>>();
+    // Writer lane 0's key groups move on to read 1, and lane 1's to read 2.
+    let first = page(&mine[..1]);
+    let first: Vec<&str> = first.iter().map(String::as_str).collect();
+    let (_, r1) = run_sync(users(d, 1, 1000, &Restored::default(), 2), &[&first, &[]]).await;
+    let second = page(&other);
+    let second: Vec<&str> = second.iter().map(String::as_str).collect();
+    let (_, r2) = run_sync(users(d, 2, 2000, &Restored::of(&r1), 2), &[&[], &second]).await;
+    for s in r2.snapshots.iter().filter(|s| s.operator == OP) {
+        if s.key_groups.as_ref().is_some_and(|r| r.first > 0) {
+            for run in &s.runs {
+                std::fs::remove_file(d.join("state").join(run)).unwrap();
+            }
+        }
+    }
+    // On one lane, lane 0's rows flush early before lane 1's row finds its
+    // run gone, and more of lane 0's flush early again.
+    let mut req = users(d, 3, 3000, &Restored::of(&r2), 1);
+    req.limits = Some(openetl_proto::engine::v1::Limits {
+        memory_bytes: 1 << 20,
+        ..Default::default()
+    });
+    let pages: Vec<Vec<u8>> = [&mine[..3000], &other[..], &mine[3000..]]
+        .iter()
+        .flat_map(|ids| ids.chunks(500))
+        .map(|ids| {
+            let rs = page(ids);
+            rows(&rs.iter().map(String::as_str).collect::<Vec<_>>())
+        })
+        .collect();
+    let mut h = start_lanes(req);
+    let mut ins = std::mem::take(&mut h.ins);
+    let feed = tokio::spawn(async move {
+        let w = &mut ins[0];
+        for p in pages {
+            put(w, FrameKind::Rows, 0, p).await;
+        }
+        put(w, FrameKind::Barrier, 0, epoch_barrier(3, 3)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+    });
+    let (outs, ready) = h.finish().await;
+    feed.await.unwrap();
+    assert_eq!(written(&outs).len(), 6001);
+    let runs: usize = ready[0]
+        .snapshots
+        .iter()
+        .filter(|s| s.operator == OP)
+        .map(|s| s.runs.len())
+        .sum();
+    assert!(runs > 1, "no early flush after the versions started again");
+}
+
 /// A stream with versions whose job has no state is refused, as is a
 /// version kept of a stream without a cursor.
 #[test]

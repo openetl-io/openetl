@@ -419,6 +419,10 @@ struct Shared {
     /// The bytes its lanes' merges in flight take, of the merge config's
     /// `max_bytes`.
     merging: AtomicU64,
+    /// Each lane's last early flush, by its generation and key groups: the
+    /// epoch, and the flush's number. A store opened again on a lane's
+    /// groups counts on from it, so no name is written twice.
+    early: Mutex<HashMap<(u64, KeyGroupRange), (u64, u32)>>,
 }
 
 impl Shared {
@@ -499,6 +503,7 @@ impl RunStores {
                 next_id: AtomicU64::new(0),
                 learn_peak: AtomicU64::new(0),
                 merging: AtomicU64::new(0),
+                early: Mutex::default(),
             }),
             pending: PendingLimit::default(),
         }
@@ -626,7 +631,6 @@ impl RunStores {
             unopened: AtomicUsize::new(0),
             horizons,
             merging: None,
-            early: (0, 0),
             kept: HashSet::new(),
         };
         for (_, b) in runs {
@@ -1068,8 +1072,6 @@ struct RunStore {
     /// keeps them.
     horizons: Horizons,
     merging: Option<Merging>,
-    /// The epoch of its last early flush, and that flush's number.
-    early: (u64, u32),
     /// The runs of early flushes of a pending set, which a discard of their
     /// epoch leaves.
     kept: HashSet<u64>,
@@ -1591,14 +1593,20 @@ impl RunStore {
         if changes.is_empty() {
             return Ok(());
         }
-        let n = match self.early {
-            (e, n) if e == epoch => n
-                .checked_add(1)
-                .filter(|n| *n < LAST)
-                .ok_or_else(|| Error::Invalid(format!("epoch {epoch} flushed early {n} times")))?,
-            _ => 1,
+        let n = {
+            let mut early = lock(&self.shared.early);
+            let last = early.entry((self.generation, self.range)).or_default();
+            let n = match *last {
+                (e, n) if e == epoch => {
+                    n.checked_add(1).filter(|n| *n < LAST).ok_or_else(|| {
+                        Error::Invalid(format!("epoch {epoch} flushed early {n} times"))
+                    })?
+                }
+                _ => 1,
+            };
+            *last = (epoch, n);
+            n
         };
-        self.early = (epoch, n);
         let content = self.shared.config.drop.then(|| {
             let values = changes
                 .iter()
