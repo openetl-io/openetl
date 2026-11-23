@@ -1369,8 +1369,6 @@ fn broadcast(v: &ArrayRef, n: usize) -> Result<ArrayRef, Error> {
     Ok(arrow_select::take::take(v.as_ref(), &zeros, None)?)
 }
 
-/// The stream's schema as the destination gets it: each column held whole
-/// at the type the destination has, or left out.
 /// `batch` with a last column of its rows' hashes.
 fn with_hashes(batch: &RecordBatch, hashes: Vec<u64>, version: u64) -> Result<RecordBatch, Error> {
     let schema = batch.schema();
@@ -1390,6 +1388,8 @@ fn with_hashes(batch: &RecordBatch, hashes: Vec<u64>, version: u64) -> Result<Re
     )?)
 }
 
+/// The stream's schema as the destination gets it: each column held whole
+/// at the type the destination has, or left out.
 fn deliver_schema(current: &Schema, columns: &BTreeMap<String, Holding>) -> Schema {
     let by_dest: HashMap<&str, &Holding> = columns.values().map(|c| (c.dest.as_str(), c)).collect();
     let fields: Vec<Field> = current
