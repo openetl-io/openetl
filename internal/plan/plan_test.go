@@ -92,6 +92,79 @@ func TestCursorProblem(t *testing.T) {
 	}
 }
 
+// cursors declares its cursors' types, as a database source does.
+var cursors = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
+	{Name: "orders", PrimaryKey: []string{"id"}, CursorField: "day", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL, apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}, Columns: []*apiv1.CatalogColumn{
+		{Name: "id", Type: "int64"}, {Name: "day", Type: "date32"}, {Name: "day64", Type: "date64"}, {Name: "s", Type: "timestamp[s]"},
+		{Name: "s_utc", Type: "timestamp[s, tz=UTC]"}, {Name: "clock", Type: "time32[s]"}, {Name: "ms", Type: "timestamp[ms, tz=UTC]"},
+		{Name: "us", Type: "timestamp[us, tz=UTC]"}, {Name: "version", Type: "int64"}, {Name: "at", Type: "utf8"},
+	}},
+	{Name: "logs", CursorField: "day", Replay: apiv1.Replay_REPLAY_SUPERSET, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_INCREMENTAL}, Columns: []*apiv1.CatalogColumn{
+		{Name: "day", Type: "date32"},
+	}},
+	{Name: "users", PrimaryKey: []string{"id"}, CursorField: "day", Replay: apiv1.Replay_REPLAY_EXACT, SyncModes: []apiv1.SyncMode{apiv1.SyncMode_SYNC_MODE_CDC}, Columns: []*apiv1.CatalogColumn{
+		{Name: "id", Type: "int64"}, {Name: "day", Type: "date32"},
+	}},
+}}
+
+// Two changes of a row inside one unit of a coarse cursor get one record ID,
+// so the plan warns where the apply skips one as a repeat, or a merge may.
+func TestCursorWarning(t *testing.T) {
+	const skips = "the apply skips the second as a repeat"
+	orders := func(cursor string) string {
+		return `{"source": {"streams": [{"name": "orders", "cursor": "` + cursor + `"}]}}`
+	}
+	for _, tc := range []struct {
+		name, spec string
+		caps       destination.Capabilities
+		want, says string
+	}{
+		{name: "a date, by default", spec: `{"source": {"streams": [{"name": "orders"}]}}`, caps: warehouse, want: `orders: its cursor "day" is date32,`, says: skips},
+		{name: "date64", spec: orders("day64"), caps: warehouse, want: `orders: its cursor "day64" is date64,`, says: skips},
+		{name: "seconds", spec: orders("s"), caps: warehouse, want: `orders: its cursor "s" is timestamp[s],`, says: skips},
+		{name: "seconds in UTC", spec: orders("s_utc"), caps: warehouse, want: `orders: its cursor "s_utc" is timestamp[s, tz=UTC],`, says: skips},
+		{name: "a time of day in seconds", spec: orders("clock"), caps: warehouse, want: `orders: its cursor "clock" is time32[s],`, says: skips},
+		{name: "the require of effectively_once still dedupes", spec: `{"source": {"streams": [{"name": "orders", "require": "DELIVERY_LEVEL_EFFECTIVELY_ONCE"}]}}`, caps: warehouse,
+			want: `orders: its cursor "day" is date32,`, says: skips},
+		{name: "milliseconds", spec: orders("ms"), caps: warehouse},
+		{name: "microseconds", spec: orders("us"), caps: warehouse},
+		{name: "an integer", spec: orders("version"), caps: warehouse},
+		{name: "text", spec: orders("at"), caps: warehouse},
+		{name: "a cursor the catalog has no type for", spec: orders("gone"), caps: warehouse},
+		{name: "no primary key", spec: `{"source": {"streams": [{"name": "logs"}]}}`, caps: warehouse},
+		{name: "merged, which is not deduped at apply", spec: `{"destination": {"write": "WRITE_MODE_MERGE"}, "source": {"streams": [{"name": "orders"}]}}`, caps: warehouse},
+		{name: "at_least_once", spec: `{"source": {"streams": [{"name": "orders", "require": "DELIVERY_LEVEL_AT_LEAST_ONCE"}]}}`, caps: warehouse},
+		{name: "a destination that can't dedupe", spec: `{"delivery": {"require": "DELIVERY_LEVEL_AT_LEAST_ONCE"}, "source": {"streams": [{"name": "orders"}]}}`, caps: parquet},
+		{name: "full_refresh", spec: `{"source": {"streams": [{"name": "orders", "sync": "SYNC_MODE_FULL_REFRESH"}]}}`, caps: warehouse},
+		{name: "cdc", spec: `{"source": {"streams": [{"name": "users"}]}}`, caps: warehouse},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &apiv1.PipelineSpec{}
+			if err := protojsonUnmarshal(tc.spec, spec); err != nil {
+				t.Fatal(err)
+			}
+			_, problems, warnings := Pipeline(spec, cursors, tc.caps)
+			for _, p := range problems {
+				if strings.Contains(p.Error(), "cursor") {
+					t.Errorf("problem %q: a coarse cursor is a warning, as the runner plans each sync again", p)
+				}
+			}
+			var got []string
+			for _, w := range warnings {
+				if strings.HasPrefix(w.GetMessage(), "its cursor ") {
+					got = append(got, w.GetStream()+": "+w.GetMessage())
+				}
+			}
+			switch {
+			case tc.want == "" && len(got) > 0:
+				t.Errorf("warnings %q, want none", got)
+			case tc.want != "" && (len(got) != 1 || !strings.HasPrefix(got[0], tc.want) || !strings.Contains(got[0], tc.says)):
+				t.Errorf("warnings %q, want one starting %q that says %q", got, tc.want, tc.says)
+			}
+		})
+	}
+}
+
 func TestPipeline(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

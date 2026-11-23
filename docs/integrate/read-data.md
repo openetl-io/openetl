@@ -28,6 +28,6 @@ from (
 where n = 1;
 ```
 
-To read the latest version of each record from a stream written with append, partition by its primary key instead, and order by `_openetl_seq` descending.
+To read the latest version of each record from a stream written with append, partition by its primary key instead, and order by `_openetl_seq` descending. If two changes of a row can have the same cursor value, both versions have the same `_openetl_id` and `_openetl_seq`. Then also order by `_openetl_synced_at` descending, and do not keep one row per `_openetl_id`. See [Choose a cursor that changes on every update](../pipelines/delivery.md#choose-a-cursor-that-changes-on-every-update).
 
 The destination connector defines the table, file or event format and how readers see committed data. Follow that connector version's documentation for catalog setup, reader compatibility and any destination-specific metadata.
