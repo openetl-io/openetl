@@ -102,9 +102,9 @@ pub struct Shaper {
     /// schema, what its metadata knows of the values, such as the columns
     /// that held integers past ±2^53, and the holds.
     changed: bool,
-    /// Shaped batches carry their rows' hashes, in
-    /// [`versions::HASH_COLUMN`], their held values' too.
-    versions: bool,
+    /// Shaped batches carry their rows' hashes, of the columns but these, in
+    /// [`versions::HASH_COLUMN`], their held values' too; None: no hashes.
+    versions: Option<Arc<[String]>>,
 }
 
 impl Shaper {
@@ -166,7 +166,7 @@ impl Shaper {
             changelog: false,
             holds: None,
             changed: false,
-            versions: false,
+            versions: None,
         };
         shaper.pin();
         Ok(shaper)
@@ -207,15 +207,16 @@ impl Shaper {
             changelog: self.changelog,
             holds: self.holds.clone(),
             changed: false,
-            versions: self.versions,
+            versions: self.versions.clone(),
         }
     }
 
     /// Has shaped batches carry their rows' hashes, and their schema's
     /// version, in a last column, [`versions::HASH_COLUMN`], which the held
-    /// values' batches carry too. It's no column of the stream's.
-    pub fn with_versions(mut self, on: bool) -> Self {
-        self.versions = on;
+    /// values' batches carry too. It's no column of the stream's. The hashes
+    /// leave out `volatile`'s columns, by source name; None: no hashes.
+    pub fn with_versions(mut self, volatile: Option<Arc<[String]>>) -> Self {
+        self.versions = volatile;
         self
     }
 
@@ -655,10 +656,10 @@ impl Shaper {
         };
         let unchanged = self.unchanged(&c.batch, &control)?;
         let lists = self.held_lists(c.batch.num_rows(), unchanged.as_ref(), &cells);
-        let hashes = self.versions.then(|| {
+        let hashes = self.versions.as_ref().map(|volatile| {
             (
-                versions::row_hashes(&c.batch, &cells),
-                versions::schema_version(&c.batch.schema()),
+                versions::row_hashes(&c.batch, &cells, volatile),
+                versions::schema_version(&c.batch.schema(), volatile),
             )
         });
         let mut batch = self.assemble(schema, &c.batch, ids, &control, unchanged, lists)?;

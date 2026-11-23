@@ -334,6 +334,10 @@ message StreamPlan {
   // keep, or without a live entry of its schema's version, keeps its ID.
   // Needs state_url. A keyed stream with a cursor_field. Empty: none.
   string versions_operator = 17;
+  // Columns, by source name, that the hash of a row's values leaves out:
+  // versions_operator's, and that of windows and OVER that drop a row read
+  // again (EventTime.rereads).
+  repeated string volatile_columns = 18;
 }
 
 // EventTime is how a stream's watermarks are made. A split's watermark is

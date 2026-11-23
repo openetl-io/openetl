@@ -1347,8 +1347,12 @@ type StreamPlan struct {
 	// keep, or without a live entry of its schema's version, keeps its ID.
 	// Needs state_url. A keyed stream with a cursor_field. Empty: none.
 	VersionsOperator string `protobuf:"bytes,17,opt,name=versions_operator,json=versionsOperator,proto3" json:"versions_operator,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Columns, by source name, that the hash of a row's values leaves out:
+	// versions_operator's, and that of windows and OVER that drop a row read
+	// again (EventTime.rereads).
+	VolatileColumns []string `protobuf:"bytes,18,rep,name=volatile_columns,json=volatileColumns,proto3" json:"volatile_columns,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *StreamPlan) Reset() {
@@ -1498,6 +1502,13 @@ func (x *StreamPlan) GetVersionsOperator() string {
 		return x.VersionsOperator
 	}
 	return ""
+}
+
+func (x *StreamPlan) GetVolatileColumns() []string {
+	if x != nil {
+		return x.VolatileColumns
+	}
+	return nil
 }
 
 // EventTime is how a stream's watermarks are made. A split's watermark is
@@ -4592,7 +4603,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xca\x05\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xf5\x05\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -4615,7 +4626,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\x12\x1c\n" +
 	"\toverwrite\x18\x10 \x01(\bR\toverwrite\x12+\n" +
-	"\x11versions_operator\x18\x11 \x01(\tR\x10versionsOperator\"\xe8\x02\n" +
+	"\x11versions_operator\x18\x11 \x01(\tR\x10versionsOperator\x12)\n" +
+	"\x10volatile_columns\x18\x12 \x03(\tR\x0fvolatileColumns\"\xe8\x02\n" +
 	"\tEventTime\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12!\n" +
 	"\fdelay_micros\x18\x02 \x01(\x03R\vdelayMicros\x12\x12\n" +

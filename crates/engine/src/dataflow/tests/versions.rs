@@ -220,6 +220,31 @@ async fn a_renamed_key_keeps_the_versions_of_a_new_stream() {
     assert_ne!(record(&second, 1), record(&first, 1), "v2 took v1's ID");
 }
 
+/// A row read again whose volatile columns alone changed keeps its ID; one
+/// whose other columns changed gets an ID of its own.
+#[tokio::test]
+async fn a_volatile_column_doesnt_make_a_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let volatile = |n: u64, from: &Restored| {
+        let mut req = users(d, n, n as i64 * 1000, from, 1);
+        req.streams[0].volatile_columns = vec!["fetched".into()];
+        req
+    };
+    let row = |name: &str, fetched: i64| {
+        format!(r#"{{"id": 1, "name": "{name}", "fetched": {fetched}, "at": "2024-05-01"}}"#)
+    };
+    let (first, ready) = run_sync(volatile(1, &Restored::default()), &[&[&row("v1", 1)]]).await;
+    let (again, ready) = run_sync(volatile(2, &Restored::of(&ready)), &[&[&row("v1", 2)]]).await;
+    assert_eq!(
+        record(&again, 1),
+        record(&first, 1),
+        "a fetch time made a version"
+    );
+    let (second, _) = run_sync(volatile(3, &Restored::of(&ready)), &[&[&row("v2", 3)]]).await;
+    assert_ne!(record(&second, 1), record(&first, 1), "v2 took v1's ID");
+}
+
 /// A declarative read gives again the rows at the highest cursor of the
 /// read before the last, which the last gave too: an entry the last read
 /// gave, or that no read since gave a row of its key group, is live.

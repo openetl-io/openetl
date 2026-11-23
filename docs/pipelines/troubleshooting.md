@@ -137,6 +137,21 @@ Confirm which streams and columns the pipeline selects. An incremental read depe
 
 For a continuous pipeline with growing lag, compare read throughput, commit duration and capacity. If retention is at risk, restore progress before the source drops unread history. Do not treat resetting positions as a throughput fix.
 
+## A row lands again on every sync
+
+If an appended table gets the same rows again on every sync, each time with a new `_openetl_id`, a column of the stream probably changes on every read while the row does not: a computed value, the time the source fetched the row, or JSON whose keys come in another order. An incremental read gives again the rows at the previous highest cursor value. In a stream deduped at apply, OpenETL tells the versions of a row apart by their values, so such a column makes each read of the row a new version, which lands. A group window or `OVER` over the stream counts such a row again in the same way.
+
+Compare two copies of a row to find the column whose value differs. Then list the column in the stream's [`volatileColumns`](../reference/specs/pipeline.md#source-and-streams), and apply the pipeline:
+
+```yaml
+source:
+  streams:
+    - name: products
+      volatileColumns: [fetched_at]
+```
+
+OpenETL then leaves the column out when it compares versions, so the rows read again from the next sync on keep their IDs. A change to that column alone no longer lands, so list only columns whose changes you do not need.
+
 ## Verify recovery
 
 After correcting the cause, resume a paused pipeline or stream:

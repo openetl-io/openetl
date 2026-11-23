@@ -282,7 +282,7 @@ fn shaper(plan: &Plan, s: usize, restored: Option<SchemaRef>) -> Result<Shaper, 
     .map_err(bad)?
     .with_soft_deletes(plan.soft_deletes[s])
     .with_changelog(plan.changelog[s])
-    .with_versions(plan.versions[s].is_some()))
+    .with_versions(plan.versions[s].as_ref().map(|_| plan.volatile[s].clone())))
 }
 
 /// Stream s's shaper as its owner has it, from `schema`, holding whole the

@@ -373,7 +373,7 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 			return nil, nil, nil, fmt.Errorf("engineclient: %s declared schema: %w", s.Name, err)
 		}
 		sp := streamPlan(plan, s, plan.Schemas[s.Name], !sql)
-		sp.ArrowSchema, sp.CursorField, sp.ReadStartMicros = declared, s.CursorField, plan.ReadStarts[s.Name]
+		sp.ArrowSchema, sp.CursorField, sp.ReadStartMicros, sp.VolatileColumns = declared, s.CursorField, plan.ReadStarts[s.Name], s.VolatileColumns
 		sp.Overwrite = !sql && !s.Transformed && s.Mode == destination.Overwrite
 		if !sql {
 			sp.VersionsOperator = plan.Versions[s.Name]

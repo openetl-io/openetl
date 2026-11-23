@@ -45,6 +45,8 @@ pub struct Plan {
     /// Each stream's: the operator whose state keeps the version that holds
     /// each of its record IDs, at the writer lanes.
     pub versions: Vec<Option<String>>,
+    /// Each stream's: the columns its versions' hashes leave out.
+    pub volatile: Vec<std::sync::Arc<[String]>>,
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
     /// Batches skip shaping, for measuring the boundary.
     pub passthrough: bool,
@@ -162,6 +164,8 @@ pub struct InputPlan {
     pub types: TypeOptions,
     pub changelog: bool,
     pub event_time: Option<EventTime>,
+    /// The columns that the hash of a row read again leaves out.
+    pub volatile: std::sync::Arc<[String]>,
 }
 
 /// Held values to patch in, a chunk after each of the stream's barriers.
@@ -539,6 +543,10 @@ impl Plan {
                 op => Some(op.to_owned()),
             });
         }
+        let volatile = sinks
+            .iter()
+            .map(|s| s.volatile_columns.as_slice().into())
+            .collect();
         let changelog = sinks.iter().map(|s| s.changelog).collect();
         let overwrite = sinks
             .iter()
@@ -804,6 +812,7 @@ impl Plan {
             identities,
             soft_deletes,
             versions,
+            volatile,
             changelog,
             overwrite,
             passthrough: req.passthrough,
@@ -1001,6 +1010,7 @@ fn input_plan(s: &StreamPlan, infinity: Infinity) -> Result<InputPlan, JobError>
             .map(EventTime::of)
             .transpose()
             .map_err(|e| bad("event time", e))?,
+        volatile: s.volatile_columns.as_slice().into(),
     })
 }
 

@@ -51,6 +51,9 @@ type Stream struct {
 	Overrides map[string]arrow.DataType
 	// Timestamps keep nanoseconds, which the destination must too.
 	NanosecondTimestamps bool
+	// Columns, by source name, whose values can change on every read while
+	// the row doesn't: the hash of a row's values leaves them out.
+	VolatileColumns []string
 	// Overrides Settings.Require; 0: the pipeline's.
 	Require delivery.Level
 	// Whether rows with the same content become one; nil: the default

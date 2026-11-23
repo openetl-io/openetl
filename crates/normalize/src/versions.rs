@@ -43,21 +43,24 @@ pub const HASH_COLUMN: &str = "\0hash";
 /// metadata.
 pub const SCHEMA_KEY: &str = "openetl.version.schema";
 
-fn counted(name: &str) -> bool {
-    !name.starts_with("_openetl_") && !name.starts_with('\0')
+/// Whether a column counts in a row's hash: not a metadata column, nor one
+/// of the stream's `volatile` columns, whose values can change on every read
+/// while the row doesn't.
+fn counted(name: &str, volatile: &[String]) -> bool {
+    !name.starts_with("_openetl_") && !name.starts_with('\0') && !volatile.iter().any(|v| v == name)
 }
 
-/// Each row's hash, of `batch`'s columns, where `cells` are the cells held
-/// instead of their values, which the batch has null, by row and column
-/// name.
-pub fn row_hashes(batch: &RecordBatch, cells: &[HeldCell]) -> Vec<u64> {
+/// Each row's hash, of `batch`'s columns but `volatile`, where `cells` are
+/// the cells held instead of their values, which the batch has null, by row
+/// and column name.
+pub fn row_hashes(batch: &RecordBatch, cells: &[HeldCell], volatile: &[String]) -> Vec<u64> {
     let schema = batch.schema();
     let mut columns: Vec<(&Field, &dyn Array)> = schema
         .fields()
         .iter()
         .map(AsRef::as_ref)
         .zip(batch.columns().iter().map(AsRef::as_ref))
-        .filter(|(f, _)| counted(f.name()))
+        .filter(|(f, _)| counted(f.name(), volatile))
         .collect();
     columns.sort_by(|a, b| a.0.name().cmp(b.0.name()));
     let mut held: HashMap<(usize, &str), &str> = HashMap::new();
@@ -88,12 +91,12 @@ pub fn row_hashes(batch: &RecordBatch, cells: &[HeldCell]) -> Vec<u64> {
 }
 
 /// The version of a schema, of the columns [`row_hashes`] counts.
-pub fn schema_version(schema: &Schema) -> u64 {
+pub fn schema_version(schema: &Schema, volatile: &[String]) -> u64 {
     let mut fields: Vec<&Field> = schema
         .fields()
         .iter()
         .map(AsRef::as_ref)
-        .filter(|f| counted(f.name()) && *f.data_type() != DataType::Null)
+        .filter(|f| counted(f.name(), volatile) && *f.data_type() != DataType::Null)
         .collect();
     fields.sort_by(|a, b| a.name().cmp(b.name()));
     let mut buf = VERSION.to_vec();
@@ -253,7 +256,7 @@ mod tests {
             ("price", Arc::new(Float64Array::from(vec![1.5]))),
             ("gained", Arc::new(StringArray::from(vec![None::<&str>]))),
         ]);
-        assert_eq!(row_hashes(&narrow, &[]), row_hashes(&wide, &[]));
+        assert_eq!(row_hashes(&narrow, &[], &[]), row_hashes(&wide, &[], &[]));
         let null = |b: &RecordBatch| {
             let s = b.schema();
             Schema::new(
@@ -265,14 +268,14 @@ mod tests {
             )
         };
         assert_eq!(
-            schema_version(&narrow.schema()),
-            schema_version(&null(&wide))
+            schema_version(&narrow.schema(), &[]),
+            schema_version(&null(&wide), &[])
         );
         let to_text = batch(vec![("id", Arc::new(StringArray::from(vec!["1"])))]);
         let number = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
         assert_ne!(
-            schema_version(&to_text.schema()),
-            schema_version(&number.schema())
+            schema_version(&to_text.schema(), &[]),
+            schema_version(&number.schema(), &[])
         );
     }
 
@@ -289,10 +292,10 @@ mod tests {
             reason: String::new(),
             raw: raw.into(),
         };
-        let h = row_hashes(&a, &[]);
+        let h = row_hashes(&a, &[], &[]);
         assert_eq!(h[0], h[1], "a metadata column counted");
-        let x = row_hashes(&a, &[held("x")]);
-        let y = row_hashes(&a, &[held("y")]);
+        let x = row_hashes(&a, &[held("x")], &[]);
+        let y = row_hashes(&a, &[held("y")], &[]);
         assert_ne!(x[0], y[0], "a held cell's value didn't count");
         assert_ne!(x[0], h[0]);
         let shown = batch(vec![
@@ -300,9 +303,27 @@ mod tests {
             ("v", Arc::new(StringArray::from(vec!["x"]))),
         ]);
         assert_eq!(
-            row_hashes(&shown, &[])[0],
+            row_hashes(&shown, &[], &[])[0],
             x[0],
             "a held cell hashed apart from its value"
+        );
+    }
+
+    #[test]
+    fn volatile_columns_dont_count() {
+        let a = batch(vec![
+            ("id", Arc::new(Int64Array::from(vec![1, 1]))),
+            ("fetched_at", Arc::new(Int64Array::from(vec![5, 6]))),
+        ]);
+        let volatile = ["fetched_at".to_owned()];
+        let h = row_hashes(&a, &[], &volatile);
+        assert_eq!(h[0], h[1], "a volatile column counted");
+        assert_ne!(row_hashes(&a, &[], &[])[0], h[0]);
+        let id = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
+        assert_eq!(h[0], row_hashes(&id, &[], &[])[0]);
+        assert_eq!(
+            schema_version(&a.schema(), &volatile),
+            schema_version(&id.schema(), &[])
         );
     }
 
@@ -319,7 +340,7 @@ mod tests {
                 Arc::new(TimestampMicrosecondArray::from(vec![1_700_000_000_000_000])),
             ),
         ]);
-        assert_eq!(row_hashes(&b, &[]), vec![0x7012_9633_2c59_fec6]);
-        assert_eq!(schema_version(&b.schema()), 0x46a5_e4bb_fb9d_be06);
+        assert_eq!(row_hashes(&b, &[], &[]), vec![0x7012_9633_2c59_fec6]);
+        assert_eq!(schema_version(&b.schema(), &[]), 0x46a5_e4bb_fb9d_be06);
     }
 }

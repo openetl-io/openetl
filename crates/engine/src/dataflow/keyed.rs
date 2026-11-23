@@ -320,6 +320,7 @@ pub(super) async fn rows(
                     .insert(UInt64Array::from(openetl_normalize::versions::row_hashes(
                         &typed.batch,
                         &typed.cells,
+                        &t.inputs[st.input].volatile,
                     )))
                     .clone(),
             },

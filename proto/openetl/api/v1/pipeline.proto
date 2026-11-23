@@ -618,6 +618,11 @@ message PipelineStream {
   // How long a SQL statement's dedupe over the stream that keeps each key's
   // first row remembers a key. Only with event_time.
   Dedupe dedupe = 14;
+  // Columns, by source name, whose values can change on every read while
+  // the row doesn't, such as the time the source fetched it: they don't tell
+  // a version of a row from another, where a stream deduped at apply keeps
+  // its versions and where a window or OVER drops a row read again.
+  repeated string volatile_columns = 15;
 }
 
 // Dedupe says how long a dedupe by ROW_NUMBER() … = 1, in ascending order of

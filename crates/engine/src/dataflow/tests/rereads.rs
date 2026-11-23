@@ -130,8 +130,19 @@ fn version(id: i64, email: &str, v: i64, second: i64) -> String {
 async fn reread(
     sql: &str,
     over: bool,
+    flags: (bool, bool, bool),
+    lead: Option<&str>,
+) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
+    reread_volatile(sql, over, flags, lead, &[]).await
+}
+
+/// `reread`, with a's `volatile` columns.
+async fn reread_volatile(
+    sql: &str,
+    over: bool,
     (held, read_only, keyed): (bool, bool, bool),
     lead: Option<&str>,
+    volatile: &[&str],
 ) -> (Vec<Vec<frame::Frame>>, Vec<EpochReady>) {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
@@ -144,6 +155,7 @@ async fn reread(
         req.quarantine_url = format!("file://{}", dir.path().join("q").display());
         event_time(&mut req).held = held;
         event_time(&mut req).rereads = true;
+        req.streams[0].volatile_columns = volatile.iter().map(|&c| c.to_owned()).collect();
         if !keyed {
             req.streams[0].primary_key.clear();
         }
@@ -221,6 +233,17 @@ async fn a_window_takes_a_row_read_again_once() {
         assert_eq!(repeats, if read_only { 0 } else { 3 });
         assert_eq!(quarantined(&ready, "minutes"), 0);
     }
+}
+
+/// A column the stream says is volatile doesn't tell a row read again from
+/// the row the window took: the second version of x's row at 20s, whose v
+/// alone differs, is a repeat.
+#[tokio::test]
+async fn a_window_leaves_volatile_columns_out_of_a_row_read_again() {
+    let (outs, ready) = reread_volatile(MINUTES, false, (false, false, true), None, &["v"]).await;
+    assert_eq!(all_rows(&outs, 2), [row(0, "x", 3, 2), row(0, "y", 1, 2)]);
+    let repeats: u64 = ready[0].operators.iter().map(|o| o.repeats).sum();
+    assert_eq!(repeats, 4);
 }
 
 /// A session takes a row a read gives again once: a session that holds

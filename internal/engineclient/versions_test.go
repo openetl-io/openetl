@@ -306,6 +306,25 @@ func TestASecondVersionAtOneCursorValueLands(t *testing.T) {
 	}
 }
 
+// A row read again whose volatile columns alone changed, such as the time
+// the source fetched it, lands once.
+func TestAVolatileColumnDoesntMakeAVersion(t *testing.T) {
+	mem := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer mem.AssertSize(t, 0)
+	ctx := testContext(t)
+	p := newVersionsPipeline(t, mem,
+		[]string{`{"id": 1, "name": "v1", "fetched": 1, "at": "2024-05-01"}`},
+		[]string{`{"id": 1, "name": "v1", "fetched": 2, "at": "2024-05-01"}`},
+	)
+	p.edit = func(j *runner.Job) { j.Streams[0].VolatileColumns = []string{"fetched"} }
+	for range 2 {
+		p.sync(ctx)
+	}
+	if got := p.dest.names("users", 1); !slices.Equal(got, []string{"v1"}) {
+		t.Errorf("row 1 applied as %q, want v1 once", got)
+	}
+}
+
 // A reset reads its streams again from the start, and keeps the versions
 // of their records, as it keeps their schemas: a version that changed since
 // the last read still lands.
