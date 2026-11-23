@@ -11,7 +11,8 @@
 //! before it was. A row without a live entry of its schema's version keeps
 //! its ID, and its hash becomes the owner. So does a row of a key group the
 //! writer lane doesn't keep: an entry is missed, and the version skipped as
-//! it was before, but never given two IDs.
+//! it was before, but never given two IDs. Versions of a layout other than
+//! this engine's start again, as versions that can't be read do.
 
 use std::collections::HashMap;
 
@@ -29,6 +30,10 @@ use super::{Flow, Out};
 use crate::error::JobError;
 
 const ENTRIES: OperatorId = OperatorId(0);
+/// The layout of a lane's versions, as its snapshots name it: the state's,
+/// and the versions' own in the bits above it, so that an engine that
+/// keeps them otherwise starts them again rather than misread them.
+const LAYOUT: u32 = openetl_state::LAYOUT | (1 << 16);
 /// Each key group's reads, as a value: the last two that gave a row of it.
 const READS: &[u8] = b"reads";
 
@@ -143,7 +148,7 @@ impl Versions {
                 }
             };
             let open = range.unwrap_or(KeyGroupRange::new(0, 0));
-            let restored: Vec<openetl_state::Snapshot> = plan
+            let mut restored: Vec<openetl_state::Snapshot> = plan
                 .state
                 .restored
                 .iter()
@@ -151,15 +156,19 @@ impl Versions {
                 .map(|(_, sn)| sn.clone())
                 .collect();
             let stores = state.stores(id);
-            let layer = match Layer::open(
-                &stores,
-                plan.generation,
-                plan.first_epoch,
-                open,
-                &restored,
-            )
-            .await
-            {
+            let opened = match restored.iter().find(|sn| sn.layout != LAYOUT) {
+                Some(sn) => Err(StateError::Snapshot(format!(
+                    "versions of layout {:#x}, where this engine keeps {LAYOUT:#x}",
+                    sn.layout
+                ))),
+                None => {
+                    for sn in &mut restored {
+                        sn.layout = openetl_state::LAYOUT;
+                    }
+                    Layer::open(&stores, plan.generation, plan.first_epoch, open, &restored).await
+                }
+            };
+            let layer = match opened {
                 Ok(l) => l,
                 Err(e @ (StateError::Snapshot(_) | StateError::Corrupt(_))) => {
                     tracing::warn!(
@@ -389,8 +398,14 @@ impl Stream {
             )
         })?;
         let named = snapshots
-            .iter()
-            .map(|sn| crate::state::named(&self.id, sn))
+            .into_iter()
+            .map(|sn| {
+                let sn = openetl_state::Snapshot {
+                    layout: LAYOUT,
+                    ..sn
+                };
+                crate::state::named(&self.id, &sn)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         flow.align
             .lock()

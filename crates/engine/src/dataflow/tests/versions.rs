@@ -419,6 +419,25 @@ async fn a_redo_reads_the_epochs_versions_and_writes_none() {
     }
 }
 
+/// Versions of a layout this engine doesn't keep, as a later engine's that
+/// a rollback restores, start again rather than fail the sync: a second
+/// version keeps its ID, as with no versions.
+#[tokio::test]
+async fn versions_of_another_layout_start_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let v1 = r#"{"id": 1, "name": "v1", "at": "2024-05-01"}"#;
+    let (first, mut r1) = sync(d, 1, &Restored::default(), &[v1]).await;
+    let ours = r1.snapshots.iter_mut().filter(|s| s.operator == OP);
+    for s in ours {
+        assert_ne!(s.layout, openetl_state::LAYOUT, "no layout of their own");
+        s.layout += 1 << 16;
+    }
+    let v2 = r#"{"id": 1, "name": "v2", "at": "2024-05-01"}"#;
+    let (second, _) = sync(d, 2, &r1, &[v2]).await;
+    assert_eq!(record(&second, 1), record(&first, 1));
+}
+
 /// A stream with versions whose job has no state is refused, as is a
 /// version kept of a stream without a cursor.
 #[test]
