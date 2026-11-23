@@ -70,6 +70,8 @@ jobs:
               SUITES=deny
             fi
           fi
+          # read takes the first line alone.
+          [[ "$SUITES" != *[$'\n\r']* ]] || { echo "::error::suites must be on one line: $names"; exit 1; }
           read -ra asked <<<"$SUITES"
           # Blank would run nothing and pass.
           [ "${#asked[@]}" != 0 ] || { echo "::error::suites is blank: $names"; exit 1; }
