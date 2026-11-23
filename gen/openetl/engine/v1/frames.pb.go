@@ -62,6 +62,9 @@ const (
 	// Between engines only: where the frames after it go, until the next
 	// ROUTE.
 	FrameKind_FRAME_KIND_ROUTE FrameKind = 12
+	// Between engines only: a BATCH of held values, to the writer lane their
+	// rows went to.
+	FrameKind_FRAME_KIND_HELD FrameKind = 13
 )
 
 // Enum value maps for FrameKind.
@@ -79,6 +82,7 @@ var (
 		10: "FRAME_KIND_WATERMARK",
 		11: "FRAME_KIND_MESH_HELLO",
 		12: "FRAME_KIND_ROUTE",
+		13: "FRAME_KIND_HELD",
 	}
 	FrameKind_value = map[string]int32{
 		"FRAME_KIND_UNSPECIFIED":   0,
@@ -93,6 +97,7 @@ var (
 		"FRAME_KIND_WATERMARK":     10,
 		"FRAME_KIND_MESH_HELLO":    11,
 		"FRAME_KIND_ROUTE":         12,
+		"FRAME_KIND_HELD":          13,
 	}
 )
 
@@ -654,7 +659,7 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"writerLane\x12\"\n" +
 	"\n" +
 	"keyed_lane\x18\x03 \x01(\rH\x00R\tkeyedLane\x88\x01\x01B\r\n" +
-	"\v_keyed_lane*\xd2\x02\n" +
+	"\v_keyed_lane*\xe7\x02\n" +
 	"\tFrameKind\x12\x1a\n" +
 	"\x16FRAME_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10FRAME_KIND_HELLO\x10\x01\x12\x14\n" +
@@ -668,7 +673,8 @@ const file_openetl_engine_v1_frames_proto_rawDesc = "" +
 	"\x14FRAME_KIND_WATERMARK\x10\n" +
 	"\x12\x19\n" +
 	"\x15FRAME_KIND_MESH_HELLO\x10\v\x12\x14\n" +
-	"\x10FRAME_KIND_ROUTE\x10\f\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
+	"\x10FRAME_KIND_ROUTE\x10\f\x12\x13\n" +
+	"\x0fFRAME_KIND_HELD\x10\r\"\x04\b\x06\x10\x06*\x17FRAME_KIND_STAGED_FILESB>Z<github.com/openetl-io/openetl/gen/openetl/engine/v1;enginev1b\x06proto3"
 
 var (
 	file_openetl_engine_v1_frames_proto_rawDescOnce sync.Once

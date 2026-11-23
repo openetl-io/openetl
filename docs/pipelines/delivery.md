@@ -196,7 +196,6 @@ The table keeps the first version, and the second is skipped as a repeat, in the
 - **A row that neither of the last two reads gave.** Its hash is gone.
 - **A schema change.** A column that the stream gains or loses, or a column that changes to another kind of value, such as from a number to text, starts the hashes again. A widening, such as from `int32` to `int64`, does not.
 - **A stream that a SQL transform reads, and the outputs of a transform.** OpenETL keeps no hashes for them.
-- **[A job on workers](./workers.md) whose stream has an exchange and can hold columns.** OpenETL keeps no hashes for it.
 
 In these cases, the table ends with another row than the source has:
 

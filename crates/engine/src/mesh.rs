@@ -230,8 +230,8 @@ fn transient(msg: impl Into<String>) -> JobError {
     JobError::new(ErrorCode::Transient, msg)
 }
 
-/// A frame that crosses engines: its kind, stream and payload. Held values
-/// and patches stay on their lane's own writer lane.
+/// A frame that crosses engines: its kind, stream and payload. Patches stay
+/// on their own writer lane.
 pub fn wire(out: Out) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
     let index = |s: usize| u32::try_from(s).map_err(|_| JobError::internal("a stream past u32"));
     Ok(match out {
@@ -256,11 +256,12 @@ pub fn wire(out: Out) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
             Watermark { micros }.encode_to_vec(),
         ),
         Out::End(s) => (FrameKind::EndOfStream, index(s)?, Vec::new()),
-        Out::Held(..) | Out::Patch(..) => {
-            return Err(JobError::internal(
-                "held values and patches don't cross engines",
-            ));
-        }
+        Out::Held(s, b) => (
+            FrameKind::Held,
+            index(s)?,
+            ipc::encode_batch(&b).map_err(|e| JobError::internal(e.to_string()))?,
+        ),
+        Out::Patch(..) => return Err(JobError::internal("patches don't cross engines")),
     })
 }
 
@@ -314,6 +315,10 @@ pub fn unwire(f: frame::Frame, generation: u64) -> Result<Out, String> {
     let s = f.stream as usize;
     match f.kind {
         FrameKind::Batch => Ok(Out::Batch(
+            s,
+            ipc::decode_batch(f.payload).map_err(|e| e.to_string())?,
+        )),
+        FrameKind::Held => Ok(Out::Held(
             s,
             ipc::decode_batch(f.payload).map_err(|e| e.to_string())?,
         )),

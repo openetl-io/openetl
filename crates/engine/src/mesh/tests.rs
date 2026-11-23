@@ -401,16 +401,33 @@ async fn rows_cross_engines_and_barriers_align_on_every_lane() {
     }
 }
 
+/// What a sync of a mesh wrote: each row's record ID, with the engine
+/// that wrote it, the record IDs of the patches, and each engine's epochs.
+struct Synced {
+    ids: BTreeMap<i64, (usize, Vec<u8>)>,
+    patched: Vec<Vec<u8>>,
+    ready: Vec<EpochReady>,
+}
+
+impl Synced {
+    fn snapshots(&self) -> Vec<StateSnapshot> {
+        self.ready
+            .iter()
+            .flat_map(|r| r.snapshots.clone())
+            .collect()
+    }
+}
+
 /// Sync `n` of a mesh of two engines whose writer lanes keep the versions
-/// of stream a's records: engine 0's lane reads ids 0..40, each named
-/// `name`, at one cursor value. Each row's record ID, with the engine that
-/// wrote it, and the epoch's snapshots.
+/// of stream a's records, each request as `change` leaves it: engine 0's
+/// lane reads `rows`, at one cursor value.
 async fn versions_sync(
     state: &str,
     n: u64,
     restored: &[StateSnapshot],
-    name: &str,
-) -> (BTreeMap<i64, (usize, Vec<u8>)>, Vec<StateSnapshot>) {
+    rows: &[String],
+    change: impl Fn(&mut StartJobRequest),
+) -> Synced {
     let mut es = mesh(&[(1, 1), (1, 1)], |_, req| {
         req.generation = n;
         req.first_epoch = n;
@@ -420,31 +437,35 @@ async fn versions_sync(
         s.cursor_field = "at".into();
         s.read_start_micros = n as i64 * 1000;
         s.versions_operator = "versions.a".into();
+        change(req);
     })
     .await;
     let drains: Vec<_> = es
         .iter_mut()
         .map(|e| drain(std::mem::take(&mut e.outs)))
         .collect();
-    let page = Rows {
-        rows: (0..40)
-            .map(|i| format!(r#"{{"id": {i}, "name": "{name}", "at": "2024-05-01"}}"#).into_bytes())
-            .collect(),
+    if !rows.is_empty() {
+        let page = Rows {
+            rows: rows.iter().map(|r| r.clone().into_bytes()).collect(),
+        }
+        .encode_to_vec();
+        put(&mut es[0].ins[0], FrameKind::Rows, page).await;
     }
-    .encode_to_vec();
-    put(&mut es[0].ins[0], FrameKind::Rows, page).await;
     for e in &mut es {
         for w in &mut e.ins {
             put(w, FrameKind::Barrier, barrier(n, n)).await;
             end(w).await;
         }
     }
-    let mut ids = BTreeMap::new();
-    let mut snapshots = Vec::new();
+    let mut out = Synced {
+        ids: BTreeMap::new(),
+        patched: Vec::new(),
+        ready: Vec::new(),
+    };
     for (engine, (e, drains)) in es.into_iter().zip(drains).enumerate() {
         for d in drains {
             for f in d.await.unwrap() {
-                if f.kind != FrameKind::Batch {
+                if f.kind != FrameKind::Batch && f.kind != FrameKind::Patch {
                     continue;
                 }
                 let b = crate::ipc::decode_batch(f.payload.clone()).unwrap();
@@ -459,18 +480,29 @@ async fn versions_sync(
                     .column_by_name("_openetl_id")
                     .unwrap()
                     .as_fixed_size_binary();
+                if f.kind == FrameKind::Patch {
+                    out.patched
+                        .extend(records.iter().map(|r| r.unwrap().to_vec()));
+                    continue;
+                }
                 for (id, record) in ids_of(&b).into_iter().zip(records.iter()) {
-                    ids.insert(id, (engine, record.unwrap().to_vec()));
+                    out.ids.insert(id, (engine, record.unwrap().to_vec()));
                 }
             }
         }
         e.job.await.unwrap().unwrap();
         let mut events = e.events;
-        for r in ready(&mut events).await {
-            snapshots.extend(r.snapshots);
-        }
+        out.ready.extend(ready(&mut events).await);
     }
-    (ids, snapshots)
+    out
+}
+
+fn named(name: &str, price: &str) -> Vec<String> {
+    (0..40)
+        .map(|i| {
+            format!(r#"{{"id": {i}, "name": "{name}", "price": "{price}", "at": "2024-05-01"}}"#)
+        })
+        .collect()
 }
 
 fn ids_of(b: &arrow_array::RecordBatch) -> Vec<i64> {
@@ -489,20 +521,92 @@ fn ids_of(b: &arrow_array::RecordBatch) -> Vec<i64> {
 async fn versions_cross_engines_with_their_rows() {
     let dir = tempfile::tempdir().unwrap();
     let state = format!("file://{}", dir.path().join("state").display());
-    let (v1, after1) = versions_sync(&state, 1, &[], "v1").await;
-    let (v2, after2) = versions_sync(&state, 2, &after1, "v2").await;
-    let (again, _) = versions_sync(&state, 3, &after2, "v2").await;
-    assert_eq!(v1.len(), 40);
+    let v1 = versions_sync(&state, 1, &[], &named("v1", "1.5"), |_| {}).await;
+    let v2 = versions_sync(&state, 2, &v1.snapshots(), &named("v2", "1.5"), |_| {}).await;
+    let again = versions_sync(&state, 3, &v2.snapshots(), &named("v2", "1.5"), |_| {}).await;
+    assert_eq!(v1.ids.len(), 40);
     assert!(
-        v1.values().any(|(e, _)| *e == 1),
+        v1.ids.values().any(|(e, _)| *e == 1),
         "no row crossed to engine 1"
     );
-    for (id, (engine, record)) in &v2 {
+    for (id, (engine, record)) in &v2.ids {
         assert_ne!(
-            record, &v1[id].1,
+            record, &v1.ids[id].1,
             "row {id}'s second version, at engine {engine}, kept its ID"
         );
-        assert_eq!(&again[id].1, record, "row {id} read again changed its ID");
+        assert_eq!(
+            &again.ids[id].1, record,
+            "row {id} read again changed its ID"
+        );
+    }
+}
+
+/// Stream a with its price declared decimal(`precision`, 2), whose cells
+/// that don't fit are held.
+fn holding(dir: &std::path::Path, precision: u8, req: &mut StartJobRequest) {
+    use arrow_schema::{DataType, Field, Schema};
+    req.held_url = format!("file://{}/held", dir.display());
+    let declared = Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("price", DataType::Decimal128(precision, 2), true),
+        Field::new("at", DataType::Utf8, true),
+    ]);
+    req.streams[0].arrow_schema = crate::ipc::encode_schema(&Arc::new(declared)).unwrap();
+    req.streams[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+        cells: true,
+        ..Default::default()
+    });
+}
+
+/// A held cell's row goes to the writer lane its row went to, in whichever
+/// engine, which gives it the record ID it gave the row: a release patches
+/// the second version's row, under its own ID.
+#[tokio::test]
+async fn held_values_cross_engines_with_their_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let state = format!("file://{}", d.join("state").display());
+    let v1 = versions_sync(&state, 1, &[], &named("v1", "1.5"), |r| holding(d, 10, r)).await;
+    let v2 = versions_sync(
+        &state,
+        2,
+        &v1.snapshots(),
+        &named("v2", "12345678901.5"),
+        |r| holding(d, 10, r),
+    )
+    .await;
+    let files: Vec<String> = v2
+        .ready
+        .iter()
+        .flat_map(|r| r.holds.get("a"))
+        .flat_map(|h| h.files.iter().map(|f| f.path.clone()))
+        .collect();
+    assert_eq!(files.len(), 2, "each engine's writer lane holds cells");
+    let schema = v2.ready[0].schemas["a"].clone();
+    let released = versions_sync(&state, 3, &v2.snapshots(), &[], |r| {
+        holding(d, 20, r);
+        r.streams[0].restored_schema = schema.clone();
+        r.streams[0].holds.as_mut().unwrap().replay = Some(openetl_proto::engine::v1::Replay {
+            files: files.clone(),
+            columns: vec!["price".into()],
+            ..Default::default()
+        });
+    })
+    .await;
+    let mut want: Vec<Vec<u8>> = v2.ids.values().map(|(_, r)| r.clone()).collect();
+    let mut got = released.patched;
+    want.sort();
+    got.sort();
+    assert_eq!(
+        got, want,
+        "the patches' record IDs aren't the second versions'"
+    );
+    for (id, (_, record)) in &v2.ids {
+        assert_ne!(
+            record, &v1.ids[id].1,
+            "row {id}'s second version kept its ID"
+        );
     }
 }
 

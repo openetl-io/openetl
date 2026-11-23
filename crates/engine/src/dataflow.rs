@@ -1403,9 +1403,8 @@ impl Lane {
 
     /// Sends held values to the lane's writer lane, or, where writer lanes
     /// keep the stream's versions, to the writer lanes their rows went to,
-    /// which give them the IDs they gave the rows. Held values don't cross
-    /// engines, so the runner keeps no versions of a stream that holds on
-    /// workers with an exchange.
+    /// which give them the IDs they gave the rows, in this engine or
+    /// another.
     async fn held(
         &self,
         stream: usize,
@@ -1806,7 +1805,8 @@ where
             | FrameKind::Patch
             | FrameKind::Watermark
             | FrameKind::MeshHello
-            | FrameKind::Route) => {
+            | FrameKind::Route
+            | FrameKind::Held) => {
                 return Err(protocol(format!("unexpected {} frame", k.as_str_name())));
             }
         }
