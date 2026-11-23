@@ -431,8 +431,6 @@ impl Stream {
     }
 }
 
-/// The batch without its hashes, its rows' hashes and its schema's version;
-/// None where it has none.
 /// Key columns, by source name, as `schema` names them: a renamed column by
 /// the name the schema's metadata gives its source name. A batch carries
 /// its names, which the writer lane's engine may not know yet, as before a
@@ -450,6 +448,8 @@ fn named(key: &[String], schema: &Schema) -> Vec<String> {
         .collect()
 }
 
+/// The batch without its hashes, its rows' hashes and its schema's version;
+/// None where it has none.
 fn without_hashes(batch: &RecordBatch) -> Result<Option<(RecordBatch, Vec<u64>, u64)>, JobError> {
     let schema = batch.schema();
     let Ok(at) = schema.index_of(HASH_COLUMN) else {
