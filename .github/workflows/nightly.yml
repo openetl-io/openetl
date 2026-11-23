@@ -1,5 +1,5 @@
 name: nightly
-run-name: nightly (${{ github.event_name == 'workflow_dispatch' && inputs.suites || 'all' }})
+run-name: nightly (${{ github.event_name == 'schedule' && 'all' || inputs.suites }})
 
 # The heavy suites: integration, every end-to-end test on DBOS and on
 # Temporal, kind, a short chaos run, and cargo-deny's advisories.
@@ -13,7 +13,9 @@ run-name: nightly (${{ github.event_name == 'workflow_dispatch' && inputs.suites
 #
 #   gh workflow run nightly.yml --ref BRANCH -f suites="e2e-dbos kind"
 #
-# and opens no issue. suites=all runs every suite, as a release needs.
+# and opens no issue. Its title is "nightly (SUITES)", so suites=all, which
+# runs every suite as a release needs, is the only dispatch titled
+# "nightly (all)". A blank `suites` fails the run.
 on:
   schedule:
     - cron: "17 23 * * *"
@@ -22,6 +24,7 @@ on:
       suites:
         description: "Suites, separated by spaces: integration, e2e-dbos, e2e-temporal, kind, chaos and deny; or all"
         type: string
+        required: true
         default: integration e2e-dbos e2e-temporal kind
 
 permissions:
@@ -56,6 +59,7 @@ jobs:
           SUITES: ${{ inputs.suites }}
         run: |
           known="integration e2e-dbos e2e-temporal kind chaos deny"
+          names="suites names some of $known, separated by spaces, or is all"
           if [ "$EVENT" = schedule ]; then
             passed=$(gh run list -R "$GITHUB_REPOSITORY" -w nightly.yml -c "$GITHUB_SHA" -s success -L 100 \
               --json displayTitle -q '[.[] | select(.displayTitle == "nightly (all)")] | length')
@@ -66,10 +70,12 @@ jobs:
               SUITES=deny
             fi
           fi
-          [ "$SUITES" != all ] || SUITES=$known
           read -ra asked <<<"$SUITES"
+          # Blank would run nothing and pass.
+          [ "${#asked[@]}" != 0 ] || { echo "::error::suites is blank: $names"; exit 1; }
+          [ "${asked[*]}" != all ] || read -ra asked <<<"$known"
           for s in "${asked[@]}"; do
-            [[ " $known " == *" $s "* ]] || { echo "::error::$s isn't a suite: $known, or all"; exit 1; }
+            [[ " $known " == *" $s "* ]] || { echo "::error::$s isn't a suite: $names"; exit 1; }
           done
           SUITES="${asked[*]}"
           engine=false
