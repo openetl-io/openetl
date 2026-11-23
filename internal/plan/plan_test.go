@@ -110,11 +110,12 @@ var cursors = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 
 // A stream's volatileColumns are the source's names of its catalog's
 // columns: another name, as a typo or the destination's name, would leave
-// the column in the versions' hash, so it's a problem that names both.
-func TestVolatileColumnsAreTheCatalogs(t *testing.T) {
+// the column in the versions' hash, so the plan warns of it. It's not a
+// problem, as a column a source gives only as it reads isn't in the catalog.
+func TestVolatileColumnsNotInTheCatalogWarn(t *testing.T) {
 	for _, tc := range []struct{ name, columns, want string }{
 		{"the catalog's", `["version", "at"]`, ""},
-		{"a typo", `["version", "fetchd"]`, `stream "orders": volatileColumns names column "fetchd", which the source's latest catalog doesn't have`},
+		{"a typo", `["version", "fetchd"]`, `orders: volatileColumns names column "fetchd", which the source's latest catalog doesn't have`},
 		{"none", `[]`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,18 +123,23 @@ func TestVolatileColumnsAreTheCatalogs(t *testing.T) {
 			if err := protojsonUnmarshal(`{"source": {"streams": [{"name": "orders", "volatileColumns": `+tc.columns+`}]}}`, spec); err != nil {
 				t.Fatal(err)
 			}
-			_, problems, _ := Pipeline(spec, cursors, warehouse)
-			var got []string
+			_, problems, warnings := Pipeline(spec, cursors, warehouse)
 			for _, p := range problems {
 				if strings.Contains(p.Error(), "volatileColumns") {
-					got = append(got, p.Error())
+					t.Errorf("problem %q: a column the catalog lacks is a warning, as one may come only at read time", p)
+				}
+			}
+			var got []string
+			for _, w := range warnings {
+				if strings.HasPrefix(w.GetMessage(), "volatileColumns") {
+					got = append(got, w.GetStream()+": "+w.GetMessage())
 				}
 			}
 			switch {
 			case tc.want == "" && len(got) > 0:
-				t.Errorf("problems %q, want none", got)
+				t.Errorf("warnings %q, want none", got)
 			case tc.want != "" && (len(got) != 1 || !strings.HasPrefix(got[0], tc.want)):
-				t.Errorf("problems %q, want one starting %q", got, tc.want)
+				t.Errorf("warnings %q, want one starting %q", got, tc.want)
 			}
 		})
 	}
