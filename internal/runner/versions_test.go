@@ -7,18 +7,22 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
+)
+
+var (
+	dedupes = capsDest{caps: destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, DedupeAtApply: true,
+		WriteModes: []destination.WriteMode{destination.Append, destination.Merge}}}
+	read = Stream{Name: "s", Replay: source.Superset, Mode: destination.Append, PrimaryKey: []string{"id"}, Read: source.Incremental, CursorField: "at"}
 )
 
 // The versions of a stream's records are kept where the destination
 // dedupes it by _openetl_id against what it has, and its reads give a
 // record again at their cursor's floor.
 func TestVersionsAreKeptOfStreamsDedupedAgainstTheTarget(t *testing.T) {
-	dedupes := capsDest{caps: destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}, DedupeAtApply: true,
-		WriteModes: []destination.WriteMode{destination.Append, destination.Merge}}}
 	plain := destination.Capabilities{Class: destination.StageAndApply, Scopes: []destination.Scope{destination.ScopeStream}}
-	read := Stream{Name: "s", Replay: source.Superset, Mode: destination.Append, PrimaryKey: []string{"id"}, Read: source.Incremental, CursorField: "at"}
 	for _, tc := range []struct {
 		name string
 		edit func(*Job)
@@ -80,5 +84,25 @@ func TestARestartKeepsTheVersions(t *testing.T) {
 	cp := j.restart(rec, []string{"a"})
 	if len(cp.Versions) != 1 || cp.Streams["a"].ReadStart != 0 {
 		t.Errorf("restarted %+v", cp)
+	}
+}
+
+// On more than one writer lane, a stream whose versions are kept is
+// exchanged by key group before its writer, also where its source splits it
+// by key, so that each writer lane gets the rows of the key groups whose
+// versions it keeps.
+func TestAStreamWhoseVersionsAreKeptIsExchangedByKeyGroup(t *testing.T) {
+	split := read
+	split.Partitioning = plan.SourcePartitioning(split.PrimaryKey, true, false)
+	j := Job{Destination: dedupes, StateURL: "file:///state", Streams: []Stream{split}, Settings: delivery.Settings{Require: delivery.ExactlyOnce}}
+	if got := j.exchanges(2); !slices.Equal(got["s"], []string{"id"}) {
+		t.Errorf("on two writer lanes, exchanges %v", got)
+	}
+	if got := j.exchanges(1); got != nil {
+		t.Errorf("on one writer lane, exchanges %v", got)
+	}
+	j.Settings.Require = delivery.AtLeastOnce
+	if got := j.exchanges(2); got != nil {
+		t.Errorf("without versions, exchanges %v", got)
 	}
 }

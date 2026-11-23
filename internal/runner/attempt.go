@@ -1556,11 +1556,12 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 // the key groups of the statement's keys, which a redo reads it again by.
 func (j *Job) exchanges(writers int) map[string][]string {
 	var out map[string][]string
+	versions := j.versions()
 	for _, s := range j.sinkStreams() {
 		if _, keyed := j.keyedBy(s.Name); keyed {
 			continue
 		}
-		if cols := exchange(s, writers); cols != nil {
+		if cols := exchange(s, writers, versions[s.Name] != ""); cols != nil {
 			if out == nil {
 				out = map[string][]string{}
 			}
@@ -1573,9 +1574,13 @@ func (j *Job) exchanges(writers int) map[string][]string {
 // exchange is the columns a stream's rows are exchanged by before the
 // writer, on writers writer lanes: the writer's need, its primary key, where
 // the stream's partitioning doesn't meet it; nil where it does, as on one
-// writer lane, which every lane merges into.
-func exchange(s Stream, writers int) []string {
-	p := plan.Place(s.Partitioning, plan.WriterOperator(s.PrimaryKey, writers <= 1))
+// writer lane, which every lane merges into. A writer that keeps the
+// versions of the stream's records (versions) needs each key's rows on the
+// writer lane that owns its key group, which splits by key don't meet.
+func exchange(s Stream, writers int, versions bool) []string {
+	w := plan.WriterOperator(s.PrimaryKey, writers <= 1)
+	w.Need.KeyGroups = versions
+	p := plan.Place(s.Partitioning, w)
 	if !p.Steps[0].Exchange {
 		return nil
 	}
@@ -1616,7 +1621,7 @@ func (j *Job) exchangeKey(d Stream) []string {
 // output's never do (exchanges).
 func (j *Job) keyGrouped(s Stream) bool {
 	_, keyed := j.keyedBy(s.Name)
-	return !keyed && exchange(s, 2) != nil
+	return !keyed && exchange(s, 2, j.versions()[s.Name] != "") != nil
 }
 
 // sinkStarts are the starts of the reads of the destination's streams that

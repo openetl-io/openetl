@@ -1,6 +1,6 @@
 //! Engines of one attempt in one process, over loopback TLS.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock, Weak};
@@ -12,7 +12,7 @@ use base64::Engine as _;
 use openetl_proto::connector::v1::{Epoch, ErrorCode};
 use openetl_proto::engine::v1::{
     Barrier, EpochReady, EventsResponse, FrameKind, Mesh, MeshEngine, Rows, StartJobRequest,
-    events_response,
+    StateSnapshot, events_response,
 };
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWriteExt, BufReader, DuplexStream, ReadBuf, duplex};
@@ -398,6 +398,111 @@ async fn rows_cross_engines_and_barriers_align_on_every_lane() {
             b.iter().any(|id| *id < 200) && b.iter().any(|id| *id >= 200),
             "{b:?}"
         );
+    }
+}
+
+/// Sync `n` of a mesh of two engines whose writer lanes keep the versions
+/// of stream a's records: engine 0's lane reads ids 0..40, each named
+/// `name`, at one cursor value. Each row's record ID, with the engine that
+/// wrote it, and the epoch's snapshots.
+async fn versions_sync(
+    state: &str,
+    n: u64,
+    restored: &[StateSnapshot],
+    name: &str,
+) -> (BTreeMap<i64, (usize, Vec<u8>)>, Vec<StateSnapshot>) {
+    let mut es = mesh(&[(1, 1), (1, 1)], |_, req| {
+        req.generation = n;
+        req.first_epoch = n;
+        req.state_url = state.to_owned();
+        req.restored_snapshots = restored.to_vec();
+        let s = &mut req.streams[0];
+        s.cursor_field = "at".into();
+        s.read_start_micros = n as i64 * 1000;
+        s.versions_operator = "versions.a".into();
+    })
+    .await;
+    let drains: Vec<_> = es
+        .iter_mut()
+        .map(|e| drain(std::mem::take(&mut e.outs)))
+        .collect();
+    let page = Rows {
+        rows: (0..40)
+            .map(|i| format!(r#"{{"id": {i}, "name": "{name}", "at": "2024-05-01"}}"#).into_bytes())
+            .collect(),
+    }
+    .encode_to_vec();
+    put(&mut es[0].ins[0], FrameKind::Rows, page).await;
+    for e in &mut es {
+        for w in &mut e.ins {
+            put(w, FrameKind::Barrier, barrier(n, n)).await;
+            end(w).await;
+        }
+    }
+    let mut ids = BTreeMap::new();
+    let mut snapshots = Vec::new();
+    for (engine, (e, drains)) in es.into_iter().zip(drains).enumerate() {
+        for d in drains {
+            for f in d.await.unwrap() {
+                if f.kind != FrameKind::Batch {
+                    continue;
+                }
+                let b = crate::ipc::decode_batch(f.payload.clone()).unwrap();
+                assert!(
+                    b.schema()
+                        .fields()
+                        .iter()
+                        .all(|f| !f.name().starts_with('\0')),
+                    "a hidden column reached engine {engine}'s writer edge"
+                );
+                let records = b
+                    .column_by_name("_openetl_id")
+                    .unwrap()
+                    .as_fixed_size_binary();
+                for (id, record) in ids_of(&b).into_iter().zip(records.iter()) {
+                    ids.insert(id, (engine, record.unwrap().to_vec()));
+                }
+            }
+        }
+        e.job.await.unwrap().unwrap();
+        let mut events = e.events;
+        for r in ready(&mut events).await {
+            snapshots.extend(r.snapshots);
+        }
+    }
+    (ids, snapshots)
+}
+
+fn ids_of(b: &arrow_array::RecordBatch) -> Vec<i64> {
+    b.column(b.schema().index_of("id").unwrap())
+        .as_primitive::<arrow_array::types::Int64Type>()
+        .iter()
+        .flatten()
+        .collect()
+}
+
+/// Rows that cross to the other engine's writer lane carry their hashes,
+/// which it takes off: a version read again at one cursor value with other
+/// values gets a record ID of its own there, from the versions that writer
+/// lane keeps, and read again unchanged it keeps that ID.
+#[tokio::test]
+async fn versions_cross_engines_with_their_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = format!("file://{}", dir.path().join("state").display());
+    let (v1, after1) = versions_sync(&state, 1, &[], "v1").await;
+    let (v2, after2) = versions_sync(&state, 2, &after1, "v2").await;
+    let (again, _) = versions_sync(&state, 3, &after2, "v2").await;
+    assert_eq!(v1.len(), 40);
+    assert!(
+        v1.values().any(|(e, _)| *e == 1),
+        "no row crossed to engine 1"
+    );
+    for (id, (engine, record)) in &v2 {
+        assert_ne!(
+            record, &v1[id].1,
+            "row {id}'s second version, at engine {engine}, kept its ID"
+        );
+        assert_eq!(&again[id].1, record, "row {id} read again changed its ID");
     }
 }
 

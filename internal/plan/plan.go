@@ -451,7 +451,9 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		}
 		sp := &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
 			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]}
-		sp.Partitioning, sp.Operators = Place(sourceOf(spec, s.cs, s.ps), WriterOperator(s.cs.GetPrimaryKey(), oneLane)).API()
+		w := WriterOperator(s.cs.GetPrimaryKey(), oneLane)
+		w.Need.KeyGroups = !sql && keepsVersions(read, d.Keyed, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField()), p.Dedupe)
+		sp.Partitioning, sp.Operators = Place(sourceOf(spec, s.cs, s.ps), w).API()
 		plans = append(plans, sp)
 	}
 	if ownCode(spec) {
@@ -593,6 +595,15 @@ func CursorProblem(stream string, read apiv1.SyncMode, keyed bool, cursor string
 		return fmt.Errorf("stream %q has a primary key and is read with stream, which needs a cursor to tell one event of a key from the next: the source names none, so set source.streams[].cursor", stream)
 	}
 	return nil
+}
+
+// keepsVersions says the writer lanes of a stream the source writes to the
+// destination keep the versions of its records, by key group: a keyed
+// stream read with incremental by a cursor, deduped at apply, which gives a
+// version read again at its cursor's value with other values an ID of its
+// own (runner.VersionsOperator).
+func keepsVersions(read apiv1.SyncMode, keyed bool, cursor string, dedupe destination.Dedupe) bool {
+	return read == apiv1.SyncMode_SYNC_MODE_INCREMENTAL && keyed && cursor != "" && dedupe == destination.DedupeTarget
 }
 
 // cursorWarning warns of a keyed stream read with incremental and deduped at
