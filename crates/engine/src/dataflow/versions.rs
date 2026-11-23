@@ -7,9 +7,11 @@
 //! An entry is the owner's hash and its schema's version, at the read that
 //! last gave its ID, by the read's start: the ID's one row at that time,
 //! which a lookup reads by its key rather than a scan. The entries the
-//! stream's last two reads gave stay, and the reads before those expire as
-//! a read gives the first row of a key group, a read given again once a row
-//! of the read before it was. A row without a live entry of its schema's
+//! stream's last two reads gave stay: a read's first row at a writer lane
+//! moves each of its key groups on to the read, and the entries of the
+//! reads before the last expire, so a read's runs go two reads after it. A
+//! group's reads are horizons, which the record carries, as a value would
+//! keep the run it's in named after the run's entries had gone. A row without a live entry of its schema's
 //! version keeps its ID, and its hash becomes the owner. So does a row of a
 //! key group the writer lane doesn't keep: an entry is missed, and the
 //! version skipped as it was before, but never given two IDs. Versions of a
@@ -32,12 +34,14 @@ use super::{Flow, Out};
 use crate::error::JobError;
 
 const ENTRIES: OperatorId = OperatorId(0);
+/// Each key group's last read, as the horizon of an operator that holds
+/// nothing. The horizon of [`ENTRIES`] is the start of the read before it,
+/// less one.
+const LAST: OperatorId = OperatorId(1);
 /// The layout of a lane's versions, as its snapshots name it: the state's,
 /// and the versions' own in the bits above it, so that an engine that
 /// keeps them otherwise starts them again rather than misread them.
-const LAYOUT: u32 = openetl_state::LAYOUT | (2 << 16);
-/// Each key group's reads, as a value: the last two that gave a row of it.
-const READS: &[u8] = b"reads";
+const LAYOUT: u32 = openetl_state::LAYOUT | (3 << 16);
 
 /// A writer lane's versions of each stream that keeps them.
 pub(super) struct Versions {
@@ -56,32 +60,14 @@ struct Stream {
     named: Vec<String>,
     /// The read's start.
     read: i64,
-    groups: HashMap<u32, Reads>,
+    /// Whether the lane's key groups moved on to the read in the open epoch.
+    moved: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Reads {
     before: Option<i64>,
     last: i64,
-}
-
-impl Reads {
-    fn decode(b: &[u8]) -> Option<Self> {
-        let last = i64::from_le_bytes(b.get(..8)?.try_into().ok()?);
-        let before = match b.get(8..16) {
-            Some(p) => Some(i64::from_le_bytes(p.try_into().ok()?)),
-            None => None,
-        };
-        Some(Reads { before, last })
-    }
-
-    fn encode(&self) -> Bytes {
-        let mut b = self.last.to_le_bytes().to_vec();
-        if let Some(p) = self.before {
-            b.extend_from_slice(&p.to_le_bytes());
-        }
-        Bytes::from(b)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,7 +194,7 @@ impl Versions {
                 key: plan.identities[s].key.clone(),
                 named: plan.identities[s].key.clone(),
                 read: plan.identities[s].read_start,
-                groups: HashMap::new(),
+                moved: false,
             }));
         }
         Ok(Self { streams })
@@ -286,11 +272,13 @@ impl Stream {
         if rows.is_empty() {
             return Ok(batch);
         }
-        self.reads(rows.iter().map(|&r| groups[r]), write).await?;
+        if write {
+            self.move_on(range);
+        }
         let mut slots = Vec::with_capacity(rows.len() * 2);
         for &r in &rows {
             let g = groups[r];
-            let reads = self.groups[&g];
+            let reads = self.reads(g);
             slots.push((KeyRef::new(g, id_of(r)), reads.last));
             if let Some(b) = reads.before {
                 slots.push((KeyRef::new(g, id_of(r)), b));
@@ -308,7 +296,7 @@ impl Stream {
         let mut changed = false;
         for &r in &rows {
             let g = groups[r];
-            let reads = self.groups[&g];
+            let reads = self.reads(g);
             let last = found.next().flatten();
             let before = match reads.before {
                 Some(_) => found.next().flatten(),
@@ -352,49 +340,43 @@ impl Stream {
         RecordBatch::try_new(batch.schema(), columns).map_err(|e| JobError::internal(e.to_string()))
     }
 
-    /// Loads each group's reads the lane hasn't yet, and moves those of a
-    /// group the read hasn't given a row of before on to it, which expires
-    /// the entries of the reads before the last.
-    async fn reads(
-        &mut self,
-        groups: impl Iterator<Item = u32>,
-        write: bool,
-    ) -> Result<(), JobError> {
-        let mut new: Vec<u32> = groups.filter(|g| !self.groups.contains_key(g)).collect();
-        new.sort_unstable();
-        new.dedup();
-        if new.is_empty() {
-            return Ok(());
-        }
-        let keys: Vec<KeyRef<'_>> = new.iter().map(|&g| KeyRef::new(g, READS)).collect();
-        let got = self
-            .layer
-            .get(ENTRIES, &keys)
-            .await
-            .map_err(|e| self.failed(&e))?;
-        for (g, v) in new.into_iter().zip(got) {
-            let was = v.as_deref().and_then(Reads::decode);
-            let reads = match was {
-                Some(r) if r.last >= self.read => r,
-                Some(r) => Reads {
-                    before: Some(r.last),
-                    last: self.read,
-                },
-                None => Reads {
-                    before: None,
-                    last: self.read,
-                },
+    /// A key group's reads: those its horizons keep, and this one where
+    /// the group hasn't moved on to it.
+    fn reads(&self, g: u32) -> Reads {
+        let last = self.layer.horizon(LAST, g);
+        if last == i64::MIN {
+            return Reads {
+                before: None,
+                last: self.read,
             };
-            if write && was != Some(reads) {
-                self.layer
-                    .put(ENTRIES, KeyRef::new(g, READS), reads.encode());
-                if let Some(b) = reads.before {
-                    self.layer.expire_in(ENTRIES, g, b - 1);
-                }
-            }
-            self.groups.insert(g, reads);
         }
-        Ok(())
+        if last >= self.read {
+            let before = self.layer.horizon(ENTRIES, g);
+            return Reads {
+                before: (before > i64::MIN).then(|| before + 1),
+                last,
+            };
+        }
+        Reads {
+            before: Some(last),
+            last: self.read,
+        }
+    }
+
+    /// Moves each of the lane's key groups on to the read, once, and again
+    /// after a discard: the entries of the reads before the last expire.
+    fn move_on(&mut self, range: KeyGroupRange) {
+        if self.moved {
+            return;
+        }
+        self.moved = true;
+        for g in range.first..=range.last {
+            let reads = self.reads(g);
+            if let Some(b) = reads.before {
+                self.layer.expire_in(ENTRIES, g, b - 1);
+            }
+            self.layer.expire_in(LAST, g, reads.last);
+        }
     }
 
     /// Ends the epoch's versions: a redo's are dropped, as its record has
@@ -403,7 +385,7 @@ impl Stream {
         let plan = &flow.plan;
         if plan.state.job.as_ref().is_some_and(|j| j.read_only()) {
             self.layer.discard();
-            self.groups.clear();
+            self.moved = false;
             return Ok(());
         }
         let snapshots = self.layer.barrier(epoch).await.map_err(|e| {

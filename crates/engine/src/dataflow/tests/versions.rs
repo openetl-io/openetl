@@ -247,7 +247,7 @@ async fn a_volatile_column_doesnt_make_a_version() {
 
 /// A declarative read gives again the rows at the highest cursor of the
 /// read before the last, which the last gave too: an entry the last read
-/// gave, or that no read since gave a row of its key group, is live.
+/// gave, or that no read since gave a row of its writer lane, is live.
 #[tokio::test]
 async fn an_entry_lives_through_the_read_after_its_own() {
     let dir = tempfile::tempdir().unwrap();
@@ -267,7 +267,7 @@ async fn an_entry_lives_through_the_read_after_its_own() {
     assert_ne!(
         record(&late, 1),
         record(&first, 1),
-        "a read without the key group's rows expired it"
+        "a read without rows expired it"
     );
 }
 
@@ -288,6 +288,38 @@ async fn an_entry_the_last_read_didnt_give_expires() {
         record(&first, 1),
         "an entry the last read didn't give is live"
     );
+}
+
+/// A read's entries leave the record two reads after it, whichever key
+/// groups those give rows of, where the record carries a lane's changes
+/// and where every barrier writes a run: the record names none of its runs.
+#[tokio::test]
+async fn a_reads_runs_go_two_reads_after_it() {
+    let all: Vec<String> = (0..20_000)
+        .map(|i| format!(r#"{{"id": {i}, "name": "n{i}", "at": "2024-05-01"}}"#))
+        .collect();
+    let all: Vec<&str> = all.iter().map(String::as_str).collect();
+    let one = r#"{"id": 1, "name": "n1", "at": "2024-05-01"}"#;
+    for pending in [None, Some(0)] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut from = Restored::default();
+        for (n, rs) in [(1, &all[..]), (2, &[one][..]), (3, &[one][..])] {
+            let mut req = users(dir.path(), n, n as i64 * 1000, &from, 1);
+            req.state_pending_bytes = pending;
+            let (_, ready) = run_sync(req, &[rs]).await;
+            from = Restored::of(&ready);
+        }
+        let first: Vec<&String> = from
+            .snapshots
+            .iter()
+            .flat_map(|s| &s.runs)
+            .filter(|r| r.contains("/g1/"))
+            .collect();
+        assert!(
+            first.is_empty(),
+            "pending {pending:?}: the record names the first read's {first:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -516,8 +548,12 @@ async fn a_reads_versions_go_to_runs_under_the_jobs_memory() {
 /// of 1,000 on one lane and one epoch, then the same rows read again, with
 /// the stream's versions kept and without; `VERSIONS=on` or `off` for one
 /// of them, `MEMORY` the job's memory and `SCRATCH` its scratch, in bytes,
-/// none by default, and `READS=1` for the first read alone. A measure, not
-/// a check:
+/// none by default, and `READS=1` for the first read alone. `CHANGED=k`
+/// makes each read after the first give `k` rows spread over the table, each
+/// changed, rather than all of them again, and `PENDING` sets the job's
+/// pending bytes, as tests do. Each read prints its time, the runs its
+/// record names and their bytes, and its storage requests. A measure, not a
+/// check:
 /// `cargo test -p openetl-engine first_read_times -- --ignored --nocapture`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
@@ -541,6 +577,11 @@ async fn first_read_times() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
+    let changed: usize = std::env::var("CHANGED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let pending: Option<u64> = std::env::var("PENDING").ok().and_then(|v| v.parse().ok());
     let modes = match std::env::var("VERSIONS").as_deref() {
         Ok("on") => vec![true],
         Ok("off") => vec![false],
@@ -551,7 +592,7 @@ async fn first_read_times() {
         let mut from = Restored::default();
         for sync in 1..=reads {
             let mut req = users(dir.path(), sync, sync as i64 * 1000, &from, 1);
-            req.state_pending_bytes = None;
+            req.state_pending_bytes = pending;
             if memory > 0 || scratch > 0 {
                 req.limits = Some(openetl_proto::engine::v1::Limits {
                     memory_bytes: memory,
@@ -566,10 +607,23 @@ async fn first_read_times() {
                 req.streams[0].versions_operator.clear();
                 req.state_url.clear();
             }
+            let (pages, given) = match changed {
+                k if k > 0 && sync > 1 => {
+                    let rs: Vec<String> = (0..k)
+                        .map(|j| j * (n / k) + sync as usize % (n / k))
+                        .map(|i| format!(r#"{{"id": {i}, "name": "r{sync}", "at": "2024-05-01"}}"#))
+                        .collect();
+                    (
+                        vec![rows(&rs.iter().map(String::as_str).collect::<Vec<_>>())],
+                        k,
+                    )
+                }
+                _ => (pages.clone(), n),
+            };
             let started = std::time::Instant::now();
-            let mut h = start_lanes(req);
+            let plan = Arc::new(Plan::from_request(req).unwrap());
+            let mut h = start_plan(plan.clone());
             let mut ins = std::mem::take(&mut h.ins);
-            let pages = pages.clone();
             let feed = tokio::spawn(async move {
                 let w = &mut ins[0];
                 for p in pages {
@@ -582,7 +636,7 @@ async fn first_read_times() {
             let (outs, ready) = h.finish().await;
             feed.await.unwrap();
             let took = started.elapsed();
-            assert_eq!(written(&outs).len(), n);
+            assert_eq!(written(&outs).len(), given);
             fn size(p: &Path) -> u64 {
                 std::fs::read_dir(p).map_or(0, |d| {
                     d.flatten()
@@ -594,10 +648,25 @@ async fn first_read_times() {
                         .sum()
                 })
             }
+            let named: u64 = ready[0]
+                .snapshots
+                .iter()
+                .flat_map(|s| &s.runs)
+                .map(|r| std::fs::metadata(dir.path().join("state").join(r)).map_or(0, |m| m.len()))
+                .sum();
+            let runs: usize = ready[0].snapshots.iter().map(|s| s.runs.len()).sum();
+            let carried: usize = ready[0]
+                .snapshots
+                .iter()
+                .map(|s| s.data.len() + s.pending.len())
+                .sum();
             eprintln!(
-                "{n} rows, read {sync}, versions {versions}: {took:?}, state {} bytes",
+                "{n} rows, read {sync} of {given}, versions {versions}: {took:?}, state {} bytes, {runs} runs of {named} bytes, record {carried} bytes",
                 size(&dir.path().join("state"))
             );
+            if let Some(j) = &plan.state.job {
+                eprintln!("counts: {:?}", j.stores(OP).counts());
+            }
             from = Restored::of(&ready[0]);
         }
     }
