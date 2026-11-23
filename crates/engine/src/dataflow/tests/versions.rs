@@ -515,8 +515,9 @@ async fn a_reads_versions_go_to_runs_under_the_jobs_memory() {
 /// Times a first read of `ROWS` rows of users (default 200,000), in pages
 /// of 1,000 on one lane and one epoch, then the same rows read again, with
 /// the stream's versions kept and without; `VERSIONS=on` or `off` for one
-/// of them, `MEMORY` the job's memory in bytes, none by default, and
-/// `READS=1` for the first read alone. A measure, not a check:
+/// of them, `MEMORY` the job's memory and `SCRATCH` its scratch, in bytes,
+/// none by default, and `READS=1` for the first read alone. A measure, not
+/// a check:
 /// `cargo test -p openetl-engine first_read_times -- --ignored --nocapture`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
@@ -529,6 +530,10 @@ async fn first_read_times() {
         .map(|p| page(p * 1000..((p + 1) * 1000).min(n)))
         .collect();
     let memory: u64 = std::env::var("MEMORY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let scratch: u64 = std::env::var("SCRATCH")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
@@ -547,10 +552,14 @@ async fn first_read_times() {
         for sync in 1..=reads {
             let mut req = users(dir.path(), sync, sync as i64 * 1000, &from, 1);
             req.state_pending_bytes = None;
-            if memory > 0 {
+            if memory > 0 || scratch > 0 {
                 req.limits = Some(openetl_proto::engine::v1::Limits {
                     memory_bytes: memory,
-                    ..Default::default()
+                    scratch_dir: match scratch {
+                        0 => String::new(),
+                        _ => dir.path().join("scratch").display().to_string(),
+                    },
+                    scratch_bytes: scratch,
                 });
             }
             if !versions {

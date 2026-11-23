@@ -624,6 +624,39 @@ async fn a_check_finds_a_run_thats_gone() {
     assert!(matches!(ls[0].check().await, Err(Error::Corrupt(_))));
 }
 
+/// A row put in place of another reads back by its key, from the open
+/// epoch and from a restore's runs, newest first, until a horizon passes
+/// its time.
+#[tokio::test]
+async fn a_put_row_reads_back_by_its_key() {
+    let s = stores(&Bucket::new(), RunConfig::default());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    ls[0].put_row(OP, k, 10, b("b"));
+    ls[0].put_row(OP, k, 20, b("c"));
+    let slots = [(k, 10), (k, 20), (k, 30), (KeyRef::new(8, b"id"), 10)];
+    let want = vec![Some(b("b")), Some(b("c")), None, None];
+    assert_eq!(ls[0].row(OP, &slots).await.unwrap(), want);
+    let all = barrier(&mut ls, 1).await;
+    let mut ls = open(&s, 2, 2, 1, &all).await;
+    assert_eq!(ls[0].row(OP, &slots).await.unwrap(), want);
+    // Put again in a later epoch, the slot's row is in two runs, and the
+    // newer one's reads.
+    ls[0].put_row(OP, k, 10, b("d"));
+    let all = barrier(&mut ls, 2).await;
+    let mut ls = open(&s, 3, 3, 1, &all).await;
+    assert_eq!(
+        ls[0].row(OP, &slots).await.unwrap(),
+        vec![Some(b("d")), Some(b("c")), None, None]
+    );
+    ls[0].expire_in(OP, 7, 10);
+    assert_eq!(
+        ls[0].row(OP, &slots[..2]).await.unwrap(),
+        vec![None, Some(b("c"))]
+    );
+}
+
 /// Where the recorded runs of each format are, under this crate.
 const RECORDED: &str = "tests/testdata/runs-v1";
 

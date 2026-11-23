@@ -40,6 +40,10 @@ impl Memory {
     }
 }
 
+/// The seq of a row [`Layer::put_row`] puts, which no appended row has:
+/// their epochs start at 1.
+const PUT: u64 = 0;
+
 /// A lane's state, for its range of key groups and every operator of the
 /// lane, as [`StateBackend`] serves it. The open epoch's changes stay in
 /// memory until [`Layer::barrier`] adds them to the pending set, or
@@ -252,6 +256,54 @@ impl Layer {
     /// what it can't read, as a run that's gone, is an error here.
     pub async fn check(&self) -> Result<()> {
         self.store.check().await
+    }
+
+    /// Puts `row` as the key's one row at `time`, in place of the one put
+    /// there before, which [`Layer::row`] reads by its key rather than a
+    /// scan. A slot takes these or [`StateBackend::append`]'s, not both. A
+    /// row at or before the operator's horizon is gone at once.
+    pub fn put_row(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64, row: Bytes) {
+        if let Some(g) = self.place(key.group)
+            && !self.gone(op, g, time)
+        {
+            self.change(layout::row(g, op, time, key.key, PUT), Some(row));
+        }
+    }
+
+    /// The row [`Layer::put_row`] put at each key's time, or `None`, read
+    /// together.
+    pub async fn row(
+        &mut self,
+        op: OperatorId,
+        slots: &[(KeyRef<'_>, i64)],
+    ) -> Result<Vec<Option<Bytes>>> {
+        self.usable()?;
+        self.relieve().await?;
+        let mut out = Vec::with_capacity(slots.len());
+        let (mut missing, mut at) = (Vec::new(), Vec::new());
+        for (i, (k, time)) in slots.iter().enumerate() {
+            let g = self.group(k.group)?;
+            if self.gone(op, g, *time) {
+                out.push(None);
+                continue;
+            }
+            let key = layout::row(g, op, *time, k.key, PUT);
+            match self.changed(&key) {
+                Some(v) => out.push(v.clone()),
+                None => {
+                    out.push(None);
+                    missing.push(key);
+                    at.push(i);
+                }
+            }
+        }
+        if !missing.is_empty() {
+            let got = self.store.get(&missing).await?;
+            for (i, v) in at.into_iter().zip(got) {
+                out[i] = v;
+            }
+        }
+        Ok(out)
     }
 
     /// The barrier of epoch `epoch`, the open one: adds its changes to the

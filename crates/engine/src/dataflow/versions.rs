@@ -5,15 +5,16 @@
 //! cursor, which the next read gives again at its inclusive floor.
 //!
 //! An entry is the owner's hash and its schema's version, at the read that
-//! last gave its ID, by the read's start. The entries the stream's last two
-//! reads gave stay, and the reads before those expire as a read gives the
-//! first row of a key group, a read given again once a row of the read
-//! before it was. A row without a live entry of its schema's version keeps
-//! its ID, and its hash becomes the owner. So does a row of a key group the
-//! writer lane doesn't keep: an entry is missed, and the version skipped as
-//! it was before, but never given two IDs. Versions of a layout other than
-//! this engine's start again, as versions that can't be read do, and so do
-//! versions whose runs are gone.
+//! last gave its ID, by the read's start: the ID's one row at that time,
+//! which a lookup reads by its key rather than a scan. The entries the
+//! stream's last two reads gave stay, and the reads before those expire as
+//! a read gives the first row of a key group, a read given again once a row
+//! of the read before it was. A row without a live entry of its schema's
+//! version keeps its ID, and its hash becomes the owner. So does a row of a
+//! key group the writer lane doesn't keep: an entry is missed, and the
+//! version skipped as it was before, but never given two IDs. Versions of a
+//! layout other than this engine's start again, as versions that can't be
+//! read do, and so do versions whose runs are gone.
 
 use std::collections::HashMap;
 
@@ -34,7 +35,7 @@ const ENTRIES: OperatorId = OperatorId(0);
 /// The layout of a lane's versions, as its snapshots name it: the state's,
 /// and the versions' own in the bits above it, so that an engine that
 /// keeps them otherwise starts them again rather than misread them.
-const LAYOUT: u32 = openetl_state::LAYOUT | (1 << 16);
+const LAYOUT: u32 = openetl_state::LAYOUT | (2 << 16);
 /// Each key group's reads, as a value: the last two that gave a row of it.
 const READS: &[u8] = b"reads";
 
@@ -297,7 +298,7 @@ impl Stream {
         }
         let found = self
             .layer
-            .rows(ENTRIES, &slots)
+            .row(ENTRIES, &slots)
             .await
             .map_err(|e| self.failed(&e))?;
         let mut found = found.into_iter();
@@ -308,17 +309,17 @@ impl Stream {
         for &r in &rows {
             let g = groups[r];
             let reads = self.groups[&g];
-            let last = found.next().unwrap_or_default();
+            let last = found.next().flatten();
             let before = match reads.before {
-                Some(_) => found.next().unwrap_or_default(),
-                None => Vec::new(),
+                Some(_) => found.next().flatten(),
+                None => None,
             };
             let id = id_of(r);
             let (entry, fresh) = match taken.get(&(g, id)) {
                 Some(e) => (Some(*e), true),
-                None => match last.last().and_then(|b| Entry::decode(b)) {
+                None => match last.as_deref().and_then(Entry::decode) {
                     Some(e) => (Some(e), true),
-                    None => (before.last().and_then(|b| Entry::decode(b)), false),
+                    None => (before.as_deref().and_then(Entry::decode), false),
                 },
             };
             let owner = match entry {
@@ -337,7 +338,7 @@ impl Stream {
             };
             if let Some(e) = owner.filter(|_| write) {
                 self.layer
-                    .append(ENTRIES, KeyRef::new(g, id), reads.last, e.encode());
+                    .put_row(ENTRIES, KeyRef::new(g, id), reads.last, e.encode());
                 taken.insert((g, id), e);
             }
         }
