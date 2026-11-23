@@ -55,10 +55,12 @@ use crate::stage::{Applied, Stage, pushed_rows};
 use crate::staging::Staging;
 use crate::transform::Route;
 use crate::watermark::{self, Senders, Splits};
+use versions::Versions;
 
 pub(crate) mod keyed;
 #[cfg(test)]
 mod schema_model;
+mod versions;
 
 pub type Events = mpsc::Sender<Result<EventsResponse, Status>>;
 
@@ -279,7 +281,8 @@ fn shaper(plan: &Plan, s: usize, restored: Option<SchemaRef>) -> Result<Shaper, 
     )
     .map_err(bad)?
     .with_soft_deletes(plan.soft_deletes[s])
-    .with_changelog(plan.changelog[s]))
+    .with_changelog(plan.changelog[s])
+    .with_versions(plan.versions[s].is_some()))
 }
 
 /// Stream s's shaper as its owner has it, from `schema`, holding whole the
@@ -1398,6 +1401,39 @@ impl Lane {
         Ok(())
     }
 
+    /// Sends held values to the lane's writer lane, or, where writer lanes
+    /// keep the stream's versions, to the writer lanes their rows went to,
+    /// which give them the IDs they gave the rows. Held values don't cross
+    /// engines, so the runner keeps no versions of a stream that holds on
+    /// workers with an exchange.
+    async fn held(
+        &self,
+        stream: usize,
+        key: &[String],
+        batch: RecordBatch,
+    ) -> Result<(), JobError> {
+        let plan = &self.flow.plan;
+        let Some(exchange) = self
+            .exchange(stream)
+            .filter(|_| plan.versions[stream].is_some())
+        else {
+            return self.send(Out::Held(stream, batch)).await;
+        };
+        let parts = by_key_group(
+            &batch,
+            &exchange.columns(key),
+            plan.key_groups,
+            plan.routed_writers(),
+        )
+        .map_err(|e| shape_error(&plan.streams[stream], NormalizeError::Arrow(e)))?;
+        for (w, part) in parts.into_iter().enumerate() {
+            if let Some(part) = part {
+                self.route(w, Out::Held(stream, part)).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Sends a schema change, a barrier or an end to every writer lane the
     /// stream's rows on this lane can reach.
     async fn all(&self, stream: usize, out: impl Fn() -> Out) -> Result<(), JobError> {
@@ -2145,7 +2181,8 @@ fn hold(
     Ok(())
 }
 
-/// Sends a shaped batch: its schema change, its held values and its rows.
+/// Sends a shaped batch: its schema change, its rows and its held values,
+/// which a writer lane gives the IDs it gave their rows.
 async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Result<(), JobError> {
     let stream = ls.stream;
     for v in &n.versioned {
@@ -2167,15 +2204,15 @@ async fn shaped(lane: &Lane, ls: &mut LaneStream, n: Shaped, c: &Counters) -> Re
         e.cells += 1;
         c.cells_held.fetch_add(1, Ordering::Relaxed);
     }
-    for b in n.held {
-        lane.send(Out::Held(stream, b)).await?;
-    }
+    let key = match lane.exchange(stream).is_some() || lane.flow.plan.kept(stream).is_some() {
+        true => ls.shaper.key_columns(),
+        false => Vec::new(),
+    };
     if n.batch.num_rows() > 0 {
-        let key = match lane.exchange(stream).is_some() || lane.flow.plan.kept(stream).is_some() {
-            true => ls.shaper.key_columns(),
-            false => Vec::new(),
-        };
         lane.rows(stream, &key, n.batch).await?;
+    }
+    for b in n.held {
+        lane.held(stream, &key, b).await?;
     }
     Ok(())
 }
@@ -2239,9 +2276,18 @@ async fn replay(lane: &Lane, ls: &mut LaneStream) -> Result<(), JobError> {
     Ok(())
 }
 
+/// The stream's schema changed to `batch`'s, less the hashes it carries to
+/// the writer.
 fn schema_change(stream: usize, batch: &RecordBatch) -> Result<Out, JobError> {
-    let encoded =
-        ipc::encode_schema(&batch.schema()).map_err(|e| JobError::internal(e.to_string()))?;
+    let schema = batch.schema();
+    let fields: Vec<_> = schema
+        .fields()
+        .iter()
+        .filter(|f| f.name() != openetl_normalize::versions::HASH_COLUMN)
+        .cloned()
+        .collect();
+    let schema = arrow_schema::Schema::new_with_metadata(fields, schema.metadata().clone());
+    let encoded = ipc::encode_schema(&schema).map_err(|e| JobError::internal(e.to_string()))?;
     let msg = SchemaChange {
         arrow_schema: encoded,
     };
@@ -2754,6 +2800,7 @@ where
         None => None,
     };
 
+    let mut versions = Versions::open(&flow, writer).await?;
     let mut open = plan.streams.len();
     while open > 0 {
         let item = match feed.try_next()? {
@@ -2768,6 +2815,7 @@ where
             // A reader failed, and its error says why.
             Next::Closed => return Ok(false),
         };
+        let item = versions.apply(&flow, item).await?;
         let (kind, stream, payload) = match item {
             Out::Batch(s, batch) => {
                 let payload =
@@ -2877,11 +2925,13 @@ fn write_parquet(
     )
     .map_err(sink_error)?;
 
+    let mut versions = rt.block_on(Versions::open(flow, writer))?;
     let mut open = plan.streams.len();
     while open > 0 {
         let Some(item) = rt.block_on(feed.next())? else {
             return Ok(false);
         };
+        let item = rt.block_on(versions.apply(flow, item))?;
         let mark: Mark = match item {
             Out::Batch(s, batch) => {
                 staging.write(s, &batch).map_err(sink_error)?;
@@ -2960,11 +3010,13 @@ async fn write_staged(
         writer,
         plan.writer_lanes,
     )?;
+    let mut versions = Versions::open(&flow, writer).await?;
     let mut open = plan.streams.len();
     while open > 0 {
         let Some(item) = feed.next().await? else {
             return Ok(false);
         };
+        let item = versions.apply(&flow, item).await?;
         let mark = match item {
             Out::Batch(s, batch) => {
                 staging.write(s, &batch).await?;
@@ -3008,11 +3060,13 @@ async fn write_staged(
 async fn write_discard(flow: Arc<Flow>, writer: usize, mut feed: Feed) -> Result<bool, JobError> {
     let plan = &flow.plan;
     let counters = &flow.counters;
+    let mut versions = Versions::open(&flow, writer).await?;
     let mut open = plan.streams.len();
     while open > 0 {
         let Some(item) = feed.next().await? else {
             return Ok(false);
         };
+        let item = versions.apply(&flow, item).await?;
         let mark = match item {
             Out::Batch(s, batch) => {
                 counters[s]
@@ -3076,6 +3130,7 @@ pub(crate) mod tests {
     mod empty_overwrite;
     mod event_time;
     mod rereads;
+    mod versions;
 
     struct Harness {
         to_engine: DuplexStream,

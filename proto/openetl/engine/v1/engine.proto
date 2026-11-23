@@ -324,6 +324,16 @@ message StreamPlan {
   // schema an empty batch of its declared columns shapes to, in that
   // epoch's EpochReady. Unset with a transform.
   bool overwrite = 16;
+  // The operator whose state keeps, by key group at the writer lanes, the
+  // version that holds each of the stream's record IDs: the hash of its
+  // values. A record read again with other values than that version's, as
+  // a second change within one value of its cursor, gets an ID of its own,
+  // made from its base ID and its hash, so that a destination that skips
+  // the IDs it has (DEDUPE_TARGET) takes it. Entries the stream's last two
+  // reads didn't give expire. A row of a key group the writer lane doesn't
+  // keep, or without a live entry of its schema's version, keeps its ID.
+  // Needs state_url. A keyed stream with a cursor_field. Empty: none.
+  string versions_operator = 17;
 }
 
 // EventTime is how a stream's watermarks are made. A split's watermark is

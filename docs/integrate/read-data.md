@@ -11,7 +11,7 @@ Every row OpenETL writes to a table or a file carries metadata columns besides t
 
 | Column | What it holds |
 |---|---|
-| `_openetl_id` | The ID of this version of the record: a hash of the stream, the record's primary key (or, without one, every column), and its `_openetl_seq`. The same version gets the same ID however often it is read. |
+| `_openetl_id` | The ID of this version of the record: a hash of the stream, the record's primary key (or, without one, every column), and its `_openetl_seq`. The same version gets the same ID however often it is read. A version read after another with the same `_openetl_seq` and other values can get an ID of its own, from its values. |
 | `_openetl_op` | `insert`, `update` or `delete`. Only streams read with CDC have updates and deletes. |
 | `_openetl_seq` | Where this version comes in the source's order: its position in the source's log, its cursor value, or when the read started. A later version of a record has a higher one. |
 | `_openetl_synced_at` | When OpenETL wrote it, in UTC. |

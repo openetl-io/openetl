@@ -121,7 +121,7 @@ pub fn in_key_groups(
     }
 }
 
-fn hashable(dt: &DataType) -> bool {
+pub(crate) fn hashable(dt: &DataType) -> bool {
     use DataType as D;
     matches!(
         dt,
@@ -152,13 +152,13 @@ fn hashable(dt: &DataType) -> bool {
     )
 }
 
-fn part(buf: &mut Vec<u8>, b: &[u8]) {
+pub(crate) fn part(buf: &mut Vec<u8>, b: &[u8]) {
     buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
     buf.extend_from_slice(b);
 }
 
 /// Encodes row `i` of `a`, of field `f`, whose type is hashable.
-fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Array, i: usize) {
+pub(crate) fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Array, i: usize) {
     use DataType as D;
     use std::fmt::Write;
     if a.is_null(i) {
@@ -263,7 +263,7 @@ fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Array, i: usiz
     part(buf, text.as_bytes());
 }
 
-fn json(f: &Field) -> bool {
+pub(crate) fn json(f: &Field) -> bool {
     f.metadata().get(EXTENSION_NAME_KEY).map(String::as_str) == Some(JSON_EXTENSION)
 }
 

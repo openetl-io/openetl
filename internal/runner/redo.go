@@ -345,7 +345,7 @@ func keyName(key []string) string {
 // It shapes rows by rec's schemas, and runs as generation gen, which names
 // what it quarantines. Its stateful operators start from the state before,
 // the record before rec, as rec's attempt restored it, with its watermarks,
-// and write none.
+// and write none; the versions of its streams' records from rec's.
 func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, before *checkpoint.Record, i int) error {
 	if j.ownCode() || j.staged() {
 		return errs.New(errs.Internal, "runner: only the destination's own writers redo an epoch")
@@ -385,6 +385,10 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	}
 	before = j.redoStart(rec, before)
 	plan := rj.plan(gen, rec.Epoch, before, readStarts, schemas, outputSchemas(rec), nil)
+	// rec's versions hold those the epoch gave IDs to: a version read
+	// again unchanged gets the ID the epoch gave it, and one that changed
+	// since an ID of its own.
+	plan.Snapshots = versionsState(plan.Snapshots, plan.Versions, rec.Snapshots)
 	// Each lane writes its own writer lane.
 	plan.KeyGroupRanges, plan.FirstLane, plan.Exchanges = part.ranges, i, nil
 	plan.StateReadOnly = true

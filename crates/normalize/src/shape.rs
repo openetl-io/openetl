@@ -6,7 +6,7 @@ use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions,
-    StringArray, TimestampMicrosecondArray, new_null_array,
+    StringArray, TimestampMicrosecondArray, UInt64Array, new_null_array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use serde_json::Value;
@@ -21,6 +21,7 @@ use crate::hold::{
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
 use crate::typed::{Typed, Typer, input_rows, remap};
+use crate::versions;
 use crate::{
     EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, NotHeld, Rejected, TypeOptions,
     UUID_EXTENSION, coerce,
@@ -101,6 +102,9 @@ pub struct Shaper {
     /// schema, what its metadata knows of the values, such as the columns
     /// that held integers past ±2^53, and the holds.
     changed: bool,
+    /// Shaped batches carry their rows' hashes, in
+    /// [`versions::HASH_COLUMN`], their held values' too.
+    versions: bool,
 }
 
 impl Shaper {
@@ -162,6 +166,7 @@ impl Shaper {
             changelog: false,
             holds: None,
             changed: false,
+            versions: false,
         };
         shaper.pin();
         Ok(shaper)
@@ -202,7 +207,16 @@ impl Shaper {
             changelog: self.changelog,
             holds: self.holds.clone(),
             changed: false,
+            versions: self.versions,
         }
+    }
+
+    /// Has shaped batches carry their rows' hashes, and their schema's
+    /// version, in a last column, [`versions::HASH_COLUMN`], which the held
+    /// values' batches carry too. It's no column of the stream's.
+    pub fn with_versions(mut self, on: bool) -> Self {
+        self.versions = on;
+        self
     }
 
     /// Whether what lanes share has changed since the last call.
@@ -641,7 +655,16 @@ impl Shaper {
         };
         let unchanged = self.unchanged(&c.batch, &control)?;
         let lists = self.held_lists(c.batch.num_rows(), unchanged.as_ref(), &cells);
-        let batch = self.assemble(schema, &c.batch, ids, &control, unchanged, lists)?;
+        let hashes = self.versions.then(|| {
+            (
+                versions::row_hashes(&c.batch, &cells),
+                versions::schema_version(&c.batch.schema()),
+            )
+        });
+        let mut batch = self.assemble(schema, &c.batch, ids, &control, unchanged, lists)?;
+        if let Some((hashes, version)) = hashes {
+            batch = with_hashes(&batch, hashes, version)?;
+        }
         let (batch, held) = self.hold_back(batch, &cells)?;
         let cells = cells
             .iter()
@@ -896,7 +919,12 @@ impl Shaper {
         for k in &self.identity.key {
             take(self.namer.get(k).unwrap_or(k))?;
         }
-        for m in ["_openetl_id", "_openetl_seq", "_openetl_op"] {
+        for m in [
+            "_openetl_id",
+            "_openetl_seq",
+            "_openetl_op",
+            versions::HASH_COLUMN,
+        ] {
             take(m)?;
         }
         fields.push(Field::new(HELD_COLUMN, held_type(), true));
@@ -1342,6 +1370,25 @@ fn broadcast(v: &ArrayRef, n: usize) -> Result<ArrayRef, Error> {
 
 /// The stream's schema as the destination gets it: each column held whole
 /// at the type the destination has, or left out.
+/// `batch` with a last column of its rows' hashes.
+fn with_hashes(batch: &RecordBatch, hashes: Vec<u64>, version: u64) -> Result<RecordBatch, Error> {
+    let schema = batch.schema();
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    fields.push(
+        Field::new(versions::HASH_COLUMN, DataType::UInt64, false).with_metadata(HashMap::from([
+            (versions::SCHEMA_KEY.to_owned(), version.to_string()),
+        ])),
+    );
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(UInt64Array::from(hashes)));
+    let opts = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    Ok(RecordBatch::try_new_with_options(
+        Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+        columns,
+        &opts,
+    )?)
+}
+
 fn deliver_schema(current: &Schema, columns: &BTreeMap<String, Holding>) -> Schema {
     let by_dest: HashMap<&str, &Holding> = columns.values().map(|c| (c.dest.as_str(), c)).collect();
     let fields: Vec<Field> = current

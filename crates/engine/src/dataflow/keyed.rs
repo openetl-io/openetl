@@ -126,10 +126,11 @@ const SPLIT: &str = "\0split";
 const PLACE: &str = "\0place";
 /// The column of each row's record ID, after the columns a statement reads.
 const ID_COLUMN: &str = "\0id";
-/// The column of each row's hash, after its record ID: of every value of
-/// its stream's row, by which a group window and `OVER` tell a row read
-/// again from another version of it with its ID. 0 where they don't.
-const HASH_COLUMN: &str = "\0hash";
+/// The column of each row's hash, after its record ID: its version's
+/// ([`openetl_normalize::versions`]), by which a group window and `OVER`
+/// tell a row read again from another version of it with its ID. 0 where
+/// they don't.
+const HASH_COLUMN: &str = openetl_normalize::versions::HASH_COLUMN;
 
 /// A frame to another engine's keyed lane: its kind, statement and
 /// payload.
@@ -315,7 +316,12 @@ pub(super) async fn rows(
         let hashes = match drops_repeats(keyed, event_time) {
             true => match &hashes {
                 Some(h) => h.clone(),
-                None => hashes.insert(row_hashes(&typed.batch)?).clone(),
+                None => hashes
+                    .insert(UInt64Array::from(openetl_normalize::versions::row_hashes(
+                        &typed.batch,
+                        &typed.cells,
+                    )))
+                    .clone(),
             },
             false => UInt64Array::from(vec![0; typed.batch.num_rows()]),
         };
@@ -495,33 +501,6 @@ pub(crate) fn drops_repeats(keyed: &Planned, event_time: Option<&watermark::Even
     }
 }
 
-/// Each row's hash: of the names and values of its stream's row's columns
-/// that aren't null, by name, so a row read again has its hash whatever
-/// columns the stream gained since, that it has no value of, and wherever
-/// they are.
-pub(crate) fn row_hashes(batch: &RecordBatch) -> Result<UInt64Array, JobError> {
-    let schema = batch.schema();
-    let mut columns: Vec<(&Field, &arrow_array::ArrayRef)> = schema
-        .fields()
-        .iter()
-        .map(AsRef::as_ref)
-        .zip(batch.columns())
-        .collect();
-    columns.sort_by(|a, b| a.0.name().cmp(b.0.name()));
-    let mut buf = Vec::new();
-    let mut out = Vec::with_capacity(batch.num_rows());
-    for r in 0..batch.num_rows() {
-        buf.clear();
-        for (f, c) in columns.iter().filter(|(_, c)| !c.is_null(r)) {
-            buf.extend_from_slice(&window::codec::len32(f.name().len()).to_be_bytes());
-            buf.extend_from_slice(f.name().as_bytes());
-            over::row::value(c, f.data_type(), r, &mut buf).map_err(JobError::internal)?;
-        }
-        out.push(twox_hash::XxHash3_64::oneshot(&buf));
-    }
-    Ok(UInt64Array::from(out))
-}
-
 /// The columns a statement reads, from a batch of its stream: null where
 /// the batch lacks one. One of another type changes what its operator
 /// keeps, which needs its state built again.
@@ -663,7 +642,7 @@ impl Op {
     }
 
     /// Takes rows of the statement's input, with `ids`, their record IDs,
-    /// and their hashes, as [`row_hashes`] gives them.
+    /// and their versions' hashes.
     pub(crate) async fn rows(
         &mut self,
         layer: &mut Layer,

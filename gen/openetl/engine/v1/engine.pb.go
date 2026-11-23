@@ -1336,9 +1336,19 @@ type StreamPlan struct {
 	// (Barrier.ends_read), as when the read has no rows, the stream takes the
 	// schema an empty batch of its declared columns shapes to, in that
 	// epoch's EpochReady. Unset with a transform.
-	Overwrite     bool `protobuf:"varint,16,opt,name=overwrite,proto3" json:"overwrite,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Overwrite bool `protobuf:"varint,16,opt,name=overwrite,proto3" json:"overwrite,omitempty"`
+	// The operator whose state keeps, by key group at the writer lanes, the
+	// version that holds each of the stream's record IDs: the hash of its
+	// values. A record read again with other values than that version's, as
+	// a second change within one value of its cursor, gets an ID of its own,
+	// made from its base ID and its hash, so that a destination that skips
+	// the IDs it has (DEDUPE_TARGET) takes it. Entries the stream's last two
+	// reads didn't give expire. A row of a key group the writer lane doesn't
+	// keep, or without a live entry of its schema's version, keeps its ID.
+	// Needs state_url. A keyed stream with a cursor_field. Empty: none.
+	VersionsOperator string `protobuf:"bytes,17,opt,name=versions_operator,json=versionsOperator,proto3" json:"versions_operator,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *StreamPlan) Reset() {
@@ -1481,6 +1491,13 @@ func (x *StreamPlan) GetOverwrite() bool {
 		return x.Overwrite
 	}
 	return false
+}
+
+func (x *StreamPlan) GetVersionsOperator() string {
+	if x != nil {
+		return x.VersionsOperator
+	}
+	return ""
 }
 
 // EventTime is how a stream's watermarks are made. A split's watermark is
@@ -4575,7 +4592,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x06Naming\x12*\n" +
 	"\x11keep_source_names\x18\x01 \x01(\bR\x0fkeepSourceNames\x12\x1d\n" +
 	"\n" +
-	"max_length\x18\x02 \x01(\rR\tmaxLength\"\x9d\x05\n" +
+	"max_length\x18\x02 \x01(\rR\tmaxLength\"\xca\x05\n" +
 	"\n" +
 	"StreamPlan\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
@@ -4597,7 +4614,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"key_groups\x18\x0e \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12;\n" +
 	"\n" +
 	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\x12\x1c\n" +
-	"\toverwrite\x18\x10 \x01(\bR\toverwrite\"\xe8\x02\n" +
+	"\toverwrite\x18\x10 \x01(\bR\toverwrite\x12+\n" +
+	"\x11versions_operator\x18\x11 \x01(\tR\x10versionsOperator\"\xe8\x02\n" +
 	"\tEventTime\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12!\n" +
 	"\fdelay_micros\x18\x02 \x01(\x03R\vdelayMicros\x12\x12\n" +

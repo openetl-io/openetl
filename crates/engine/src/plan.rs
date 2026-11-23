@@ -42,6 +42,9 @@ pub struct Plan {
     /// Each stream's: whether the destination replaces its table with what
     /// each read writes. False with a transform.
     pub overwrite: Vec<bool>,
+    /// Each stream's: the operator whose state keeps the version that holds
+    /// each of its record IDs, at the writer lanes.
+    pub versions: Vec<Option<String>>,
     pub quarantine: Option<std::sync::Arc<Quarantine>>,
     /// Batches skip shaping, for measuring the boundary.
     pub passthrough: bool,
@@ -390,11 +393,18 @@ impl Plan {
                 .concat(),
             None => layout.lanes().to_vec(),
         };
+        let versioned: HashSet<&str> = req
+            .streams
+            .iter()
+            .map(|s| s.versions_operator.as_str())
+            .filter(|o| !o.is_empty())
+            .collect();
         let mut restored_state = Vec::with_capacity(req.restored_snapshots.len());
         for s in &req.restored_snapshots {
-            let known = transform
-                .as_ref()
-                .is_some_and(|t| t.operators().any(|o| o == s.operator));
+            let known = versioned.contains(s.operator.as_str())
+                || transform
+                    .as_ref()
+                    .is_some_and(|t| t.operators().any(|o| o == s.operator));
             if !known {
                 return Err(JobError::config(format!(
                     "the checkpoint names state of operator {:?}, which no statement of transform.sql computes, and which the pipeline's version didn't drop: \
@@ -406,8 +416,13 @@ impl Plan {
             restored_state.push(crate::state::snapshot(s)?);
         }
         let operators = transform.as_ref().map_or(0, |t| t.operators().count());
-        let state_job = match (operators, req.state_url.as_str()) {
+        let state_job = match (operators + versioned.len(), req.state_url.as_str()) {
             (0, _) => None,
+            (_, "") if operators == 0 => {
+                return Err(JobError::config(
+                    "a stream keeps the versions of its records, and the job has no state URL to keep them at",
+                ));
+            }
             (_, "") => {
                 return Err(JobError::config(
                     "transform.sql has a statement with state, as a group window or OVER, and the job has no state URL to keep it at",
@@ -511,6 +526,19 @@ impl Plan {
             }
         }
         let soft_deletes = sinks.iter().map(|s| s.soft_deletes).collect();
+        let mut versions = Vec::with_capacity(sinks.len());
+        for s in sinks {
+            versions.push(match s.versions_operator.as_str() {
+                "" => None,
+                _ if s.primary_key.is_empty() || s.cursor_field.is_empty() || s.changelog => {
+                    return Err(JobError::config(format!(
+                        "stream {} keeps the versions of its records, which needs a primary key and a cursor, and no changelog",
+                        s.name
+                    )));
+                }
+                op => Some(op.to_owned()),
+            });
+        }
         let changelog = sinks.iter().map(|s| s.changelog).collect();
         let overwrite = sinks
             .iter()
@@ -775,6 +803,7 @@ impl Plan {
             declared,
             identities,
             soft_deletes,
+            versions,
             changelog,
             overwrite,
             passthrough: req.passthrough,
@@ -988,7 +1017,12 @@ fn check_transform(req: &StartJobRequest) -> Result<Option<Transform>, JobError>
         return Err(JobError::config("the transform has no SQL"));
     }
     for s in &req.streams {
-        if s.soft_deletes || s.holds.is_some() || s.exchange.is_some() || !s.table.is_empty() {
+        if s.soft_deletes
+            || s.holds.is_some()
+            || s.exchange.is_some()
+            || !s.table.is_empty()
+            || !s.versions_operator.is_empty()
+        {
             return Err(JobError::config(format!(
                 "stream {} is a transform's input, and has the destination's settings, \
                  which are its outputs'",

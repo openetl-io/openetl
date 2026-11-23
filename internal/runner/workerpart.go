@@ -539,6 +539,16 @@ func (p *workerPart) attend(ctx context.Context, a *attemptv1.Assignment) error 
 	plan.FirstWriterLane, plan.AttemptWriterLanes = p.global[0], len(a.GetWriterLanes())
 	if x := a.GetExchange(); x != nil {
 		plan.Mesh, plan.Exchanges = p.mesh(a, x), job.exchanges(len(a.GetWriterLanes()))
+		// A held row goes to the writer lane its row went to, for the ID
+		// it gave the row, and held values don't cross engines.
+		// ponytail: such a stream keeps no versions on workers; send held
+		// values over the mesh to keep them.
+		for name := range plan.Holds {
+			if plan.Exchanges[name] != nil {
+				delete(plan.Versions, name)
+			}
+		}
+		plan.Snapshots = versionsState(plan.Snapshots, plan.Versions, plan.Snapshots)
 	}
 	// Every worker has joined, with its port held, so none can have taken
 	// this one's. The engine binds it.

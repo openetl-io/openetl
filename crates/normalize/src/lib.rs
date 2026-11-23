@@ -13,12 +13,13 @@ pub mod keygroup;
 pub mod naming;
 mod shape;
 mod typed;
+pub mod versions;
 
 pub use cause::{Cause, Code, NotHeld};
 pub use coerce::{Infinity, check_declared, nanoseconds, render_row};
 pub use control::{CONTROL_KEY, Control};
 pub use evolve::{BIG_INTS_KEY, Policy, VERSIONS_KEY, widens};
-pub use ids::{Identity, element_ids};
+pub use ids::{Identity, element_ids, version_id};
 pub use keygroup::{KEY_GROUP_HASH, by_key_group, in_key_groups, key_groups};
 pub use shape::{Shaped, Shaper};
 pub use typed::Typed;
