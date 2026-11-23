@@ -71,7 +71,7 @@ pub struct RunRef {
 /// epochs write the same name, and none is written twice: a lane names at
 /// most one merge at a barrier, and counts its early flushes on across an
 /// epoch that it opens again, and across a store opened again on its key
-/// groups, as versions that start again open one.
+/// groups.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunName {
     pub generation: u64,

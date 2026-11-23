@@ -640,6 +640,26 @@ async fn a_put_row_reads_back_by_its_key() {
     );
 }
 
+/// A store forgets a run its snapshots name only before it reads from it,
+/// as if it held nothing: a read could have found what one after it
+/// wouldn't.
+#[tokio::test]
+async fn a_run_is_forgotten_only_before_its_read() {
+    let s = stores(&Bucket::new(), RunConfig::default());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    let all = barrier(&mut ls, 1).await;
+    let name = runs(&all[0]).unwrap()[0].name.clone();
+    let mut ls = open(&s, 2, 2, 1, &all).await;
+    assert!(ls[0].forget(&name));
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![None]);
+    assert!(runs(&barrier(&mut ls, 2).await[0]).unwrap().is_empty());
+    let mut ls = open(&s, 3, 2, 1, &all).await;
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![Some(b("a"))]);
+    assert!(!ls[0].forget(&name), "a run read from");
+}
+
 /// Where the recorded runs of each format are, under this crate.
 const RECORDED: &str = "tests/testdata/runs-v1";
 

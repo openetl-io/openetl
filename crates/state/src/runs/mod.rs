@@ -2105,6 +2105,33 @@ impl Store for RunStore {
         Box::pin(self.lookup(keys))
     }
 
+    /// Not a run it opened: what a lookup found in one, from a cache, a
+    /// later lookup would no longer find, nor one it wrote.
+    fn forget(&mut self, name: &str) -> bool {
+        let Some(id) = self
+            .runs
+            .iter()
+            .find(|r| r.name == name && r.open.get().is_none())
+            .map(|r| r.id)
+        else {
+            return false;
+        };
+        for secs in &mut self.sections {
+            secs.retain(|s| s.run.id != id);
+        }
+        self.runs.retain(|r| r.id != id);
+        if self
+            .merging
+            .as_ref()
+            .is_some_and(|m| m.inputs.iter().any(|i| i.0 == id))
+        {
+            self.merging = None;
+        }
+        let unopened = self.runs.iter().filter(|r| r.open.get().is_none()).count();
+        self.unopened.store(unopened, Ordering::Relaxed);
+        true
+    }
+
     fn scan<'a>(
         &'a self,
         start: &'a [u8],

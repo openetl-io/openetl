@@ -499,10 +499,10 @@ async fn versions_of_another_layout_start_again() {
 
 /// Versions whose runs are gone, as after a rollback whose runner, from
 /// before them, restored their record and deleted what it didn't know,
-/// start again at the lookup that finds one, rather than fail the sync: a
+/// forget them at the lookup that finds one, rather than fail the sync: a
 /// second version keeps its ID, and a third, a read later, gets its own.
 #[tokio::test]
-async fn versions_whose_runs_are_gone_start_again() {
+async fn versions_whose_runs_are_gone_forget_them() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let v1 = r#"{"id": 1, "name": "v1", "at": "2024-05-01"}"#;
@@ -522,7 +522,7 @@ async fn versions_whose_runs_are_gone_start_again() {
 
 /// A run of the versions that's there but can't be read fails the sync, as
 /// other state's does, rather than drop the versions for good: only a run
-/// that's gone starts them again.
+/// that's gone is forgotten.
 #[tokio::test]
 async fn versions_whose_run_cant_be_read_fail_the_sync() {
     let dir = tempfile::tempdir().unwrap();
@@ -546,12 +546,171 @@ async fn versions_whose_run_cant_be_read_fail_the_sync() {
     assert_eq!(err.code, ErrorCode::CheckpointCorrupt, "{}", err.message);
 }
 
-/// Versions that start again on a lane that flushed early in the epoch
-/// write runs of names it didn't: a run that's gone can be found after an
-/// early flush where a lane holds key groups of two lanes before it, at
-/// different reads, and only the second's runs are gone.
+/// Rows of a lane's key groups and the other's, the two syncs on two lanes
+/// that version them, the first giving `mine` and the second `other`, and
+/// the second's record, whose runs of the other lane's groups are gone.
+async fn other_lanes_runs_gone(d: &Path) -> (Vec<i64>, i64, Vec<Row>, Vec<Row>, EpochReady) {
+    let plan = Plan::from_request(users(d, 1, 1000, &Restored::default(), 2)).unwrap();
+    let of = |w: usize, n: usize| -> Vec<i64> {
+        (0..)
+            .filter(|&id| {
+                let b = RecordBatch::try_from_iter(vec![(
+                    "id",
+                    Arc::new(arrow_array::Int64Array::from(vec![id])) as arrow_array::ArrayRef,
+                )])
+                .unwrap();
+                let g =
+                    openetl_normalize::key_groups(&b, &["id".into()], plan.key_groups).unwrap()[0];
+                plan.layout.writer(w).contains(&g)
+            })
+            .take(n)
+            .collect()
+    };
+    let (mine, other) = (of(0, 2), of(1, 1)[0]);
+    let firsts = [user(mine[0], "v1"), user(mine[1], "v1")];
+    let firsts: Vec<&str> = firsts.iter().map(String::as_str).collect();
+    let (first, r1) = run_sync(users(d, 1, 1000, &Restored::default(), 2), &[&firsts, &[]]).await;
+    let theirs = user(other, "v1");
+    let (second, r2) = run_sync(users(d, 2, 2000, &Restored::of(&r1), 2), &[&[], &[&theirs]]).await;
+    for s in r2.snapshots.iter().filter(|s| s.operator == OP) {
+        if s.key_groups.as_ref().is_some_and(|r| r.first > 0) {
+            for run in &s.runs {
+                std::fs::remove_file(d.join("state").join(run)).unwrap();
+            }
+        }
+    }
+    (mine, other, first, second, r2)
+}
+
+fn user(id: i64, name: &str) -> String {
+    format!(r#"{{"id": {id}, "name": "{name}", "at": "2024-05-01"}}"#)
+}
+
+/// A run found gone mid-epoch is forgotten, and the lane reads on with the
+/// rest: rows of key groups it didn't hold keep their versions, before it
+/// and after, the record no longer names it, and a redo of the epoch gives
+/// the same IDs.
 #[tokio::test]
-async fn versions_that_start_again_after_an_early_flush_write_runs_of_new_names() {
+async fn a_run_found_gone_leaves_the_other_key_groups_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (mine, other, first, second, r2) = other_lanes_runs_gone(d).await;
+    let mut h = start_lanes(users(d, 3, 3000, &Restored::of(&r2), 1));
+    for r in [user(mine[0], "v2"), user(other, "v2"), user(mine[1], "v2")] {
+        put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[&r])).await;
+    }
+    put(&mut h.ins[0], FrameKind::Barrier, 0, epoch_barrier(3, 3)).await;
+    h.end_all(1).await;
+    let (outs, ready) = h.finish().await;
+    let third = written(&outs);
+    for &id in &mine {
+        assert_ne!(
+            record(&third, id),
+            record(&first, id),
+            "row {id} lost its versions"
+        );
+    }
+    assert_eq!(
+        record(&third, other),
+        record(&second, other),
+        "the gone entry's"
+    );
+    for s in ready[0].snapshots.iter().filter(|s| s.operator == OP) {
+        for run in &s.runs {
+            assert!(d.join("state").join(run).exists(), "the record names {run}");
+        }
+    }
+    let mut req = users(d, 4, 3000, &Restored::of(&r2), 1);
+    req.first_epoch = 3;
+    req.state_read_only = true;
+    let groups = Plan::from_request(req.clone()).unwrap().key_groups;
+    req.streams[0].key_groups = Some(ProtoRange {
+        first: 0,
+        last: groups - 1,
+    });
+    let again = [user(mine[0], "v2"), user(other, "v2"), user(mine[1], "v2")];
+    let again: Vec<&str> = again.iter().map(String::as_str).collect();
+    let (redo, _) = run_sync(req, &[&again]).await;
+    for id in [mine[0], other, mine[1]] {
+        assert_eq!(record(&redo, id), record(&third, id), "the redo's {id}");
+    }
+}
+
+/// Held values get the IDs their rows got where another sender's rows,
+/// between them, find a run gone: a writer lane takes frames from every
+/// lane, so the operator is given them in that order here.
+#[tokio::test]
+async fn held_values_after_a_run_found_gone_get_their_rows_ids() {
+    use super::super::versions::Versions;
+    use openetl_normalize::versions::{HASH_COLUMN, SCHEMA_KEY, schema_version};
+
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let (mine, other, first, second, r2) = other_lanes_runs_gone(d).await;
+    let plan = Arc::new(Plan::from_request(users(d, 3, 3000, &Restored::of(&r2), 1)).unwrap());
+    let lanes = plan.lanes.clone();
+    let mut h = start_plan(plan);
+    let flow = loop {
+        match lanes.0.get().and_then(std::sync::Weak::upgrade) {
+            Some(f) => break f,
+            None => tokio::task::yield_now().await,
+        }
+    };
+    let schema = ipc::decode_schema(&r2.schemas["users"]).unwrap();
+    let version = schema_version(&schema, &[]).to_string();
+    let batch = |id: i64, record: Vec<u8>| {
+        use arrow_schema::{Field, Schema};
+        let hash = Field::new(HASH_COLUMN, DataType::UInt64, false)
+            .with_metadata([(SCHEMA_KEY.to_owned(), version.clone())].into());
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("_openetl_id", DataType::FixedSizeBinary(16), false),
+            hash,
+        ]);
+        RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![id])),
+                Arc::new(
+                    arrow_array::FixedSizeBinaryArray::try_from_iter([record].into_iter()).unwrap(),
+                ),
+                Arc::new(arrow_array::UInt64Array::from(vec![7])),
+            ],
+        )
+        .unwrap()
+    };
+    let id_of = |out: Out| match out {
+        Out::Batch(_, b) | Out::Held(_, b) => b
+            .column_by_name("_openetl_id")
+            .unwrap()
+            .as_fixed_size_binary()
+            .iter()
+            .next()
+            .flatten()
+            .unwrap()
+            .to_vec(),
+        _ => panic!("not a batch"),
+    };
+    let base = record(&first, mine[0]);
+    let mut v = Versions::open(&flow, 0).await.unwrap();
+    let row = v.apply(&flow, Out::Batch(0, batch(mine[0], base.clone())));
+    let row = id_of(row.await.unwrap());
+    assert_ne!(row, base, "the row got no version");
+    let theirs = batch(other, record(&second, other));
+    v.apply(&flow, Out::Batch(0, theirs)).await.unwrap();
+    let held = v.apply(&flow, Out::Held(0, batch(mine[0], base)));
+    assert_eq!(id_of(held.await.unwrap()), row, "the held value's ID");
+    drop(flow);
+    h.end_all(1).await;
+    h.finish().await;
+}
+
+/// A run found gone after an early flush of the epoch is forgotten alone,
+/// where a lane holds key groups of two lanes before it, at different
+/// reads, and only the second's runs are gone: the lane flushes early on,
+/// and the record names its flushes.
+#[tokio::test]
+async fn a_run_found_gone_after_an_early_flush_leaves_the_flushes() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let plan = Plan::from_request(users(d, 1, 1000, &Restored::default(), 2)).unwrap();
@@ -622,7 +781,7 @@ async fn versions_that_start_again_after_an_early_flush_write_runs_of_new_names(
         .filter(|s| s.operator == OP)
         .map(|s| s.runs.len())
         .sum();
-    assert!(runs > 1, "no early flush after the versions started again");
+    assert!(runs > 1, "no early flush named");
 }
 
 /// A stream with versions whose job has no state is refused, as is a
