@@ -160,9 +160,11 @@ func TestARetryOfAReadThatReplacesTheTableContinuesIt(t *testing.T) {
 // overwriteDest replaces a stream's table with what its read committed, as
 // the commit of the epoch the read ended in. A read that StartReads gives
 // another start than the last is a new one. Rows of an epoch an attempt
-// didn't commit go with the attempt.
+// didn't commit go with the attempt. The runner calls Write and Commit from
+// different goroutines, so mu guards the maps.
 type overwriteDest struct {
 	countingDest
+	mu      sync.Mutex
 	start   map[string]time.Time
 	read    map[string]int64
 	written map[uint64]map[string]int64
@@ -177,6 +179,8 @@ func (d *overwriteDest) Capabilities() destination.Capabilities {
 }
 
 func (d *overwriteDest) Open(context.Context, destination.OpenConfig) (destination.Writer, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.start == nil {
 		d.start, d.read, d.table = map[string]time.Time{}, map[string]int64{}, map[string]int64{}
 	}
@@ -185,6 +189,8 @@ func (d *overwriteDest) Open(context.Context, destination.OpenConfig) (destinati
 }
 
 func (d *overwriteDest) StartReads(_ context.Context, starts map[string]time.Time) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for s, at := range starts {
 		if !d.start[s].Equal(at) {
 			d.start[s], d.read[s] = at, 0
@@ -194,6 +200,8 @@ func (d *overwriteDest) StartReads(_ context.Context, starts map[string]time.Tim
 }
 
 func (d *overwriteDest) Write(_ context.Context, e destination.Epoch, s string, b arrow.RecordBatch) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.written[e.N] == nil {
 		d.written[e.N] = map[string]int64{}
 	}
@@ -202,11 +210,15 @@ func (d *overwriteDest) Write(_ context.Context, e destination.Epoch, s string, 
 }
 
 func (d *overwriteDest) EndRead(_ context.Context, e destination.Epoch, s string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.ended[e.N] = append(d.ended[e.N], s)
 	return nil
 }
 
 func (d *overwriteDest) Commit(_ context.Context, e destination.Epoch, _ []destination.Staged) (destination.Committed, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	for s, n := range d.written[e.N] {
 		d.read[s] += n
 	}
