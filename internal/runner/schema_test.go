@@ -92,18 +92,28 @@ func TestOverridesApplyToDeclaredDecimals(t *testing.T) {
 	}
 }
 
+// A read names the columns the job declared, with their types as the
+// source's Discover gave them: a pipeline's override isn't the source's
+// type, so a source comparing with it would fail every attempt.
 func TestAReadNamesTheColumnsTheJobDeclared(t *testing.T) {
 	declared := arrow.NewSchema([]arrow.Field{
 		{Name: "id", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "v", Type: arrow.PrimitiveTypes.Int64},
+		{Name: "v", Type: &arrow.Decimal128Type{Precision: 38, Scale: 9}, Nullable: true},
 	}, nil)
-	j := &Job{Streams: []Stream{{Name: "typed", Schema: declared}, {Name: "untyped"}}}
+	j := &Job{Streams: []Stream{{Name: "typed", Read: source.Incremental, CursorField: "id", Schema: declared, Overrides: map[string]arrow.DataType{"v": arrow.BinaryTypes.String}}, {Name: "untyped"}}}
 	req := j.readRequest(nil, nil)
 	if got := req.Streams[0].Columns; !slices.Equal(got, []string{"id", "v"}) {
 		t.Errorf("columns %v", got)
 	}
-	if got := req.Streams[1].Columns; got != nil {
-		t.Errorf("a stream without a schema: %v", got)
+	if got := req.Streams[0].Schema; got == nil || !got.Equal(declared) {
+		t.Errorf("schema %v, want the discovered %v", got, declared)
+	}
+	if got := req.Streams[1]; got.Columns != nil || got.Schema != nil {
+		t.Errorf("a stream without a schema: %v, %v", got.Columns, got.Schema)
+	}
+	// A redo reads it the same way.
+	if got := j.Streams[0].configured(); got.Schema != declared || got.SyncMode != source.Incremental || got.Cursor != "id" {
+		t.Errorf("configured %+v", got)
 	}
 }
 

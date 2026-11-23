@@ -181,7 +181,11 @@ pub(crate) fn wire(item: In) -> Result<(FrameKind, u32, Vec<u8>), JobError> {
         In::Barrier(s, e) => (
             FrameKind::Barrier,
             index(s)?,
-            Barrier { epoch: Some(e) }.encode_to_vec(),
+            Barrier {
+                epoch: Some(e),
+                ..Default::default()
+            }
+            .encode_to_vec(),
         ),
         In::End(s) => (FrameKind::EndOfStream, index(s)?, Vec::new()),
     })

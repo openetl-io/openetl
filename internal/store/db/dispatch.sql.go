@@ -647,7 +647,7 @@ func (q *Queries) FinishRunning(ctx context.Context, arg FinishRunningParams) (i
 }
 
 const getDispatchOutcome = `-- name: GetDispatchOutcome :one
-SELECT state, outcome FROM dispatches WHERE org_id = $1 AND id = $2
+SELECT state, outcome, epoch FROM dispatches WHERE org_id = $1 AND id = $2
 `
 
 type GetDispatchOutcomeParams struct {
@@ -658,12 +658,13 @@ type GetDispatchOutcomeParams struct {
 type GetDispatchOutcomeRow struct {
 	State   string
 	Outcome []byte
+	Epoch   int64
 }
 
 func (q *Queries) GetDispatchOutcome(ctx context.Context, arg GetDispatchOutcomeParams) (GetDispatchOutcomeRow, error) {
 	row := q.db.QueryRow(ctx, getDispatchOutcome, arg.OrgID, arg.ID)
 	var i GetDispatchOutcomeRow
-	err := row.Scan(&i.State, &i.Outcome)
+	err := row.Scan(&i.State, &i.Outcome, &i.Epoch)
 	return i, err
 }
 

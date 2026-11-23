@@ -117,9 +117,13 @@ func (j *Job) recordedSchemas(rec *checkpoint.Record) map[string][]byte {
 // applyRecorded applies rec's schemas on w: an epoch recovered or redone
 // needs them in place, and can't change them.
 func (j *Job) applyRecorded(ctx context.Context, w destination.Writer, applied map[string]*arrow.Schema, rec *checkpoint.Record) (destination.SchemaApplied, error) {
-	a, err := applySchemas(ctx, w, applied, j.recordedSchemas(rec))
+	schemas := j.recordedSchemas(rec)
+	a, err := applySchemas(ctx, w, applied, schemas)
 	if err == nil && len(a.Refused) > 0 {
-		err = errs.Wrap(errs.SchemaDrift, &RefusedError{Columns: []RefusedColumn{{RefusedColumn: a.Refused[0]}}}, "runner: recovering a recorded epoch")
+		cols := []RefusedColumn{{RefusedColumn: a.Refused[0]}}
+		if err = j.markUnheld(cols, a.Limits, schemas); err == nil {
+			err = errs.Wrap(errs.SchemaDrift, &RefusedError{Columns: cols}, "runner: recovering a recorded epoch")
+		}
 	}
 	return a, err
 }
@@ -582,7 +586,7 @@ func (j *Job) replaySplit(ctx context.Context, n uint64, r redoRead, out chan<- 
 	rctx, stop := context.WithCancel(ctx)
 	defer stop()
 	em := &redoEmitter{ctx: rctx, stop: stop, read: r, out: out}
-	cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Columns: s.columns()}
+	cs := s.configured()
 	var until, completeAt []byte
 	switch {
 	case !r.to.Complete:

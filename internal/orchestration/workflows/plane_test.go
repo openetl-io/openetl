@@ -30,13 +30,15 @@ type plane struct {
 	sent  []contract.WorkInput
 	times []time.Time
 	done  map[string]contract.WorkOutcome
+	// The last epoch each piece of work committed, as status reports.
+	epochs map[string]uint64
 	// What it was asked to cancel.
 	cancelled []string
 	looks     int
 }
 
 func newPlane(env harness, run func(contract.WorkInput) (time.Duration, contract.WorkOutcome)) *plane {
-	p := &plane{env: env, run: run, done: map[string]contract.WorkOutcome{}}
+	p := &plane{env: env, run: run, done: map[string]contract.WorkOutcome{}, epochs: map[string]uint64{}}
 	env.RegisterStep(orchestration.NewAction(contract.EnqueueWork, p.enqueue))
 	env.RegisterStep(orchestration.NewStep(contract.GetWork, p.status))
 	env.RegisterStep(orchestration.NewAction(contract.CancelWork, p.cancel))
@@ -76,7 +78,14 @@ func (p *plane) status(_ context.Context, ref contract.WorkRef) (contract.WorkSt
 	defer p.mu.Unlock()
 	p.looks++
 	out, ok := p.done[ref.ID]
-	return contract.WorkStatus{Done: ok, Outcome: out}, nil
+	return contract.WorkStatus{Done: ok, Outcome: out, Epoch: p.epochs[ref.ID]}, nil
+}
+
+// commit has the work commit epoch n before it ends.
+func (p *plane) commit(id string, n uint64) {
+	p.mu.Lock()
+	p.epochs[id] = n
+	p.mu.Unlock()
 }
 
 // cancel stops work right away, as a runner would at a checkpoint.

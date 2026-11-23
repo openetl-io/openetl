@@ -11,6 +11,8 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/streamschema"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 )
 
@@ -66,7 +68,7 @@ type Release struct {
 
 // RefusedError: the destination refused columns of an epoch's schemas
 // before the epoch was recorded. RunAttempt starts another attempt that
-// holds them.
+// holds them, unless one can't be held.
 type RefusedError struct {
 	Columns []RefusedColumn
 }
@@ -75,6 +77,9 @@ type RefusedColumn struct {
 	destination.RefusedColumn
 	// The field the destination has, as ColumnHold.Delivered.
 	Delivered []byte
+	// Why the column can't be held, as a clause, as notHeld has it; empty
+	// if it can.
+	NotHeld string
 }
 
 func (e *RefusedError) Error() string {
@@ -101,6 +106,12 @@ func (c RefusedColumn) describe() string {
 	return s
 }
 
+// unheld is the error for c, which can't be held: SCHEMA_DRIFT, with what
+// the destination refused and how to make it take it.
+func (c RefusedColumn) unheld() error {
+	return errs.Wrap(errs.SchemaDrift, &RefusedError{Columns: []RefusedColumn{c}}, fmt.Sprintf("runner: column %s can't be held: %s", c.Column, c.NotHeld))
+}
+
 func (c RefusedColumn) cause() *checkpoint.HoldCause {
 	return &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Refusal: c.Reason, FromType: c.FromType, ToType: c.ToType, Fix: c.Fix}
 }
@@ -111,6 +122,77 @@ func (c RefusedColumn) cause() *checkpoint.HoldCause {
 func (j *Job) holdsOn(s Stream) bool {
 	return s.Holds != nil && j.HeldURL != "" && len(s.PrimaryKey) > 0 && !j.ownCode() &&
 		j.Destination.Capabilities().Holds.Takes(s.Mode)
+}
+
+// notHeld says why s's column col, by its destination name, can't be held
+// whole, as a clause, as far as the runner knows what the engine refuses;
+// empty if it can. source is col's source name; empty: col's.
+func notHeld(s Stream, limits destination.TableLimits, col, source string) string {
+	if source == "" {
+		source = col
+	}
+	shows := Held{}
+	if s.Holds != nil {
+		shows = s.Holds.Held
+		if h, ok := s.Holds.Columns[source]; ok {
+			shows = h
+		}
+	}
+	switch {
+	case slices.Contains(s.PrimaryKey, source):
+		return "it's part of the stream's key"
+	case s.CursorField != "" && s.CursorField == source:
+		return "it's the stream's cursor"
+	case slices.Contains(limits.Unholdable, col):
+		return "the destination can't hold it"
+	case slices.Contains(limits.NotNull, col) && (shows.Mode == HeldNull || shows.Value == ""):
+		return "it can't be null, and the pipeline gives it no held value"
+	}
+	return ""
+}
+
+// markUnheld sets the NotHeld of each of cols, by limits, the destination's
+// answer to schemas, the stream schemas it was given.
+func (j *Job) markUnheld(cols []RefusedColumn, limits map[string]destination.TableLimits, schemas map[string][]byte) error {
+	streams := j.sinkStreams()
+	for i, r := range cols {
+		k := slices.IndexFunc(streams, func(s Stream) bool { return s.Name == r.Stream })
+		if k < 0 {
+			continue
+		}
+		src, err := sourceName(schemas[r.Stream], r.Column)
+		if err != nil {
+			return fmt.Errorf("stream %s schema: %w", r.Stream, err)
+		}
+		cols[i].NotHeld = notHeld(streams[k], limits[r.Stream], r.Column, src)
+	}
+	return nil
+}
+
+// sourceName is the source name of col, a destination name in raw, a
+// stream schema the engine reported; empty where it's col's, or raw is nil.
+func sourceName(raw []byte, col string) (string, error) {
+	if raw == nil {
+		return "", nil
+	}
+	s, err := decodeSchema(raw)
+	if err != nil {
+		return "", err
+	}
+	names, err := streamschema.SourceNames(s)
+	return names[col], err
+}
+
+// heldUnholdable is the error for a hold in force on s's column c, which
+// can't be held, as why says: one recorded before the runner checked. It
+// goes once the user releases it.
+func heldUnholdable(s string, c checkpoint.ColumnHold, why string) error {
+	then := "once the destination takes the column as the stream has it"
+	if c.Cause != nil && c.Cause.Fix != "" {
+		then = "once the destination takes the change (run this on it: " + c.Cause.Fix + ")"
+	}
+	return errs.New(errs.SchemaDrift, "runner: stream %s holds column %s (%s), but it can't be held: %s; %s, release the hold with `openetl holds release PIPELINE %s %s`",
+		s, c.Column, c.Reason, why, then, s, c.Column)
 }
 
 func (j *Job) checkHolds() error {
@@ -193,9 +275,44 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				}
 			}
 		}
+		// A hold in force on a column that can't be held, as one recorded
+		// before the runner checked, stops the attempt until it's released.
+		// A discarded one has no values left, so it goes, and the destination
+		// gets the column as the stream has it.
+		var raw []byte
+		if restored != nil {
+			raw = j.recordedSchemas(restored)[s.Name]
+		}
+		kept := h.Columns[:0]
+		for _, c := range h.Columns {
+			var src string
+			if c.Cause != nil {
+				src = c.Cause.Source
+			}
+			if src == "" {
+				var err error
+				if src, err = sourceName(raw, c.Column); err != nil {
+					return nil, nil, fmt.Errorf("runner: stream %s schema: %w", s.Name, err)
+				}
+			}
+			if why := notHeld(s, limits[s.Name], c.Column, src); why != "" {
+				if c.Discarded {
+					continue
+				}
+				return nil, nil, heldUnholdable(s.Name, c, why)
+			}
+			kept = append(kept, c)
+		}
+		h.Columns = kept
 		for _, r := range j.refused {
 			if r.Stream != s.Name {
 				continue
+			}
+			if r.NotHeld == "" && slices.Contains(limits[s.Name].Unholdable, r.Column) {
+				r.NotHeld = "the destination can't hold it"
+			}
+			if r.NotHeld != "" {
+				return nil, nil, r.unheld()
 			}
 			is := func(col string) bool { return col == r.Column }
 			released = slices.DeleteFunc(released, is)

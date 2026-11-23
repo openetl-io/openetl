@@ -62,6 +62,9 @@ type Frame struct {
 	Watermark *int64
 	Rows      []json.RawMessage
 	Batch     arrow.RecordBatch
+	// A FrameBarrier into the dataflow: the stream's read ends in Epoch.
+	// Set on at least the last of the stream's lanes' barriers of it.
+	EndsRead bool
 	// A batch into the dataflow, in place of Batch, as an external source
 	// encoded it: an Arrow IPC stream holding one batch.
 	IPC   []byte

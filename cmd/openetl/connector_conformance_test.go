@@ -85,11 +85,11 @@ func TestConnectorTestDestination(t *testing.T) {
 	dir := testConnectors(t, "destination-jsonl")
 	data := t.TempDir()
 	cfg := writeFile(t, dir, "jsonl.json", fmt.Sprintf(`{"dir": %q, "token": {"secret": "tok"}}`, data))
-	bad := writeFile(t, dir, "bad.json", fmt.Sprintf(`{"dir": %q, "token": "nope"}`, data))
+	bad := writeFile(t, dir, "bad.json", fmt.Sprintf(`{"dir": %q, "token": "nope-not-the-token"}`, data))
 	t.Setenv("DATA", data)
 	read := `cat "$DATA/$OPENETL_NAMESPACE/$OPENETL_STREAM.jsonl" 2>/dev/null || true`
 	drop := `echo "$OPENETL_NAMESPACE" >> "$DATA/dropped"; rm -rf "$DATA/$OPENETL_NAMESPACE"`
-	out, report, err := runOut(t, "test", "-q", "--untyped", "--run", destinationChecks, "--config", cfg, "--secret", "tok=s3cr3t",
+	out, report, err := runOut(t, "test", "-q", "--untyped", "--run", destinationChecks, "--config", cfg, "--secret", "tok=jsonl-s3cr3t-token",
 		"--bad-credentials", bad, "--read-command", read, "--drop-command", drop, filepath.Join(dir, "destination-jsonl"))
 	if err != nil {
 		t.Fatalf("%v\n%s\n%s", err, out, report)
@@ -102,12 +102,12 @@ func TestConnectorTestDestination(t *testing.T) {
 	}
 
 	// A reader that sees nothing fails the checks that write.
-	out, _, err = runOut(t, "test", "-q", "--run", "^write/commit$", "--config", cfg, "--secret", "tok=s3cr3t", "--read-command", "true", filepath.Join(dir, "destination-jsonl"))
+	out, _, err = runOut(t, "test", "-q", "--run", "^write/commit$", "--config", cfg, "--secret", "tok=jsonl-s3cr3t-token", "--read-command", "true", filepath.Join(dir, "destination-jsonl"))
 	if err == nil || !strings.Contains(out, "FAIL write/commit") {
 		t.Errorf("a reader that sees nothing: %v\n%s", err, out)
 	}
 
-	out, _, err = runOut(t, "test", "-q", "--run", "^(check|write/commit)$", "--config", cfg, "--secret", "tok=s3cr3t", filepath.Join(dir, "destination-jsonl"))
+	out, _, err = runOut(t, "test", "-q", "--run", "^(check|write/commit)$", "--config", cfg, "--secret", "tok=jsonl-s3cr3t-token", filepath.Join(dir, "destination-jsonl"))
 	if err != nil || !strings.Contains(out, "No --read-command") || !strings.Contains(out, "PASS check") ||
 		!strings.Contains(out, "SKIP write/commit\n    the suite has no Read") {
 		t.Errorf("without --read-command: %v\n%s", err, out)
@@ -147,7 +147,7 @@ func TestConnectorTestDescriptor(t *testing.T) {
 		t.Fatal(err)
 	}
 	desc := writeFile(t, dist, "jsonl.connector.yaml", string(doc))
-	cfg := writeFile(t, dir, "jsonl.json", fmt.Sprintf(`{"dir": %q, "token": "s3cr3t"}`, t.TempDir()))
+	cfg := writeFile(t, dir, "jsonl.json", fmt.Sprintf(`{"dir": %q, "token": "jsonl-s3cr3t-token"}`, t.TempDir()))
 	cache := t.TempDir()
 	out, report, err := runOut(t, "test", "-q", "--cache", cache, "--run", "^(spec|check)$", "--config", cfg, desc)
 	if err != nil || !strings.Contains(out, "acme/jsonl 1.0.0's destination: 2 checks, 2 passed") {
@@ -191,7 +191,7 @@ func TestConnectorTestReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	desc := writeFile(t, dist, "jsonl.connector.yaml", string(doc))
-	cfg := writeFile(t, dir, "jsonl.json", fmt.Sprintf(`{"dir": %q, "token": "s3cr3t"}`, t.TempDir()))
+	cfg := writeFile(t, dir, "jsonl.json", fmt.Sprintf(`{"dir": %q, "token": "jsonl-s3cr3t-token"}`, t.TempDir()))
 	t.Setenv("DOCKER_CONFIG", t.TempDir())
 
 	srv := httptest.NewServer(ggcr.New(ggcr.Logger(log.New(io.Discard, "", 0))))

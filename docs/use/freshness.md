@@ -40,7 +40,7 @@ If a pipeline is paused, its status is **Paused**. Otherwise, its status comes f
 | **Healthy** | The latest sync succeeded. |
 | **Running** | A sync is running now. |
 | **Degraded** | The latest sync succeeded with quarantined rows or held columns. Open the pipeline to inspect the affected data. |
-| **Failed** | The latest sync failed. |
+| **Failed** | The latest sync failed. A continuous pipeline whose run failed reads nothing until it starts again: after the cause is corrected, select **Pause** and then **Resume**. |
 | **Paused** | The pipeline does not start scheduled syncs. An active scheduled sync can continue. |
 | **Stopped** | A continuous pipeline's run stopped after a stop request, such as a pause or a new version. |
 | **Never synced** | The pipeline has not synced. |

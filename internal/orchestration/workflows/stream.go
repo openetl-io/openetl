@@ -3,6 +3,7 @@ package workflows
 import (
 	"cmp"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/openetl-io/openetl/internal/orchestration"
@@ -16,6 +17,9 @@ const (
 	streamRetry    = 5 * time.Second
 	maxStreamRetry = 5 * time.Minute
 	healthyJob     = 10 * time.Minute
+	// StreamState.FailureLimit's default, for a run whose state has none,
+	// such as one started before the setting.
+	failureLimit = 5
 )
 
 type runEnd int
@@ -28,11 +32,13 @@ const (
 
 // StreamSupervisor runs a continuous pipeline: a run of its current version
 // at a time, each one long-running job on a runner of its data plane,
-// which it retries after failures without limit. A refresh signal makes
+// which it retries after failures, without limit for codes that recur
+// (errs.Code.Recurs). A refresh signal makes
 // it look at the pipeline again, and stop the run at a checkpoint if the
 // pipeline has a new version or a hold released, is paused, became
 // scheduled or is gone. A run
-// that fails with a code that isn't retried waits for the next refresh. It
+// that fails with a code that isn't retried, or whose job fails with the
+// same code too often in a row, waits for the next refresh. It
 // ends when the pipeline is gone or scheduled.
 //
 // Nothing it knows lives only in the workflow: one started after another was
@@ -87,6 +93,9 @@ func (w Workflows) StreamSupervisor(ctx orchestration.Context, in contract.Strea
 		finish := contract.FinishSyncInput{OrgID: in.OrgID, SyncID: in.Run.SyncID, Stopped: end == runStopped}
 		if end == runFailed {
 			finish.Error, finish.Code = err.Error(), orchestration.CodeOf(err)
+			if r, ok := errors.AsType[*repeatedFailure](err); ok {
+				finish.Failures = r.failures
+			}
 		} else if err != nil {
 			log.Info("the run stopped", "err", err)
 		}
@@ -116,7 +125,8 @@ func takeOver(st contract.StreamState) *contract.StreamRun {
 }
 
 // runJobs runs in.Run's job until it stops when asked to, fails with a code
-// that isn't retried, or the supervisor should continue as new. A drained job
+// that isn't retried or fails too often in a row (repeated), or the
+// supervisor should continue as new. A drained job
 // starts again at once, on another runner. A failed one starts again after a
 // wait that doubles from AttemptRetry to maxStreamRetry, and starts over once
 // a job has lasted healthyJob. A job outlives its workflow run, so continuing
@@ -166,7 +176,8 @@ func (w Workflows) runJobs(b *inbox, in *contract.StreamInput, resumed bool) (ru
 				continue
 			}
 		}
-		end, stopped, jobErr := w.awaitJob(b, in, adopted, look)
+		end, stopped, st := w.awaitJob(b, in, adopted, look)
+		jobErr := outcomeError(st.Outcome)
 		if end == runContinued {
 			return runContinued, nil
 		}
@@ -174,8 +185,12 @@ func (w Workflows) runJobs(b *inbox, in *contract.StreamInput, resumed bool) (ru
 			run.Job = ""
 			return runStopped, jobErr
 		}
-		if ctx.Now().Sub(run.JobStart) >= healthyJob {
+		healthy := ctx.Now().Sub(run.JobStart) >= healthyJob
+		if healthy {
 			run.Backoff = 0
+		}
+		if healthy || st.Epoch > 0 {
+			run.Failures, run.Failed = 0, ""
 		}
 		run.Job = ""
 		run.Earlier++
@@ -190,6 +205,9 @@ func (w Workflows) runJobs(b *inbox, in *contract.StreamInput, resumed bool) (ru
 		}
 		if !retryable(jobErr) {
 			return runFailed, jobErr
+		}
+		if repeated(b, run, jobErr) {
+			return runFailed, &repeatedFailure{failures: run.Failures, err: jobErr}
 		}
 		run.Backoff = w.backoff(run.Backoff)
 		run.Retry = true
@@ -239,8 +257,8 @@ func (w Workflows) outdated(b *inbox, in *contract.StreamInput) bool {
 // before this workflow run, which may have missed its wake, and resumed that
 // it may have missed a refresh. It returns runContinued if the supervisor
 // should continue as new while the job runs, and otherwise whether it was
-// stopped, and the error it ended with.
-func (w Workflows) awaitJob(b *inbox, in *contract.StreamInput, adopted, resumed bool) (end runEnd, stopped bool, jobErr error) {
+// stopped, and how it ended.
+func (w Workflows) awaitJob(b *inbox, in *contract.StreamInput, adopted, resumed bool) (end runEnd, stopped bool, done contract.WorkStatus) {
 	ctx := b.ctx
 	ref := contract.WorkRef{OrgID: in.OrgID, ID: in.Run.Job}
 	look := adopted
@@ -262,7 +280,7 @@ func (w Workflows) awaitJob(b *inbox, in *contract.StreamInput, adopted, resumed
 			case err != nil:
 				ctx.Logger().Warn("looking at the job failed; waiting", "err", err)
 			case st.Done:
-				return 0, stopping, outcomeError(st.Outcome)
+				return 0, stopping, st
 			}
 		}
 		if stopping && !stopSent {
@@ -282,7 +300,7 @@ func (w Workflows) awaitJob(b *inbox, in *contract.StreamInput, adopted, resumed
 		}
 		look = timedOut
 		if !stopping && ctx.ShouldContinue() {
-			return runContinued, false, nil
+			return runContinued, false, contract.WorkStatus{}
 		}
 	}
 }
@@ -295,6 +313,38 @@ func (w Workflows) backoff(last time.Duration) time.Duration {
 	}
 	return min(2*last, maxStreamRetry)
 }
+
+// repeated counts a failure of the run's job with err, and reports whether
+// the run should fail: once its job failed with the same code, one that
+// doesn't recur, as often in a row as its state's FailureLimit. Only failures
+// after the longest wait count, so a short outage that fails jobs the same
+// way doesn't end a run. Codes are compared and messages aren't: a message
+// can name what changes from one attempt to the next, such as the epoch.
+func repeated(b *inbox, run *contract.StreamRun, err error) bool {
+	code := orchestration.CodeOf(err)
+	if code != run.Failed {
+		run.Failures, run.Failed = 0, code
+	}
+	if errs.Named(code).Recurs() || run.Backoff < maxStreamRetry {
+		return false
+	}
+	run.Failures++
+	return run.Failures >= cmp.Or(run.State.FailureLimit, failureLimit) && b.ctx.Version("stream-failure-limit")
+}
+
+// repeatedFailure is the failure of a job that failed the same way too often
+// in a row, which ended its run.
+type repeatedFailure struct {
+	failures int32
+	err      error
+}
+
+func (e *repeatedFailure) Error() string {
+	return fmt.Sprintf("the job failed with %s %d times in a row, so OpenETL stopped retrying it; resume the pipeline to start it again: %v",
+		orchestration.CodeOf(e.err), e.failures, e.err)
+}
+
+func (e *repeatedFailure) Unwrap() error { return e.err }
 
 // retryable is whether a job that failed with err is retried: unless it was
 // cancelled or failed with a code that fails the run. FENCED is retried: only

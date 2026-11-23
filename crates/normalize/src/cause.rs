@@ -116,6 +116,19 @@ impl NotHeld {
             NotHeld::Transform => "transform",
         }
     }
+
+    /// Why, as a clause about the column.
+    pub fn clause(&self) -> &'static str {
+        match self {
+            NotHeld::Key => "it's part of the stream's key",
+            NotHeld::Cursor => "it's the stream's cursor",
+            NotHeld::Destination => "the destination can't hold it",
+            NotHeld::NotNull => "it can't be null, and the pipeline gives it no held value",
+            NotHeld::HeldValue => "its held value doesn't fit its type",
+            NotHeld::Record => "its record isn't a JSON object",
+            NotHeld::Transform => "a SQL transform's statement reads it",
+        }
+    }
 }
 
 /// Why a row was quarantined. It never holds a value.

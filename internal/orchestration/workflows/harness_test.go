@@ -31,6 +31,10 @@ type harness interface {
 	SetStartTime(time.Time)
 	// PastHistoryLimit makes the workflow's ShouldContinue say so.
 	PastHistoryLimit()
+	// BeforeChange runs the workflow as one that got to change before the
+	// change was made, whose Version says no. A backend that can't skips
+	// the test.
+	BeforeChange(change string)
 	ExecuteWorkflow(name any, in ...any)
 	IsWorkflowCompleted() bool
 	// GetWorkflowError is how it ended: nil, orchestration.ErrStopped, a
@@ -90,6 +94,10 @@ func (h *temporalHarness) Send(m orchestration.Message) {
 }
 
 func (h *temporalHarness) PastHistoryLimit() { h.SetCurrentHistoryLength(2001) }
+
+func (h *temporalHarness) BeforeChange(change string) {
+	h.OnGetVersion(change, workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
+}
 
 func (h *temporalHarness) GetWorkflowError() error {
 	err := h.TestWorkflowEnvironment.GetWorkflowError()

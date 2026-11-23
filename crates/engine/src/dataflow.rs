@@ -259,6 +259,8 @@ struct Crossing {
     cells: BTreeMap<String, CellHolds>,
     quarantine: Vec<QuarantineFile>,
     replayed: Option<ReplayProgress>,
+    /// A lane's barrier ended the stream's read.
+    ends_read: bool,
     /// Once every lane has passed it.
     at: Option<At>,
 }
@@ -288,7 +290,6 @@ fn owned_shaper(
     schema: Option<SchemaRef>,
     holding: Option<&[ColumnHold]>,
 ) -> Result<Shaper, JobError> {
-    let bad = |e: NormalizeError| JobError::config(format!("stream {}: {e}", plan.streams[s]));
     // The columns the stream added since it was restored that the
     // destination takes: not those held whole that it has no field of, as a
     // column added while held isn't counted where it's added.
@@ -336,7 +337,9 @@ fn owned_shaper(
     };
     let mut shaper = shaper(plan, s, schema)?;
     if let Some(config) = config {
-        shaper = shaper.with_holds(config).map_err(bad)?;
+        shaper = shaper
+            .with_holds(config)
+            .map_err(|e| shape_error(&plan.streams[s], e))?;
     }
     if let (Some(r), Some(_)) = (&plan.replays[s], &plan.held_url) {
         // Patches go out at the types the destination will have. Once a
@@ -452,8 +455,17 @@ impl Owner {
         Ok(())
     }
 
+    /// A lane's barrier n ends the stream's read. It says so before it
+    /// passes the barrier.
+    fn ends_read(&self, n: u64) {
+        self.lock().crossings.entry(n).or_default().ends_read = true;
+    }
+
     /// A lane passed the stream's barrier n. The last to pass it fixes the
-    /// stream's state there: from then on, the schema policy applies.
+    /// stream's state there: from then on, the schema policy applies. True
+    /// if that lane is to give the stream its declared schema first, and
+    /// then settle n: an overwrite stream with a declared schema whose read
+    /// ends at n without a schema.
     fn cross(
         &self,
         plan: &Plan,
@@ -462,7 +474,7 @@ impl Owner {
         quarantine: Option<QuarantineFile>,
         cells: BTreeMap<String, CellHolds>,
         replayed: Option<ReplayProgress>,
-    ) -> Result<(), JobError> {
+    ) -> Result<bool, JobError> {
         let mut guard = self.lock();
         let o = &mut *guard;
         let c = o.crossings.entry(n).or_default();
@@ -477,13 +489,48 @@ impl Owner {
         }
         c.replayed = c.replayed.take().or(replayed);
         if c.lanes < plan.inbound.len() {
-            return Ok(());
+            return Ok(false);
         }
+        // Without its cursor's declared type, the declared schema would have
+        // no _openetl_seq, which the stream's first rows would then add.
+        let declared = plan.declared[stream].as_ref().is_some_and(|d| {
+            plan.identities[stream]
+                .cursor
+                .as_ref()
+                .is_none_or(|c| d.field_with_name(c).is_ok())
+        });
+        if c.ends_read
+            && plan.overwrite[stream]
+            && !plan.changelog[stream]
+            && declared
+            && o.shaper.schema().is_none()
+        {
+            return Ok(true);
+        }
+        self.fix(o, plan, stream, n)?;
+        Ok(false)
+    }
+
+    /// Fixes the stream's state at barrier n, once the lane that cross told
+    /// to give the stream its declared schema has.
+    fn settle(&self, plan: &Plan, stream: usize, n: u64) -> Result<(), JobError> {
+        let mut guard = self.lock();
+        self.fix(&mut guard, plan, stream, n)
+    }
+
+    /// Fixes the stream's state at barrier n, which every lane has passed.
+    fn fix(&self, o: &mut OwnerState, plan: &Plan, stream: usize, n: u64) -> Result<(), JobError> {
         if o.shaper.seal() {
             o.version += 1;
             self.version.store(o.version, Ordering::Release);
         }
         let mut state = at(plan, stream, &o.shaper)?;
+        let Some(c) = o.crossings.get_mut(&n) else {
+            return Err(JobError::internal(format!(
+                "stream {} settled barrier {n}, which no lane passed",
+                plan.streams[stream]
+            )));
+        };
         if let Some(h) = &mut state.holds {
             h.cells = std::mem::take(&mut c.cells).into_iter().collect();
             h.replayed = c.replayed.take();
@@ -1061,6 +1108,20 @@ impl LaneStream {
         }
     }
 
+    /// Gives the stream, which had no rows, the schema an empty batch of its
+    /// declared columns shapes to.
+    async fn declare(&mut self, plan: &Plan, owner: &Owner) -> Result<(), JobError> {
+        let name = &plan.streams[self.stream];
+        self.shape_own(
+            plan,
+            owner,
+            |sh| sh.type_declared(),
+            |_, e| shape_error(name, e),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Types with `f` and shapes, with the owner's latest schema, and
     /// publishes what that changes.
     fn shape(
@@ -1545,10 +1606,9 @@ where
                 }
             }
             FrameKind::Barrier => {
-                let epoch = Barrier::decode(f.payload.as_slice())
-                    .map_err(|e| protocol(e.to_string()))?
-                    .epoch
-                    .unwrap_or_default();
+                let barrier =
+                    Barrier::decode(f.payload.as_slice()).map_err(|e| protocol(e.to_string()))?;
+                let epoch = barrier.epoch.unwrap_or_default();
                 if epoch.generation != plan.generation || epoch.n != li.next_epoch {
                     return Err(protocol(format!(
                         "stream {name} crossed barrier ({}, {}) while in ({}, {})",
@@ -1569,7 +1629,10 @@ where
                         .await?;
                         let replayed = ls.replay.as_ref().map(Replayer::progress);
                         let owner = &flow.owners[input];
-                        owner.cross(
+                        if barrier.ends_read {
+                            owner.ends_read(epoch.n);
+                        }
+                        let declare = owner.cross(
                             plan,
                             input,
                             epoch.n,
@@ -1577,6 +1640,10 @@ where
                             std::mem::take(&mut ls.cells),
                             replayed,
                         )?;
+                        if declare {
+                            ls.declare(plan, owner).await?;
+                            owner.settle(plan, input, epoch.n)?;
+                        }
                         lane.all(input, || Out::Barrier(input, epoch)).await?;
                         if ls.replay.is_some() {
                             ls.catch_up(owner);
@@ -2737,7 +2804,11 @@ where
                 if let Some(h) = &mut held {
                     h.seal(s).await?;
                 }
-                let payload = Barrier { epoch: Some(epoch) }.encode_to_vec();
+                let payload = Barrier {
+                    epoch: Some(epoch),
+                    ..Default::default()
+                }
+                .encode_to_vec();
                 frame::write(&mut w, FrameKind::Barrier, out_index[s], &payload)
                     .await
                     .map_err(gone)?;
@@ -3002,6 +3073,7 @@ pub(crate) mod tests {
 
     use crate::plan::tests::request;
 
+    mod empty_overwrite;
     mod event_time;
 
     struct Harness {
@@ -3096,6 +3168,7 @@ pub(crate) mod tests {
     fn barrier(n: u64) -> Vec<u8> {
         Barrier {
             epoch: Some(Epoch { generation: 1, n }),
+            ..Default::default()
         }
         .encode_to_vec()
     }
@@ -3601,6 +3674,29 @@ pub(crate) mod tests {
         assert!(
             openetl_normalize::render_row(last, 0).contains("x"),
             "{held:?}"
+        );
+    }
+
+    // A plan that holds the key, as one recorded before the runner checked
+    // what it holds, stops the stream with SCHEMA_DRIFT.
+    #[test]
+    fn a_hold_on_the_key_is_schema_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = pending_hold_request(dir.path());
+        if let Some(h) = req.streams[0].holds.as_mut() {
+            h.holding[0].column = "id".into();
+        }
+        let plan = Plan::from_request(req).unwrap();
+        let mut first = shaper(&plan, 0, None).unwrap();
+        first.rows([br#"{"id": 1, "a": 1}"#.as_slice()]).unwrap();
+        let Err(err) = owned_shaper(&plan, 0, first.schema(), None) else {
+            panic!("the key was held");
+        };
+        assert_eq!(err.code, ErrorCode::SchemaDrift, "{}", err.message);
+        assert!(
+            err.message.contains("part of the stream's key"),
+            "{}",
+            err.message
         );
     }
 
@@ -5093,6 +5189,7 @@ pub(crate) mod tests {
         let barrier2 = |n| {
             Barrier {
                 epoch: Some(Epoch { generation: 2, n }),
+                ..Default::default()
             }
             .encode_to_vec()
         };
@@ -6070,6 +6167,7 @@ pub(crate) mod tests {
                 generation: 2,
                 n: 2,
             }),
+            ..Default::default()
         }
         .encode_to_vec();
         put(w, FrameKind::Barrier, 0, barrier2.clone()).await;
@@ -6179,6 +6277,7 @@ pub(crate) mod tests {
     pub(crate) fn barrier_of(generation: u64, n: u64) -> Vec<u8> {
         Barrier {
             epoch: Some(Epoch { generation, n }),
+            ..Default::default()
         }
         .encode_to_vec()
     }

@@ -23,6 +23,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/contract"
 	"github.com/openetl-io/openetl/internal/orchestration/sizing"
 	"github.com/openetl-io/openetl/internal/platform/errs"
+	"github.com/openetl-io/openetl/internal/platform/ints"
 	"github.com/openetl-io/openetl/internal/platform/resources"
 	"github.com/openetl-io/openetl/internal/store"
 	"github.com/openetl-io/openetl/internal/store/db"
@@ -277,7 +278,7 @@ func (d *Dispatcher) Status(ctx context.Context, ref contract.WorkRef) (contract
 	if row.State != stateFinished {
 		return contract.WorkStatus{}, nil
 	}
-	st := contract.WorkStatus{Done: true}
+	st := contract.WorkStatus{Done: true, Epoch: ints.Uint64(row.Epoch)}
 	if err := json.Unmarshal(row.Outcome, &st.Outcome); err != nil {
 		return st, fmt.Errorf("dispatch: outcome of %s: %w", ref.ID, err)
 	}

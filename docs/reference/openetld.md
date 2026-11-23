@@ -22,7 +22,7 @@ The server and the orchestrators keep OpenETL's records in the metadata database
 
 ## Orchestration
 
-What runs workflows, for the server and the orchestrators: DBOS, which keeps them in Postgres, or Temporal.
+What runs workflows, for the server and the orchestrators: DBOS, which keeps them in Postgres, or Temporal. And how often a continuous pipeline's job may fail the same way before the orchestrators stop retrying it.
 
 | Flag | Variable | Default | What it sets |
 |---|---|---|---|
@@ -31,6 +31,7 @@ What runs workflows, for the server and the orchestrators: DBOS, which keeps the
 | `--executor-id` | `OPENETL_EXECUTOR_ID` |  | which orchestrator this is, unique among them and the same across restarts, such as its pod's name; on DBOS only (default: the host name) |
 | `--temporal-address` | `OPENETL_TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend host:port; on Temporal only |
 | `--temporal-namespace` | `OPENETL_TEMPORAL_NAMESPACE` | `default` | Temporal namespace; on Temporal only |
+| `--continuous-failure-limit` | `OPENETL_CONTINUOUS_FAILURE_LIMIT` | `5` | how many times in a row a continuous pipeline's job may fail with the same error code before OpenETL stops retrying it and fails its run, until openetl resume or an apply of the pipeline starts another; failures count once the retries are 5 minutes apart, so 5 takes about 30 minutes, and a job that commits or runs for 10 minutes starts the count again; TRANSIENT, RATE\_LIMITED, AUTH\_EXPIRED, DESTINATION\_UNAVAILABLE, RESOURCE\_EXHAUSTED, DRAINING and FENCED never count; a change applies to runs that start after it |
 
 ## Console and sign-in
 

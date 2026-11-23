@@ -93,17 +93,19 @@ func (s Stream) delivery() delivery.Stream {
 		Deduped: s.Deduped, Remembers: s.Remembers, Refreshed: s.Deduped && s.Read == source.FullRefresh, DedupeOf: s.From, Replaces: s.Replaces}
 }
 
-// columns names the columns of Schema; nil without one.
-func (s Stream) columns() []string {
-	if s.Schema == nil {
-		return nil
+// configured is how a read of s asks for it, from its start: the columns
+// and types Schema declares, as the source's Discover gave them. Never
+// Declared: a source compares them with what it finds, and an override
+// isn't the source's type.
+func (s Stream) configured() source.ConfiguredStream {
+	cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Schema: s.Schema}
+	if s.Schema != nil {
+		cs.Columns = make([]string, s.Schema.NumFields())
+		for i, f := range s.Schema.Fields() {
+			cs.Columns[i] = f.Name
+		}
 	}
-	fields := s.Schema.Fields()
-	names := make([]string, len(fields))
-	for i, f := range fields {
-		names[i] = f.Name
-	}
-	return names
+	return cs
 }
 
 // Declared is Schema with Overrides applied.
@@ -427,7 +429,8 @@ const commitAttempts = 4
 // RunAttempt runs one attempt of a bounded sync: claim, recover HEAD's epoch,
 // then read until every stream is complete, committing along the way. If
 // the destination refuses columns before an epoch is recorded, it runs
-// another attempt at once that holds them; one it refuses again fails it.
+// another attempt at once that holds them; one it refuses again, or one
+// that can't be held, fails it with SCHEMA_DRIFT.
 func RunAttempt(ctx context.Context, job Job) (Result, error) {
 	for {
 		res, err := runAttempt(ctx, job)
@@ -446,6 +449,9 @@ func RunAttempt(ctx context.Context, job Job) (Result, error) {
 			}
 			if !slices.ContainsFunc(job.sinkStreams(), func(s Stream) bool { return s.Name == c.Stream && job.holdsOn(s) }) {
 				return res, errs.Wrap(errs.SchemaDrift, err, "runner: the stream doesn't hold columns")
+			}
+			if c.NotHeld != "" {
+				return res, c.unheld()
 			}
 		}
 		job.refused = append(job.refused, re.Columns...)
@@ -1143,7 +1149,7 @@ func (j *Job) readRequest(splits map[string][]checkpoint.SplitState, done map[st
 		if done[s.Name] {
 			continue
 		}
-		cs := source.ConfiguredStream{Name: s.Name, SyncMode: s.Read, Cursor: s.CursorField, Columns: s.columns()}
+		cs := s.configured()
 		if ss := splits[s.Name]; len(ss) == 1 && ss[0].ID == checkpoint.WholeStream {
 			cs.State = ss[0].State
 		} else {
@@ -2061,6 +2067,9 @@ func (c *coordinator) applySchemas(ctx context.Context, n uint64, st *epochState
 	}
 	cols, err := refusedColumns(a, before)
 	if err != nil {
+		return fmt.Errorf("runner: epoch %d: %w", n, err)
+	}
+	if err := c.job.markUnheld(cols, a.Limits, sinkSchemas); err != nil {
 		return fmt.Errorf("runner: epoch %d: %w", n, err)
 	}
 	return &RefusedError{Columns: cols}

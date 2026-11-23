@@ -37,7 +37,12 @@ const (
 )
 
 // SCHEMA_DRIFT comes only from a schema policy pausing a stream, which no
-// retry changes until approvals exist.
+// retry changes until approvals exist. DATA_INVALID is retried: some pass on
+// a retry, such as the engine's batch failures whose rows pass one at a
+// time, or a staging file that failed to write on the runner's own disk, and
+// a retry picks up a fix made outside OpenETL, such as a raised limit or a
+// replaced file. A continuous pipeline stops retrying one that keeps failing
+// (Recurs).
 var retryable = map[Code]bool{
 	Transient:              true,
 	RateLimited:            true,
@@ -60,6 +65,33 @@ var retryable = map[Code]bool{
 
 // Retryable reports whether an attempt that failed with c is retried.
 func (c Code) Retryable() bool { return retryable[c] }
+
+// recurs are the codes of failures that last as long as something outside
+// the job does, such as an outage, a rate limit, expiring credentials, a
+// runner that drains or an attempt that started late, and pass once it ends.
+// Any other code, DATA_INVALID and INTERNAL among them and any code added
+// later, can mean a failure that a retry repeats unchanged.
+var recurs = map[Code]bool{
+	Transient:              true,
+	RateLimited:            true,
+	AuthExpired:            true,
+	DestinationUnavailable: true,
+	ResourceExhausted:      true,
+	Draining:               true,
+	Fenced:                 true,
+}
+
+// Recurs reports whether a continuous pipeline's job that keeps failing with
+// c is retried for as long as it fails. A job that keeps failing with
+// another code that is retried stops being retried after a number of
+// failures in a row.
+func (c Code) Recurs() bool { return recurs[c] }
+
+// Named is the code named name, such as "RATE_LIMITED"; Unspecified if no
+// code has that name.
+func Named(name string) Code {
+	return Code(protocolv1.ErrorCode_value["ERROR_CODE_"+name])
+}
 
 // NonRetryable returns the names of the codes that aren't retried, sorted.
 func NonRetryable() []string {

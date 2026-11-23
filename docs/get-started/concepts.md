@@ -51,7 +51,7 @@ A stream's **sync mode** specifies how to read it:
 A stream's **write mode** specifies how to write it:
 
 - **Append** adds records to the destination.
-- **Overwrite** replaces the destination's existing data with the data read during the sync.
+- **Overwrite** replaces the destination's existing data with the data read during the sync. A read with no rows leaves the table empty, and creates an empty table if there is none. The exception is a stream whose source does not declare its column types and that has never had rows. It leaves an existing table as it is, and creates none.
 - **Merge** uses the primary key to insert or update each row. The destination keeps the latest version of each row.
 
 A pipeline can have a **transform**, which changes rows between the source and the destination. A **SQL transform** is SQL statements that the engine runs as it copies. Each `INSERT INTO` statement reads streams and writes an **output**, which the destination gets as a stream.

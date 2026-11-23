@@ -9,9 +9,12 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/internal/rpcerr"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
+	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
 // How long a cancelled read, or a connector restarting one, may take.
@@ -157,7 +160,7 @@ func (r *sourceRun) checkCommitted(t T) {
 	pipeline := r.pipeline()
 	ctx, cancel := context.WithTimeout(t.Context(), r.readTimeout())
 	defer cancel()
-	l := startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: streams, Pipeline: pipeline})
+	l := startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: r.declare(t, streams), Pipeline: pipeline})
 	defer l.stop()
 	first := -1
 	l.wait(r.readTimeout(), func(events []event) bool {
@@ -236,12 +239,39 @@ func (r *sourceRun) checkCommitted(t T) {
 	}
 }
 
+// declare gives streams the types the catalog declares for them, as the
+// platform's reads do: without control columns. A stream whose declared
+// schema doesn't decode goes without; checkDiscover reports that.
+func (r *sourceRun) declare(t T, streams []*protocolv1.ConfiguredStream) []*protocolv1.ConfiguredStream {
+	t.Helper()
+	cat := r.discover(t)
+	out := make([]*protocolv1.ConfiguredStream, len(streams))
+	for i, cs := range streams {
+		out[i] = cs
+		if len(cs.GetArrowSchema()) > 0 {
+			continue
+		}
+		decl, err := arrowipc.DecodeSchema(cat[cs.GetName()].GetArrowSchema())
+		if err != nil {
+			continue
+		}
+		fields, _ := source.SplitDeclared(decl)
+		b, err := arrowipc.EncodeSchema(fields)
+		if err != nil || len(b) == 0 {
+			continue
+		}
+		out[i] = proto.CloneOf(cs)
+		out[i].ArrowSchema = b
+	}
+	return out
+}
+
 // readUnder is a bounded read of streams under pipeline.
 func (r *sourceRun) readUnder(t T, pipeline string, streams ...*protocolv1.ConfiguredStream) *readResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), r.readTimeout())
 	defer cancel()
-	res, err := read(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: streams, Pipeline: pipeline})
+	res, err := read(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: r.declare(t, streams), Pipeline: pipeline})
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -276,7 +306,7 @@ func (r *sourceRun) checkContinuous(t T) {
 	pipeline := r.pipeline()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	first := startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: follow, Pipeline: pipeline, Continuous: true})
+	first := startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: r.declare(t, follow), Pipeline: pipeline, Continuous: true})
 	defer first.stop()
 	if !first.wait(r.readTimeout(), func(events []event) bool { return caughtUp(full, follow, events) }) {
 		r.liveFailed(t, first, "a bounded read's records")
@@ -308,7 +338,7 @@ func (r *sourceRun) checkContinuous(t T) {
 	var second *liveRead
 	deadline := time.Now().Add(restartTimeout)
 	for {
-		second = startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: again, Pipeline: pipeline, Continuous: true})
+		second = startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: r.declare(t, again), Pipeline: pipeline, Continuous: true})
 		got := second.wait(r.readTimeout(), func(events []event) bool {
 			for name, rows := range want {
 				if len(rows.minus(countRows(allRows(eventsOf(events, name))))) > 0 {
@@ -374,7 +404,7 @@ func (r *sourceRun) checkContinuousSplits(t T) {
 		whole = append(whole, &protocolv1.ConfiguredStream{Name: cs.GetName(), SyncMode: cs.GetSyncMode(), Cursor: cs.GetCursor()})
 	}
 	upstream := r.readUnder(t, r.pipeline(), whole...)
-	l := startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: follow, Pipeline: r.pipeline(), Continuous: true, Lanes: 1})
+	l := startRead(ctx, r.proc.Conn(), &protocolv1.ReadRequest{Config: r.proc.Config(), Streams: r.declare(t, follow), Pipeline: r.pipeline(), Continuous: true, Lanes: 1})
 	defer l.stop()
 	if !l.wait(r.readTimeout(), func(events []event) bool { return caughtUp(upstream, follow, events) }) {
 		r.liveFailed(t, l, "every split's records, on one lane")

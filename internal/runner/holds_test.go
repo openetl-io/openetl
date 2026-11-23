@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -182,6 +183,86 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	}
 	if len(holds["s"].Columns) != 0 {
 		t.Errorf("columns %+v", holds["s"].Columns)
+	}
+}
+
+// A hold on a column that can't be held, recorded before the runner checked
+// what it holds, stops each attempt with how to release it; released or
+// discarded, the attempt holds it no longer. A refusal of it fails with the
+// fix.
+func TestAHoldOnAColumnThatCantBeHeldStopsUntilReleased(t *testing.T) {
+	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+	fix := "aws dynamodb delete-table --table-name s"
+	key := checkpoint.ColumnHold{
+		Column: "id", Since: since, Delivered: []byte("id int"), Reason: "the destination refused it: the table is keyed on it",
+		Cause: &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Refusal: "the table is keyed on it", Fix: fix},
+	}
+	record := func(c checkpoint.ColumnHold) *checkpoint.Record {
+		return &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{Columns: []checkpoint.ColumnHold{c}}}}}
+	}
+	j := &Job{
+		HeldURL:     "file:///held",
+		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
+		Destination: holdingDest{},
+		Streams:     []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}},
+	}
+	stops := func(err error, says ...string) {
+		t.Helper()
+		if errs.CodeOf(err) != errs.SchemaDrift {
+			t.Fatalf("got %v, want SCHEMA_DRIFT", err)
+		}
+		for _, s := range says {
+			if !strings.Contains(err.Error(), s) {
+				t.Errorf("%v doesn't say %q", err, s)
+			}
+		}
+	}
+	_, _, err := j.startHolds(t.Context(), record(key), nil)
+	stops(err, "it's part of the stream's key", fix, "openetl holds release PIPELINE s id")
+
+	// Discarded, in this attempt or before it, the hold goes without a
+	// replay: its values are gone.
+	gone := key
+	gone.Discarded = true
+	for _, c := range []struct {
+		releases []Release
+		rec      *checkpoint.Record
+	}{
+		{[]Release{{Stream: "s", Column: "id", Since: since, Discard: true}}, record(key)},
+		{nil, record(gone)},
+	} {
+		j.Releases = c.releases
+		holds, plans, err := j.startHolds(t.Context(), c.rec, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := holds["s"]; len(h.Columns) != 0 || h.Replay != nil || len(plans["s"].Holding) != 0 {
+			t.Errorf("discarded, holds %+v, plan %+v", h, plans["s"])
+		}
+	}
+
+	j.Releases = []Release{{ID: "r1", Stream: "s", Column: "id", Since: since}}
+	holds, plans, err := j.startHolds(t.Context(), record(key), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plans["s"].Holding) != 0 || holds["s"].Replay == nil || !reflect.DeepEqual(holds["s"].Replay.Columns, []string{"id"}) {
+		t.Errorf("released, holds %+v, plan %+v", holds["s"], plans["s"])
+	}
+
+	// The destination refuses the released column again, and lists it as
+	// one it can't hold.
+	j.refused = []RefusedColumn{{RefusedColumn: destination.RefusedColumn{Stream: "s", Column: "id", Reason: "the table is keyed on it", Fix: fix}}}
+	_, _, err = j.startHolds(t.Context(), record(key), map[string]destination.TableLimits{"s": {Unholdable: []string{"id"}}})
+	stops(err, "the destination can't hold it", fix)
+
+	// A column the destination's limits say it can't hold.
+	j.Releases, j.refused = nil, nil
+	part := checkpoint.ColumnHold{Column: "p", Since: since, Reason: "the destination refused it: it partitions by it"}
+	_, _, err = j.startHolds(t.Context(), record(part), map[string]destination.TableLimits{"s": {Unholdable: []string{"p"}}})
+	stops(err, "the destination can't hold it", "once the destination takes the column as the stream has it", "openetl holds release PIPELINE s p")
+	if _, _, err := j.startHolds(t.Context(), record(part), nil); err != nil {
+		t.Errorf("held where the destination can hold it: %v", err)
 	}
 }
 

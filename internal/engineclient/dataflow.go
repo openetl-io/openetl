@@ -374,6 +374,7 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		}
 		sp := streamPlan(plan, s, plan.Schemas[s.Name], !sql)
 		sp.ArrowSchema, sp.CursorField, sp.ReadStartMicros = declared, s.CursorField, plan.ReadStarts[s.Name]
+		sp.Overwrite = !sql && !s.Transformed && s.Mode == destination.Overwrite
 		if e := s.EventTime; e != nil {
 			sp.EventTime = &enginev1.EventTime{Column: e.Column, DelayMicros: e.Delay.Microseconds(), Held: e.Held, LatenessMicros: e.Lateness.Microseconds(),
 				DedupeRetentionMicros: e.Dedupe, FullRead: e.FullRead}
@@ -764,7 +765,7 @@ func encode(f runner.Frame, gen uint64, alloc memory.Allocator, buf *bytes.Buffe
 		}
 		return enginev1.FrameKind_FRAME_KIND_BATCH, buf.Bytes(), nil
 	case runner.FrameBarrier:
-		b, err := proto.Marshal(&enginev1.Barrier{Epoch: &protocolv1.Epoch{Generation: gen, N: f.Epoch}})
+		b, err := proto.Marshal(&enginev1.Barrier{Epoch: &protocolv1.Epoch{Generation: gen, N: f.Epoch}, EndsRead: f.EndsRead})
 		return enginev1.FrameKind_FRAME_KIND_BARRIER, b, err
 	case runner.FrameSplit:
 		b, err := proto.Marshal(&enginev1.Split{Id: f.Split, Watermark: f.Watermark})

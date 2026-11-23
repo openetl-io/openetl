@@ -8,8 +8,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/openetl-io/openetl/sdk/go/check"
+	"github.com/openetl-io/openetl/sdk/go/configschema"
 	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 )
 
@@ -28,16 +30,113 @@ type answer interface {
 }
 
 // checkAnswer reports what resp, the connector's answer with config, breaks
-// of the protocol, as checkItems does. It gives config's secret values, for
+// of the protocol, as checkItems does, but leaves out of the leak check the
+// secrets refuseUntestable refuses. It gives config's secret values, for
 // shown.
 func (c *common) checkAnswer(t T, with string, config []byte, resp answer) []string {
 	t.Helper()
-	var secrets []string
-	if _, s, err := splitSecrets(c.spec.GetConfigSchema(), config); err == nil {
-		secrets = slices.Collect(maps.Values(s))
+	c.refuseUntestable(t)
+	schema := c.spec.GetConfigSchema()
+	var secrets, tested []string
+	if _, s, err := splitSecrets(schema, config); err == nil {
+		untestable := untestableSecrets(schema, config)
+		for _, k := range slices.Sorted(maps.Keys(s)) {
+			secrets = append(secrets, s[k])
+			if _, ok := untestable[k]; !ok {
+				tested = append(tested, s[k])
+			}
+		}
 	}
-	checkItems(t, with, resp, secrets, fieldPaths(c.spec.GetConfigSchema()))
+	checkSecrets(t, with, resp, tested)
+	checkForm(t, with, resp, secrets, fieldPaths(schema))
 	return secrets
+}
+
+// minSecretLength is the fewest characters of a secret value the leak check
+// tests for: a shorter one, such as "openetl", turns up in text that doesn't
+// show it, such as a path or a bucket's name, and fails a connector that
+// leaks nothing.
+const minSecretLength = 12
+
+// untestableSecrets gives, by dotted path, each non-empty secret of config
+// that the leak check can't tell from other text, with why: it's shorter
+// than minSecretLength, or one of config's other values holds it. It's nil
+// when there's none, or config can't be read.
+func untestableSecrets(schema, config []byte) map[string]string {
+	_, secrets, err := splitSecrets(schema, config)
+	if err != nil || len(secrets) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(strings.NewReader(string(config)))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		return nil
+	}
+	for k := range secrets {
+		configschema.Replace(m, k, nil)
+	}
+	var others []string
+	values(m, &others)
+	var out map[string]string
+	for k, v := range secrets {
+		why := ""
+		switch {
+		case v == "":
+			continue
+		case utf8.RuneCountInString(v) < minSecretLength:
+			why = fmt.Sprintf("is shorter than %d characters", minSecretLength)
+		case slices.ContainsFunc(others, func(o string) bool { return strings.Contains(o, v) }):
+			why = "appears in another of the config's values"
+		default:
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[k] = why
+	}
+	return out
+}
+
+// values appends the strings and numbers in v, a decoded JSON value, at any
+// depth.
+func values(v any, out *[]string) {
+	switch v := v.(type) {
+	case string:
+		*out = append(*out, v)
+	case json.Number:
+		*out = append(*out, v.String())
+	case map[string]any:
+		for _, x := range v {
+			values(x, out)
+		}
+	case []any:
+		for _, x := range v {
+			values(x, out)
+		}
+	}
+}
+
+// refuseUntestable fails t, once a suite, with each secret of the suite's
+// configs that the leak check can't test, naming it by its path and never
+// by its value.
+func (c *common) refuseUntestable(t T) {
+	t.Helper()
+	c.mu.Lock()
+	done := c.refused
+	c.refused = true
+	c.mu.Unlock()
+	if done {
+		return
+	}
+	for _, cfg := range c.configs() {
+		untestable := untestableSecrets(c.spec.GetConfigSchema(), cfg.b)
+		for _, k := range slices.Sorted(maps.Keys(untestable)) {
+			t.Errorf("%s's secret config.%s %s, so the kit can't tell a leak of it from text that only happens to hold it: give it a distinctive value of at least %d characters that appears nowhere else in the config",
+				cfg.name, k, untestable[k], minSecretLength)
+		}
+	}
 }
 
 // hidden is what a report shows in place of a connector's text that holds a
@@ -68,6 +167,13 @@ func holds(text string, secrets []string) bool {
 func checkItems(t T, with string, resp answer, secrets []string, fields map[string]bool) {
 	t.Helper()
 	checkSecrets(t, with, resp, secrets)
+	checkForm(t, with, resp, secrets, fields)
+}
+
+// checkForm is checkItems without the leak check: it shows no text that
+// holds one of secrets.
+func checkForm(t T, with string, resp answer, secrets []string, fields map[string]bool) {
+	t.Helper()
 	items := resp.GetItems()
 	seen := map[string]int{}
 	for i, it := range items {

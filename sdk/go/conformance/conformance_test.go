@@ -31,12 +31,18 @@ import (
 )
 
 var configSchema = []byte(`{"type": "object", "properties": {
-	"token": {"type": "string", "x-secret": true}, "down": {"type": "boolean"}}, "required": ["token"]}`)
+	"token": {"type": "string", "x-secret": true}, "down": {"type": "boolean"}, "label": {"type": "string"}}, "required": ["token"]}`)
+
+// The memory connectors take any token but badToken.
+const (
+	goodToken = "conformance-good-token"
+	badToken  = "conformance-bad-token"
+)
 
 var (
-	good           = []byte(`{"token": "good"}`)
-	badCredentials = []byte(`{"token": "bad"}`)
-	unreachable    = []byte(`{"token": "good", "down": true}`)
+	good           = []byte(`{"token": "` + goodToken + `"}`)
+	badCredentials = []byte(`{"token": "` + badToken + `"}`)
+	unreachable    = []byte(`{"token": "` + goodToken + `", "down": true}`)
 )
 
 type memConfig struct {
@@ -50,11 +56,13 @@ func bind(config []byte) (memConfig, error) {
 	return c, err
 }
 
+func (c memConfig) signedIn() bool { return c.Token != badToken }
+
 func (c memConfig) check() error {
 	switch {
 	case c.Down:
 		return sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_TRANSIENT, errors.New("connection refused"))
-	case c.Token != "good":
+	case !c.signedIn():
 		return sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_AUTH_INVALID, errors.New("bad token"))
 	}
 	return nil
@@ -75,6 +83,8 @@ type upstream struct {
 	changes, trimmed int64
 	// The streams preflights asked about, as name:mode.
 	preflighted []string
+	// How many streams reads asked for with their declared types.
+	declared int
 }
 
 type memSource struct {
@@ -100,8 +110,10 @@ var eventsSchema = arrow.NewSchema([]arrow.Field{
 	{Name: "ts", Type: arrow.PrimitiveTypes.Int64},
 }, nil)
 
+var declaredSchemas = map[string]*arrow.Schema{"users": usersSchema, "events": eventsSchema, "changes": changesSchema}
+
 func (s *memSource) Check(context.Context) error {
-	if s.bug == "check-internal" && s.c.Token != "good" {
+	if s.bug == "check-internal" && !s.c.signedIn() {
 		return errors.New("bad token")
 	}
 	return s.c.check()
@@ -144,7 +156,7 @@ func (s *memSource) Discover(context.Context) (source.Catalog, error) {
 
 func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
 	if err := s.c.check(); err != nil {
-		if s.bug == "check-internal" && s.c.Token != "good" {
+		if s.bug == "check-internal" && !s.c.signedIn() {
 			return errors.New("bad token")
 		}
 		return err
@@ -159,6 +171,18 @@ func (s *memSource) Read(ctx context.Context, req source.ReadRequest, out source
 	s.up.mu.Unlock()
 	var split []source.ConfiguredStream
 	for _, st := range req.Streams {
+		if st.Schema != nil {
+			changed, err := source.ChangedTypes(st.Schema, declaredSchemas[st.Name])
+			if err != nil {
+				return err
+			}
+			if len(changed) > 0 {
+				return sdk.WithCode(protocolv1.ErrorCode_ERROR_CODE_TRANSIENT, fmt.Errorf("stream %s: the types of %v changed", st.Name, changed))
+			}
+			s.up.mu.Lock()
+			s.up.declared++
+			s.up.mu.Unlock()
+		}
 		var err error
 		switch {
 		case st.Name == "changes" && len(st.Splits) > 0:
@@ -516,8 +540,14 @@ func memSuite(up *upstream, bug string) conformance.SourceSuite {
 	}
 }
 
+// It passes, and its reads declare their streams' types, which match its
+// catalog's.
 func TestSourcePasses(t *testing.T) {
-	sourceSuite("").Test(t)
+	up := &upstream{users: 23, events: 18, changes: 14}
+	memSuite(up, "").Test(t)
+	if up.declared == 0 {
+		t.Error("no read declared its streams' types")
+	}
 }
 
 // The resume and until checks can start from one resume point.
@@ -649,7 +679,7 @@ func (d *memDestination) Checks() []check.Check {
 			return nil
 		}},
 		{Name: "auth", Kind: check.Authentication, Title: "Sign in with the token", Field: "token", Needs: []string{"connect"}, Run: func(context.Context, *check.Probe) error {
-			if d.c.Token != "good" {
+			if !d.c.signedIn() {
 				return check.CredentialsRejected.Fail()
 			}
 			return nil
@@ -1287,7 +1317,16 @@ var rewrites = map[string]func(ctx context.Context, method string, reply any, ca
 	"check-leaks": func(_ context.Context, _ string, reply any, call func() error) error {
 		err := call()
 		if r, ok := reply.(*protocolv1.CheckResponse); ok && len(r.GetItems()) > 0 {
-			r.Items[0].Detail = "signed in with good"
+			r.Items[0].Detail = "signed in with " + goodToken
+		}
+		return err
+	},
+	// An item's detail names a path that holds "openetl", as the s3
+	// destination's check object's does, though it shows no secret.
+	"check-names-path": func(_ context.Context, _ string, reply any, call func() error) error {
+		err := call()
+		if r, ok := reply.(*protocolv1.CheckResponse); ok && len(r.GetItems()) > 0 && r.GetItems()[0].GetError() == nil {
+			r.Items[0].Detail = "wrote _openetl/check-1"
 		}
 		return err
 	},
@@ -1367,6 +1406,68 @@ func TestAnswerBugsFail(t *testing.T) {
 				t.Errorf("failed checks %v, want %v; said %q: %v", failed, tc.failed, tc.says, said)
 			}
 		})
+	}
+}
+
+// The kit refuses, in the spec check alone, a secret its leak check can't
+// tell from other text: one too short, or one another value of its config
+// holds. It names the secret by its path, never by its value. A distinctive
+// secret is tested, and text that doesn't show it passes.
+func TestUntestableSecrets(t *testing.T) {
+	const refused = "secret config.token %s, so the kit can't tell a leak of it from text that only happens to hold it: give it a distinctive value of at least 12 characters that appears nowhere else in the config"
+	short := fmt.Sprintf(refused, "is shorter than 12 characters")
+	cases := map[string]struct {
+		config, unreachable []byte
+		value               string
+		failed              []string
+		says                string
+	}{
+		"a short secret, in a path the error names": {[]byte(`{"token": "openetl"}`), nil, "openetl", []string{"spec"}, "Config's " + short},
+		"a distinctive secret, with the same path":  {good, nil, goodToken, nil, ""},
+		"a secret another value holds": {[]byte(`{"token": "` + goodToken + `", "label": "the ` + goodToken + ` bucket"}`), nil, goodToken,
+			[]string{"spec"}, "Config's " + fmt.Sprintf(refused, "appears in another of the config's values")},
+		"a short secret in the unreachable config": {good, []byte(`{"token": "nope", "down": true}`), "nope", []string{"spec"}, "Unreachable's " + short},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := destinationSuite("check-names-path")
+			s.Config, s.BadCredentials, s.Unreachable = tc.config, nil, tc.unreachable
+			var log []string
+			failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) {
+				s.Run(ctx, func(r conformance.Result) {
+					if r.Check == "spec" || r.Check == "check" || r.Check == "errors" || r.Check == "preflight" {
+						log = append(log, r.Log...)
+						report(r)
+					}
+				})
+			})
+			said := tc.says == "" || slices.Contains(log, tc.says)
+			if !slices.Equal(failed, tc.failed) || !said {
+				t.Errorf("failed checks %v, want %v; said %q: %v", failed, tc.failed, tc.says, said)
+			}
+			if slices.ContainsFunc(log, func(l string) bool { return strings.Contains(l, tc.value) }) {
+				t.Errorf("the log shows the secret: %q", log)
+			}
+		})
+	}
+}
+
+// Without the spec check, as openetl connector test --run can leave it out,
+// the first check that looks for leaks refuses the secret instead.
+func TestUntestableSecretsWithoutSpec(t *testing.T) {
+	s := destinationSuite("check-names-path")
+	s.Config = []byte(`{"token": "openetl"}`)
+	var log []string
+	failed := runFailed(t, func(ctx context.Context, report func(conformance.Result)) {
+		s.RunMatching(ctx, func(c string) bool { return c == "check" }, func(r conformance.Result) {
+			log = append(log, r.Log...)
+			report(r)
+		})
+	})
+	if !slices.Equal(failed, []string{"check"}) || !slices.ContainsFunc(log, func(l string) bool {
+		return strings.HasPrefix(l, "Config's secret config.token is shorter than 12 characters")
+	}) {
+		t.Errorf("failed checks %v, logged %q", failed, log)
 	}
 }
 

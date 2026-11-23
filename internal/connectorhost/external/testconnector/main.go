@@ -253,16 +253,35 @@ func (s supports) Read(_ context.Context, _ source.ReadRequest, out source.Emitt
 	return out.Complete("supports", nil)
 }
 
-// echo emits one row per stream it's asked to read: how it was asked.
+// echo emits one row per stream it's asked to read: how it was asked, and
+// with a schema, the columns whose types changed from echoSchema's.
 type echo struct{}
 
+var jsonType, _ = extensions.NewJSONType(arrow.BinaryTypes.String)
+
+// echoSchema has an extension this process registers, one it doesn't,
+// declared by its field metadata, and a type a pipeline can override.
+var echoSchema = arrow.NewSchema([]arrow.Field{
+	{Name: "id", Type: extensions.NewUUIDType()},
+	{Name: "doc", Type: jsonType, Nullable: true},
+	{Name: "point", Type: arrow.BinaryTypes.Binary, Nullable: true, Metadata: arrow.NewMetadata([]string{"ARROW:extension:name", "ARROW:extension:metadata"}, []string{"example.point", "{}"})},
+	{Name: "amount", Type: &arrow.Decimal128Type{Precision: 38, Scale: 9}, Nullable: true},
+}, nil)
+
 func (echo) Discover(context.Context) (source.Catalog, error) {
-	return source.Catalog{Streams: []source.CatalogStream{{Name: "echo"}}}, nil
+	return source.Catalog{Streams: []source.CatalogStream{{Name: "echo", Schema: echoSchema}}}, nil
 }
 
 func (echo) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
 	for _, cs := range req.Streams {
 		m := map[string]any{"mode": cs.SyncMode, "cursor": cs.Cursor, "state": string(cs.State), "columns": cs.Columns}
+		if cs.Schema != nil {
+			changed, err := source.ChangedTypes(cs.Schema, echoSchema)
+			if err != nil {
+				return err
+			}
+			m["changed"] = changed
+		}
 		if cs.Until != nil {
 			m["until"] = string(cs.Until)
 		}

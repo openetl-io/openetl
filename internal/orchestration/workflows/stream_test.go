@@ -26,6 +26,8 @@ type streamEnv struct {
 	// When each job started, on the workflow's clock.
 	starts   []time.Time
 	finished []contract.FinishSyncInput
+	// The epoch a job commits before it ends, by its number.
+	commits map[int]uint64
 	// How many of FinishSync's tries fail.
 	finishFailures int
 	finishTries    int
@@ -65,6 +67,9 @@ func newStreamEnv(t *testing.T, w workflows.Workflows, answer job) *streamEnv {
 		j := input[contract.StreamJobInput](t, in)
 		e.jobs = append(e.jobs, j)
 		e.starts = append(e.starts, e.env.Now())
+		if n := e.commits[len(e.jobs)]; n > 0 {
+			e.plane.commit(in.ID, n)
+		}
 		return answer(len(e.jobs), j)
 	})
 	return e
@@ -551,5 +556,192 @@ func TestStreamLooksAfterContinuing(t *testing.T) {
 	}
 	if got := e.versions(); !slices.Equal(got, []string{"r1/v2"}) {
 		t.Errorf("jobs %v", got)
+	}
+}
+
+// dataInvalid fails the nth job with DATA_INVALID, in a message that names
+// its epoch, as a runner's does.
+func dataInvalid(n int) contract.WorkOutcome {
+	return contract.WorkOutcome{Code: errs.DataInvalid.String(), Message: errs.New(errs.DataInvalid, "runner: write orders in epoch %d: a record too large", n).Error()}
+}
+
+// A job that keeps failing with the same code that doesn't recur, whatever
+// its message, fails the run once it has failed 5 times in a row after its
+// retries reached 5 minutes apart. The run then waits for a refresh, such as
+// a resume, which starts another.
+func TestStreamStopsRetryingTheSameFailure(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+		if in.SyncID == "r1" {
+			return time.Second, dataInvalid(n)
+		}
+		return runsForever(n, in)
+	})
+	e.at(5*time.Hour, func(*contract.StreamState) {})
+	e.at(6*time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	// Ten waits from 1 s doubling to 5 minutes, then five failures after
+	// waits of 5 minutes.
+	if got := e.versions(); len(got) != 16 || got[14] != "r1/v1" || got[15] != "r2/v1" {
+		t.Errorf("jobs %v", got)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r1 failed", "r2 stopped"}) {
+		t.Fatalf("runs ended %v", got)
+	}
+	if f := e.finished[0]; f.Code != errs.DataInvalid.String() || f.Failures != 5 ||
+		!strings.Contains(f.Error, "failed with DATA_INVALID 5 times in a row") || !strings.HasSuffix(f.Error, "epoch 15: a record too large") {
+		t.Errorf("the run ended with %+v", f)
+	}
+}
+
+// Failures count only once the wait before a retry has reached 5 minutes, so
+// a short outage that fails jobs the same way doesn't end the run. The run
+// keeps the limit its pipeline's state gave it.
+func TestStreamCountsFailuresAfterTheLongestWait(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(int, contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+		return time.Second, fail(errs.Internal)
+	})
+	e.state.FailureLimit = 1
+	e.at(10*time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.jobs) != 11 {
+		t.Fatalf("%d jobs, want 11", len(e.jobs))
+	}
+	if waited := e.starts[10].Sub(e.starts[9]) - time.Second; waited != 5*time.Minute {
+		t.Errorf("the last job waited %s", waited)
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r1 failed"}) || e.finished[0].Failures != 1 || e.finished[0].Code != errs.Internal.String() {
+		t.Errorf("runs ended %v: %+v", got, e.finished)
+	}
+}
+
+// A workflow that got to the limit before the limit was made retries as it
+// did then.
+func TestStreamFromBeforeTheLimitRetries(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+		if n <= 15 {
+			return time.Second, fail(errs.Internal)
+		}
+		return runsForever(n, in)
+	})
+	e.env.BeforeChange("stream-failure-limit")
+	e.state.FailureLimit = 1
+	e.at(10*time.Hour, gone)
+	if err := e.run(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.jobs) != 16 {
+		t.Errorf("%d jobs, want 16", len(e.jobs))
+	}
+	if got := e.ends(); !slices.Equal(got, []string{"r1 stopped"}) {
+		t.Errorf("runs ended %v", got)
+	}
+}
+
+// Codes that recur while an outage lasts are retried however often they fail.
+func TestStreamRetriesRecurringFailuresWithoutLimit(t *testing.T) {
+	for _, code := range []errs.Code{errs.Transient, errs.RateLimited, errs.AuthExpired, errs.DestinationUnavailable, errs.ResourceExhausted, errs.Fenced} {
+		t.Run(code.String(), func(t *testing.T) {
+			e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+				if n <= 20 {
+					return time.Second, fail(code)
+				}
+				return runsForever(n, in)
+			})
+			e.state.FailureLimit = 1
+			e.at(10*time.Hour, gone)
+			if err := e.run(stream); err != nil {
+				t.Fatal(err)
+			}
+			if len(e.jobs) != 21 {
+				t.Errorf("%d jobs, want 21", len(e.jobs))
+			}
+			if got := e.ends(); !slices.Equal(got, []string{"r1 stopped"}) {
+				t.Errorf("runs ended %v", got)
+			}
+		})
+	}
+}
+
+// A failure with another code, a job that ran 10 minutes, and one that
+// committed each start the count again. A drain doesn't.
+func TestStreamFailureCountStartsAgain(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// The last job that fails; the rest run until they're stopped.
+		last int
+		// How jobs fail, by number; the rest fail with DATA_INVALID.
+		fails map[int]contract.WorkOutcome
+		// How long jobs run, by number; the rest run a second.
+		ran     map[int]time.Duration
+		commits map[int]uint64
+		// The jobs that start, and whether the last one failed the run.
+		jobs   int
+		failed bool
+	}{
+		{name: "another code", last: 20, jobs: 21, fails: map[int]contract.WorkOutcome{
+			12: fail(errs.Internal), 13: fail(errs.Transient), 15: fail(errs.Internal), 17: fail(errs.Transient), 19: fail(errs.Internal),
+		}},
+		// Its retries wait from 1 s again, and the count starts once they
+		// are 5 minutes apart again.
+		{name: "a healthy job", last: 30, jobs: 23, failed: true, ran: map[int]time.Duration{12: 11 * time.Minute}},
+		{name: "a commit", last: 20, jobs: 13, failed: true, commits: map[int]uint64{12: 7}},
+		{name: "a drain", last: 20, jobs: 13, failed: true, fails: map[int]contract.WorkOutcome{12: fail(errs.Draining)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newStreamEnv(t, workflows.Workflows{AttemptRetry: time.Second}, func(n int, in contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+				switch {
+				case n > c.last:
+					return runsForever(n, in)
+				case c.fails[n].Code != "":
+					return time.Second, c.fails[n]
+				}
+				return cmp.Or(c.ran[n], time.Second), dataInvalid(n)
+			})
+			e.state.FailureLimit = 2
+			e.commits = c.commits
+			e.at(10*time.Hour, gone)
+			if err := e.run(stream); err != nil {
+				t.Fatal(err)
+			}
+			if len(e.jobs) != c.jobs {
+				t.Errorf("%d jobs, want %d", len(e.jobs), c.jobs)
+			}
+			want := []string{"r1 stopped"}
+			if c.failed {
+				want = []string{"r1 failed"}
+			}
+			if got := e.ends(); !slices.Equal(got, want) {
+				t.Errorf("runs ended %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// A supervisor that continues as new carries the count to the next workflow
+// run, which fails the run when it reaches the limit.
+func TestStreamCarriesTheFailureCount(t *testing.T) {
+	e := newStreamEnv(t, workflows.Workflows{}, func(n int, _ contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+		return time.Minute, dataInvalid(n)
+	})
+	e.env.PastHistoryLimit()
+	run := &contract.StreamRun{State: e.state, SyncID: "r7", RunKey: "k7", Earlier: 14, Backoff: 5 * time.Minute, Failures: 3, Failed: errs.DataInvalid.String()}
+	next := continuedWith(t, e.run(contract.StreamInput{OrgID: "o", PipelineID: "p", Run: run}))
+	if r := next.Run; r == nil || r.Failures != 4 || r.Failed != errs.DataInvalid.String() || !r.Retry {
+		t.Fatalf("continued with %+v", r)
+	}
+
+	e = newStreamEnv(t, workflows.Workflows{}, func(n int, _ contract.StreamJobInput) (time.Duration, contract.WorkOutcome) {
+		return time.Minute, dataInvalid(n)
+	})
+	e.at(time.Hour, gone)
+	if err := e.run(next); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.ends(); len(e.jobs) != 1 || !slices.Equal(got, []string{"r7 failed"}) || e.finished[0].Failures != 5 {
+		t.Errorf("%d jobs, runs ended %v: %+v", len(e.jobs), got, e.finished)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -95,7 +96,11 @@ func (s *sourceServer) Read(req *protocolv1.ReadRequest, stream grpc.ServerStrea
 	}
 	r := source.ReadRequest{Pipeline: req.GetPipeline(), Continuous: req.GetContinuous(), Lanes: int(req.GetLanes())}
 	for _, cs := range req.GetStreams() {
-		r.Streams = append(r.Streams, configuredStream(cs))
+		c, err := configuredStream(cs)
+		if err != nil {
+			return status(err)
+		}
+		r.Streams = append(r.Streams, c)
 	}
 	out := newEmitter(stream, r.Lanes)
 	err = src.Read(ctx, r, out)
@@ -105,8 +110,13 @@ func (s *sourceServer) Read(req *protocolv1.ReadRequest, stream grpc.ServerStrea
 	return status(err)
 }
 
-func configuredStream(cs *protocolv1.ConfiguredStream) source.ConfiguredStream {
-	return source.ConfiguredStream{Name: cs.GetName(), SyncMode: source.SyncMode(cs.GetSyncMode()), Cursor: cs.GetCursor(), State: cs.State, Splits: splitsOf(cs.GetSplits()), Columns: cs.GetColumns(), Until: cs.Until, CompleteAt: cs.CompleteAt}
+func configuredStream(cs *protocolv1.ConfiguredStream) (source.ConfiguredStream, error) {
+	schema, err := arrowipc.DecodeSchema(cs.GetArrowSchema())
+	if err != nil {
+		return source.ConfiguredStream{}, fmt.Errorf("stream %s's schema: %w", cs.GetName(), err)
+	}
+	return source.ConfiguredStream{Name: cs.GetName(), SyncMode: source.SyncMode(cs.GetSyncMode()), Cursor: cs.GetCursor(), State: cs.State, Splits: splitsOf(cs.GetSplits()),
+		Columns: cs.GetColumns(), Schema: schema, Until: cs.Until, CompleteAt: cs.CompleteAt}, nil
 }
 
 func splitsOf(ps []*protocolv1.Split) []source.Split {
@@ -137,7 +147,11 @@ func (s *sourceServer) Splits(ctx context.Context, req *protocolv1.SplitsRequest
 	if !ok {
 		return nil, status(WithCode(protocolv1.ErrorCode_ERROR_CODE_INTERNAL, errors.New("the source doesn't split streams")))
 	}
-	splits, err := sp.Splits(ctx, configuredStream(req.GetStream()), splitsOf(req.GetEnded()))
+	cs, err := configuredStream(req.GetStream())
+	if err != nil {
+		return nil, status(err)
+	}
+	splits, err := sp.Splits(ctx, cs, splitsOf(req.GetEnded()))
 	if err != nil {
 		return nil, status(err)
 	}
@@ -227,7 +241,11 @@ func (s *sourceServer) PreflightSource(ctx context.Context, req *protocolv1.Pref
 	}
 	pr := source.PreflightRequest{Pipeline: req.GetPipeline(), Continuous: req.GetContinuous(), Interval: req.GetInterval().AsDuration()}
 	for _, cs := range req.GetStreams() {
-		pr.Streams = append(pr.Streams, configuredStream(cs))
+		c, err := configuredStream(cs)
+		if err != nil {
+			return &protocolv1.PreflightSourceResponse{Error: protoError(err)}, nil
+		}
+		pr.Streams = append(pr.Streams, c)
 	}
 	items, rerr := answer(ctx, secrets, func(ctx context.Context) check.Report {
 		return check.RunList(ctx, func() []check.Check { return p.Preflight(pr) })

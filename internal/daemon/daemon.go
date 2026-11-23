@@ -427,7 +427,10 @@ func orchestrate(ctx context.Context, cfg config.Config, backend orchestration.B
 	go reconciler.Run(ctx)
 	teardowns := &ops.Teardowns{Store: st, Ops: &ops.Ops{Backend: backend}, Logger: log.With("component", "teardowns")}
 	go teardowns.Run(ctx)
-	acts := &cpactivities.Activities{Store: st, Schedules: sched, Dispatch: work, Catalog: catalog, Logger: log.With("component", "steps")}
+	acts := &cpactivities.Activities{
+		Store: st, Schedules: sched, Dispatch: work, Catalog: catalog,
+		FailureLimit: ints.Int32(cfg.ContinuousFailureLimit), Logger: log.With("component", "steps"),
+	}
 	return backend.Run(ctx, wf.All(), acts.Steps())
 }
 

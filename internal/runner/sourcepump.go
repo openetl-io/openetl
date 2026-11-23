@@ -895,13 +895,14 @@ func (p *sourcePump) placeLane(name string, lane int) error {
 		return nil
 	}
 	l.placed = true
+	ends := p.ends.endsAt(name, p.pending)
 	if st.inTurn {
 		for each := range p.lanes {
-			if err := p.forward(Frame{Kind: FrameBarrier, Lane: each, Stream: name, Epoch: p.pending}); err != nil {
+			if err := p.forward(Frame{Kind: FrameBarrier, Lane: each, Stream: name, Epoch: p.pending, EndsRead: ends}); err != nil {
 				return err
 			}
 		}
-	} else if err := p.forward(Frame{Kind: FrameBarrier, Lane: lane, Stream: name, Epoch: p.pending}); err != nil {
+	} else if err := p.forward(Frame{Kind: FrameBarrier, Lane: lane, Stream: name, Epoch: p.pending, EndsRead: ends}); err != nil {
 		return err
 	}
 	held := l.held

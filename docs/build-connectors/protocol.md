@@ -61,7 +61,11 @@ For `stream` mode with a primary key, declare a cursor that distinguishes events
 
 `Read` emits JSON objects or Arrow batches. It marks **resume points**, each with state that lets a later read resume at that position. A bounded stream ends with `Complete`; its state becomes the next sync's starting state. Commits normally align to resume points. A [forced barrier](../pipelines/delivery.md#reading-a-stream-delivered-at-least-once) is permitted only when replay preserves the required delivery guarantee.
 
-Each read request lists the declared `columns`. If the source sends text values for OpenETL to parse, those columns need declared types. If a new column appears, fail the read with a transient error. The next attempt's discovery can declare its type before reading again.
+Each read request lists the declared `columns`. If the source sends text values for OpenETL to parse, those columns need declared types. Declare timestamps in microseconds, inside lists too: OpenETL refuses a stream that declares another unit. If a new column appears, fail the read with a transient error. The next attempt's discovery can declare its type before reading again.
+
+Each read request also gives the declared types of each stream's columns in `arrow_schema`. They are the types that the source's `Discover` returned for that run, without control columns. An empty `arrow_schema` means that the request does not give types. A column's type can change after that discovery and before the read starts. OpenETL then parses values with the old type: for example, it decodes text in a column declared as binary as base64.
+
+If a column's current type differs from its declared type, fail the read with a transient error. The next attempt discovers the stream again. Compare each column by name, with its Arrow storage type and its extension's name and metadata, such as `arrow.uuid` or `arrow.json`. OpenETL can send a canonical extension's metadata in a different form that Arrow defines as equal: for example, `arrow.json` with empty metadata instead of `{}`. In Go, `source.ConfiguredStream` has the types in `Schema`, and `source.ChangedTypes` compares them.
 
 Sources can also implement these operations:
 
@@ -97,6 +101,8 @@ A writer's calls are the commit protocol:
 3. **Commit** runs after the checkpoint record is written. For stage-and-apply destinations, it makes the epoch visible with stream markers protected by the destination's fence. It must be idempotent.
 4. **Recover** runs when an attempt starts. It raises the fence to the attempt's generation, preventing older attempts from committing. It reports whether the recorded epoch was already applied, was applied during recovery, or is lost.
 
+A stream written with `overwrite` gets **EndRead** in the epoch where its read ends, before that epoch's **PreCommit**. That epoch's **Commit** replaces the stream's table with what the read wrote. By then, lane 0's writer, which commits, has the stream's schema, from its batches or from **ApplySchema**, which comes before **Commit**. A read with no rows gets the schema from **ApplySchema** alone: replace the table with an empty one, or create it empty. Some streams get no schema from a read with no rows, and their tables stay as they are: a stream that has never had rows and whose source does not declare its column types, or its cursor's type, and a transform's output that has never had rows.
+
 A reply to **PreCommit** or **Commit** names the epoch of the request it answers, and each request gets one reply. OpenETL fails the attempt on a reply for another epoch, or one it did not ask for. `sdk.Serve` does this for you.
 
 The commit is the destination's own: its staging, markers, fence and catalog live in its writer, not in OpenETL.
@@ -114,6 +120,20 @@ Failed teardown operations retry for up to 7 days. After that, OpenETL records `
 A destination must not change an existing column's type unless the pipeline permits it. This applies to target columns, staging columns and other columns that become user data. Refuse an unpermitted type change with `RefusedColumn`. Include the column, reason, types and a `Fix` statement or repair step, such as `ALTER TABLE`.
 
 OpenETL holds the affected column where supported, or stops the stream. It shows the repair to the user. New columns can still be added.
+
+A destination that takes holds also answers with each stream's `TableLimits`. The limits name columns by their destination names:
+
+- `Unholdable`: columns that the destination cannot hold, such as a partition column or the key of its table.
+- `NotNull`: columns that cannot be null.
+- `Fixed`: columns whose type cannot change.
+
+OpenETL cannot hold some refused columns:
+
+- a column that the destination lists in `Unholdable`;
+- a column of the stream's primary key, or its cursor;
+- a column in `NotNull`, if the pipeline gives it no `heldValue`.
+
+If the destination refuses one of these columns, the attempt fails with `SCHEMA_DRIFT`. The error includes the refusal's reason and its `Fix`.
 
 ### Checks and preflights
 

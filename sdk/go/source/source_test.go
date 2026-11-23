@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/extensions"
 
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/source"
@@ -36,6 +38,63 @@ func TestSplitDeclared(t *testing.T) {
 	}
 	if got, gotSeq := source.SplitDeclared(arrow.NewSchema([]arrow.Field{source.OpField(), source.SeqField(seq)}, nil)); got != nil || !arrow.TypeEqual(gotSeq, seq) {
 		t.Errorf("control columns alone split into %v and seq %v", got, gotSeq)
+	}
+}
+
+// ChangedTypes finds a column whose type changed, an extension's included,
+// whether the extension is a registered type or field metadata, and not
+// one the declared types don't have.
+func TestChangedTypes(t *testing.T) {
+	uuidMeta := arrow.NewMetadata([]string{"ARROW:extension:name", "ARROW:extension:metadata"}, []string{"arrow.uuid", ""})
+	pointMeta := arrow.NewMetadata([]string{"ARROW:extension:name", "ARROW:extension:metadata"}, []string{"example.point", "{}"})
+	jsonType, err := extensions.NewJSONType(arrow.BinaryTypes.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: extensions.NewUUIDType()},
+		{Name: "doc", Type: jsonType},
+		{Name: "point", Type: arrow.BinaryTypes.Binary, Metadata: pointMeta},
+		{Name: "bytes", Type: arrow.BinaryTypes.Binary},
+		{Name: "n", Type: arrow.PrimitiveTypes.Int64},
+	}, nil)
+	b, err := arrowipc.EncodeSchema(declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// As a read's request carries them.
+	if declared, err = arrowipc.DecodeSchema(b); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		current []arrow.Field
+		want    []string
+	}{
+		"unchanged, the UUID and the JSON as field metadata": {current: []arrow.Field{
+			{Name: "id", Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: uuidMeta},
+			{Name: "doc", Type: arrow.BinaryTypes.String, Metadata: arrow.NewMetadata([]string{"ARROW:extension:name", "ARROW:extension:metadata"}, []string{"arrow.json", "{}"})},
+			{Name: "point", Type: arrow.BinaryTypes.Binary, Metadata: pointMeta},
+			{Name: "bytes", Type: arrow.BinaryTypes.Binary},
+			{Name: "n", Type: arrow.PrimitiveTypes.Int64},
+		}},
+		"a new column": {current: []arrow.Field{{Name: "n", Type: arrow.PrimitiveTypes.Int64}, {Name: "new", Type: arrow.BinaryTypes.String}}},
+		"bytes to text, and uuid and json to their storage": {current: []arrow.Field{
+			{Name: "id", Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}},
+			{Name: "doc", Type: arrow.BinaryTypes.String},
+			{Name: "bytes", Type: arrow.BinaryTypes.String},
+		}, want: []string{"id", "doc", "bytes"}},
+		"another extension": {current: []arrow.Field{
+			{Name: "point", Type: arrow.BinaryTypes.Binary, Metadata: arrow.NewMetadata([]string{"ARROW:extension:name"}, []string{"example.line"})},
+			{Name: "n", Type: arrow.PrimitiveTypes.Int32},
+		}, want: []string{"point", "n"}},
+	} {
+		got, err := source.ChangedTypes(declared, arrow.NewSchema(c.current, nil))
+		if err != nil || !slices.Equal(got, c.want) {
+			t.Errorf("%s: changed %v, %v; want %v", name, got, err, c.want)
+		}
+	}
+	if got, err := source.ChangedTypes(nil, declared); got != nil || err != nil {
+		t.Errorf("without declared types: %v, %v", got, err)
 	}
 }
 

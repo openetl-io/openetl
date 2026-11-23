@@ -14,7 +14,7 @@ Source checks cover:
 - Specifications and configuration schemas.
 - Connection checks and their items.
 - A preflight of every discovered stream.
-- Discovery, reads and resumption.
+- Discovery, reads and resumption. Reads give each stream the declared types that discovery returned.
 - Reads that stop at a redo's `until` or complete at its `complete_at`.
 - Continuous reads, of streams read whole and of streams in splits.
 
@@ -71,3 +71,14 @@ The continuous-splits check runs only for a source whose spec declares `splits` 
 The other checks read each stream whole, so the until and complete-at checks give a stream's `until` and `complete_at`, not a split's. A source that reads splits gets the same fields on each `Split`, and its own tests cover that.
 
 In Go, a connector's own tests run the same checks with `conformance.SourceSuite` or `conformance.DestinationSuite` and `Test(t)`, as every official connector does in its `conformance_test.go`.
+
+## Secrets in test configs
+
+Give each secret in the suite's configs a distinctive value. The kit fails a connector whose `Check` or preflight shows a secret's value in any text. It finds the value as a substring, so a short or common value also matches text that does not show it. For example, the secret `openetl` matches the path `_openetl/check-1`.
+
+The kit refuses such a value before it checks for leaks. It refuses a non-empty secret in any of the suite's configs, with bad credentials and an unreachable upstream included, if one of these is true:
+
+- The value has fewer than 12 characters.
+- The value appears in a value of the same config that is not a secret.
+
+The `spec` check fails and names the secret by its path, such as `config.password`, and not by its value. If `--run` leaves out `spec`, the first check that looks for leaks fails instead. To fix it, use a value of at least 12 characters that appears nowhere else in the config, such as `conformance-test-password`. Set your test upstream to accept the same value.

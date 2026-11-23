@@ -108,6 +108,10 @@ The code tells OpenETL and people what kind of failure it is. These are the code
 | `CONTRACT_CHANGED` | The upstream answers in a way the connector does not expect. |
 | `INTERNAL` | The connector cannot say. `unknown` has this code. |
 
+A read or a write uses the same codes, and one more: `DATA_INVALID`, for data that the upstream refuses, such as a record over a size limit or a row that a load names. A check does not use it.
+
+A sync retries an attempt that fails with `DATA_INVALID`, because some of these failures pass on a retry. A fix outside OpenETL, such as a raised limit, also takes effect at the next retry. A continuous pipeline retries its job until the job fails with the same code too many times in a row, which is 5 by default. It does the same for `INTERNAL` and for each other code that is retried, except the codes of a failure that lasts only as long as an outage: `TRANSIENT`, `RATE_LIMITED`, `AUTH_EXPIRED`, `DESTINATION_UNAVAILABLE`, `RESOURCE_EXHAUSTED`, `DRAINING` and `FENCED`. OpenETL retries those for as long as they last. So give `TRANSIENT` only to a failure that a retry can pass. [A continuous pipeline stops retrying](../pipelines/troubleshooting.md#a-continuous-pipeline-stops-retrying) has the details.
+
 ### Params found at run time
 
 A check's `Params` hold what you know when you build the list. `Probe.Param` sets a value that the check finds as it runs, as `fmt.Sprint` prints it. Use it for both a failure's templates and a passing check's message.

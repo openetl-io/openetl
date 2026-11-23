@@ -38,6 +38,25 @@ type common struct {
 	pipelines []string
 	// Run when the suite ends.
 	closers []func()
+	// refuseUntestable has reported.
+	refused bool
+}
+
+type namedConfig struct {
+	name string
+	b    []byte
+}
+
+// configs are the suite's configs, by their fields' names; nil ones are
+// left out.
+func (c *common) configs() []namedConfig {
+	var out []namedConfig
+	for _, cfg := range []namedConfig{{"Config", c.config}, {"BadCredentials", c.badCredentials}, {"Unreachable", c.unreachable}} {
+		if cfg.b != nil {
+			out = append(out, cfg)
+		}
+	}
+	return out
 }
 
 func (c *common) process(t T) Process {
@@ -122,9 +141,11 @@ func (c *common) checks() []Check {
 }
 
 // Spec: the spec is v1 and of the right kind, its config schema compiles,
-// and the suite's configs match it.
+// the suite's configs match it, and each of their secrets is one the leak
+// check can test, as refuseUntestable says.
 func (c *common) checkSpec(t T) {
 	c.process(t)
+	c.refuseUntestable(t)
 	spec := c.spec
 	if v := spec.GetProtocolVersion(); v != "v1" {
 		t.Errorf("protocol_version is %q, not v1", v)
@@ -148,13 +169,7 @@ func (c *common) checkSpec(t T) {
 				flagf(t, "config fields without a description or title, which a form can only show by name: %s", strings.Join(u, ", "))
 			}
 		}
-		for _, cfg := range []struct {
-			name string
-			b    []byte
-		}{{"Config", c.config}, {"BadCredentials", c.badCredentials}, {"Unreachable", c.unreachable}} {
-			if cfg.b == nil {
-				continue
-			}
+		for _, cfg := range c.configs() {
 			if err := validate(sch, cfg.b); err != nil {
 				t.Errorf("%s doesn't match the config schema: %v", cfg.name, err)
 			}

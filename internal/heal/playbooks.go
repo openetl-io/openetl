@@ -82,7 +82,10 @@ func describe(o Observation, t target) (summary, next string) {
 				"The incident resolves once a sync succeeds."
 	case CrashLoop:
 		return fmt.Sprintf("%s's job keeps failing without committing", name),
-			fmt.Sprintf("It's retried, up to every 5 minutes, until it commits. Its log has each failure (%s).", logs)
+			fmt.Sprintf("It's retried, up to every 5 minutes, until it commits. A code that an outage causes, such as TRANSIENT, is retried "+
+				"for as long as the outage lasts. Another code, such as DATA_INVALID or INTERNAL, is retried until the job has failed with it "+
+				"too often in a row: by default 5 times, 5 minutes apart (openetld's --continuous-failure-limit). The run then fails: fix the "+
+				"cause, %s. Its log has each failure (%s).", resume, logs)
 	case Lagging:
 		return fmt.Sprintf("%s's read is behind its source", name),
 			"Look for a slow destination, a runner short of CPU, or a burst of changes at the source. The incident resolves once the read is back within half the threshold."
@@ -130,6 +133,11 @@ func describe(o Observation, t target) (summary, next string) {
 		}
 		return fmt.Sprintf("Stream %s of %s holds back %s", o.Stream, name, o.Details["held"]),
 			next + " The incident turns critical after a day, and resolves when the stream holds nothing."
+	}
+	if n := o.Details["failures"]; o.Class == SyncFailed && n != "" {
+		return fmt.Sprintf("%s's job failed with %s %s times in a row, so OpenETL stopped retrying it", name, o.Code, n),
+			fmt.Sprintf("A retry would likely fail the same way, so the pipeline reads nothing until it's resumed. The error is in the job's "+
+				"log (%s). Fix the cause, %s. The incident resolves once the pipeline commits again.", logs, resume)
 	}
 	if o.Code != "" {
 		return fmt.Sprintf("A sync of %s failed (%s)", name, o.Code), fmt.Sprintf("See the sync's log (%s). The incident resolves once a sync succeeds.", logs)

@@ -112,6 +112,12 @@ func (h *dbosHarness) PastHistoryLimit() {
 	h.limit = true
 }
 
+// BeforeChange skips: a DBOS workflow's Version says no only where its
+// recorded steps differ, which a new workflow has none of.
+func (h *dbosHarness) BeforeChange(string) {
+	h.t.Skip("DBOS can't run a new workflow as one from before a change")
+}
+
 func (h *dbosHarness) IsWorkflowCompleted() bool { return h.completed }
 
 func (h *dbosHarness) GetWorkflowError() error {

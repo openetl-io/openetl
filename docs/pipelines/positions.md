@@ -24,7 +24,7 @@ A reset does not directly delete destination data. The next write depends on the
 |---|---|
 | `merge` | Updates each row in place. Rows deleted at the source since the last read stay in the destination. |
 | `append` | Adds the rows again. |
-| `overwrite` | Replaces the table, as every full refresh does. |
+| `overwrite` | Replaces the table, as every full refresh does. A read with no rows empties the table, except for a stream without declared column types that has never had rows. |
 
 After a CDC reset, a new snapshot contains current rows. It does not recover intermediate changes. An appended change log therefore has a gap.
 

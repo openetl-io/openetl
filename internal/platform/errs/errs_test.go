@@ -27,11 +27,23 @@ func TestCoversProtocol(t *testing.T) {
 		if "ERROR_CODE_"+c.String() != name {
 			t.Errorf("Code(%d).String() = %q, want the suffix of %s", v, c, name)
 		}
+		if Named(c.String()) != c {
+			t.Errorf("Named(%q) = %s", c.String(), Named(c.String()))
+		}
 	}
 	for c := range retryable {
 		if _, ok := protocolv1.ErrorCode_name[int32(c)]; !ok {
 			t.Errorf("%s isn't in the protocol", c)
 		}
+	}
+	// A stream job retries FENCED, which a sync attempt doesn't.
+	for c := range recurs {
+		if !c.Retryable() && c != Fenced {
+			t.Errorf("%s recurs, and isn't retried", c)
+		}
+	}
+	if Named("NO_RUNNER") != Unspecified || DataInvalid.Recurs() || Internal.Recurs() {
+		t.Error("a code that isn't the protocol's, DATA_INVALID or INTERNAL recurs")
 	}
 }
 

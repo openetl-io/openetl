@@ -79,6 +79,9 @@ type Config struct {
 	// How far behind its source a continuous pipeline's read gets before
 	// the server sends pipeline.lagging, as a Go duration.
 	LaggingAfter string
+	// How many times in a row a continuous pipeline's job fails with the
+	// same code before its run fails, for runs that start after it's set.
+	ContinuousFailureLimit int
 	// A directory holding the built UI, which the API server serves at /.
 	// Empty: no UI.
 	Web string
@@ -234,6 +237,7 @@ var intOptions = []intOption{
 	{"log-max-size", "OPENETL_LOG_MAX_SIZE", 100, "megabytes a log file reaches before it's rotated", func(c *Config) *int { return &c.LogMaxSize }},
 	{"log-max-files", "OPENETL_LOG_MAX_FILES", 5, "rotated log files kept", func(c *Config) *int { return &c.LogMaxFiles }},
 	{"sign-in-rate", "OPENETL_SIGN_IN_RATE", 20, "sign-ins a minute each client address may make; behind a proxy, every user shares its address", func(c *Config) *int { return &c.SignInRate }},
+	{"continuous-failure-limit", "OPENETL_CONTINUOUS_FAILURE_LIMIT", 5, "how many times in a row a continuous pipeline's job may fail with the same error code before OpenETL stops retrying it and fails its run, until openetl resume or an apply of the pipeline starts another; failures count once the retries are 5 minutes apart, so 5 takes about 30 minutes, and a job that commits or runs for 10 minutes starts the count again; TRANSIENT, RATE_LIMITED, AUTH_EXPIRED, DESTINATION_UNAVAILABLE, RESOURCE_EXHAUSTED, DRAINING and FENCED never count; a change applies to runs that start after it", func(c *Config) *int { return &c.ContinuousFailureLimit }},
 	{"audit-retention-days", "OPENETL_AUDIT_RETENTION_DAYS", 90, "days the audit log keeps entries at least: a month's entries go once the month ended that long ago; 0 keeps every entry", func(c *Config) *int { return &c.AuditRetentionDays }},
 }
 
@@ -313,6 +317,9 @@ func Parse(fs *flag.FlagSet, args []string, defaults map[string]string) (Config,
 		return c, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	c.RunnerToken = os.Getenv(RunnerTokenEnv)
+	if c.ContinuousFailureLimit < 1 {
+		return c, fmt.Errorf("config: continuous-failure-limit is %d; it must be at least 1", c.ContinuousFailureLimit)
+	}
 	if c.AuditRetentionDays < 0 {
 		return c, fmt.Errorf("config: audit-retention-days is %d; it can't be negative", c.AuditRetentionDays)
 	}

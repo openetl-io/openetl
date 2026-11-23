@@ -26,8 +26,8 @@ var groups = []group{
 	},
 	{
 		"Orchestration",
-		"What runs workflows, for the server and the orchestrators: DBOS, which keeps them in Postgres, or Temporal.",
-		[]string{"orchestrator", "dbos-database-url", "executor-id", "temporal-address", "temporal-namespace"},
+		"What runs workflows, for the server and the orchestrators: DBOS, which keeps them in Postgres, or Temporal. And how often a continuous pipeline's job may fail the same way before the orchestrators stop retrying it.",
+		[]string{"orchestrator", "dbos-database-url", "executor-id", "temporal-address", "temporal-namespace", "continuous-failure-limit"},
 	},
 	{
 		"Console and sign-in",

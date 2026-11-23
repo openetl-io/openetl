@@ -28,3 +28,13 @@ func TestSettingsListEveryFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestContinuousFailureLimit(t *testing.T) {
+	c, err := Parse(flag.NewFlagSet("openetld", flag.ContinueOnError), nil, nil)
+	if err != nil || c.ContinuousFailureLimit != 5 {
+		t.Errorf("the default is %d, %v", c.ContinuousFailureLimit, err)
+	}
+	if _, err := Parse(flag.NewFlagSet("openetld", flag.ContinueOnError), []string{"--continuous-failure-limit", "0"}, nil); err == nil {
+		t.Error("a limit of 0 parsed")
+	}
+}

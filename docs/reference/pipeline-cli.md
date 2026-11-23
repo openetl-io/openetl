@@ -73,7 +73,7 @@ For a pipeline with `transform.sql`, `plan` and `apply` send the statements to a
 | Syntax | Result |
 |---|---|
 | `openetl pause NAME` | Pause the pipeline. |
-| `openetl resume NAME` | Resume the pipeline. |
+| `openetl resume NAME` | Resume the pipeline. A continuous pipeline whose run failed starts a new run, whether or not it was paused. |
 | `openetl sync NAME` | Request a sync now. The command returns before the sync finishes. |
 
 | Flag | Type | Required | Default | Meaning |
