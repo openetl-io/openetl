@@ -76,9 +76,9 @@ func TestTheVersionsAnAttemptRestores(t *testing.T) {
 // A reset keeps the versions of the streams it reads again.
 func TestARestartKeepsTheVersions(t *testing.T) {
 	j := Job{Streams: []Stream{{Name: "a"}}}
-	rec := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"a": {ReadStart: 5}}, Snapshots: []checkpoint.Snapshot{{Operator: VersionsOperator("a")}}}
+	rec := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"a": {ReadStart: 5}}, Versions: []checkpoint.Snapshot{{Operator: VersionsOperator("a")}}}
 	cp := j.restart(rec, []string{"a"})
-	if len(cp.Snapshots) != 1 || cp.Streams["a"].ReadStart != 0 {
+	if len(cp.Versions) != 1 || cp.Streams["a"].ReadStart != 0 {
 		t.Errorf("restarted %+v", cp)
 	}
 }

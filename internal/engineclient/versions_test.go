@@ -328,7 +328,8 @@ func TestAResetKeepsTheVersions(t *testing.T) {
 // unit that was in flight keeps its ID, and is skipped as before, but the
 // next one lands. So does a record whose stream's versions are no longer
 // kept, which drops them, and they start again as they did after the
-// upgrade.
+// upgrade. A record keeps them apart from the other state, which a runner
+// from before them restores without them.
 func TestVersionsStartFromARecordWithoutThem(t *testing.T) {
 	ctx := testContext(t)
 	p := newVersionsPipeline(t, nil,
@@ -343,7 +344,10 @@ func TestVersionsStartFromARecordWithoutThem(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return slices.ContainsFunc(head.Snapshots, func(s checkpoint.Snapshot) bool { return s.Operator == runner.VersionsOperator("users") })
+		if len(head.Snapshots) > 0 {
+			t.Fatalf("the record's snapshots name %+v", head.Snapshots)
+		}
+		return slices.ContainsFunc(head.Versions, func(s checkpoint.Snapshot) bool { return s.Operator == runner.VersionsOperator("users") })
 	}
 	p.edit = func(j *runner.Job) { j.StateURL = "" }
 	p.sync(ctx)
@@ -420,7 +424,7 @@ func TestAHeldCellOfASecondVersionIsPatchedIntoItsRow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if n := len(head.Snapshots); n != writers {
+			if n := len(head.Versions); n != writers {
 				t.Fatalf("%d snapshots, want one for each writer lane", n)
 			}
 			h := head.Streams["users"].Holds

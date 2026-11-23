@@ -388,7 +388,7 @@ func (j *Job) redo(ctx context.Context, gen uint64, w destination.Writer, rec, b
 	// rec's versions hold those the epoch gave IDs to: a version read
 	// again unchanged gets the ID the epoch gave it, and one that changed
 	// since an ID of its own.
-	plan.Snapshots = versionsState(plan.Snapshots, plan.Versions, rec.Snapshots)
+	plan.Snapshots = versionsState(plan.Snapshots, plan.Versions, rec.Versions)
 	// Each lane writes its own writer lane.
 	plan.KeyGroupRanges, plan.FirstLane, plan.Exchanges = part.ranges, i, nil
 	plan.StateReadOnly = true

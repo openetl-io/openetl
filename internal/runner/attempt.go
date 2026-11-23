@@ -862,7 +862,7 @@ func (j *Job) restart(rec *checkpoint.Record, streams []string) *checkpoint.Reco
 			}
 		}
 	}
-	cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return !kept[s.Operator] && !isVersions(s.Operator) })
+	cp.Snapshots = slices.DeleteFunc(slices.Clone(rec.Snapshots), func(s checkpoint.Snapshot) bool { return !kept[s.Operator] })
 	return &cp
 }
 
@@ -1540,7 +1540,7 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 	plan.Exchanges = j.exchanges(plan.WriterLanes)
 	plan.RecordSteps = j.recordsSteps()
 	if restored != nil {
-		plan.Snapshots = versionsState(restored.Snapshots, plan.Versions, restored.Snapshots)
+		plan.Snapshots = versionsState(restored.Snapshots, plan.Versions, restored.Versions)
 	}
 	if es, ok := j.Destination.(EngineSink); ok {
 		plan.Sink = es.EngineSink()
@@ -1701,7 +1701,7 @@ func (c *coordinator) begin(restored *checkpoint.Record) map[string][]byte {
 					splits[i].Reread = false
 				}
 				st.Rows = 0
-				versions := slices.DeleteFunc(slices.Clone(restored.Snapshots), func(sn checkpoint.Snapshot) bool { return sn.Operator != VersionsOperator(s.Name) })
+				versions := slices.DeleteFunc(slices.Clone(restored.Versions), func(sn checkpoint.Snapshot) bool { return sn.Operator != VersionsOperator(s.Name) })
 				c.carried[s.Name] = carried{st, splits, versions}
 				// The source isn't reading it, so it isn't told about it.
 				delete(c.ackStates, s.Name)
@@ -1976,7 +1976,6 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		KeyGroups:    c.job.keyGroups(),
 		Committables: make([][]byte, len(st.descs)),
 		Files:        recordFiles(st.flow.Files()),
-		Snapshots:    st.flow.Snapshots,
 		Operators:    checkpoint.Operators(st.flow.Operators, c.windows, st.flow.Snapshots),
 		Quarantine:   st.flow.Quarantine,
 		Sync:         c.job.Sync,
@@ -1984,6 +1983,13 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		Reset:        c.reset,
 		ResetStreams: c.resetStreams,
 		CreatedAt:    time.Now().UTC(),
+	}
+	for _, s := range st.flow.Snapshots {
+		if isVersions(s.Operator) {
+			rec.Versions = append(rec.Versions, s)
+		} else {
+			rec.Snapshots = append(rec.Snapshots, s)
+		}
 	}
 	c.resetStreams = nil
 	if c.syncRows != nil {
@@ -2026,9 +2032,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for name, cs := range c.carried {
 		rec.Streams[name] = cs.state
 		rec.SetSplits(name, cs.splits)
-		if len(cs.versions) > 0 {
-			rec.Snapshots = slices.Concat(rec.Snapshots, cs.versions)
-		}
+		rec.Versions = append(rec.Versions, cs.versions...)
 	}
 	if c.job.transformed() {
 		rec.Outputs = make(map[string]checkpoint.OutputState, len(c.job.Outputs))

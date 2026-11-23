@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -69,7 +70,7 @@ func (l *Log) namedState(ctx context.Context, r *Record, keep int) (map[string]b
 		if err != nil {
 			return nil, err
 		}
-		for _, s := range rec.Snapshots {
+		for _, s := range slices.Concat(rec.Snapshots, rec.Versions) {
 			for _, run := range s.Runs {
 				named[run] = true
 			}
