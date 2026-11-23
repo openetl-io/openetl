@@ -438,6 +438,25 @@ async fn versions_of_another_layout_start_again() {
     assert_eq!(record(&second, 1), record(&first, 1));
 }
 
+/// Versions whose runs are gone, as after a rollback whose runner, from
+/// before them, restored their record and deleted what it didn't know,
+/// start again rather than fail the sync: a second version keeps its ID.
+#[tokio::test]
+async fn versions_whose_runs_are_gone_start_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let v1 = r#"{"id": 1, "name": "v1", "at": "2024-05-01"}"#;
+    let (first, r1) = sync(d, 1, &Restored::default(), &[v1]).await;
+    for s in r1.snapshots.iter().filter(|s| s.operator == OP) {
+        for run in &s.runs {
+            std::fs::remove_file(d.join("state").join(run)).unwrap();
+        }
+    }
+    let v2 = r#"{"id": 1, "name": "v2", "at": "2024-05-01"}"#;
+    let (second, _) = sync(d, 2, &r1, &[v2]).await;
+    assert_eq!(record(&second, 1), record(&first, 1));
+}
+
 /// A stream with versions whose job has no state is refused, as is a
 /// version kept of a stream without a cursor.
 #[test]

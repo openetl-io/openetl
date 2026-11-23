@@ -248,6 +248,12 @@ impl Layer {
         self.commits
     }
 
+    /// Reads now what a read of the store's version needs first, so that
+    /// what it can't read, as a run that's gone, is an error here.
+    pub async fn check(&self) -> Result<()> {
+        self.store.check().await
+    }
+
     /// The barrier of epoch `epoch`, the open one: adds its changes to the
     /// pending set, and returns the snapshots the record names for the
     /// lane. They carry the pending set while its encoding is within the

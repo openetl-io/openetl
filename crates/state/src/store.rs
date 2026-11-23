@@ -155,4 +155,10 @@ pub trait Store: Send + Sync {
 
     /// What it holds in memory, in bytes, about.
     fn memory_bytes(&self) -> usize;
+
+    /// Reads now what a read of its version needs first, so that what it
+    /// can't read, as a run that's gone, is an error here.
+    fn check(&self) -> BoxFuture<'_, Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
 }

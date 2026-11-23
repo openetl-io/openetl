@@ -12,7 +12,8 @@
 //! its ID, and its hash becomes the owner. So does a row of a key group the
 //! writer lane doesn't keep: an entry is missed, and the version skipped as
 //! it was before, but never given two IDs. Versions of a layout other than
-//! this engine's start again, as versions that can't be read do.
+//! this engine's start again, as versions that can't be read do, and so do
+//! versions whose runs are gone.
 
 use std::collections::HashMap;
 
@@ -161,11 +162,24 @@ impl Versions {
                     "versions of layout {:#x}, where this engine keeps {LAYOUT:#x}",
                     sn.layout
                 ))),
+                // A run that's gone, as a runner from before the versions
+                // deletes, is found here rather than at a later read.
                 None => {
                     for sn in &mut restored {
                         sn.layout = openetl_state::LAYOUT;
                     }
-                    Layer::open(&stores, plan.generation, plan.first_epoch, open, &restored).await
+                    async {
+                        let l = Layer::open(
+                            &stores,
+                            plan.generation,
+                            plan.first_epoch,
+                            open,
+                            &restored,
+                        )
+                        .await?;
+                        l.check().await.map(|()| l)
+                    }
+                    .await
                 }
             };
             let layer = match opened {
