@@ -108,6 +108,37 @@ var cursors = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 	}},
 }}
 
+// A stream's volatileColumns are the source's names of its catalog's
+// columns: another name, as a typo or the destination's name, would leave
+// the column in the versions' hash, so it's a problem that names both.
+func TestVolatileColumnsAreTheCatalogs(t *testing.T) {
+	for _, tc := range []struct{ name, columns, want string }{
+		{"the catalog's", `["version", "at"]`, ""},
+		{"a typo", `["version", "fetchd"]`, `stream "orders": volatileColumns names column "fetchd", which the source's latest catalog doesn't have`},
+		{"none", `[]`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := &apiv1.PipelineSpec{}
+			if err := protojsonUnmarshal(`{"source": {"streams": [{"name": "orders", "volatileColumns": `+tc.columns+`}]}}`, spec); err != nil {
+				t.Fatal(err)
+			}
+			_, problems, _ := Pipeline(spec, cursors, warehouse)
+			var got []string
+			for _, p := range problems {
+				if strings.Contains(p.Error(), "volatileColumns") {
+					got = append(got, p.Error())
+				}
+			}
+			switch {
+			case tc.want == "" && len(got) > 0:
+				t.Errorf("problems %q, want none", got)
+			case tc.want != "" && (len(got) != 1 || !strings.HasPrefix(got[0], tc.want)):
+				t.Errorf("problems %q, want one starting %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // Two changes of a row inside one unit of a coarse cursor get one record ID,
 // so the plan warns where the apply skips one as a repeat, or a merge may.
 func TestCursorWarning(t *testing.T) {

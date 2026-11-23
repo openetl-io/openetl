@@ -190,6 +190,23 @@ func eventTimeProblem(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream) error {
 	return fmt.Errorf("stream %q: eventTime names column %q, which the source's latest catalog doesn't have; if it's new, openetl discover refreshes that", cs.GetName(), column)
 }
 
+// volatileProblems fails each of a stream's volatileColumns that isn't one
+// of the columns the catalog lists for it, by the source's names, which
+// the versions' hash matches: another would stay in the hash. A stream the
+// catalog lists no columns for passes.
+func volatileProblems(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream) []error {
+	if len(cs.GetColumns()) == 0 {
+		return nil
+	}
+	var out []error
+	for _, column := range ps.GetVolatileColumns() {
+		if !slices.ContainsFunc(cs.GetColumns(), func(c *apiv1.CatalogColumn) bool { return c.GetName() == column }) {
+			out = append(out, fmt.Errorf("stream %q: volatileColumns names column %q, which the source's latest catalog doesn't have; it takes the source's names of columns, not the destination's, and if the column is new, openetl discover refreshes the catalog", cs.GetName(), column))
+		}
+	}
+	return out
+}
+
 func Continuous(p *apiv1.PipelineSpec) bool {
 	return p.GetMode() == apiv1.PipelineMode_PIPELINE_MODE_CONTINUOUS
 }
@@ -392,6 +409,7 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		if err := eventTimeProblem(s.cs, s.ps); err != nil {
 			problems = append(problems, err)
 		}
+		problems = append(problems, volatileProblems(s.cs, s.ps)...)
 	}
 
 	var plans []*apiv1.StreamPlan
