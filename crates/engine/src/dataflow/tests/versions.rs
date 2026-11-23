@@ -432,9 +432,53 @@ fn versions_need_the_jobs_state_and_a_cursor() {
     assert!(Plan::from_request(req).is_err());
 }
 
+/// Rows of users `ids`, at one cursor value.
+fn page(ids: std::ops::Range<usize>) -> Vec<u8> {
+    let rs: Vec<String> = ids
+        .map(|i| format!(r#"{{"id": {i}, "name": "n{i}", "at": "2024-05-01"}}"#))
+        .collect();
+    rows(&rs.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// Under the job's memory, a read's versions go to runs as they pass the
+/// operator's part of it, before the barrier, rather than stay in memory
+/// to it: the record names more runs than one.
+#[tokio::test]
+async fn a_reads_versions_go_to_runs_under_the_jobs_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut req = users(dir.path(), 1, 1000, &Restored::default(), 1);
+    req.limits = Some(openetl_proto::engine::v1::Limits {
+        memory_bytes: 1 << 20,
+        ..Default::default()
+    });
+    let mut h = start_lanes(req);
+    let mut ins = std::mem::take(&mut h.ins);
+    let feed = tokio::spawn(async move {
+        let w = &mut ins[0];
+        for p in 0..20 {
+            put(w, FrameKind::Rows, 0, page(p * 500..(p + 1) * 500)).await;
+        }
+        put(w, FrameKind::Barrier, 0, epoch_barrier(1, 1)).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+    });
+    let (outs, ready) = h.finish().await;
+    feed.await.unwrap();
+    assert_eq!(written(&outs).len(), 10_000);
+    let runs: usize = ready[0]
+        .snapshots
+        .iter()
+        .filter(|s| s.operator == OP)
+        .map(|s| s.runs.len())
+        .sum();
+    assert!(runs > 1, "the versions stayed in memory to the barrier");
+}
+
 /// Times a first read of `ROWS` rows of users (default 200,000), in pages
 /// of 1,000 on one lane and one epoch, then the same rows read again, with
-/// the stream's versions kept and without. A measure, not a check:
+/// the stream's versions kept and without; `VERSIONS=on` or `off` for one
+/// of them, `MEMORY` the job's memory in bytes, none by default, and
+/// `READS=1` for the first read alone. A measure, not a check:
 /// `cargo test -p openetl-engine first_read_times -- --ignored --nocapture`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
@@ -444,19 +488,33 @@ async fn first_read_times() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(200_000);
     let pages: Vec<Vec<u8>> = (0..n.div_ceil(1000))
-        .map(|p| {
-            let rs: Vec<String> = (p * 1000..((p + 1) * 1000).min(n))
-                .map(|i| format!(r#"{{"id": {i}, "name": "n{i}", "at": "2024-05-01"}}"#))
-                .collect();
-            rows(&rs.iter().map(String::as_str).collect::<Vec<_>>())
-        })
+        .map(|p| page(p * 1000..((p + 1) * 1000).min(n)))
         .collect();
-    for versions in [false, true] {
+    let memory: u64 = std::env::var("MEMORY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let reads: u64 = std::env::var("READS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    let modes = match std::env::var("VERSIONS").as_deref() {
+        Ok("on") => vec![true],
+        Ok("off") => vec![false],
+        _ => vec![false, true],
+    };
+    for versions in modes {
         let dir = tempfile::tempdir().unwrap();
         let mut from = Restored::default();
-        for sync in 1..=2u64 {
+        for sync in 1..=reads {
             let mut req = users(dir.path(), sync, sync as i64 * 1000, &from, 1);
             req.state_pending_bytes = None;
+            if memory > 0 {
+                req.limits = Some(openetl_proto::engine::v1::Limits {
+                    memory_bytes: memory,
+                    ..Default::default()
+                });
+            }
             if !versions {
                 req.streams[0].versions_operator.clear();
                 req.state_url.clear();
