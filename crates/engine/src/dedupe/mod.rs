@@ -162,6 +162,13 @@ impl Operator {
         }
     }
 
+    /// Whether its state is done at the end of input, which a later read
+    /// starts again: but for a latest-row dedupe over a stream not read
+    /// whole, whose keys' latest rows go on in the next sync's read.
+    pub fn ends_with_input(&self) -> bool {
+        self.full_read || self.plan.keep == Keep::First
+    }
+
     /// The time a kept key's first row must be after, for a row of it at
     /// `t` to be a repeat: none where nothing is forgotten.
     fn forgets_before(&self, t: i64) -> i64 {

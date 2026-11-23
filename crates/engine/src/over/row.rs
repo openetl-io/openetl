@@ -101,6 +101,28 @@ pub fn put(v: Option<&Value>, out: &mut Vec<u8>) {
     }
 }
 
+/// Appends value `r` of `c`, of type `t`, as a row keeps it.
+pub fn value(c: &ArrayRef, t: &DataType, r: usize, out: &mut Vec<u8>) -> Result<(), String> {
+    if c.is_null(r) {
+        out.push(NULL);
+        return Ok(());
+    }
+    if compact(t) {
+        put(Value::read(c.as_ref(), r).as_ref(), out);
+        return Ok(());
+    }
+    let one = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("v", t.clone(), true)])),
+        vec![c.slice(r, 1)],
+    )
+    .map_err(|e| e.to_string())?;
+    let ipc = crate::ipc::encode_batch(&one).map_err(|e| e.to_string())?;
+    out.push(OTHER);
+    out.extend_from_slice(&codec::len32(ipc.len()).to_be_bytes());
+    out.extend_from_slice(&ipc);
+    Ok(())
+}
+
 /// Appends row `r` of `batch`, written under the schema of hash `schema`,
 /// with its record ID, `id`, of 16 bytes.
 pub fn encode(
@@ -116,27 +138,7 @@ pub fn encode(
         _ => return Err(format!("row {r} has no record ID")),
     }
     for (c, f) in batch.columns().iter().zip(batch.schema().fields()) {
-        if c.is_null(r) {
-            out.push(NULL);
-            continue;
-        }
-        if compact(f.data_type()) {
-            put(Value::read(c.as_ref(), r).as_ref(), out);
-            continue;
-        }
-        let one = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new(
-                "v",
-                f.data_type().clone(),
-                true,
-            )])),
-            vec![c.slice(r, 1)],
-        )
-        .map_err(|e| e.to_string())?;
-        let ipc = crate::ipc::encode_batch(&one).map_err(|e| e.to_string())?;
-        out.push(OTHER);
-        out.extend_from_slice(&codec::len32(ipc.len()).to_be_bytes());
-        out.extend_from_slice(&ipc);
+        value(c, f.data_type(), r, out)?;
     }
     Ok(())
 }

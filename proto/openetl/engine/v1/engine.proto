@@ -364,6 +364,13 @@ message EventTime {
   // keeps each key's latest row then deletes a key its filters drop where
   // its state doesn't know whether the output has the key's row.
   bool full_read = 8;
+  // A read of the stream may give a record again, as superset replay does,
+  // and rows of one record ID and values are one record: it has a primary
+  // key, or collapses. A group window and OVER over it keep each row's ID
+  // and a hash of its values while they keep the row, and drop the rows a
+  // read gives again. Unset: they keep no rows' IDs, as over a stream
+  // replayed exactly.
+  bool rereads = 9;
 }
 
 // HoldPlan is how a keyed stream holds back a column, or a row's cell, and
@@ -676,7 +683,9 @@ message OperatorEpoch {
   // answered, counted as lookups are.
   DiskReads disk = 18;
   // A dedupe's rows it didn't write: repeats of a key it keeps, and for one
-  // that keeps each key's latest row, rows no later than the key's.
+  // that keeps each key's latest row, rows no later than the key's. A group
+  // window's and OVER's rows it took once already, as a read gave them
+  // again: of one record ID and one hash of their stream's row.
   uint64 repeats = 19;
 }
 

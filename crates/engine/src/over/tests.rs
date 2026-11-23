@@ -171,7 +171,7 @@ impl Run {
             let part_ids = arrow_select::take::take(&all_ids, &at, None).unwrap();
             let part_ids = arrow_array::cast::AsArray::as_fixed_size_binary(&part_ids).clone();
             let out = self.ops[i]
-                .rows(&mut self.layers[i], &part, &part_ids)
+                .rows(&mut self.layers[i], &part, &part_ids, None)
                 .await
                 .unwrap();
             self.late += out
@@ -315,7 +315,7 @@ async fn rows_wait_for_the_watermark_and_late_ones_are_quarantined() {
     )
     .unwrap();
     let out = run.ops[0]
-        .rows(&mut run.layers[0], &nulls, &i)
+        .rows(&mut run.layers[0], &nulls, &i, None)
         .await
         .unwrap();
     assert_eq!(out.rejected.len(), 1);
@@ -433,7 +433,7 @@ async fn rows_written_before_a_column_was_added_leave_with_it() {
     let (before, mut op) = planned(sql, false);
     let mut layer = Layer::open(&bucket, 1, 1, range, &[]).await.unwrap();
     let (b, i) = batch(&op, &[(1, "eu", 5, SEC), (2, "eu", 7, 2 * SEC)]);
-    op.rows(&mut layer, &b, &i).await.unwrap();
+    op.rows(&mut layer, &b, &i, None).await.unwrap();
     let snaps = layer.barrier(1).await.unwrap();
     let (after, mut op) = planned(sql, true);
     assert_eq!(before.id, after.id);

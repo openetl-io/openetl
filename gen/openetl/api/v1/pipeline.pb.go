@@ -7286,7 +7286,9 @@ type OperatorStats struct {
 	// count in the epoch next to it, as reads can.
 	DiskReads *DiskReads `protobuf:"bytes,18,opt,name=disk_reads,json=diskReads,proto3" json:"disk_reads,omitempty"`
 	// A dedupe's rows it didn't write: repeats of a key it keeps, and for one
-	// that keeps each key's latest row, rows no later than the key's.
+	// that keeps each key's latest row, rows no later than the key's. A group
+	// window's and OVER's rows it took once already, as a read gave them
+	// again: of one record ID and one hash of their stream's row.
 	Repeats       uint64 `protobuf:"varint,19,opt,name=repeats,proto3" json:"repeats,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

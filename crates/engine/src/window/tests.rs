@@ -225,7 +225,10 @@ impl Run {
         {
             let Some(mine) = mine else { continue };
             let part = arrow_select::take::take_record_batch(&all, &mine).unwrap();
-            let out = self.ops[i].rows(&mut self.layers[i], &part).await.unwrap();
+            let out = self.ops[i]
+                .rows(&mut self.layers[i], &part, None)
+                .await
+                .unwrap();
             self.rejected += out.rejected.len();
             self.give(&out);
         }
@@ -817,7 +820,10 @@ async fn windows_closing_together_keep_their_own_state() {
     assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
     assert_eq!(out.failed[0].2.code, openetl_normalize::Code::Aggregate);
     let late = batch(&run.ops[0], &[("us", 1, MIN + 2)]);
-    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    let out = run.ops[0]
+        .rows(&mut run.layers[0], &late, None)
+        .await
+        .unwrap();
     let t = out.rows.unwrap();
     let ops: Vec<Option<&str>> = t
         .control
@@ -1014,7 +1020,10 @@ async fn a_delete_without_aggregates_gives_the_end_the_output_has() {
     // The second session grows to 115 seconds; then a row bridges the two.
     run.rows(&[("eu", 1, 85 * SEC)]).await;
     let late = batch(&run.ops[0], &[("eu", 1, 30 * SEC)]);
-    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    let out = run.ops[0]
+        .rows(&mut run.layers[0], &late, None)
+        .await
+        .unwrap();
     assert_eq!(
         ops_and_ends(out),
         [("delete".to_owned(), "1970-01-01T00:01:30Z".to_owned())]
@@ -1074,7 +1083,10 @@ async fn a_delete_doesnt_evaluate_the_clock_again() {
     }
     // A late row: the window no longer passes HAVING.
     let late = batch(&run.ops[0], &[("eu", 1, 2)]);
-    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    let out = run.ops[0]
+        .rows(&mut run.layers[0], &late, None)
+        .await
+        .unwrap();
     assert!(out.failed.is_empty(), "{:?}", out.failed);
     let t = out.rows.unwrap();
     let ops: Vec<Option<&str>> = t

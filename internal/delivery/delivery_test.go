@@ -116,6 +116,29 @@ func TestCollapse(t *testing.T) {
 	}
 }
 
+// A stream's reads give a record again under superset replay, and its
+// identical rows are one record where it has a primary key or collapses.
+func TestRereads(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		s    Stream
+		want bool
+	}{
+		{"exact, keyed", Stream{Replay: source.Exact, Keyed: true}, false},
+		{"exact, collapsed", Stream{Replay: source.Exact, Collapse: ptr(true)}, false},
+		{"undeclared, keyed", Stream{Keyed: true}, true},
+		{"superset, keyed, not collapsed", Stream{Replay: source.Superset, Keyed: true, Collapse: ptr(false)}, true},
+		{"superset, collapsed", Stream{Replay: source.Superset, Collapse: ptr(true)}, true},
+		{"superset, by default above at least once", Stream{Replay: source.Superset}, true},
+		{"superset, by default at least once", Stream{Replay: source.Superset, Require: AtLeastOnce}, false},
+		{"superset, not collapsed", Stream{Replay: source.Superset, Collapse: ptr(false)}, false},
+	} {
+		if got := tc.s.Rereads(ExactlyOnce); got != tc.want {
+			t.Errorf("%s: Rereads = %v", tc.name, got)
+		}
+	}
+}
+
 func TestStreamRequire(t *testing.T) {
 	s := Stream{Replay: source.Superset, Mode: destination.Append, Keyed: true, Require: AtLeastOnce}
 	if p := PlanStream(postgres, s, ExactlyOnce); p.Level != AtLeastOnce || p.Dedupe != none {

@@ -78,6 +78,8 @@ A scheduled pipeline keeps the state of `OVER` in its checkpoint between syncs, 
 - **`full_refresh`.** Each sync reads the whole stream, and writes every row at the end of the read. The next sync starts again from the whole stream.
 - **`incremental` by the event time, or `stream`.** A partition's frame goes on in the next sync, so a running total counts the rows of every sync. Rows that wait at the end of a sync are written in a later sync, once the watermark passes their time.
 
+A sync can read again rows that an earlier sync read. Over a stream with superset replay that has a primary key or collapses, `OVER` drops a row that comes again while its copy waits for the watermark. A row that comes again after its copy was written is late. [OVER state](../reference/sql-over.md#over-state) has the details.
+
 The plan refuses `OVER` over a stream read with `incremental` by another cursor. Each sync's rows would come in their own order, after rows of an earlier sync that come later in time.
 
 ## Where the state is kept

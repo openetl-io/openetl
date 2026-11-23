@@ -3075,6 +3075,7 @@ pub(crate) mod tests {
 
     mod empty_overwrite;
     mod event_time;
+    mod rereads;
 
     struct Harness {
         to_engine: DuplexStream,

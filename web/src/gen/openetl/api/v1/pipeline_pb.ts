@@ -3398,7 +3398,9 @@ export type OperatorStats = Message<"openetl.api.v1.OperatorStats"> & {
 
   /**
    * A dedupe's rows it didn't write: repeats of a key it keeps, and for one
-   * that keeps each key's latest row, rows no later than the key's.
+   * that keeps each key's latest row, rows no later than the key's. A group
+   * window's and OVER's rows it took once already, as a read gave them
+   * again: of one record ID and one hash of their stream's row.
    *
    * @generated from field: uint64 repeats = 19;
    */

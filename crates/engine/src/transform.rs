@@ -191,11 +191,6 @@ impl Keyed {
         }
     }
 
-    /// Whether its rows go to it with their record IDs, which it keeps.
-    pub fn ids(&self) -> bool {
-        !matches!(self, Keyed::Window(_))
-    }
-
     /// What it is, for messages.
     pub fn what(&self) -> &'static str {
         match self {
@@ -738,10 +733,7 @@ mod tests {
         let Some((keyed, id)) = &t.statements[0].keyed else {
             panic!("{:?}", t.statements[0]);
         };
-        assert!(
-            matches!(keyed, Keyed::Dedupe(_)) && keyed.ids(),
-            "{keyed:?}"
-        );
+        assert!(matches!(keyed, Keyed::Dedupe(_)), "{keyed:?}");
         assert!(id.starts_with("dedupe-"), "{id}");
         let e = Transform::plan(&dedupe(""), vec![a.clone()]).unwrap_err();
         assert_eq!(

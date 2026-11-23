@@ -46,7 +46,7 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{
-    Array, RecordBatch, RecordBatchOptions, StringArray, UInt32Array, new_null_array,
+    Array, RecordBatch, RecordBatchOptions, StringArray, UInt32Array, UInt64Array, new_null_array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use openetl_normalize::{Cause, Code, NotHeld, Rejected, Typed, key_groups, render_row};
@@ -79,8 +79,8 @@ type Held = Vec<Option<(String, String)>>;
 
 /// What a lane sends a keyed lane, for a stateful statement by its index.
 pub(crate) enum In {
-    /// Rows of the statement's stream: the columns it reads, and for `OVER`
-    /// and a dedupe, each row's record ID after them, in ID_COLUMN. Each row the
+    /// Rows of the statement's stream: the columns it reads, and each row's
+    /// record ID and hash after them, in ID_COLUMN and HASH_COLUMN. Each row the
     /// statement can't read, as a cell the stream holds, has the cell's
     /// column and why it's held. With where they were read, where the
     /// epoch's steps are recorded or replayed.
@@ -124,8 +124,12 @@ const HELD_REASON: &str = "\0held_reason";
 /// Its schema's metadata of an Origin::At: the split, and the place.
 const SPLIT: &str = "\0split";
 const PLACE: &str = "\0place";
-/// The column of each row's record ID, after the columns `OVER` or a dedupe reads.
+/// The column of each row's record ID, after the columns a statement reads.
 const ID_COLUMN: &str = "\0id";
+/// The column of each row's hash, after its record ID: of every value of
+/// its stream's row, by which a group window and `OVER` tell a row read
+/// again from another version of it with its ID. 0 where they don't.
+const HASH_COLUMN: &str = "\0hash";
 
 /// A frame to another engine's keyed lane: its kind, statement and
 /// payload.
@@ -301,10 +305,19 @@ pub(super) async fn rows(
     // Each row's place among its split's rows of the epoch, where the
     // epoch's steps are recorded or replayed.
     let mut placed: Option<(Arc<str>, Vec<u64>)> = None;
+    let mut hashes: Option<UInt64Array> = None;
     for &i in statements {
         let st = &t.sql.statements[i];
         let Some((keyed, id)) = &st.keyed else {
             continue;
+        };
+        let event_time = t.inputs[st.input].event_time.as_ref();
+        let hashes = match drops_repeats(keyed, event_time) {
+            true => match &hashes {
+                Some(h) => h.clone(),
+                None => hashes.insert(row_hashes(&typed.batch)?).clone(),
+            },
+            false => UInt64Array::from(vec![0; typed.batch.num_rows()]),
         };
         let batch = reads(st, keyed, &typed.batch, &t.sql.inputs[st.input].name)?;
         let mut held: Vec<Option<(String, String)>> = vec![None; batch.num_rows()];
@@ -321,10 +334,7 @@ pub(super) async fn rows(
         }
         let groups = key_groups(&batch, keyed.need(), plan.key_groups)
             .map_err(|e| shape_error(&t.sql.inputs[st.input].name, e.into()))?;
-        let batch = match keyed.ids() {
-            true => with_ids(&batch, &typed.ids)?,
-            false => batch,
-        };
+        let batch = with_ids(&batch, &typed.ids, &hashes)?;
         let keep = output_of(plan, st).and_then(|o| plan.keep[o]);
         let mut parts: Vec<Vec<u32>> = vec![Vec::new(); plan.attempt_lanes.len()];
         for (r, &g) in groups.iter().enumerate() {
@@ -416,6 +426,7 @@ async fn send(lane: &Lane, k: usize, item: In) -> Result<(), JobError> {
 fn with_ids(
     batch: &RecordBatch,
     ids: &arrow_array::FixedSizeBinaryArray,
+    hashes: &UInt64Array,
 ) -> Result<RecordBatch, JobError> {
     let mut fields: Vec<Field> = batch
         .schema()
@@ -424,8 +435,10 @@ fn with_ids(
         .map(|f| f.as_ref().clone())
         .collect();
     fields.push(Field::new(ID_COLUMN, ids.data_type().clone(), true));
+    fields.push(Field::new(HASH_COLUMN, DataType::UInt64, false));
     let mut columns = batch.columns().to_vec();
     columns.push(Arc::new(ids.clone()));
+    columns.push(Arc::new(hashes.clone()));
     RecordBatch::try_new_with_options(
         Arc::new(Schema::new_with_metadata(
             fields,
@@ -437,23 +450,76 @@ fn with_ids(
     .map_err(|e| JobError::internal(e.to_string()))
 }
 
-/// The rows of `OVER` or a dedupe without the record IDs after them, and
-/// the IDs.
+/// A statement's rows without the record IDs and hashes after them, and
+/// the IDs and hashes.
 fn without_ids(
     batch: &RecordBatch,
-) -> Result<(RecordBatch, arrow_array::FixedSizeBinaryArray), JobError> {
-    let n = batch.num_columns();
-    let last = n.checked_sub(1);
-    let ids = last
-        .filter(|&i| batch.schema().field(i).name() == ID_COLUMN)
-        .and_then(|i| batch.column(i).as_fixed_size_binary_opt().cloned());
-    let (Some(ids), Some(last)) = (ids, last) else {
-        return Err(JobError::internal("OVER's rows without their record IDs"));
+) -> Result<(RecordBatch, arrow_array::FixedSizeBinaryArray, UInt64Array), JobError> {
+    let schema = batch.schema();
+    let at = batch.num_columns().checked_sub(2);
+    let named = |i: usize, name: &str| schema.field(i).name() == name;
+    let ids = at
+        .filter(|&i| named(i, ID_COLUMN) && named(i + 1, HASH_COLUMN))
+        .and_then(|i| {
+            let ids = batch.column(i).as_fixed_size_binary_opt()?.clone();
+            let hashes = batch
+                .column(i + 1)
+                .as_primitive_opt::<arrow_array::types::UInt64Type>()?
+                .clone();
+            Some((i, ids, hashes))
+        });
+    let Some((at, ids, hashes)) = ids else {
+        return Err(JobError::internal(
+            "a keyed lane's rows without their record IDs",
+        ));
     };
     let rows = batch
-        .project(&(0..last).collect::<Vec<_>>())
+        .project(&(0..at).collect::<Vec<_>>())
         .map_err(|e| JobError::internal(e.to_string()))?;
-    Ok((rows, ids))
+    Ok((rows, ids, hashes))
+}
+
+/// Whether a stateful statement drops rows a read gives again, which its
+/// rows' hashes tell from other versions of them with their record IDs: a
+/// group window or `OVER` over a stream whose reads may give a record
+/// again; but a group window over a stream whose read is held to its end,
+/// which would keep every row's until then.
+pub(crate) fn drops_repeats(keyed: &Planned, event_time: Option<&watermark::EventTime>) -> bool {
+    let Some(e) = event_time.filter(|e| e.rereads) else {
+        return false;
+    };
+    match keyed {
+        Planned::Dedupe(_) => false,
+        Planned::Over(_) => true,
+        Planned::Window(_) => !e.held,
+    }
+}
+
+/// Each row's hash: of the names and values of its stream's row's columns
+/// that aren't null, by name, so a row read again has its hash whatever
+/// columns the stream gained since, that it has no value of, and wherever
+/// they are.
+pub(crate) fn row_hashes(batch: &RecordBatch) -> Result<UInt64Array, JobError> {
+    let schema = batch.schema();
+    let mut columns: Vec<(&Field, &arrow_array::ArrayRef)> = schema
+        .fields()
+        .iter()
+        .map(AsRef::as_ref)
+        .zip(batch.columns())
+        .collect();
+    columns.sort_by(|a, b| a.0.name().cmp(b.0.name()));
+    let mut buf = Vec::new();
+    let mut out = Vec::with_capacity(batch.num_rows());
+    for r in 0..batch.num_rows() {
+        buf.clear();
+        for (f, c) in columns.iter().filter(|(_, c)| !c.is_null(r)) {
+            buf.extend_from_slice(&window::codec::len32(f.name().len()).to_be_bytes());
+            buf.extend_from_slice(f.name().as_bytes());
+            over::row::value(c, f.data_type(), r, &mut buf).map_err(JobError::internal)?;
+        }
+        out.push(twox_hash::XxHash3_64::oneshot(&buf));
+    }
+    Ok(UInt64Array::from(out))
 }
 
 /// The columns a statement reads, from a batch of its stream: null where
@@ -521,12 +587,15 @@ pub(crate) enum Op {
 }
 
 impl Op {
+    /// `repeats` says that the stream's reads may give rows again, which a
+    /// group window and `OVER` drop.
     pub(crate) fn new(
         st: &crate::transform::Statement,
         keyed: &Planned,
         id: &str,
         input: &crate::transform::Input,
         key_groups: u32,
+        repeats: bool,
     ) -> Result<Op, JobError> {
         let lateness = input.lateness;
         Ok(match keyed {
@@ -538,22 +607,24 @@ impl Op {
                 (input.dedupe, input.full_read),
                 key_groups,
             )?),
-            Planned::Window(w) => Op::Window(window::Operator::new(
-                id,
-                st.at,
-                w.clone(),
-                &st.output,
-                st.schema.clone(),
-                lateness,
-                key_groups,
-            )?),
-            Planned::Over(o) => Op::Over(over::Operator::new(
-                id,
-                st.at,
-                o.clone(),
-                &st.output,
-                key_groups,
-            )?),
+            Planned::Window(w) => {
+                let mut w = window::Operator::new(
+                    id,
+                    st.at,
+                    w.clone(),
+                    &st.output,
+                    st.schema.clone(),
+                    lateness,
+                    key_groups,
+                )?;
+                w.drops_repeats = repeats;
+                Op::Window(w)
+            }
+            Planned::Over(o) => {
+                let mut o = over::Operator::new(id, st.at, o.clone(), &st.output, key_groups)?;
+                o.drops_repeats = repeats;
+                Op::Over(o)
+            }
         })
     }
 
@@ -574,6 +645,15 @@ impl Op {
         }
     }
 
+    /// Whether its state is done at the end of input, which a later read
+    /// of the stream starts again.
+    fn ends_with_input(&self) -> bool {
+        match self {
+            Op::Window(_) | Op::Over(_) => true,
+            Op::Dedupe(d) => d.ends_with_input(),
+        }
+    }
+
     fn watermark_micros(&self) -> Option<i64> {
         match self {
             Op::Window(w) => w.watermark_micros(),
@@ -582,21 +662,19 @@ impl Op {
         }
     }
 
-    /// Takes rows of the statement's input: for `OVER` and a dedupe, with
-    /// `ids`, their record IDs.
+    /// Takes rows of the statement's input, with `ids`, their record IDs,
+    /// and their hashes, as [`row_hashes`] gives them.
     pub(crate) async fn rows(
         &mut self,
         layer: &mut Layer,
         input: &RecordBatch,
-        ids: Option<&arrow_array::FixedSizeBinaryArray>,
+        ids: &arrow_array::FixedSizeBinaryArray,
+        hashes: &UInt64Array,
     ) -> Result<Out, JobError> {
-        match (self, ids) {
-            (Op::Window(w), _) => w.rows(layer, input).await,
-            (Op::Over(o), Some(ids)) => o.rows(layer, input, ids).await,
-            (Op::Dedupe(d), Some(ids)) => d.rows(layer, input, ids).await,
-            (Op::Over(_) | Op::Dedupe(_), None) => {
-                Err(JobError::internal("rows without their record IDs"))
-            }
+        match self {
+            Op::Window(w) => w.rows(layer, input, Some((ids, hashes))).await,
+            Op::Over(o) => o.rows(layer, input, ids, Some(hashes)).await,
+            Op::Dedupe(d) => d.rows(layer, input, ids).await,
         }
     }
 
@@ -621,9 +699,9 @@ impl Op {
             Op::Window(w) => (
                 std::mem::take(&mut w.opened),
                 std::mem::take(&mut w.dropped),
-                0,
+                std::mem::take(&mut w.repeats),
             ),
-            Op::Over(_) => (0, 0, 0),
+            Op::Over(o) => (0, 0, std::mem::take(&mut o.repeats)),
             Op::Dedupe(d) => (
                 std::mem::take(&mut d.kept),
                 std::mem::take(&mut d.forgot),
@@ -697,7 +775,9 @@ pub(super) async fn run(
         let Some(output) = output_of(plan, st) else {
             continue;
         };
-        let op = Op::new(st, keyed, id, &t.sql.inputs[st.input], plan.key_groups)?;
+        let input = &t.sql.inputs[st.input];
+        let repeats = drops_repeats(keyed, t.inputs[st.input].event_time.as_ref());
+        let op = Op::new(st, keyed, id, input, plan.key_groups, repeats)?;
         // A redo keeps the rows of its key groups alone, and so the state.
         let range = match plan.keep[output] {
             None => Some(owned.clone()),
@@ -953,13 +1033,7 @@ impl Keyed {
     /// Takes rows of the statement's stream, by the operator's watermark
     /// now.
     async fn rows(&mut self, lane: &Lane, batch: RecordBatch, held: Held) -> Result<(), JobError> {
-        let (batch, ids) = match &self.op {
-            Op::Over(_) | Op::Dedupe(_) => {
-                let (rows, ids) = without_ids(&batch)?;
-                (rows, Some(ids))
-            }
-            Op::Window(_) => (batch, None),
-        };
+        let (batch, ids, hashes) = without_ids(&batch)?;
         self.counts.rows_in += batch.num_rows() as u64;
         let flow = lane.flow.clone();
         let Some(st) = flow
@@ -988,25 +1062,24 @@ impl Keyed {
             })
             .collect();
         self.reject(lane, &batch, rejected)?;
-        let (input, ids) = match keep.len() == batch.num_rows() {
-            true => (batch.clone(), ids),
+        let (input, ids, hashes) = match keep.len() == batch.num_rows() {
+            true => (batch.clone(), ids, hashes),
             false => {
                 let at = UInt32Array::from_iter_values(keep.iter().map(|&r| r as u32));
                 let input = arrow_select::take::take_record_batch(&batch, &at)
                     .map_err(|e| JobError::internal(e.to_string()))?;
-                let ids = match ids {
-                    Some(ids) => Some(
-                        arrow_select::take::take(&ids, &at, None)
-                            .map_err(|e| JobError::internal(e.to_string()))?
-                            .as_fixed_size_binary()
-                            .clone(),
-                    ),
-                    None => None,
+                let take = |a: &dyn Array| {
+                    arrow_select::take::take(a, &at, None)
+                        .map_err(|e| JobError::internal(e.to_string()))
                 };
-                (input, ids)
+                let ids = take(&ids)?.as_fixed_size_binary().clone();
+                let hashes = take(&hashes)?
+                    .as_primitive::<arrow_array::types::UInt64Type>()
+                    .clone();
+                (input, ids, hashes)
             }
         };
-        let out = self.op.rows(&mut self.layer, &input, ids.as_ref()).await?;
+        let out = self.op.rows(&mut self.layer, &input, &ids, &hashes).await?;
         self.relieve(lane).await?;
         self.counts.late += out
             .rejected
@@ -1399,8 +1472,9 @@ impl Keyed {
             let pieces = align.pieces(e.n);
             // At the end of input every window has closed and gone, at
             // every keyed lane's barrier alike, and a later read of the
-            // stream starts them again: the record keeps none of it.
-            if self.wm != watermark::END {
+            // stream starts them again: the record keeps none of it. A
+            // latest-row dedupe's keys go on, but over a full read.
+            if self.wm != watermark::END || !self.op.ends_with_input() {
                 pieces.snapshots.extend(named);
             }
             pieces.operator(op);
