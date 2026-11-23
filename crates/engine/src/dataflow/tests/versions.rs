@@ -176,6 +176,50 @@ async fn a_second_version_at_one_cursor_value_gets_an_id_of_its_own() {
     assert_eq!(third, second);
 }
 
+/// A key the destination names otherwise, as Id becomes id, keeps the
+/// versions from a new stream's first sync, before the stream has a schema.
+#[tokio::test]
+async fn a_renamed_key_keeps_the_versions_of_a_new_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let renamed = |n: u64, from: &Restored| {
+        let mut req = users(d, n, n as i64 * 1000, from, 1);
+        req.streams[0].primary_key = vec!["Id".into()];
+        req
+    };
+    let row = |name: &str| format!(r#"{{"Id": 1, "name": "{name}", "at": "2024-05-01"}}"#);
+    let (first, ready) = run_sync(renamed(1, &Restored::default()), &[&[&row("v1")]]).await;
+    let (second, _) = run_sync(renamed(2, &Restored::of(&ready)), &[&[&row("v2")]]).await;
+    assert_ne!(record(&second, 1), record(&first, 1), "v2 took v1's ID");
+
+    // A held cell's batch, which names the key as the rows do, too, in a
+    // new stream's first sync.
+    let holding = |n: u64, from: &Restored| {
+        use arrow_schema::{Field, Schema};
+        let mut req = renamed(n, from);
+        req.held_url = format!("file://{}/held", d.display());
+        let declared = Schema::new(vec![
+            Field::new("Id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("price", DataType::Decimal128(10, 2), true),
+            Field::new("at", DataType::Utf8, true),
+        ]);
+        req.streams[0].arrow_schema = ipc::encode_schema(&Arc::new(declared)).unwrap();
+        req.streams[0].holds = Some(openetl_proto::engine::v1::HoldPlan {
+            cells: true,
+            ..Default::default()
+        });
+        req
+    };
+    let priced = |name: &str| {
+        format!(r#"{{"Id": 1, "name": "{name}", "price": "12345678901.5", "at": "2024-05-01"}}"#)
+    };
+    let (first, ready) = run_sync(holding(3, &Restored::default()), &[&[&priced("v1")]]).await;
+    assert_eq!(ready.holds["users"].files.len(), 1, "no cell held");
+    let (second, _) = run_sync(holding(4, &Restored::of(&ready)), &[&[&priced("v2")]]).await;
+    assert_ne!(record(&second, 1), record(&first, 1), "v2 took v1's ID");
+}
+
 /// A declarative read gives again the rows at the highest cursor of the
 /// read before the last, which the last gave too: an entry the last read
 /// gave, or that no read since gave a row of its key group, is live.

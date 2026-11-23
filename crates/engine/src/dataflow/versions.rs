@@ -19,6 +19,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions};
 use arrow_schema::Schema;
 use bytes::Bytes;
+use openetl_normalize::naming::source_names;
 use openetl_normalize::versions::{HASH_COLUMN, SCHEMA_KEY};
 use openetl_normalize::{key_groups, version_id};
 use openetl_proto::connector::v1::ErrorCode;
@@ -41,8 +42,11 @@ struct Stream {
     layer: Layer,
     /// The key groups whose entries the lane keeps; None for none.
     range: Option<KeyGroupRange>,
-    /// The stream's key columns, as its batches name them.
+    /// The stream's key columns, by source name.
     key: Vec<String>,
+    /// The key columns as the stream's last batch named them, which its held
+    /// values' batches, after it, name them too but don't say.
+    named: Vec<String>,
     /// The read's start.
     read: i64,
     groups: HashMap<u32, Reads>,
@@ -173,12 +177,12 @@ impl Versions {
             if !state.read_only() {
                 layer.set_flush_at(state.flush_at(plan.writer_lanes));
             }
-            let key = flow.owners[s].lock().shaper.key_columns();
             streams.push(Some(Stream {
                 id: id.clone(),
                 layer,
                 range,
-                key,
+                key: plan.identities[s].key.clone(),
+                named: plan.identities[s].key.clone(),
                 read: plan.identities[s].read_start,
                 groups: HashMap::new(),
             }));
@@ -240,7 +244,10 @@ impl Stream {
             return Ok(batch);
         };
         let plan = &flow.plan;
-        let groups = key_groups(&batch, &self.key, plan.key_groups)
+        if write {
+            self.named = named(&self.key, &batch.schema());
+        }
+        let groups = key_groups(&batch, &self.named, plan.key_groups)
             .map_err(|e| JobError::internal(format!("a stream's key groups: {e}")))?;
         let at = batch
             .schema()
@@ -397,6 +404,23 @@ impl Stream {
 
 /// The batch without its hashes, its rows' hashes and its schema's version;
 /// None where it has none.
+/// Key columns, by source name, as `schema` names them: a renamed column by
+/// the name the schema's metadata gives its source name. A batch carries
+/// its names, which the writer lane's engine may not know yet, as before a
+/// new stream's first batch there.
+fn named(key: &[String], schema: &Schema) -> Vec<String> {
+    let renamed = source_names(schema).unwrap_or_default();
+    key.iter()
+        .map(|k| {
+            renamed
+                .iter()
+                .find(|(_, source)| *source == k)
+                .map_or(k, |(dest, _)| dest)
+                .clone()
+        })
+        .collect()
+}
+
 fn without_hashes(batch: &RecordBatch) -> Result<Option<(RecordBatch, Vec<u64>, u64)>, JobError> {
     let schema = batch.schema();
     let Ok(at) = schema.index_of(HASH_COLUMN) else {
