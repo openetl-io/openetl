@@ -147,6 +147,17 @@ A discarded hold on a column held whole stays in force, with the state **Discard
 
 The next run writes the column as the stream has it. The values that the discard dropped stay dropped. If the destination still refuses the column, OpenETL holds it again and keeps its values from that run on. A discarded hold cannot go to a new version.
 
+## When a key or cursor changes type
+
+A column of the primary key cannot go to a new column, such as `id__v2`. Neither can the cursor of a stream with a primary key, unless the stream is read with `cdc`. A change to such a column's type that is not a widening, such as `bigint` to `uuid` or `timestamptz` to `timestamp`, fails the sync with `SCHEMA_DRIFT`. The error names the column, its old and new types, and the way out. This happens under `allow_all` too. Under `ignore_new`, once the policy applies, the values are cast to the column's type instead.
+
+A reset does not clear the error, because the stream keeps its schema. Choose one of these ways out:
+
+- Change the column back to its old type at the source. Then start a sync.
+- To keep the new type, delete the pipeline through the API. Then apply it again with a new destination table in `destination.tables`. The new pipeline has no checkpoints, so it reads the stream from the start.
+
+A sync can fail because the key or cursor went to a new column, such as `id__v2`, in an earlier sync. The rows written since then have a null key or a null `_openetl_seq`. Delete the pipeline and apply it again with a new destination table.
+
 ## Clean up the example
 
 Pause the example so it no longer reads or writes:

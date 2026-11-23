@@ -183,6 +183,13 @@ The plan checks hold requirements:
 | `block` | Held, or fails the sync | Held, or fails the sync | Held, or fails the sync |
 | `ignore_new` | Dropped | Values cast to the column's type | Values cast to the column's type |
 
+Some columns cannot go to a new column, because their rows would have a null key or a null `_openetl_seq` from then on:
+
+- a column of the primary key;
+- the cursor of a stream with a primary key, unless the stream is read with `cdc`, which takes `_openetl_seq` from the source's change log.
+
+A change to such a column's type that is not a widening fails the sync with `SCHEMA_DRIFT`, under `allow_all` too. Under `ignore_new`, once the policy applies, the values are cast to the column's type instead. A reset does not clear the error, because the stream keeps its schema. Change the column back at the source. To keep the new type, delete the pipeline and apply it again with a new destination table. A stream whose key or cursor went to a new column in an earlier sync fails in the same way. For a transform's output, the error also names the statement that writes the output, as for [its other schema changes](#schema-changes).
+
 A policy applies to a stream's rows after the first checkpoint that records a schema with the stream's columns, on every lane and every worker. That schema is the stream's first schema. If a sync restores a checkpoint that has the stream's columns, the policy applies from the start of the sync. A restored checkpoint without the stream's columns does not start the policy.
 
 On workers, the policy starts in two ways:
@@ -460,5 +467,6 @@ These changes fail the sync with `SCHEMA_DRIFT`:
 
 - A change that a statement cannot take, such as a column whose new type a function does not accept. The message names each column the statement reads whose type changed, and the cast that reads it as before, such as `CAST(email AS VARCHAR)`.
 - A change that would change an output's primary key.
+- A change to the type of an output's primary key column that is not a widening, [as for a stream](#schema).
 - A change to an output column's type that `schemaPolicy` does not take, where the output cannot hold the column. The message names the statement that writes the output, and the cast that keeps the column's type, such as `CAST(… AS BIGINT) AS amount`.
 - A change that the destination refuses, where the output cannot hold the column. The message gives the statement to run on the destination, as for a stream without a transform.

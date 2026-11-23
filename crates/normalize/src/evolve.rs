@@ -30,6 +30,10 @@ pub const VERSIONS_KEY: &str = "openetl.versions";
 /// them, so such a column mixed with `float64` becomes `string`.
 pub const BIG_INTS_KEY: &str = "openetl.big_ints";
 
+/// How a stream whose key or cursor can't take its new type starts over: a
+/// reset keeps the stream's schema.
+const REREAD: &str = "delete the pipeline and apply it again, with a new destination table";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Policy {
     #[default]
@@ -123,6 +127,10 @@ pub(crate) struct Evolver {
     /// Columns that have held an `int64` value past ±2^53, by their names in
     /// the schema. [`BIG_INTS_KEY`] carries them across attempts.
     pub big_ints: BTreeSet<String>,
+    /// Source columns whose type can change only by widening, with why: a
+    /// new version would leave them null in every row from then on, and
+    /// the rows' key, or their `_openetl_seq`, is read from them.
+    pub pinned: BTreeMap<String, NotHeld>,
 }
 
 impl Evolver {
@@ -139,6 +147,7 @@ impl Evolver {
             rules: None,
             holding: HashSet::new(),
             big_ints: BTreeSet::new(),
+            pinned: BTreeMap::new(),
         };
         for f in restored.map(|r| r.fields().iter()).into_iter().flatten() {
             e.add(f.as_ref().clone());
@@ -327,6 +336,17 @@ impl Evolver {
     /// Conforms a batch, whose columns have source names, to the stream's
     /// schema, taking the changes the policy allows.
     pub fn conform(&mut self, batch: &RecordBatch) -> Result<Conformed, Error> {
+        if let Some((c, why)) = self
+            .pinned
+            .iter()
+            .find(|(c, _)| self.versions.contains_key(*c))
+        {
+            return Err(Error::Drift(format!(
+                "column {c:?} went to a new version, {:?}, in an earlier sync, but {}, so the rows written since have no {c:?}: {REREAD}",
+                self.current(c),
+                why.clause()
+            )));
+        }
         let strict = self.established;
         let big_ints = self.big_ints.len();
         let mut changed = false;
@@ -408,6 +428,16 @@ impl Evolver {
                 logical_type(&cur),
                 logical_type(f)
             );
+            // ignore_new casts the values to the column's type instead.
+            let casts = self.policy == Policy::IgnoreNew && strict;
+            if !(widening || casts)
+                && let Some(why) = self.pinned.get(f.name())
+            {
+                return Err(Error::Drift(format!(
+                    "{what}, which isn't a widening; it can't be held or go to a new column, as {}: change the column back at the source, or, to keep the new type, {REREAD}",
+                    why.clause()
+                )));
+            }
             let stops = match self.policy {
                 Policy::Block => strict,
                 Policy::AllowColumns => strict && !widening,
