@@ -462,11 +462,39 @@ func TestIncrementalUnordered(t *testing.T) {
 	if !slices.Equal(r.resume["items"], want) {
 		t.Errorf("resume points\n%s\nwant\n%s", strings.Join(r.resume["items"], "\n"), strings.Join(want, "\n"))
 	}
-	if got := string(r.next["items"]); got != `{"cursor":"2026-01-01T00:50:00Z"}` {
+	// Then it becomes the highest cursor of the reads before this one, which
+	// a floor saved without high stands for.
+	if got := string(r.next["items"]); got != `{"cursor":"2026-01-01T00:05:00Z","high":"2026-01-01T00:50:00Z"}` {
 		t.Errorf("next %s", got)
 	}
 	if sinces[0] != "2026-01-01T00:00:00Z" {
 		t.Errorf("since %q, want the floor less the lookback", sinces[0])
+	}
+
+	// The next read starts at the same floor, and then the floor advances to
+	// the highest cursor of the read before it.
+	sinces = nil
+	r, err = read(t, s, source.ConfiguredStream{Name: "items", State: r.next["items"]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sinces[0] != "2026-01-01T00:00:00Z" {
+		t.Errorf("since %q, want the floor less the lookback", sinces[0])
+	}
+	if got := r.resume["items"][0]; got != `{"cursor":"2026-01-01T00:05:00Z","since":"2026-01-01T00:05:00Z","max":"2026-01-01T00:30:00Z","page":"2","high":"2026-01-01T00:50:00Z"}` {
+		t.Errorf("resume point %s", got)
+	}
+	if got := string(r.next["items"]); got != `{"cursor":"2026-01-01T00:50:00Z"}` {
+		t.Errorf("next %s", got)
+	}
+
+	// The first sync's completion has only the highest cursor.
+	r, err = read(t, s, source.ConfiguredStream{Name: "items"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(r.next["items"]); got != `{"high":"2026-01-01T00:50:00Z"}` {
+		t.Errorf("next %s", got)
 	}
 }
 
@@ -574,7 +602,7 @@ streams:
 	if len(again) != 2 || again[0].ID != splits[0].ID {
 		t.Fatalf("splits %v", again)
 	}
-	if !strings.Contains(string(again[0].State), `"cursor":"2026-01-02"`) || strings.Contains(string(again[1].State), "cursor") {
+	if !strings.Contains(string(again[0].State), `"high":"2026-01-02"`) || strings.Contains(string(again[1].State), "cursor") || strings.Contains(string(again[1].State), "high") {
 		t.Errorf("states %s and %s", again[0].State, again[1].State)
 	}
 }

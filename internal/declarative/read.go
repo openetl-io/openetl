@@ -215,6 +215,9 @@ type streamState struct {
 	// The highest cursor the read has seen, unless it's ordered.
 	Max  json.RawMessage `json:"max,omitempty"`
 	Page string          `json:"page,omitempty"`
+	// Unordered: the highest cursor of the completed reads, which becomes
+	// the floor once the next read completes. Absent: Cursor.
+	High json.RawMessage `json:"high,omitempty"`
 	// A child stream's place among its parents: the token of the parents'
 	// page, the keys of the parents read on it, and the parent Page belongs
 	// to.
@@ -288,7 +291,7 @@ func (s *src) readStream(ctx context.Context, st *stream, ss streamState, out *r
 // readChild reads st once per record of its parent, which it reads whole.
 // A resume point follows each child page and each parent.
 func (s *src) readChild(ctx context.Context, st *stream, ss streamState, out *rows) error {
-	t := newTracker(st.inc, streamState{Cursor: ss.Cursor, Max: ss.Max})
+	t := newTracker(st.inc, streamState{Cursor: ss.Cursor, Max: ss.Max, High: ss.High})
 	ptoken := ""
 	if ss.Parent != nil {
 		ptoken = *ss.Parent
@@ -849,16 +852,18 @@ func nextLink(h http.Header) string {
 }
 
 // tracker follows a stream's cursor: the floor it resumed from, the floor
-// its requests use, and the highest cursor it has seen.
+// its requests use, the highest cursor it has seen, and the highest of the
+// reads completed before it.
 type tracker struct {
 	inc   *incremental
 	floor json.RawMessage
 	since json.RawMessage
 	max   json.RawMessage
+	high  json.RawMessage
 }
 
 func newTracker(inc *incremental, ss streamState) *tracker {
-	t := &tracker{inc: inc, floor: ss.Cursor, since: ss.Cursor, max: ss.Max}
+	t := &tracker{inc: inc, floor: ss.Cursor, since: ss.Cursor, max: ss.Max, high: ss.High}
 	if ss.Page != "" {
 		t.since = ss.Since
 		// An ordered stream's floor is the highest cursor of the pages before
@@ -911,17 +916,22 @@ func (t *tracker) see(rec map[string]any) error {
 
 // highest is the larger of the floor and the highest cursor seen.
 func (t *tracker) highest() (json.RawMessage, error) {
+	return t.higher(t.max, t.floor)
+}
+
+// higher is the larger of two cursors, either of which can be nil.
+func (t *tracker) higher(a, b json.RawMessage) (json.RawMessage, error) {
 	switch {
-	case t.max == nil:
-		return t.floor, nil
-	case t.floor == nil:
-		return t.max, nil
+	case a == nil:
+		return b, nil
+	case b == nil:
+		return a, nil
 	}
-	c, err := t.inc.compare(t.max, t.floor)
+	c, err := t.inc.compare(a, b)
 	if err != nil || c > 0 {
-		return t.max, err
+		return a, err
 	}
-	return t.floor, nil
+	return b, nil
 }
 
 // pageState is the resume point after a page whose successor is next. An
@@ -937,7 +947,7 @@ func (t *tracker) pageState(next string) (streamState, error) {
 		s.Since = json.RawMessage("null")
 	}
 	if !t.inc.ordered {
-		s.Max = t.max
+		s.Max, s.High = t.max, t.high
 		return s, nil
 	}
 	var err error
@@ -949,21 +959,45 @@ func (t *tracker) pageState(next string) (streamState, error) {
 // until the stream completes.
 func (t *tracker) childState(place streamState) streamState {
 	if t.inc != nil {
-		place.Cursor, place.Max = t.floor, t.max
+		place.Cursor, place.Max, place.High = t.floor, t.max, t.high
 	}
 	return place
 }
 
-// completion is where the next sync starts: nil for the beginning.
+// completion is where the next sync starts: nil for the beginning. An
+// ordered stream's floor is the highest cursor seen. An unordered stream's
+// is the highest cursor of the reads completed before this one: those
+// values existed before this read began, so a record updated during it has
+// a cursor at or above them.
 func (t *tracker) completion() ([]byte, error) {
 	if t.inc == nil {
 		return nil, nil
 	}
-	floor, err := t.highest()
-	if err != nil || floor == nil {
-		return nil, err
+	var next streamState
+	if t.inc.ordered {
+		floor, err := t.highest()
+		if err != nil || floor == nil {
+			return nil, err
+		}
+		next.Cursor = floor
+	} else {
+		floor, err := t.higher(t.high, t.floor)
+		if err != nil {
+			return nil, err
+		}
+		high, err := t.higher(t.max, floor)
+		if err != nil {
+			return nil, err
+		}
+		if high == nil {
+			return nil, nil
+		}
+		next.Cursor = floor
+		if !bytes.Equal(high, floor) {
+			next.High = high
+		}
 	}
-	return marshal(streamState{Cursor: floor})
+	return marshal(next)
 }
 
 // stateVar is the state requests see: the floor less the lookback.

@@ -451,7 +451,7 @@
           "$ref": "#/$defs/duration"
         },
         "ordered": {
-          "description": "The API returns records sorted by the cursor, oldest first, so the floor advances after every page.",
+          "description": "The API returns records sorted by the cursor, oldest first, so the floor advances to the highest cursor after every page. Without it, the floor advances when the stream completes, to the highest cursor of the reads before this one, so a record updated during a read is read again by the next. Each read then reads again what changed since the previous read started, and the second sync reads from the beginning.",
           "type": "boolean"
         }
       }

@@ -255,7 +255,7 @@ With `collapse: true`, OpenETL can commit before the read ends. After a failure,
 
 Under `at_least_once`, nothing removes repeats. They come from three places:
 
-- **The previous incremental cursor value.** Each read includes rows at the previous highest cursor value. Those rows are written again on each sync.
+- **The previous incremental cursor value.** Each read includes rows at the previous highest cursor value. Those rows are written again on each sync. Some sources read from further back. For example, a declarative source's stream that is not `ordered` reads from the highest cursor of the sync before the previous one. All rows changed since then are written again. Its second sync, and the second after a state reset, writes every row again.
 - **A retried delivery** to a destination that delivers and acknowledges.
 - **A repeated read after a failure.** OpenETL normally commits at source resume points. After `delivery.resumePointTimeout` (`1m`) without one, it can commit using a **forced barrier**. This is permitted only if replay preserves the required guarantee. Recovery resumes from the last source resume point and reads some records again. Higher guarantees require deduplication, collapse or merge; `at_least_once` permits duplicate rows.
 

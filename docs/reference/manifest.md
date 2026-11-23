@@ -271,7 +271,7 @@ Read from a cursor floor onwards. Requests see the floor, less the lookback, as 
 | `cursor_field` | string | Yes | A top-level property of the records. Isn't empty. |
 | `type` | string | Yes | `datetime`: RFC 3339 text, and `state.cursor` is a timestamp. `unix`: seconds since 1970, and `state.cursor` is an int. `integer` and `string`: compared as they are. Is one of `datetime`, `unix`, `integer` or `string`. |
 | `lookback` | string | No | Read again this far behind the floor, for late updates. datetime and unix only. A duration such as 90s, 5m or 1h30m. Matches `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$`. |
-| `ordered` | boolean | No | The API returns records sorted by the cursor, oldest first, so the floor advances after every page. |
+| `ordered` | boolean | No | The API returns records sorted by the cursor, oldest first, so the floor advances to the highest cursor after every page. Without it, the floor advances when the stream completes, to the highest cursor of the reads before this one, so a record updated during a read is read again by the next. Each read then reads again what changed since the previous read started, and the second sync reads from the beginning. |
 
 ## `spec.streams[].parent`
 

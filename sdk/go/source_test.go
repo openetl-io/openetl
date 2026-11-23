@@ -202,16 +202,37 @@ func TestIncrementalUnordered(t *testing.T) {
 	src := &sdk.Source[config]{Name: "acme", Streams: []sdk.Stream[config]{
 		sdk.Incremental("b", "u", paginated[config](p, &since)),
 	}}
-	// The floor stays put until the stream completes.
+	// The floor stays put until the stream completes, and then becomes the
+	// highest cursor of the reads before it: none yet.
 	expect(t, read(t, src, "b", ""),
 		"b rows 1,2", `b resume {"since":null,"max":"2026-01-05T00:00:00Z","page":"t1"}`,
-		"b rows 3", `b complete {"cursor":"2026-01-05T00:00:00Z"}`)
+		"b rows 3", `b complete {"high":"2026-01-05T00:00:00Z"}`)
+
+	// A floor saved before high was: the next read starts there again.
+	since = nil
+	expect(t, read(t, src, "b", `{"cursor":"2026-01-01T00:00:00Z"}`),
+		"b rows 1,2", `b resume {"cursor":"2026-01-01T00:00:00Z","since":"2026-01-01T00:00:00Z","max":"2026-01-05T00:00:00Z","page":"t1"}`,
+		"b rows 3", `b complete {"cursor":"2026-01-01T00:00:00Z","high":"2026-01-05T00:00:00Z"}`)
+	expect(t, since, "2026-01-01T00:00:00Z")
+
+	// The floor advances to the highest cursor of the reads before, which
+	// the resume points carry.
+	since = nil
+	expect(t, read(t, src, "b", `{"cursor":"2026-01-01T00:00:00Z","high":"2026-01-02T00:00:00Z"}`),
+		"b rows 1,2", `b resume {"cursor":"2026-01-01T00:00:00Z","since":"2026-01-01T00:00:00Z","max":"2026-01-05T00:00:00Z","page":"t1","high":"2026-01-02T00:00:00Z"}`,
+		"b rows 3", `b complete {"cursor":"2026-01-02T00:00:00Z","high":"2026-01-05T00:00:00Z"}`)
+	expect(t, since, "2026-01-01T00:00:00Z")
 
 	// A resumed read keeps the highest cursor the first part emitted.
 	since = nil
-	expect(t, read(t, src, "b", `{"cursor":"2026-01-01T00:00:00Z","since":"2026-01-01T00:00:00Z","max":"2026-01-05T00:00:00Z","page":"t1"}`),
-		"b rows 3", `b complete {"cursor":"2026-01-05T00:00:00Z"}`)
+	expect(t, read(t, src, "b", `{"cursor":"2026-01-01T00:00:00Z","since":"2026-01-01T00:00:00Z","max":"2026-01-05T00:00:00Z","page":"t1","high":"2026-01-02T00:00:00Z"}`),
+		"b rows 3", `b complete {"cursor":"2026-01-02T00:00:00Z","high":"2026-01-05T00:00:00Z"}`)
 	expect(t, since, "2026-01-01T00:00:00Z")
+
+	// With nothing above the floor, the state stays as it was.
+	expect(t, read(t, src, "b", `{"cursor":"2026-02-01T00:00:00Z"}`),
+		"b rows 1,2", `b resume {"cursor":"2026-02-01T00:00:00Z","since":"2026-02-01T00:00:00Z","max":"2026-01-05T00:00:00Z","page":"t1"}`,
+		"b rows 3", `b complete {"cursor":"2026-02-01T00:00:00Z"}`)
 }
 
 func TestIncrementalOrdered(t *testing.T) {
@@ -288,6 +309,18 @@ func TestExpiredPageTokenRestartsFromTheFloor(t *testing.T) {
 		"b rows 2", `b complete {"cursor":4}`)
 	expect(t, since, "", "3")
 	expect(t, p.tokens, "t1", "", "t1")
+}
+
+// An unordered read that restarts keeps the highest cursor of the reads
+// before it.
+func TestExpiredPageTokenKeepsTheHighestOfTheReadsBefore(t *testing.T) {
+	p := &pages{records: [][]string{{`{"id":1,"u":3}`}, {`{"id":2,"u":4}`}}, expired: map[string]bool{"t1": true}}
+	src := &sdk.Source[config]{Name: "acme", Streams: []sdk.Stream[config]{
+		sdk.Incremental("b", "u", paginated[config](p, new([]string))),
+	}}
+	expect(t, read(t, src, "b", `{"cursor":1,"since":1,"max":9,"page":"t1","high":2}`),
+		"b rows 1", `b resume {"cursor":1,"since":1,"max":3,"page":"t1","high":2}`,
+		"b rows 2", `b complete {"cursor":2,"high":4}`)
 }
 
 func TestExpiredPageTokenFailsOutsideAResume(t *testing.T) {
@@ -396,7 +429,7 @@ func TestCursorOrder(t *testing.T) {
 			}),
 		}}
 		got := read(t, src, "s", "")
-		if want := fmt.Sprintf(`s complete {"cursor":%s}`, tc.want); got[len(got)-1] != want {
+		if want := fmt.Sprintf(`s complete {"high":%s}`, tc.want); got[len(got)-1] != want {
 			t.Errorf("%s: %s, want %s", tc.records, got[len(got)-1], want)
 		}
 	}

@@ -224,6 +224,8 @@ func TestASwitchOfReadModeStartsTheReadItNeeds(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 		defer cancel()
+		// Ordered, so that a completed read saves its highest cursor as the
+		// next floor, without an unordered stream's one-read lag.
 		stream := sdk.Incremental("s", "updated_at", func(_ *sdk.Ctx[struct{}], since sdk.Cursor, out *sdk.Out) error {
 			from := 1
 			if !since.IsZero() {
@@ -235,7 +237,7 @@ func TestASwitchOfReadModeStartsTheReadItNeeds(t *testing.T) {
 				}
 			}
 			return nil
-		})
+		}, sdk.Ordered())
 		bound, err := (&sdk.Source[struct{}]{Name: "src", Streams: []sdk.Stream[struct{}]{stream}}).New(nil)
 		if err != nil {
 			t.Fatal(err)
