@@ -187,6 +187,18 @@ impl Evolver {
         }
     }
 
+    /// Source columns `columns` and each version the evolver sent one to,
+    /// `{name}__v2` to `{name}__v{k}`.
+    pub(crate) fn with_versions(&self, columns: &[String]) -> Vec<String> {
+        let mut out = Vec::with_capacity(columns.len());
+        for c in columns {
+            out.push(c.clone());
+            let k = self.versions.get(c).copied().unwrap_or(1);
+            out.extend((2..=k).map(|j| format!("{c}__v{j}")));
+        }
+        out
+    }
+
     /// The source column whose values go to `column`: `column` itself,
     /// unless it's a source column's current version.
     pub(crate) fn source_of<'a>(&'a self, column: &'a str) -> &'a str {

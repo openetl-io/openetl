@@ -656,10 +656,13 @@ impl Shaper {
         };
         let unchanged = self.unchanged(&c.batch, &control)?;
         let lists = self.held_lists(c.batch.num_rows(), unchanged.as_ref(), &cells);
+        // The batch names a column the evolver versioned by its version, so
+        // each version of a volatile column is left out too.
         let hashes = self.versions.as_ref().map(|volatile| {
+            let volatile = self.evolver.with_versions(volatile);
             (
-                versions::row_hashes(&c.batch, &cells, volatile),
-                versions::schema_version(&c.batch.schema(), volatile),
+                versions::row_hashes(&c.batch, &cells, &volatile),
+                versions::schema_version(&c.batch.schema(), &volatile),
             )
         });
         let mut batch = self.assemble(schema, &c.batch, ids, &control, unchanged, lists)?;
@@ -1966,6 +1969,36 @@ mod tests {
         assert_eq!(n.batch.schema().fields(), schema.fields());
         assert_eq!(n.batch.column(0).null_count(), 1);
         assert!(n.versioned.is_empty());
+    }
+
+    /// A volatile column versioned to a new column, as an incompatible
+    /// type sends it, stays out of the hash and the schema's version in
+    /// each of its versions, as it's matched by its source name.
+    #[test]
+    fn a_volatile_columns_versions_stay_out_of_the_hash() {
+        let typed = |x: ArrayRef| {
+            let y: ArrayRef = Arc::new(Int64Array::from(vec![7]));
+            RecordBatch::try_from_iter(vec![("X", x), ("Y", y)]).unwrap()
+        };
+        let hashed = |b: &RecordBatch| {
+            let at = b.schema().index_of(versions::HASH_COLUMN).unwrap();
+            let schema = b.schema().field(at).metadata()[versions::SCHEMA_KEY].clone();
+            let hashes = b
+                .column(at)
+                .as_primitive::<arrow_array::types::UInt64Type>();
+            (hashes.values()[0], schema)
+        };
+        let mut s = shaper(None).with_versions(Some(Arc::from(["X".to_string()])));
+        let before = s
+            .batch(&typed(Arc::new(Int64Array::from(vec![1]))))
+            .unwrap();
+        s.seal();
+        let flag = |b: bool| typed(Arc::new(arrow_array::BooleanArray::from(vec![b])));
+        let first = s.batch(&flag(true)).unwrap();
+        assert_eq!(first.versioned.len(), 1, "X wasn't versioned");
+        let second = s.batch(&flag(false)).unwrap();
+        assert_eq!(hashed(&first.batch), hashed(&second.batch));
+        assert_eq!(hashed(&first.batch).1, hashed(&before.batch).1);
     }
 
     fn keyed_by(key: &str, cursor: &str) -> Shaper {
