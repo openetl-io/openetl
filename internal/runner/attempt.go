@@ -1066,9 +1066,9 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 // startSplits are each stream's splits as an attempt that restores
 // restored starts: a read it continues, or one that completed earlier in
 // the sync (done), keeps its restored splits, and a read that starts gets
-// those fresh gives it, from where the last read's ended (nil for none),
-// with the last read's watermarks carried. The floors of an attempt's
-// lanes are these splits'.
+// those fresh gives it, from the last read's endedSplits, with the last
+// read's watermarks carried. The floors of an attempt's lanes are these
+// splits'.
 func (j *Job) startSplits(restored *checkpoint.Record, done map[string]bool, fresh func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error)) (map[string][]checkpoint.SplitState, error) {
 	out := make(map[string][]checkpoint.SplitState, len(j.Streams))
 	for _, s := range j.Streams {
@@ -1077,20 +1077,29 @@ func (j *Job) startSplits(restored *checkpoint.Record, done map[string]bool, fre
 			out[s.Name] = prev
 			continue
 		}
-		ended := make([]source.Split, 0, len(prev))
-		for _, sp := range prev {
-			ended = append(ended, source.Split{ID: sp.ID, State: sp.State})
-		}
-		if prev == nil {
-			ended = nil
-		}
-		splits, err := fresh(s, ended)
+		splits, err := fresh(s, endedSplits(s, prev))
 		if err != nil {
 			return nil, err
 		}
 		out[s.Name] = carryMarks(s.EventTime, prev, splits)
 	}
 	return out, nil
+}
+
+// endedSplits are where the last read of s ended, its splits in the
+// record (prev), as a read of s that starts goes on from them: nil if it
+// never was, and for a full refresh or an overwrite, whose read must hold
+// the whole stream, even from a source that goes on from where it last
+// stopped.
+func endedSplits(s Stream, prev []checkpoint.SplitState) []source.Split {
+	if prev == nil || s.Read == source.FullRefresh || s.Mode == destination.Overwrite {
+		return nil
+	}
+	ended := make([]source.Split, 0, len(prev))
+	for _, sp := range prev {
+		ended = append(ended, source.Split{ID: sp.ID, State: sp.State})
+	}
+	return ended
 }
 
 // startsRead returns a stream's splits in restored, and whether its read

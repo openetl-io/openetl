@@ -1073,9 +1073,9 @@ func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, don
 			continue
 		}
 		er := &attemptv1.EndedRead{Stream: s.Name}
-		if prev != nil {
+		if ended := endedSplits(s, prev); ended != nil {
 			er.Ended = &protocolv1.Splits{}
-			for _, sp := range prev {
+			for _, sp := range ended {
 				er.Ended.Splits = append(er.Ended.Splits, &protocolv1.Split{Id: sp.ID, State: sp.State})
 			}
 		}

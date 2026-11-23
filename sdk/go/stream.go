@@ -69,8 +69,10 @@ func Full[C any](name string, read func(c *Ctx[C], out *Out) error, opts ...Stre
 }
 
 // Incremental declares a stream read from a cursor floor onwards. read gets
-// the floor, which is zero on the first sync, and must return every record
-// whose cursor field is at or after it: records at the floor are read again.
+// the floor, which is zero on the first sync and on each new read the
+// platform starts with no state, such as a full refresh. It must return
+// every record whose cursor field is at or after it: records at the floor
+// are read again.
 // The floor advances when the stream completes, or after every page with
 // Ordered. A resumed read gets the floor its page token belongs to.
 func Incremental[C any](name, cursor string, read func(c *Ctx[C], since Cursor, out *Out) error, opts ...StreamOption) Stream[C] {
@@ -81,8 +83,9 @@ func Incremental[C any](name, cursor string, read func(c *Ctx[C], since Cursor, 
 }
 
 // Resumable declares a stream that keeps its own state. read gets the state
-// of the last committed resume point, nil at first, and marks resume points
-// with Out.Checkpoint.
+// of the last committed resume point, nil at first and on each new read the
+// platform starts with no state, such as a full refresh, and marks resume
+// points with Out.Checkpoint.
 func Resumable[C any](name string, read func(c *Ctx[C], state json.RawMessage, out *Out) error, opts ...StreamOption) Stream[C] {
 	o := options(opts)
 	return Stream[C]{name: name, kind: resumable, primaryKey: o.primaryKey, run: func(c *Ctx[C], state []byte, out *Out) error {

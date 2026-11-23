@@ -77,6 +77,8 @@ go build -o bin/ ./cmd/source-greetings
 
 `sdk.Full` declares a full-refresh stream. `sdk.Incremental` declares a stream read from a cursor, and `sdk.Resumable` declares one with its own saved state. `sdk.Paginate` marks a resume point after each API page.
 
+A pipeline can read an `sdk.Incremental` or `sdk.Resumable` stream with `full_refresh`, or write it with `overwrite`. Each new read of it then starts with no state: `Incremental` gets a zero floor, and `Resumable` gets nil.
+
 These stream helpers declare superset replay. Retries can repeat records. The destination determines whether repeated records produce duplicate writes, using `_openetl_id` where supported.
 
 `sdk.Ordered` declares that the API returns records in ascending cursor order. It corresponds to `ordered: true` in a declarative source's `incremental` settings. With this declaration, the saved cursor floor advances after every page.

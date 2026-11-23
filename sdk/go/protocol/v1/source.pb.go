@@ -1558,7 +1558,9 @@ type SplitsRequest struct {
 	// The stream as Read gets it, without its state.
 	Stream *ConfiguredStream `protobuf:"bytes,2,opt,name=stream,proto3" json:"stream,omitempty"`
 	// Where each of its last read's splits ended, as StreamComplete.next;
-	// empty for a stream never read. The new read's splits start from them.
+	// empty for a stream never read, and for a read that starts with no
+	// state: one with SYNC_MODE_FULL_REFRESH, or one whose stream the
+	// destination overwrites. The new read's splits start from them.
 	Ended         []*Split `protobuf:"bytes,3,rep,name=ended,proto3" json:"ended,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
