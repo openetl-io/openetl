@@ -25,9 +25,11 @@ func isVersions(op string) bool { return strings.HasPrefix(op, versionsPrefix) }
 // cursor, which the destination dedupes by _openetl_id against what it
 // has, so that a version read again at the cursor's floor with other values
 // would be skipped. Only where the job keeps state, and not past a
-// transform.
+// transform, SQL or the user's code: an output named as its input, as
+// one Spark code doesn't declare, isn't the input, and the plan keeps
+// none for it.
 func (j *Job) versions() map[string]string {
-	if j.StateURL == "" || j.SQL != nil {
+	if j.StateURL == "" || j.transformed() {
 		return nil
 	}
 	caps := j.Destination.Capabilities()

@@ -18,6 +18,9 @@ var (
 	read = Stream{Name: "s", Replay: source.Superset, Mode: destination.Append, PrimaryKey: []string{"id"}, Read: source.Incremental, CursorField: "at"}
 )
 
+// flinkCode is a Flink job no test of versions runs.
+type flinkCode struct{ Flink }
+
 // The versions of a stream's records are kept where the destination
 // dedupes it by _openetl_id against what it has, and its reads give a
 // record again at their cursor's floor.
@@ -37,6 +40,10 @@ func TestVersionsAreKeptOfStreamsDedupedAgainstTheTarget(t *testing.T) {
 		{"read whole", func(j *Job) { j.Streams[0].Read, j.Streams[0].CursorField = source.FullRefresh, "" }, false},
 		{"into a destination that doesn't dedupe", func(j *Job) { j.Destination = capsDest{caps: plain} }, false},
 		{"past a transform", func(j *Job) { j.SQL = &SQLTransform{} }, false},
+		// An output named as its input, as one a transform doesn't declare,
+		// isn't the input.
+		{"past Spark code", func(j *Job) { j.Transform, j.Outputs = sparkCode{}, []Stream{read} }, false},
+		{"past Flink code", func(j *Job) { j.Flink, j.Outputs = flinkCode{}, []Stream{read} }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := Job{Destination: dedupes, StateURL: "file:///state", Streams: []Stream{read}, Settings: delivery.Settings{Require: delivery.ExactlyOnce}}
