@@ -117,6 +117,25 @@ A hold can be in force on such a column, such as a hold that a sync recorded bef
 
 If the destination still refuses the column, the sync fails with `SCHEMA_DRIFT` and the repair statement.
 
+## A change that stops a stream holding
+
+A stream holds values only while it meets every requirement for holds. These changes can stop a stream holding:
+
+- a version that changes the stream's write mode to one that the destination does not patch, or removes its primary key;
+- a version that removes the stream from `source.streams`, or a source catalog that leaves the stream out;
+- a version that renames or removes a SQL transform's output, or adds a Spark or Flink transform;
+- a version that points to a destination without holds;
+- a runner without storage for held values.
+
+If the stream has held values, the sync fails with `SCHEMA_DRIFT`. OpenETL keeps the holds and their held values. The error names the stream, what it holds and why it does not hold now. Choose one of these ways on:
+
+- Undo the change, release the holds, and make the change again after the release.
+- Discard the holds with `openetl holds discard PIPELINE STREAM COLUMN`. The next sync then makes the change, and the held values are dropped.
+
+A release that is being patched in cannot be discarded. Undo the change so that the release can finish.
+
+A paused stream keeps its holds. A change to `overwrite` does not fail the sync: each sync reads the whole stream again, and the stream's holds end.
+
 ## An example
 
 A stream `orders` has the primary key `id`, and the pipeline writes it with `merge`. Its `price` column is a decimal with two decimal places. The source sends three rows, and row 2's price is `NaN`, which a decimal cannot keep:

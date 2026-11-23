@@ -16,15 +16,17 @@ import (
 )
 
 // held is a kit record whose v is held: it arrives null, and v is what a
-// patch fills in. A deleted one deletes its key.
+// patch fills in. A deleted one deletes its key; an unchanged one is an
+// update that didn't send v.
 type held struct {
 	record
-	held, deleted bool
+	held, deleted, unchanged bool
 }
 
 var (
-	heldField    = arrow.Field{Name: destination.HeldColumn, Type: arrow.ListOf(arrow.BinaryTypes.String), Nullable: true}
-	deletedField = arrow.Field{Name: "_openetl_deleted", Type: arrow.FixedWidthTypes.Boolean}
+	heldField      = arrow.Field{Name: destination.HeldColumn, Type: arrow.ListOf(arrow.BinaryTypes.String), Nullable: true}
+	deletedField   = arrow.Field{Name: "_openetl_deleted", Type: arrow.FixedWidthTypes.Boolean}
+	unchangedField = arrow.Field{Name: "_openetl_unchanged", Type: arrow.ListOf(arrow.BinaryTypes.String), Nullable: true}
 )
 
 // heldSchema is the kit's schema with _openetl_held and extra, and v's
@@ -48,18 +50,21 @@ func heldSchema(stream string, md map[string]string, extra ...arrow.Field) *arro
 func heldBatch(schema *arrow.Schema, stream string, recs []held, seq time.Time) arrow.RecordBatch {
 	b := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer b.Release()
-	deleted := schema.FieldIndices(deletedField.Name)
+	deleted, unchanged := schema.FieldIndices(deletedField.Name), schema.FieldIndices(unchangedField.Name)
 	for _, r := range recs {
 		b.Field(0).(*array.Int64Builder).Append(r.id)
-		if r.held || r.deleted {
+		if r.held || r.deleted || r.unchanged {
 			b.Field(1).AppendNull()
 		} else {
 			b.Field(1).(*array.StringBuilder).Append(r.v)
 		}
 		b.Field(2).(*array.FixedSizeBinaryBuilder).Append(rowID(stream, r.record))
 		op := "insert"
-		if r.deleted {
+		switch {
+		case r.deleted:
 			op = "delete"
+		case r.unchanged:
+			op = "update"
 		}
 		b.Field(3).(*array.StringBuilder).Append(op)
 		b.Field(4).(*array.TimestampBuilder).Append(arrow.Timestamp(seq.UnixMicro()))
@@ -73,6 +78,15 @@ func heldBatch(schema *arrow.Schema, stream string, recs []held, seq time.Time) 
 		}
 		if len(deleted) > 0 {
 			b.Field(deleted[0]).(*array.BooleanBuilder).Append(r.deleted)
+		}
+		if len(unchanged) > 0 {
+			lb := b.Field(unchanged[0]).(*array.ListBuilder)
+			if r.unchanged {
+				lb.Append(true)
+				lb.ValueBuilder().(*array.StringBuilder).Append("v")
+			} else {
+				lb.AppendNull()
+			}
 		}
 	}
 	return b.NewRecordBatch()
@@ -282,6 +296,29 @@ func (r *destinationRun) checkHoldsSoftDelete(t T) {
 	want["1"] = "p1"
 	s.expectVs("after the held version's patch", want)
 	s.expectDeleted("after the held version's patch", deleted)
+	s.close(w)
+}
+
+// Holds: a merge update that didn't send a column, which its
+// _openetl_unchanged lists, keeps the target's value of it, and the version
+// the target holds it for, so the held version's patch still fills it in.
+func (r *destinationRun) checkHoldsUnchanged(t T) {
+	h := r.holds(t)
+	if !h.GetByKey() || !r.supportsMode(protocolv1.WriteMode_WRITE_MODE_MERGE) {
+		t.Skipf("the destination doesn't patch merge")
+	}
+	s := r.session(t, r.spec.GetDestination().GetScopes()[0], protocolv1.WriteMode_WRITE_MODE_MERGE)
+	w, _ := s.begin(1, nil, nil)
+	schema := heldSchema("alpha", nil, unchangedField)
+	t0 := time.Now()
+	old1 := record{id: 1, v: "old1"}
+	s.heldEpoch(w, epoch(1, 1), schema, []held{{record: record{id: 0, v: "a0"}}, {record: old1, held: true}}, t0, nil)
+	s.heldEpoch(w, epoch(1, 2), schema, []held{{record: record{id: 0, v: "b0"}, unchanged: true}, {record: record{id: 1, v: "b1"}, unchanged: true}}, t0.Add(time.Second), nil)
+	want := map[string]string{"0": "a0", "1": "<null>"}
+	s.expectVs("after updates that didn't send v", want)
+	s.heldEpoch(w, epoch(1, 3), schema, nil, t0, []patch{{old1, "p1"}})
+	want["1"] = "p1"
+	s.expectVs("after the held version's patch", want)
 	s.close(w)
 }
 

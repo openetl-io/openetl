@@ -831,7 +831,7 @@ func (w *memWriter) stage(e destination.Epoch, stream string, b arrow.RecordBatc
 		}
 		for c, f := range b.Schema().Fields() {
 			switch f.Name {
-			case destination.HeldColumn:
+			case destination.HeldColumn, "_openetl_unchanged":
 				row[f.Name] = heldList(b.Column(c), i)
 			case "_openetl_id":
 				row[f.Name] = b.Column(c).ValueStr(i)
@@ -1014,7 +1014,7 @@ func (w *memWriter) apply(e destination.Epoch, lanes []memStaged, marked bool) {
 					t["_openetl_deleted"] = true
 					st.tables[table][i] = t
 				default:
-					st.tables[table][i] = r
+					st.tables[table][i] = keepUnchanged(st.tables[table][i], r, w.d.bug == "unchanged-forgets-held")
 				}
 			}
 			w.patch(table, patches)
@@ -1023,6 +1023,31 @@ func (w *memWriter) apply(e destination.Epoch, lanes []memStaged, marked bool) {
 		}
 		st.markers[marker] = true
 	}
+}
+
+// keepUnchanged is update r as it merges into t: the columns it didn't
+// send keep t's values, and the versions t holds them for.
+func keepUnchanged(t, r map[string]any, forgetHeld bool) map[string]any {
+	unchanged, _ := r["_openetl_unchanged"].([]string)
+	if len(unchanged) == 0 {
+		return r
+	}
+	was, _ := t[destination.HeldColumn].(map[string]any)
+	held, _ := r[destination.HeldColumn].(map[string]any)
+	held = maps.Clone(held)
+	for _, c := range unchanged {
+		r[c] = t[c]
+		if v, ok := was[c]; ok && !forgetHeld {
+			if held == nil {
+				held = map[string]any{}
+			}
+			held[c] = v
+		}
+	}
+	if held != nil {
+		r[destination.HeldColumn] = held
+	}
+	return r
 }
 
 // patch fills each patch's held columns in the row of its key, where the
@@ -1260,6 +1285,7 @@ func TestDestinationBugsFail(t *testing.T) {
 		"fenced-internal":         {"write/fence"},
 		"unguarded-patch":         {"holds/patch", "holds/soft-delete"},
 		"patch-undeletes":         {"holds/soft-delete"},
+		"unchanged-forgets-held":  {"holds/unchanged"},
 		"limits-without-not-null": {"holds/not-null"},
 		"type-changes-unasked":    {"write/type-changes"},
 		"type-changes-refused":    {"write/type-changes"},

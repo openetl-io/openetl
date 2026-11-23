@@ -9,7 +9,9 @@ import (
 )
 
 // explain sets h's reason and ways out from its cause. A column hold
-// without a cause, from an older record, keeps its reason.
+// without a cause, from an older record, keeps its reason. A discarded
+// column hold drops the column's values until it's released, its one way
+// out.
 func explain(h *apiv1.Hold) {
 	c := h.GetCause()
 	if !h.GetWhole() {
@@ -25,7 +27,12 @@ func explain(h *apiv1.Hold) {
 	if r := holdReason(h); r != "" {
 		h.Reason = r
 	}
-	if !h.GetDiscarded() && !h.GetReleasing() {
+	switch {
+	case h.GetDiscarded() && h.GetWhole():
+		release := waysOut(h)[0]
+		release.Effect = "Delivers the column again from the next run, as the stream has it. The values the discard dropped stay dropped."
+		h.WaysOut = []*apiv1.HoldWayOut{release}
+	case !h.GetDiscarded() && !h.GetReleasing():
 		h.WaysOut = waysOut(h)
 	}
 }

@@ -17,7 +17,7 @@ If the pipeline holds values, **Holds** lists each affected column. Entries iden
 | **Pending** | It was released or discarded, and waits for the pipeline's next run. |
 | **Releasing** | Its held values are being written in. |
 | **Release refused** | The last release did not clear the hold. Another release request is required before OpenETL tries again. |
-| **Discarded** | Its values were dropped. The column stays as the destination has it. |
+| **Discarded** | Its values were dropped. The column stays as the destination has it. For a column held whole, OpenETL also drops the column's later values until someone releases the hold. |
 
 **To clear it** lists recovery choices in recommended order. These can include destination repairs and commands to release or discard the hold.
 

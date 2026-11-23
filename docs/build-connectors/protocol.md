@@ -121,6 +121,8 @@ A destination must not change an existing column's type unless the pipeline perm
 
 OpenETL holds the affected column where supported, or stops the stream. It shows the repair to the user. New columns can still be added.
 
+A destination that takes holds keeps, for each held cell, the version that it holds the cell for: the `_openetl_id` of the row that listed the column in `_openetl_held`. A patch fills a cell only where the target still holds the cell for the patch's `_openetl_id`. A merge update that lists a column in `_openetl_unchanged` did not send that column. Keep the target's value of the column and the version that the target holds it for, as a soft delete does, so the held version's patch still fills it. The conformance kit's `holds/unchanged` check tests this.
+
 A destination that takes holds also answers with each stream's `TableLimits`. The limits name columns by their destination names:
 
 - `Unholdable`: columns that the destination cannot hold, such as a partition column or the key of its table.

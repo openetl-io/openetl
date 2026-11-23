@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,7 +48,7 @@ func hold(r db.ListHoldsRow) (*apiv1.Hold, error) {
 		Stream: r.Stream, Column: r.ColumnName, Whole: r.Whole, Reason: r.Reason,
 		SinceGeneration: ints.Uint64(r.SinceGeneration), SinceEpoch: ints.Uint64(r.SinceEpoch),
 		Cells: ints.Uint64(r.Cells), Discarded: r.Discarded, Releasing: r.Releasing,
-		Pending: r.ReleaseID != nil && !r.Discarded && !r.Releasing && !refused,
+		Pending: r.ReleaseID != nil && (!r.Discarded || r.ReleaseDiscards != nil && !*r.ReleaseDiscards) && !r.Releasing && !refused,
 	}
 	if refused && !r.Discarded {
 		h.Refused = &apiv1.HoldRefusal{Reason: r.Refusal}
@@ -89,7 +90,9 @@ func (s *Server) DiscardHold(ctx context.Context, req *connect.Request[apiv1.Dis
 // release records a release, or a discard, of the stream's open holds on
 // column: the column held whole, its held cells, or both. With newVersion,
 // the column held whole goes to a new version of it, and its cells with
-// it. A continuous pipeline's run restarts to take it.
+// it. A release of a discarded column hold ends it: the column is delivered
+// again, and the values it dropped stay dropped. A continuous pipeline's
+// run restarts to take it.
 func (s *Server) release(ctx context.Context, parent, stream, column string, discard, newVersion bool) (*apiv1.Hold, error) {
 	audit(ctx).set("stream", stream)
 	audit(ctx).set("column", column)
@@ -113,18 +116,26 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 		if err != nil {
 			return err
 		}
-		found, whole := false, false
+		found, whole, discarded := false, false, false
 		for i, r := range rows {
-			whole = whole || r.Stream == stream && r.ColumnName == column && r.Whole && !r.Discarded && !r.Releasing
-			if r.Stream == stream && r.ColumnName == column && refusedBy(r) {
-				// A new release replaces the one the hold refused.
+			if r.Stream != stream || r.ColumnName != column {
+				continue
+			}
+			whole = whole || r.Whole && !r.Discarded && !r.Releasing
+			discarded = discarded || r.Whole && r.Discarded
+			// A new release replaces the one the hold refused, or the discard
+			// it took.
+			if refusedBy(r) || !discard && r.Discarded && r.ReleaseID != nil && r.ReleaseDiscards != nil && *r.ReleaseDiscards {
 				if err := q.DeleteHoldRelease(ctx, db.DeleteHoldReleaseParams{OrgID: s.Tenant.Org, ID: *r.ReleaseID}); err != nil {
 					return err
 				}
 				rows[i].ReleaseID, rows[i].ReleaseDiscards = nil, nil
 			}
 		}
-		if newVersion && !whole {
+		switch {
+		case newVersion && !whole && discarded:
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("the hold on %s.%s is discarded, so it can't go to a new version; release it to deliver the column again", stream, column))
+		case newVersion && !whole:
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s.%s isn't held whole, so it can't go to a new version", stream, column))
 		}
 		for _, r := range rows {
@@ -132,7 +143,7 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 				continue
 			}
 			found = true
-			if r.Discarded || r.Releasing {
+			if r.Releasing || r.Discarded && discard {
 				continue
 			}
 			id, err := uuid.NewV7()
@@ -260,7 +271,8 @@ func (s *Server) recordHolds(ctx context.Context, pipeline uuid.UUID, generation
 
 // checkHolds opens a held incident for each stream holding something it
 // hadn't been, turns it critical once its oldest hold is a day old, and
-// resolves it once the stream holds nothing. Discarded columns count as
+// resolves it once the stream holds nothing, or isn't in the checkpoint, as
+// a stream the pipeline doesn't read now. Discarded columns count as
 // nothing: there's no decision left.
 func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Sync, m *dataplanev1.ReportCheckpointRequest) error {
 	open, err := s.Store.OpenIncidents(ctx, db.OpenIncidentsParams{OrgID: s.Tenant.Org, PipelineID: pipeline, Class: string(heal.Held)})
@@ -278,6 +290,14 @@ func (s *Server) checkHolds(ctx context.Context, pipeline uuid.UUID, sync db.Syn
 		outputs := map[string]bool{}
 		for _, o := range m.GetOutputs() {
 			outputs[o.GetName()] = true
+		}
+		for _, o := range open {
+			if !slices.ContainsFunc(holders(m), func(h holder) bool { return h.name == o.Stream }) {
+				stream := o.Stream
+				if _, err := heal.Resolve(ctx, q, s.Tenant.Org, pipeline, []string{string(heal.Held)}, &stream, "the stream holds nothing"); err != nil {
+					return err
+				}
+			}
 		}
 		for i, st := range holders(m) {
 			if i < len(m.GetStreams()) && outputs[st.name] {

@@ -134,6 +134,7 @@ func (r *destinationRun) checks() []Check {
 		Check{"holds/patch", r.checkHoldsPatch},
 		Check{"holds/last", r.checkHoldsLast},
 		Check{"holds/soft-delete", r.checkHoldsSoftDelete},
+		Check{"holds/unchanged", r.checkHoldsUnchanged},
 		Check{"holds/not-null", r.checkHoldsNotNull},
 		Check{"lanes/commit", r.eachLanes(r.checkLanesCommit)},
 		Check{"lanes/empty", r.eachLanes(r.checkLanesEmpty)},

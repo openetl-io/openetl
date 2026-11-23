@@ -294,6 +294,69 @@ func TestHoldsReleasesAndTheirIncident(t *testing.T) {
 	}
 }
 
+// A discarded column hold drops the column's values until it's released: a
+// release replaces the discard the run took, and a run takes it.
+func TestADiscardedColumnHoldIsReleasedToEndIt(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	amount := &dataplanev1.CheckpointHold{Column: "amount", Whole: true, Reason: "a view depends on it", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}, StartTime: timestamppb.Now()}
+	e.report(t, 1, 3, amount)
+	if _, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"})); err != nil {
+		t.Fatal(err)
+	}
+	amount.Discarded = true
+	e.report(t, 1, 4, amount)
+	h := e.holds(t)["amount"]
+	if !h.GetDiscarded() || h.GetPending() || len(h.GetWaysOut()) != 1 || h.GetWaysOut()[0].GetAction() != apiv1.HoldWayOut_ACTION_RELEASE {
+		t.Fatalf("discarded %v", h)
+	}
+	if got := e.releases(t); len(got) != 0 {
+		t.Errorf("releases %v, once the discard is taken", got)
+	}
+	_, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount", NewVersion: true}))
+	if code(err) != connect.CodeFailedPrecondition {
+		t.Errorf("a discarded hold released to a new version: %v", err)
+	}
+	_, err = e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"}))
+	if code(err) != connect.CodeFailedPrecondition {
+		t.Errorf("a discarded hold discarded again: %v", err)
+	}
+	res, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Msg.GetHold().GetPending() || !e.holds(t)["amount"].GetPending() {
+		t.Errorf("released %v", res.Msg.GetHold())
+	}
+	if got := e.releases(t); len(got) != 1 || got[0] != "orders.amount" {
+		t.Errorf("releases %v", got)
+	}
+	e.report(t, 2, 5)
+	if len(e.holds(t)) != 0 || len(e.releases(t)) != 0 {
+		t.Errorf("holds %v, releases %v, once the run takes the release", e.holds(t), e.releases(t))
+	}
+}
+
+// A held incident resolves once its stream is in no checkpoint, as when
+// the pipeline doesn't read it after its holds were discarded.
+func TestAHeldIncidentResolvesOnceItsStreamGoes(t *testing.T) {
+	e := newHoldsEnv(t)
+	e.report(t, 1, 3, &dataplanev1.CheckpointHold{Column: "note", Cells: 7, Reason: "nan", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 3}, StartTime: timestamppb.Now()})
+	if st, _ := e.incident(t); st != "open" {
+		t.Fatalf("incident %s", st)
+	}
+	_, err := e.runner.ReportCheckpoint(t.Context(), connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
+		PipelineId: e.pipeline.String(), RunId: "run1", Generation: 2, Epoch: 4, CreateTime: timestamppb.Now(),
+		Streams: []*dataplanev1.CheckpointStream{{Name: "users", Rows: 1}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := e.incident(t); st != "resolved" {
+		t.Errorf("incident %s, once orders is in no checkpoint", st)
+	}
+}
+
 // Syncs and checkpoints count each stream's held cells, and name the columns
 // it held at their latest commit, discarded ones left out.
 func TestHeldCellsBySyncAndCheckpoint(t *testing.T) {

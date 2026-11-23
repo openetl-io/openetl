@@ -471,9 +471,11 @@ type TableLimits struct {
 // (Append) names, where the target still holds the version the row's
 // _openetl_id names. Its other columns are the stream's key, _openetl_id,
 // _openetl_seq, _openetl_synced_at and the columns it fills, each filling
-// the held column of its name or the one its FillsKey metadata names. It is
-// called from the goroutine that calls Write, and the batch is released
-// after it returns.
+// the held column of its name or the one its FillsKey metadata names. A
+// Merge update keeps, for each column its _openetl_unchanged lists, the
+// target's value and the version the target holds it for, as a soft delete
+// does, so that version's patch still fills it. It is called from the
+// goroutine that calls Write, and the batch is released after it returns.
 type Patcher interface {
 	Patch(ctx context.Context, e Epoch, stream string, batch arrow.RecordBatch) error
 }

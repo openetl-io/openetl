@@ -137,7 +137,15 @@ To drop the held values, choose discard:
 openetl holds discard PIPELINE STREAM COLUMN
 ```
 
-The next run drops those saved values and leaves the destination's column as it is. Discard is not a repair to the source or schema policy; understand how later values will be handled before choosing it. Do not run release and discard as consecutive recovery steps: they are different decisions about the same saved data.
+The next run drops those saved values and leaves the destination's column as it is. Discard is not a repair to the source or schema policy. Do not run release and discard as consecutive recovery steps: they are different decisions about the same saved data.
+
+A discarded hold on a column held whole stays in force, with the state **Discarded**. Each later row is written with the column's held cell, null or `heldValue`, and OpenETL keeps none of the column's later values. To deliver the column again:
+
+1. Make the destination take the change, as for a release.
+2. Release the discarded hold with `openetl holds release PIPELINE STREAM COLUMN`.
+3. Start a sync.
+
+The next run writes the column as the stream has it. The values that the discard dropped stay dropped. If the destination still refuses the column, OpenETL holds it again and keeps its values from that run on. A discarded hold cannot go to a new version.
 
 ## Clean up the example
 

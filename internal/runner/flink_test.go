@@ -22,6 +22,7 @@ import (
 	bridgev1 "github.com/openetl-io/openetl/gen/openetl/bridge/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/runner"
 	"github.com/openetl-io/openetl/internal/runner/flinktest"
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
@@ -798,6 +799,41 @@ func TestFlinkRestartAfterAnotherAttemptMovedHEAD(t *testing.T) {
 		}
 		if err != nil {
 			t.Errorf("HEAD's chain: %v", err)
+		}
+	})
+}
+
+// A Flink job's records hold nothing, so an attempt restored from a record
+// with held values stops before it deploys, and keeps them.
+func TestFlinkStopsAtHeldValues(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		mem := checkpoint.NewMemStore()
+		sess, err := checkpoint.NewLog(mem, "org", "p").Claim(ctx, "seed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := &checkpoint.Holds{Cells: map[string]checkpoint.CellHold{"id": {Cells: 2, Since: checkpoint.RecordRef{Generation: 1, Epoch: 1}}}}
+		if err := sess.Commit(ctx, &checkpoint.Record{Epoch: 1, Streams: map[string]checkpoint.StreamState{"a": {Holds: held}}, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		log := checkpoint.NewLog(mem, "org", "p")
+		dest := newExactDest()
+		dest.applied[destination.Epoch{Generation: sess.Generation(), N: 1}] = true
+		bridge := flinktest.NewBridge()
+		cluster := flinktest.NewCluster(bridge)
+		job := oneStreamJob(log, dest, cluster, bridge, 10, nil)
+		job.HeldURL = "file:///held"
+		_, err = runner.RunAttempt(ctx, job)
+		if errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "a Spark or Flink transform writes it") {
+			t.Fatalf("attempt: %v, want SCHEMA_DRIFT", err)
+		}
+		if n := cluster.Deploys(); n != 0 {
+			t.Errorf("deployed %d times", n)
+		}
+		if head, err := log.Latest(ctx); err != nil || head.HoldsOf("a") == nil {
+			t.Errorf("HEAD %+v, %v: the holds went", head, err)
 		}
 	})
 }

@@ -226,12 +226,120 @@ func (j *Job) checkHolds() error {
 	return nil
 }
 
+var writeModes = map[destination.WriteMode]string{destination.Append: "append", destination.Overwrite: "overwrite", destination.Merge: "merge"}
+
+// notHolding says why s, one of the destination's streams, doesn't hold in
+// this job, as a clause.
+func (j *Job) notHolding(s Stream) string {
+	switch {
+	case j.ownCode():
+		return "a Spark or Flink transform writes it"
+	case j.HeldURL == "":
+		return "the runner has no storage for held values"
+	case len(s.PrimaryKey) == 0:
+		return "it has no primary key"
+	case !j.Destination.Capabilities().Holds.Takes(s.Mode):
+		return "the destination doesn't patch a stream it writes with " + writeModes[s.Mode]
+	}
+	return "it doesn't hold"
+}
+
+// keptHolds fails the attempt if restored has held values of a stream that
+// doesn't hold in this job, as after a version that changes its write
+// mode, key, destination or transform, or that doesn't read it, or a
+// catalog without it: the next record would drop its holds, and their held
+// files with them. The job's discards apply first. A paused stream keeps
+// its holds, and an overwritten one reads its values again.
+func (j *Job) keptHolds(restored *checkpoint.Record) error {
+	if restored == nil {
+		return nil
+	}
+	keeps := map[string]bool{}
+	for _, s := range j.Paused {
+		keeps[s.Name] = true
+	}
+	why := map[string]string{}
+	for _, s := range j.sinkStreams() {
+		if j.holdsOn(s) || s.Mode == destination.Overwrite {
+			keeps[s.Name] = true
+		} else {
+			why[s.Name] = j.notHolding(s)
+		}
+	}
+	gone := "the pipeline doesn't read it now"
+	switch {
+	case j.ownCode():
+		gone = "a Spark or Flink transform writes what the destination gets now"
+	case j.transformed():
+		gone = "no output of the SQL transform has its name"
+	}
+	names := slices.Concat(slices.Collect(maps.Keys(restored.Streams)), slices.Collect(maps.Keys(restored.Outputs)))
+	slices.Sort(names)
+	var problems []string
+	for _, name := range slices.Compact(names) {
+		if keeps[name] {
+			continue
+		}
+		held, cols := heldValues(restored.HoldsOf(name), j.Releases, name)
+		if len(held) == 0 {
+			continue
+		}
+		reason, ok := why[name]
+		if !ok {
+			reason = gone
+		}
+		col := "COLUMN"
+		if len(cols) == 1 {
+			col = cols[0]
+		}
+		problems = append(problems, fmt.Sprintf("stream %s holds %s, and %s, so this run can't keep them; undo the change and release them, "+
+			"or discard them with `openetl holds discard PIPELINE %s %s`", name, strings.Join(held, " and "), reason, name, col))
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return errs.New(errs.SchemaDrift, "runner: %s", strings.Join(problems, "; "))
+}
+
+// heldValues are what h holds of stream's values once releases' discards
+// apply, as phrases, and the columns a discard takes; none if it holds
+// nothing.
+func heldValues(h *checkpoint.Holds, releases []Release, stream string) (held, cols []string) {
+	if h == nil {
+		return nil, nil
+	}
+	discarded := func(col string, since checkpoint.RecordRef) bool {
+		return slices.ContainsFunc(releases, func(r Release) bool {
+			return r.Discard && r.Stream == stream && r.Column == col && r.Since == since
+		})
+	}
+	for _, c := range h.Columns {
+		if !c.Discarded && !discarded(c.Column, c.Since) {
+			held, cols = append(held, "column "+c.Column+" held whole"), append(cols, c.Column)
+		}
+	}
+	for _, col := range slices.Sorted(maps.Keys(h.Cells)) {
+		if c := h.Cells[col]; !discarded(col, c.Since) {
+			held, cols = append(held, fmt.Sprintf("%d held cells of %s", c.Cells, col)), append(cols, col)
+		}
+	}
+	if h.Replay != nil {
+		held = append(held, "the release of "+strings.Join(h.Replay.Columns, ", ")+", which is being patched in and can't be discarded")
+	}
+	slices.Sort(cols)
+	return held, slices.Compact(cols)
+}
+
 // startHolds are the holds each holding stream starts the attempt with:
 // restored's, with the job's releases applied and the refused columns
 // held; and the dataflow's plans. A released column the destination
 // refuses again keeps its hold, isn't patched in, and records the refused
-// release, as do its released cells.
+// release, as do its released cells. It fails, as keptHolds does, if a
+// stream that doesn't hold would drop restored's held values.
 func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limits map[string]destination.TableLimits) (map[string]*checkpoint.Holds, map[string]*HoldPlan, error) {
+	if err := j.keptHolds(restored); err != nil {
+		return nil, nil, err
+	}
 	holds := map[string]*checkpoint.Holds{}
 	plans := map[string]*HoldPlan{}
 	for _, s := range j.sinkStreams() {
@@ -252,11 +360,16 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			}
 			again := func(f *checkpoint.Refused) bool { return f != nil && r.ID != "" && f.Release == r.ID && !r.Discard }
 			if i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool {
-				return c.Column == r.Column && c.Since == r.Since && !c.Discarded && !again(c.Refused)
+				return c.Column == r.Column && c.Since == r.Since && (!c.Discarded || !r.Discard) && !again(c.Refused)
 			}); i >= 0 {
-				if r.Discard {
+				switch {
+				case h.Columns[i].Discarded:
+					// Released, a discarded hold ends without a replay, as its
+					// values are gone; refused again, the column is held anew.
+					h.Columns = slices.Delete(h.Columns, i, i+1)
+				case r.Discard:
 					h.Columns[i].Discarded, h.Columns[i].Refused = true, nil
-				} else {
+				default:
 					taken = append(taken, h.Columns[i])
 					if r.NewVersion && h.Columns[i].Delivered != nil {
 						versioned = append(versioned, h.Columns[i])

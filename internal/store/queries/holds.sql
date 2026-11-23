@@ -33,14 +33,15 @@ ON CONFLICT (org_id, pipeline_id, stream, column_name, whole, since_generation, 
 RETURNING id, discard, new_version;
 
 -- name: PendingHoldReleases :many
--- The releases of holds still open, not discarded, not being patched in,
--- and not refused, for a run to take.
+-- The releases of holds still open, not being patched in, and not refused,
+-- for a run to take: of a hold not discarded, or a release that ends a
+-- discarded one.
 SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version
 FROM hold_releases r
 JOIN holds h ON h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
     AND h.column_name = r.column_name AND h.whole = r.whole
     AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch
-WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND NOT h.discarded AND NOT h.releasing
+WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND (NOT h.discarded OR NOT r.discard) AND NOT h.releasing
     AND r.id IS DISTINCT FROM h.refused_release
 ORDER BY r.create_time, r.id;
 

@@ -186,6 +186,47 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	}
 }
 
+// A released discarded hold ends without a replay, even where another hold
+// keeps the held files its values were in; refused again, its column is
+// held anew, from this attempt, with the values it gets from now on.
+func TestAReleasedDiscardedHoldEndsWithoutItsValues(t *testing.T) {
+	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+	restored := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{{Column: "y", Since: since, Discarded: true, Reason: "the destination refused it: view"}},
+		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 1, Since: since}},
+		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 2, To: 2}},
+	}}}}
+	j := &Job{
+		HeldURL:     "file:///held",
+		Log:         checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"),
+		Destination: holdingDest{},
+		Streams:     []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}},
+		Releases:    []Release{{ID: "r", Stream: "s", Column: "y", Since: since}},
+	}
+	holds, plans, err := j.startHolds(t.Context(), restored, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := holds["s"]; len(h.Columns) != 0 || h.Replay != nil || len(plans["s"].Holding) != 0 {
+		t.Errorf("released, the discarded hold %+v, plan %+v", h, plans["s"])
+	}
+
+	j.refused = []RefusedColumn{{RefusedColumn: destination.RefusedColumn{Stream: "s", Column: "y", Reason: "view"}}}
+	holds, _, err = j.startHolds(t.Context(), restored, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := holds["s"]
+	if len(h.Columns) != 1 || h.Columns[0].Discarded || h.Columns[0].Since != (checkpoint.RecordRef{}) || h.Replay != nil {
+		t.Fatalf("refused again, the column's hold %+v, replay %+v", h.Columns, h.Replay)
+	}
+	at := checkpoint.RecordRef{Generation: 2, Epoch: 1}
+	merged := mergeHolds(h, &ReadyHolds{Holding: h.Columns}, at, time.Now())
+	if c := merged.Columns[0]; c.Since != at || c.Discarded {
+		t.Errorf("the new hold %+v starts at %v, not %v", c, c.Since, at)
+	}
+}
+
 // A hold on a column that can't be held, recorded before the runner checked
 // what it holds, stops each attempt with how to release it; released or
 // discarded, the attempt holds it no longer. A refusal of it fails with the
@@ -315,6 +356,90 @@ func TestASQLTransformsOutputsHold(t *testing.T) {
 	if j.holdsOn(j.Outputs[0]) {
 		t.Error("a Spark transform's output holds")
 	}
+}
+
+// An attempt in which a stream with held values doesn't hold, which would
+// drop them, stops with how to go on, until they're discarded: a SQL
+// output renamed, or the user's Spark code. A stream or output of the same
+// name that holds takes them, as does a paused stream, which keeps them.
+func TestHeldValuesStopAnAttemptThatWouldDropThem(t *testing.T) {
+	since := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+	held := func() *checkpoint.Holds {
+		return &checkpoint.Holds{
+			Columns: []checkpoint.ColumnHold{{Column: "n", Since: since}, {Column: "gone", Since: since, Discarded: true}},
+			Cells:   map[string]checkpoint.CellHold{"x": {Cells: 3, Since: since}},
+		}
+	}
+	output := func(name string) Stream {
+		return Stream{Name: name, Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}, Transformed: true}
+	}
+	sql := func(outputs ...string) *Job {
+		j := &Job{
+			HeldURL: "file:///held", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"), Destination: holdingDest{},
+			Streams: []Stream{{Name: "a", Replay: source.Exact, PrimaryKey: []string{"id"}}},
+			SQL:     &SQLTransform{SQL: "INSERT INTO b SELECT * FROM a"},
+		}
+		for _, o := range outputs {
+			j.Outputs = append(j.Outputs, output(o))
+		}
+		return j
+	}
+	outputHeld := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"a": {}}, Outputs: map[string]checkpoint.OutputState{"a": {Holds: held()}}}
+	stops := func(err error, want ...string) {
+		t.Helper()
+		if errs.CodeOf(err) != errs.SchemaDrift {
+			t.Fatalf("got %v, want SCHEMA_DRIFT", err)
+		}
+		for _, w := range want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%v doesn't say %q", err, w)
+			}
+		}
+	}
+
+	_, _, err := sql("b").startHolds(t.Context(), outputHeld, nil)
+	stops(err, "stream a holds column n held whole and 3 held cells of x, and no output of the SQL transform has its name",
+		"undo the change and release them", "openetl holds discard PIPELINE a COLUMN")
+	if strings.Contains(err.Error(), "gone") {
+		t.Errorf("%v names a discarded hold", err)
+	}
+	j := sql("b")
+	j.Releases = []Release{{Stream: "a", Column: "x", Since: since, Discard: true}}
+	_, _, err = j.startHolds(t.Context(), outputHeld, nil)
+	stops(err, "stream a holds column n held whole, and", "openetl holds discard PIPELINE a n`")
+	j.Releases = append(j.Releases, Release{Stream: "a", Column: "n", Since: since, Discard: true})
+	if _, _, err := j.startHolds(t.Context(), outputHeld, nil); err != nil {
+		t.Errorf("discarded: %v", err)
+	}
+
+	// Renamed back, or without the transform, the stream of the output's
+	// name takes them.
+	if holds, _, err := sql("a", "b").startHolds(t.Context(), outputHeld, nil); err != nil || holds["a"] == nil || len(holds["a"].Cells) != 1 {
+		t.Errorf("an output of the name: %v, %+v", err, holds)
+	}
+	plain := sql()
+	plain.SQL, plain.Streams[0].Mode, plain.Streams[0].Holds = nil, destination.Append, &StreamHolds{}
+	if holds, _, err := plain.startHolds(t.Context(), outputHeld, nil); err != nil || holds["a"] == nil || len(holds["a"].Columns) != 2 {
+		t.Errorf("the stream of the output's name: %v, %+v", err, holds)
+	}
+
+	spark := sql("a")
+	spark.SQL, spark.Transform = nil, sparkCode{}
+	_, _, err = spark.startHolds(t.Context(), outputHeld, nil)
+	stops(err, "stream a holds", "a Spark or Flink transform writes it")
+
+	// A paused stream keeps its holds; a release in progress can't be
+	// discarded.
+	streamHeld := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"a": {Holds: held()}, "p": {Holds: held()}}}
+	plain.Paused = []Stream{{Name: "p"}}
+	if _, _, err := plain.startHolds(t.Context(), streamHeld, nil); err != nil {
+		t.Errorf("a paused stream: %v", err)
+	}
+	releasing := held()
+	releasing.Replay = &checkpoint.Replay{Columns: []string{"x"}}
+	plain.Paused = nil
+	_, _, err = plain.startHolds(t.Context(), &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"a": {}, "r": {Holds: releasing}}}, nil)
+	stops(err, "stream r holds", "the release of x, which is being patched in and can't be discarded", "the pipeline doesn't read it now")
 }
 
 // sparkCode stands for the user's Spark code.
