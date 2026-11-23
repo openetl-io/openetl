@@ -229,3 +229,19 @@ func release(f Frame) {
 		f.Batch.Release()
 	}
 }
+
+// drainFrames releases the frames left in ch once nothing sends to it, as
+// when an attempt stops.
+func drainFrames(ch chan Frame) {
+	for {
+		select {
+		case f, ok := <-ch:
+			if !ok {
+				return
+			}
+			release(f)
+		default:
+			return
+		}
+	}
+}

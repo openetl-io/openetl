@@ -1498,7 +1498,11 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		defer close(c.commits)
 		return c.loop(gctx)
 	})
-	return g.Wait()
+	err := g.Wait()
+	for _, ch := range append([]chan Frame{toFlow, fromFlow}, lanes...) {
+		drainFrames(ch)
+	}
+	return err
 }
 
 // plan is the dataflow's plan of an attempt of generation gen whose first
