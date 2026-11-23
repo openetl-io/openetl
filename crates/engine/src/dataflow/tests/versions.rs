@@ -520,6 +520,32 @@ async fn versions_whose_runs_are_gone_start_again() {
     assert_ne!(record(&third, 1), record(&second, 1), "not kept again");
 }
 
+/// A run of the versions that's there but can't be read fails the sync, as
+/// other state's does, rather than drop the versions for good: only a run
+/// that's gone starts them again.
+#[tokio::test]
+async fn versions_whose_run_cant_be_read_fail_the_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let v1 = r#"{"id": 1, "name": "v1", "at": "2024-05-01"}"#;
+    let (_, r1) = sync(d, 1, &Restored::default(), &[v1]).await;
+    for s in r1.snapshots.iter().filter(|s| s.operator == OP) {
+        for run in &s.runs {
+            let p = d.join("state").join(run);
+            let mut b = std::fs::read(&p).unwrap();
+            b.fill(0);
+            std::fs::write(&p, b).unwrap();
+        }
+    }
+    let v2 = r#"{"id": 1, "name": "v2", "at": "2024-05-01"}"#;
+    let mut h = start_lanes(users(d, 2, 2000, &r1, 1));
+    put(&mut h.ins[0], FrameKind::Rows, 0, rows(&[v2])).await;
+    put(&mut h.ins[0], FrameKind::Barrier, 0, epoch_barrier(2, 2)).await;
+    h.end_all(1).await;
+    let err = h.job.await.unwrap().unwrap_err();
+    assert_eq!(err.code, ErrorCode::CheckpointCorrupt, "{}", err.message);
+}
+
 /// Versions that start again on a lane that flushed early in the epoch
 /// write runs of names it didn't: a run that's gone can be found after an
 /// early flush where a lane holds key groups of two lanes before it, at

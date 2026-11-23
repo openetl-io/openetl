@@ -389,7 +389,9 @@ pub fn snapshot(s: &StateSnapshot) -> Result<(String, Snapshot), JobError> {
 pub fn state_error(what: &str, e: &StateError) -> JobError {
     let code = match e {
         StateError::Store(_) => ErrorCode::Transient,
-        StateError::Snapshot(_) | StateError::Corrupt(_) => ErrorCode::CheckpointCorrupt,
+        StateError::Snapshot(_) | StateError::Corrupt(_) | StateError::Gone(_) => {
+            ErrorCode::CheckpointCorrupt
+        }
         StateError::Invalid(_) => ErrorCode::Internal,
     };
     JobError::new(code, format!("{what}: {e}"))

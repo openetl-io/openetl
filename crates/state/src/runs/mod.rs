@@ -389,9 +389,7 @@ impl Objects for ObjectStorage {
             };
             // A run a snapshot names that isn't there won't be on a retry.
             let b = read.await.map_err(|e| match e {
-                object_store::Error::NotFound { .. } => {
-                    Error::Corrupt(format!("run {name}, which a snapshot names, is missing"))
-                }
+                object_store::Error::NotFound { .. } => Error::Gone(name.to_owned()),
                 e => Error::Store(format!("reading run {name}: {e}")),
             })?;
             match b.len() as u64 == want {

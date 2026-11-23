@@ -160,7 +160,9 @@ impl Versions {
             };
             let layer = match opened {
                 Ok(l) => l,
-                Err(e @ (StateError::Snapshot(_) | StateError::Corrupt(_))) => {
+                Err(
+                    e @ (StateError::Snapshot(_) | StateError::Corrupt(_) | StateError::Gone(_)),
+                ) => {
                     tracing::warn!(stream = %plan.streams[s], error = %e, "{UNREAD}");
                     Layer::open(&stores, plan.generation, plan.first_epoch, open, &[])
                         .await
@@ -330,14 +332,13 @@ impl Stream {
     }
 
     /// Starts the versions again, empty, for the rest of the attempt, where
-    /// `e` says the record's can't be read, as a run that's gone: rows keep
-    /// their IDs until they're kept again. A runner from before the
-    /// versions, after a rollback, deletes their runs, which a later one
-    /// restores. Other errors fail the attempt.
+    /// `e` says a run of the record's is gone: rows keep their IDs until
+    /// they're kept again. A runner from before the versions, after a
+    /// rollback, deletes their runs, which a later one restores. Other
+    /// errors, as a run that's there but can't be read, fail the attempt.
     async fn start_again(&mut self, flow: &Flow, e: &StateError) -> Result<(), JobError> {
         let plan = &flow.plan;
-        let (StateError::Snapshot(_) | StateError::Corrupt(_), Some(state)) = (e, &plan.state.job)
-        else {
+        let (StateError::Gone(_), Some(state)) = (e, &plan.state.job) else {
             return Err(self.failed(e));
         };
         tracing::warn!(operator = %self.id, error = %e, "{UNREAD}");

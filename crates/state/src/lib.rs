@@ -125,6 +125,10 @@ pub enum Error {
     /// What a store holds doesn't parse.
     #[error("corrupt state: {0}")]
     Corrupt(String),
+    /// A run a snapshot names isn't in the store, by its name: deleted, as
+    /// retention does, rather than unreadable.
+    #[error("corrupt state: run {0}, which a snapshot names, is missing")]
+    Gone(String),
     #[error("store: {0}")]
     Store(String),
 }
