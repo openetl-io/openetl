@@ -362,3 +362,69 @@ fn versions_need_the_jobs_state_and_a_cursor() {
     req.streams[0].cursor_field.clear();
     assert!(Plan::from_request(req).is_err());
 }
+
+/// Times a first read of `ROWS` rows of users (default 200,000), in pages
+/// of 1,000 on one lane and one epoch, then the same rows read again, with
+/// the stream's versions kept and without. A measure, not a check:
+/// `cargo test -p openetl-engine first_read_times -- --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn first_read_times() {
+    let n: usize = std::env::var("ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200_000);
+    let pages: Vec<Vec<u8>> = (0..n.div_ceil(1000))
+        .map(|p| {
+            let rs: Vec<String> = (p * 1000..((p + 1) * 1000).min(n))
+                .map(|i| format!(r#"{{"id": {i}, "name": "n{i}", "at": "2024-05-01"}}"#))
+                .collect();
+            rows(&rs.iter().map(String::as_str).collect::<Vec<_>>())
+        })
+        .collect();
+    for versions in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut from = Restored::default();
+        for sync in 1..=2u64 {
+            let mut req = users(dir.path(), sync, sync as i64 * 1000, &from, 1);
+            req.state_pending_bytes = None;
+            if !versions {
+                req.streams[0].versions_operator.clear();
+                req.state_url.clear();
+            }
+            let started = std::time::Instant::now();
+            let mut h = start_lanes(req);
+            let mut ins = std::mem::take(&mut h.ins);
+            let pages = pages.clone();
+            let feed = tokio::spawn(async move {
+                let w = &mut ins[0];
+                for p in pages {
+                    put(w, FrameKind::Rows, 0, p).await;
+                }
+                put(w, FrameKind::Barrier, 0, epoch_barrier(sync, sync)).await;
+                put(w, FrameKind::EndOfStream, 0, vec![]).await;
+                w.shutdown().await.unwrap();
+            });
+            let (outs, ready) = h.finish().await;
+            feed.await.unwrap();
+            let took = started.elapsed();
+            assert_eq!(written(&outs).len(), n);
+            fn size(p: &Path) -> u64 {
+                std::fs::read_dir(p).map_or(0, |d| {
+                    d.flatten()
+                        .map(|e| match e.metadata() {
+                            Ok(m) if m.is_dir() => size(&e.path()),
+                            Ok(m) => m.len(),
+                            Err(_) => 0,
+                        })
+                        .sum()
+                })
+            }
+            eprintln!(
+                "{n} rows, read {sync}, versions {versions}: {took:?}, state {} bytes",
+                size(&dir.path().join("state"))
+            );
+            from = Restored::of(&ready[0]);
+        }
+    }
+}
