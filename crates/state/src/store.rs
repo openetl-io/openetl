@@ -115,6 +115,16 @@ pub trait Store: Send + Sync {
         horizons: &'a Horizons,
     ) -> BoxFuture<'a, Result<Vec<Snapshot>>>;
 
+    /// Whether a lane's pending set of `bytes`, at epoch `epoch`'s barrier,
+    /// rides in the record rather than being committed: within the lane's
+    /// `share`, or, for a store whose stores share a pool of what a record
+    /// carries, within what's left of it for the epoch, which it then
+    /// takes.
+    fn carry(&self, epoch: u64, bytes: usize, share: usize) -> bool {
+        let _ = epoch;
+        bytes <= share
+    }
+
     /// Whether it takes [`Store::flush`]: a store that keeps everything
     /// in memory releases nothing by it.
     fn flushes(&self) -> bool {
@@ -155,4 +165,11 @@ pub trait Store: Send + Sync {
 
     /// What it holds in memory, in bytes, about.
     fn memory_bytes(&self) -> usize;
+
+    /// Stops reading run `name`, one [`crate::Error::Gone`] named, as if
+    /// it held nothing: for state a consumer can do without. Whether it
+    /// did: not where a read may have found something in it already.
+    fn forget(&mut self, _name: &str) -> bool {
+        false
+    }
 }

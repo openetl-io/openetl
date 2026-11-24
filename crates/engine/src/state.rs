@@ -28,7 +28,7 @@ use bytes::Bytes;
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_proto::engine::v1::{KeyGroupRange as ProtoRange, StateSnapshot};
 use openetl_state::runs::{MergeConfig, ObjectStorage, RunConfig, RunStores, runs};
-use openetl_state::{DiskCache, Error as StateError, KeyGroupRange, PendingLimit, Snapshot};
+use openetl_state::{DiskCache, Error as StateError, KeyGroupRange, PendingLimit, Pool, Snapshot};
 
 use crate::error::JobError;
 use crate::store::Location;
@@ -65,6 +65,10 @@ const STATE_SHARE: u64 = 2;
 /// this much, so it doesn't write a run per batch.
 pub const MIN_EARLY: usize = 256 << 10;
 
+/// What the engine logs where an operator's lanes gave up on merging runs
+/// whose storage kept failing.
+pub const ABANDONED: &str = "storage failed reads of an operator's merges time after time, so its lanes merge those runs no more until the next attempt, and lookups ask more runs meanwhile";
+
 /// The engine's scratch: a directory of its own on local disk, and what
 /// the job may keep there.
 #[derive(Clone, Debug)]
@@ -80,14 +84,22 @@ pub struct JobState {
     config: RunConfig,
     /// Each operator's.
     pending: PendingLimit,
+    /// What records carry at most of all operators' pending sets.
+    pending_bytes: usize,
     /// Each operator's, which its lanes share with their block cache.
     stores: Mutex<HashMap<String, RunStores>>,
+    /// The operators whose stores take one pool's block cache, merges'
+    /// bytes and records' pending sets, their part of the job's, and their
+    /// stores' config.
+    pooled: Option<(std::collections::HashSet<String>, Pool, RunConfig)>,
     operators: usize,
     /// The job's memory; 0 for no limit.
     memory: u64,
     disk: Option<Arc<DiskCache>>,
     /// What each operator's lanes hold in memory, by operator and lane.
     held: Mutex<HashMap<(String, usize), usize>>,
+    /// The merges each operator's lanes gave up on, as last logged.
+    abandoned: Mutex<HashMap<String, u64>>,
     /// A test's: the engine is near its memory limit whatever it holds.
     #[cfg(test)]
     pub pressed: std::sync::atomic::AtomicBool,
@@ -156,6 +168,8 @@ impl JobState {
                 bytes: pending / operators.max(1),
                 key_groups,
             },
+            pending_bytes: pending,
+            pooled: None,
             config: RunConfig {
                 cache_bytes: cache,
                 merge: Some(MergeConfig {
@@ -169,11 +183,48 @@ impl JobState {
             memory,
             disk,
             held: Mutex::new(HashMap::new()),
+            abandoned: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pressed: Default::default(),
             #[cfg(test)]
             peak: Default::default(),
         })
+    }
+
+    /// Has `operators`, of the job's, share one [`Pool`] in place of each
+    /// its own block cache, merges' bytes and pending share: their part of
+    /// the job's, as they are of its operators, and of the pending bytes,
+    /// as this engine's lanes' `groups` are of the pipeline's key groups.
+    /// So the state of many streams' versions stays within the job's
+    /// budget, rather than each stream's taking at least the least an
+    /// operator takes, and a record carries the pending sets of the lanes
+    /// with changes, rather than a small share of each lane's.
+    pub fn pooled(mut self, operators: std::collections::HashSet<String>, groups: u32) -> Self {
+        let (v, n) = (operators.len(), self.operators);
+        if v == 0 {
+            return self;
+        }
+        let most = MAX_CACHE.saturating_mul(v);
+        let cache = match self.memory {
+            0 => most,
+            m => usize::try_from(m / CACHE_SHARE * v as u64 / n as u64)
+                .unwrap_or(most)
+                .clamp(MIN_CACHE, most),
+        };
+        let key_groups = u128::from(self.pending.key_groups.max(1));
+        let pending = self.pending_bytes as u128 * v as u128 / n as u128;
+        let pending = pending * u128::from(groups.min(self.pending.key_groups)) / key_groups;
+        let config = RunConfig {
+            cache_bytes: cache,
+            merge: Some(MergeConfig {
+                max_bytes: cache as u64,
+                ..MergeConfig::default()
+            }),
+            ..RunConfig::default()
+        };
+        let pool = Pool::new(cache, usize::try_from(pending).unwrap_or(usize::MAX));
+        self.pooled = Some((operators, pool, config));
+        self
     }
 
     /// Whether the engine is near its memory limit.
@@ -226,19 +277,41 @@ impl JobState {
             }
             held.values().sum()
         };
-        let caches: usize = self
-            .stores
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .map(RunStores::cache_bytes)
-            .sum();
-        let all = (lanes + caches) as u64;
+        let all = (lanes + self.cache_bytes()) as u64;
         crate::memory::set_state(all);
         #[cfg(test)]
         self.peak
             .fetch_max(all, std::sync::atomic::Ordering::Relaxed);
         all
+    }
+
+    /// The merges `operator`'s lanes gave up on, storage having failed
+    /// their reads time after time, where that's more than when last
+    /// asked: the engine logs each rise once.
+    pub fn abandoned_merges(&self, operator: &str) -> Option<u64> {
+        let now = self.stores(operator).counts().merges_abandoned;
+        let mut seen = self
+            .abandoned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let was = seen.entry(operator.to_owned()).or_default();
+        (now > *was).then(|| {
+            *was = now;
+            now
+        })
+    }
+
+    /// What the block caches of the job's operators hold: a pool's once.
+    pub fn cache_bytes(&self) -> usize {
+        let own: usize = self
+            .stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(op, _)| !self.is_pooled(op))
+            .map(|(_, s)| s.cache_bytes())
+            .sum();
+        own + self.pooled.as_ref().map_or(0, |p| p.1.cache_bytes())
     }
 
     /// What the job's state may hold in memory, in all, near the engine's
@@ -263,6 +336,17 @@ impl JobState {
         self.read_only
     }
 
+    /// Where run `run` of `operator` is, as a URL of the state's store: a
+    /// path a person can find it at.
+    pub fn url(&self, operator: &str, run: &str) -> String {
+        let base = self.location.base.trim_end_matches('/');
+        format!("{base}/{}/{run}", dir(operator))
+    }
+
+    fn is_pooled(&self, operator: &str) -> bool {
+        self.pooled.as_ref().is_some_and(|p| p.0.contains(operator))
+    }
+
     /// Where `operator`'s lanes keep their runs.
     pub fn stores(&self, operator: &str) -> RunStores {
         let mut stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
@@ -271,14 +355,16 @@ impl JobState {
             .or_insert_with(|| {
                 let prefix = self.location.prefix.clone().join(dir(operator));
                 let objects = Arc::new(ObjectStorage::new(self.location.store.clone(), prefix));
-                match &self.disk {
-                    Some(d) => RunStores::with_disk(
-                        objects,
-                        self.config.clone(),
-                        d.clone(),
-                        &dir(operator),
-                    ),
-                    None => RunStores::new(objects, self.config.clone()),
+                let space = dir(operator);
+                match (&self.pooled, &self.disk) {
+                    (Some((ops, pool, config)), d) if ops.contains(operator) => {
+                        let disk = d.as_ref().map(|d| (d.clone(), space.as_str()));
+                        RunStores::pooled(objects, config.clone(), disk, pool)
+                    }
+                    (_, Some(d)) => {
+                        RunStores::with_disk(objects, self.config.clone(), d.clone(), &space)
+                    }
+                    (_, None) => RunStores::new(objects, self.config.clone()),
                 }
                 .with_pending(self.pending)
             })
@@ -315,20 +401,44 @@ impl Drop for LaneState {
 
 /// The directory below the state URL that holds an operator's runs: its ID,
 /// where that's only letters, digits, `-` and `_`, and otherwise `x.` and
-/// the ID's bytes in hex, which no such ID can be.
+/// the ID's bytes in hex, which no such ID can be. Where that's longer than
+/// [`MAX_DIR`], it's `h.`, the ID's first [`DIR_PREFIX`] bytes with any
+/// other than those as `_`, `.` and a 128-bit hash of the ID in hex: two
+/// dots, which neither of the others has.
 pub fn dir(operator: &str) -> String {
     let plain = !operator.is_empty()
         && operator
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    match plain {
+    let named = match plain {
         true => operator.to_owned(),
         false => {
             let hex: String = operator.bytes().map(|b| format!("{b:02x}")).collect();
             format!("x.{hex}")
         }
+    };
+    if named.len() <= MAX_DIR {
+        return named;
     }
+    let readable: String = operator
+        .bytes()
+        .take(DIR_PREFIX)
+        .map(
+            |b| match b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
+                true => char::from(b),
+                false => '_',
+            },
+        )
+        .collect();
+    let hash = twox_hash::XxHash3_128::oneshot(operator.as_bytes());
+    format!("h.{readable}.{hash:032x}")
 }
+
+/// The longest directory name [`dir`] gives as the ID or its hex: file
+/// systems refuse a name over 255 bytes.
+const MAX_DIR: usize = 255;
+/// The bytes of a longer ID that its directory's name keeps.
+const DIR_PREFIX: usize = 64;
 
 /// The record's name for a lane's snapshot of `operator`, with the runs it
 /// names below the state URL.
@@ -389,7 +499,10 @@ pub fn snapshot(s: &StateSnapshot) -> Result<(String, Snapshot), JobError> {
 pub fn state_error(what: &str, e: &StateError) -> JobError {
     let code = match e {
         StateError::Store(_) => ErrorCode::Transient,
-        StateError::Snapshot(_) | StateError::Corrupt(_) => ErrorCode::CheckpointCorrupt,
+        StateError::Snapshot(_)
+        | StateError::Corrupt(_)
+        | StateError::Gone(_)
+        | StateError::Unreadable { .. } => ErrorCode::CheckpointCorrupt,
         StateError::Invalid(_) => ErrorCode::Internal,
     };
     JobError::new(code, format!("{what}: {e}"))
@@ -514,6 +627,30 @@ mod tests {
         }
     }
 
+    /// Many streams' versions share one pool: its block cache and merges
+    /// take their part of the job's, rather than each the least an
+    /// operator takes, and the job counts its cache once. An operator
+    /// outside the pool keeps its own.
+    #[test]
+    fn versions_share_a_pool_of_the_jobs_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let ops: std::collections::HashSet<String> =
+            (0..300).map(|i| format!("versions.t{i}")).collect();
+        let state = JobState::open(&url, false, 301, 768 << 20, 256, None, None)
+            .unwrap()
+            .pooled(ops, 128);
+        let (_, pool, config) = state.pooled.as_ref().unwrap();
+        let part = (768 << 20) / CACHE_SHARE as usize * 300 / 301;
+        assert_eq!(config.cache_bytes, part);
+        assert_eq!(config.merge.as_ref().unwrap().max_bytes, part as u64);
+        assert_eq!(state.config.cache_bytes, MIN_CACHE, "the window's own");
+        let (a, b) = (state.stores("versions.t0"), state.stores("versions.t1"));
+        assert!(!state.is_pooled("w") && state.is_pooled("versions.t7"));
+        assert_eq!(state.cache_bytes(), pool.cache_bytes());
+        assert_eq!(a.cache_bytes(), b.cache_bytes());
+    }
+
     /// A lane that ends, holding state, stops counting toward the job's,
     /// while one that goes on still counts.
     #[test]
@@ -538,5 +675,50 @@ mod tests {
         assert_eq!(dir("a/b"), "x.612f62");
         assert_eq!(dir("x.61"), "x.782e3631");
         assert_eq!(dir(""), "x.");
+        // The longest ID whose hex fits keeps it; a byte more doesn't.
+        let fits = format!("versions.{}", "s".repeat(117));
+        assert_eq!(dir(&fits).len(), 254);
+        assert!(dir(&fits).starts_with("x.76657273696f6e73"));
+        assert!(dir(&format!("{fits}s")).starts_with("h.versions_sss"));
+    }
+
+    /// A long ID's directory is bounded, readable, and its own: IDs that
+    /// share their first bytes get others, and none is another form's.
+    #[test]
+    fn a_long_ids_directory_is_bounded_and_its_own() {
+        let long = |tail: &str| format!("versions.public.{}{tail}", "t".repeat(200));
+        let (a, b) = (dir(&long("a")), dir(&long("b")));
+        assert_ne!(a, b);
+        for d in [&a, &b] {
+            assert!(d.len() <= MAX_DIR, "{d}");
+            assert!(d.starts_with("h.versions_public_ttt"), "{d}");
+            assert_eq!(d.matches('.').count(), 2, "{d}");
+        }
+        let plain = "w".repeat(300);
+        assert!(dir(&plain).starts_with("h.www") && dir(&plain).len() <= MAX_DIR);
+        // A run under it is written and read back on a file system.
+        let tmp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", tmp.path().display());
+        let state = JobState::open(&url, false, 1, 0, 16, Some(0), None).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            use openetl_state::{KeyRef, Layer, OperatorId};
+            let stores = state.stores(&long("a"));
+            let range = KeyGroupRange::new(0, 15);
+            let mut lane = Layer::open(&stores, 1, 1, range, &[]).await.unwrap();
+            lane.put_row(
+                OperatorId(0),
+                KeyRef::new(3, b"id"),
+                7,
+                Bytes::from_static(b"e"),
+            );
+            let record = lane.barrier(1).await.unwrap();
+            let mut back = Layer::open(&stores, 2, 2, range, &record).await.unwrap();
+            let slot = [(KeyRef::new(3, b"id"), 7)];
+            let got = back.row(OperatorId(0), &slot).await.unwrap();
+            assert_eq!(got, [Some(Bytes::from_static(b"e"))]);
+        });
     }
 }

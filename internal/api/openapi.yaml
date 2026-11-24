@@ -5573,6 +5573,15 @@ components:
                     description: |-
                         How long a SQL statement's dedupe over the stream that keeps each key's
                          first row remembers a key. Only with event_time.
+                volatileColumns:
+                    type: array
+                    items:
+                        type: string
+                    description: |-
+                        Columns, by source name, whose values can change on every read while
+                         the row doesn't, such as the time the source fetched it: they don't tell
+                         a version of a row from another, where a stream deduped at apply keeps
+                         its versions and where a window or OVER drops a row read again.
         PipelineVersion:
             type: object
             properties:

@@ -310,7 +310,10 @@ func pathText(p *apiv1.StreamPlan) string {
 }
 
 // The plan gives each stream its path: what its source gives, and where an
-// exchange sits on the way to the writer.
+// exchange sits on the way to the writer. A keyed stream read with
+// incremental and deduped at apply, as ranged is, has its writer lanes keep
+// the versions of its records by key group, which its splits by key don't
+// meet; deduped no more, its splits meet its writer's need.
 func TestPipelinePaths(t *testing.T) {
 	lanes := warehouse
 	lanes.WriterLanes = 8
@@ -337,13 +340,17 @@ func TestPipelinePaths(t *testing.T) {
 		t.Fatal(problems)
 	}
 	want := map[string]string{
-		"ranged":  "PARTITIONING_KIND_SPLITS[id] > " + writer + " PARTITIONING_KIND_SPLITS[id]",
+		"ranged":  "PARTITIONING_KIND_SPLITS[id] > " + writer + " after an exchange PARTITIONING_KIND_KEY_GROUP[id]",
 		"hashed":  "PARTITIONING_KIND_NONE[] > " + writer + " after an exchange PARTITIONING_KIND_KEY_GROUP[id]",
 		"changes": "PARTITIONING_KIND_NONE[] > " + writer + " after an exchange PARTITIONING_KIND_KEY_GROUP[id]",
 		"logs":    "PARTITIONING_KIND_NONE[] > " + writer + " PARTITIONING_KIND_NONE[]",
 	}
 	if got := paths(plans); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("paths\n%v\nwant\n%v", got, want)
+	}
+	plans, _, _ = Pipeline(&apiv1.PipelineSpec{Delivery: &apiv1.Delivery{Require: apiv1.DeliveryLevel_DELIVERY_LEVEL_AT_LEAST_ONCE}}, cat, lanes)
+	if got := pathText(plans[0]); got != "PARTITIONING_KIND_SPLITS[id] > "+writer+" PARTITIONING_KIND_SPLITS[id]" {
+		t.Errorf("ranged at least once: %s", got)
 	}
 	// Into one writer lane, every lane merges.
 	plans, _, _ = Pipeline(&apiv1.PipelineSpec{}, cat, warehouse)

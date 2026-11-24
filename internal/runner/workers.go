@@ -929,14 +929,15 @@ func (j *Job) coordinate(ctx, rctx context.Context, span trace.Span, sess *check
 	if err != nil {
 		return res, err
 	}
-	log.Debug("attempt laid out", "lanes", len(a.GetLanes()), "writer_lanes", len(a.GetWriterLanes()), "splits", layoutString(a), "exchange_between_workers", j.meshed(n))
+	mesh := j.meshed(n)
+	log.Debug("attempt laid out", "lanes", len(a.GetLanes()), "writer_lanes", len(a.GetWriterLanes()), "splits", layoutString(a), "exchange_between_workers", mesh)
 	f.writers, f.order = len(a.GetWriterLanes()), map[checkpoint.SplitRef]int{}
 	for _, l := range a.GetWriterLanes() {
 		f.writerWorkers = append(f.writerWorkers, int(l.GetWorker()))
 		kg := l.GetKeyGroups()
 		f.ranges = append(f.ranges, plan.KeyGroupRange{First: int(kg.GetFirst()), Last: int(kg.GetLast())})
 	}
-	if j.meshed(n) {
+	if mesh {
 		if a.Exchange, err = attempt.NewExchange(); err != nil {
 			return res, err
 		}
@@ -1126,7 +1127,7 @@ func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, don
 // attempt's layout, and a worker no more lanes than its writer lanes have
 // key groups.
 func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[string]bool, resplits bool) (*attemptv1.Assignment, error) {
-	mesh := j.meshed(n)
+	mesh, versions := j.meshed(n), j.versions()
 	load := make([]int, n)
 	inParts := make([]bool, n)
 	least := func() int { return slices.Index(load, slices.Min(load)) }
@@ -1139,7 +1140,7 @@ func (j *Job) layout(n int, splits map[string][]checkpoint.SplitState, done map[
 	changes := -1
 	for _, s := range j.Streams {
 		ss := splits[s.Name]
-		together := done[s.Name] || len(ss) <= 1 || j.oneWorker(s, mesh)
+		together := done[s.Name] || len(ss) <= 1 || j.oneWorker(s, mesh, versions)
 		w := least()
 		if s.Read == source.CDC && !done[s.Name] {
 			if changes < 0 {
@@ -1265,10 +1266,11 @@ type crossed struct {
 // lanes.
 func (j *Job) crossing() map[string][]crossed {
 	out := map[string][]crossed{}
+	versions := j.versions()
 	for _, s := range j.Streams {
 		for _, d := range j.fedBy(s.Name) {
 			_, keyed := j.keyedBy(d.Name)
-			if !keyed && !j.keyGrouped(d) {
+			if !keyed && !j.keyGrouped(d, versions) {
 				continue
 			}
 			c := crossed{key: j.exchangeKey(d)}
@@ -1309,20 +1311,22 @@ func (j *Job) meshed(n int) bool {
 	if n < 2 || !meshes(j.Dataflow) {
 		return false
 	}
-	return j.stateful() || slices.ContainsFunc(j.sinkStreams(), j.keyGrouped)
+	versions := j.versions()
+	return j.stateful() || slices.ContainsFunc(j.sinkStreams(), func(s Stream) bool { return j.keyGrouped(s, versions) })
 }
 
 // oneWorker says one worker reads all of s's splits: a destination's stream
 // it becomes, itself or a SQL transform's output from it, is an overwrite,
 // whose read one pump ends, or has an exchange before its writer and the
 // workers' engines don't exchange rows between them (mesh). An output's
-// partitioning is its stream's past the statement.
-func (j *Job) oneWorker(s Stream, mesh bool) bool {
+// partitioning is its stream's past the statement. versions is
+// j.versions().
+func (j *Job) oneWorker(s Stream, mesh bool, versions map[string]string) bool {
 	if j.SQL == nil {
-		return s.Mode == destination.Overwrite || !mesh && j.keyGrouped(s)
+		return s.Mode == destination.Overwrite || !mesh && j.keyGrouped(s, versions)
 	}
 	for _, o := range j.Outputs {
-		if o.From == s.Name && (o.Mode == destination.Overwrite || !mesh && j.keyGrouped(o)) {
+		if o.From == s.Name && (o.Mode == destination.Overwrite || !mesh && j.keyGrouped(o, versions)) {
 			return true
 		}
 	}

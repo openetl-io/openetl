@@ -51,6 +51,9 @@ type Stream struct {
 	Overrides map[string]arrow.DataType
 	// Timestamps keep nanoseconds, which the destination must too.
 	NanosecondTimestamps bool
+	// Columns, by source name, whose values can change on every read while
+	// the row doesn't: the hash of a row's values leaves them out.
+	VolatileColumns []string
 	// Overrides Settings.Require; 0: the pipeline's.
 	Require delivery.Level
 	// Whether rows with the same content become one; nil: the default
@@ -834,7 +837,8 @@ func (j *Job) reset(rec *checkpoint.Record) (*checkpoint.Record, string, []strin
 
 // restart is rec as an attempt that reads streams again from the start
 // restores it, a copy: without their positions, the state of the
-// statements that read them, or the state no statement keeps.
+// statements that read them, or the state no statement keeps. The
+// versions of their records stay, as their schemas do.
 func (j *Job) restart(rec *checkpoint.Record, streams []string) *checkpoint.Record {
 	cp := *rec
 	cp.Streams = maps.Clone(rec.Streams)
@@ -1622,6 +1626,9 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 		plan.SQL, plan.Outputs, plan.OutputSchemas = j.SQL, j.Outputs, outputSchemas
 		plan.StateURL = j.StateURL
 	}
+	if plan.Versions = j.versions(); plan.Versions != nil {
+		plan.StateURL = j.StateURL
+	}
 	if len(holdPlans) > 0 {
 		plan.HeldURL, plan.Holds = j.HeldURL, holdPlans
 	}
@@ -1629,7 +1636,7 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 	plan.Exchanges = j.exchanges(plan.WriterLanes)
 	plan.RecordSteps = j.recordsSteps()
 	if restored != nil {
-		plan.Snapshots = restored.Snapshots
+		plan.Snapshots = versionsState(restored.Snapshots, plan.Versions, restored.Versions)
 	}
 	if es, ok := j.Destination.(EngineSink); ok {
 		plan.Sink = es.EngineSink()
@@ -1645,11 +1652,12 @@ func (j *Job) plan(gen, first uint64, restored *checkpoint.Record, readStarts ma
 // the key groups of the statement's keys, which a redo reads it again by.
 func (j *Job) exchanges(writers int) map[string][]string {
 	var out map[string][]string
+	versions := j.versions()
 	for _, s := range j.sinkStreams() {
 		if _, keyed := j.keyedBy(s.Name); keyed {
 			continue
 		}
-		if cols := exchange(s, writers); cols != nil {
+		if cols := exchange(s, writers, versions[s.Name] != ""); cols != nil {
 			if out == nil {
 				out = map[string][]string{}
 			}
@@ -1662,9 +1670,13 @@ func (j *Job) exchanges(writers int) map[string][]string {
 // exchange is the columns a stream's rows are exchanged by before the
 // writer, on writers writer lanes: the writer's need, its primary key, where
 // the stream's partitioning doesn't meet it; nil where it does, as on one
-// writer lane, which every lane merges into.
-func exchange(s Stream, writers int) []string {
-	p := plan.Place(s.Partitioning, plan.WriterOperator(s.PrimaryKey, writers <= 1))
+// writer lane, which every lane merges into. A writer that keeps the
+// versions of the stream's records (versions) needs each key's rows on the
+// writer lane that owns its key group, which splits by key don't meet.
+func exchange(s Stream, writers int, versions bool) []string {
+	w := plan.WriterOperator(s.PrimaryKey, writers <= 1)
+	w.Need.KeyGroups = versions
+	p := plan.Place(s.Partitioning, w)
 	if !p.Steps[0].Exchange {
 		return nil
 	}
@@ -1702,10 +1714,10 @@ func (j *Job) exchangeKey(d Stream) []string {
 
 // keyGrouped says a stream's rows meet the writer through an exchange by key
 // group when there is more than one writer lane; a stateful statement's
-// output's never do (exchanges).
-func (j *Job) keyGrouped(s Stream) bool {
+// output's never do (exchanges). versions is j.versions().
+func (j *Job) keyGrouped(s Stream, versions map[string]string) bool {
 	_, keyed := j.keyedBy(s.Name)
-	return !keyed && exchange(s, 2) != nil
+	return !keyed && exchange(s, 2, versions[s.Name] != "") != nil
 }
 
 // sinkStarts are the starts of the reads of the destination's streams that
@@ -1780,7 +1792,8 @@ func (c *coordinator) begin(restored *checkpoint.Record) map[string][]byte {
 					splits[i].Reread = false
 				}
 				st.Rows = 0
-				c.carried[s.Name] = carried{st, splits}
+				versions := slices.DeleteFunc(slices.Clone(restored.Versions), func(sn checkpoint.Snapshot) bool { return sn.Operator != VersionsOperator(s.Name) })
+				c.carried[s.Name] = carried{st, splits, versions}
 				// The source isn't reading it, so it isn't told about it.
 				delete(c.ackStates, s.Name)
 			}
@@ -2041,6 +2054,8 @@ func (c *coordinator) commit(ctx context.Context, n uint64, st *epochState) (err
 type carried struct {
 	state  checkpoint.StreamState
 	splits []checkpoint.SplitState
+	// The versions of its records.
+	versions []checkpoint.Snapshot
 }
 
 // record writes epoch n's checkpoint record, and drops what the epoch
@@ -2052,7 +2067,6 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		KeyGroups:    c.job.keyGroups(),
 		Committables: make([][]byte, len(st.descs)),
 		Files:        recordFiles(st.flow.Files()),
-		Snapshots:    st.flow.Snapshots,
 		Operators:    checkpoint.Operators(st.flow.Operators, c.windows, st.flow.Snapshots),
 		Quarantine:   st.flow.Quarantine,
 		Sync:         c.job.Sync,
@@ -2060,6 +2074,13 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 		Reset:        c.reset,
 		ResetStreams: c.resetStreams,
 		CreatedAt:    time.Now().UTC(),
+	}
+	for _, s := range st.flow.Snapshots {
+		if isVersions(s.Operator) {
+			rec.Versions = append(rec.Versions, s)
+		} else {
+			rec.Snapshots = append(rec.Snapshots, s)
+		}
 	}
 	c.resetStreams = nil
 	if c.syncRows != nil {
@@ -2113,6 +2134,7 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	for name, cs := range c.carried {
 		rec.Streams[name] = cs.state
 		rec.SetSplits(name, cs.splits)
+		rec.Versions = append(rec.Versions, cs.versions...)
 	}
 	if c.job.transformed() {
 		rec.Outputs = make(map[string]checkpoint.OutputState, len(c.job.Outputs))

@@ -46,7 +46,7 @@ pub use layer::{Layer, Memory};
 pub use layout::{LAYOUT, SectionKind};
 pub use memory::MemoryBucket;
 pub use pending::VERSION as PENDING_VERSION;
-pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, RunConfig, RunStores};
+pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, Pool, RunConfig, RunStores};
 pub use store::{BoxFuture, Change, Horizons, PendingLimit, Snapshot, Store, Stores};
 
 /// A key's group, out of the pipeline's key groups, as routing gives it.
@@ -125,8 +125,29 @@ pub enum Error {
     /// What a store holds doesn't parse.
     #[error("corrupt state: {0}")]
     Corrupt(String),
+    /// Runs a snapshot names aren't in the store, by their names: deleted,
+    /// as retention does, rather than unreadable. A read names every run it
+    /// needed and found so, each once.
+    #[error("corrupt state: {}", missing(.0))]
+    Gone(Vec<String>),
+    /// A run a snapshot names is in the store, by its name, and can't be
+    /// read as the snapshot says: its bytes are damaged, or it isn't the
+    /// run named.
+    #[error("corrupt state: run {run}: {why}")]
+    Unreadable { run: String, why: String },
     #[error("store: {0}")]
     Store(String),
+}
+
+/// What [`Error::Gone`] says of its runs.
+fn missing(runs: &[String]) -> String {
+    match runs {
+        [run] => format!("run {run}, which a snapshot names, is missing"),
+        runs => format!(
+            "runs {}, which a snapshot names, are missing",
+            runs.join(", ")
+        ),
+    }
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

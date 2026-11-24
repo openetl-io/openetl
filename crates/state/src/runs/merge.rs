@@ -1,7 +1,14 @@
 //! Merging a lane's sections, by kind: which to merge, and the merge.
 //!
-//! - Rows and timers are never merged: they die whole as the horizon
-//!   passes them.
+//! - Timers are never merged: they die whole as the horizon passes them.
+//! - Rows merge only among sections of one time, all of whose rows are at
+//!   that time, by size, whichever operators' rows they are: a read's
+//!   versions, a window's rows at its end, OVER's or a dedupe's rows at a
+//!   coarse event time. They die whole as the horizon passes it, the
+//!   output with them, and a lookup at another time passes over them all.
+//!   Sections of rows at several times are left to die whole. A merge
+//!   drops rows the horizon passed, and deletes where no older section may
+//!   hold a row at that time.
 //! - Values merge lazily, by size: only while a lane names more values
 //!   sections than [`MergeConfig::values_bound`], since most windows'
 //!   accumulators die before a merge would reach them. A merge that takes
@@ -78,8 +85,10 @@ pub struct Candidate {
     pub stored: u64,
     /// Its entries' bytes, uncompressed.
     pub raw: u64,
-    /// Its least and greatest time: a set's expiries.
+    /// Its least and greatest time: rows' times, a set's expiries.
     pub times: Option<(i64, i64)>,
+    /// Of a run a merge couldn't read: it merges no more.
+    pub stuck: bool,
 }
 
 /// A merge to make: of a kind's sections `at`, in the lane's order.
@@ -87,7 +96,8 @@ pub struct Candidate {
 pub struct Plan {
     pub kind: SectionKind,
     pub at: Range<usize>,
-    /// It takes the lane's oldest, so a delete shadows nothing older.
+    /// No older section may hold what a delete it takes deletes: it takes
+    /// the lane's oldest, or, of rows, the oldest that may hold their time.
     pub oldest: bool,
 }
 
@@ -96,11 +106,63 @@ pub struct Plan {
 pub fn plan(sections: &[Vec<Candidate>; 4], config: &MergeConfig) -> Option<Plan> {
     let values = &sections[SectionKind::Values.index()];
     if values.len() > config.values_bound
-        && let Some(at) = pick(values, |_| true, 2, config)
+        && let Some(at) = pick(values, |c| !c.stuck, 2, config)
     {
         return Some(planned(SectionKind::Values, at, values.len()));
     }
-    let set = &sections[SectionKind::Set.index()];
+    let fanout = usize::try_from(config.fanout).unwrap_or(usize::MAX).max(2);
+    let set = set_plan(&sections[SectionKind::Set.index()], fanout, config);
+    let rows = rows_plan(&sections[SectionKind::Rows.index()], fanout, config);
+    let weight = |p: &Plan| {
+        let secs = &sections[p.kind.index()];
+        (
+            tier(secs[p.at.start].stored, config),
+            std::cmp::Reverse(p.at.len()),
+            p.at.start,
+        )
+    };
+    [set, rows].into_iter().flatten().min_by_key(weight)
+}
+
+/// The merge of a lane's rows, if any: sections of one time, at least
+/// `fanout` of one tier next to each other.
+fn rows_plan(rows: &[Candidate], fanout: usize, config: &MergeConfig) -> Option<Plan> {
+    let mut times: Vec<i64> = rows
+        .iter()
+        .filter_map(|c| c.times.filter(|(lo, hi)| lo == hi).map(|t| t.0))
+        .collect();
+    times.sort_unstable();
+    times.dedup();
+    let (t, at) = times
+        .into_iter()
+        .filter_map(|t| {
+            let at = pick(
+                rows,
+                |c| c.times == Some((t, t)) && !c.stuck,
+                fanout,
+                config,
+            )?;
+            Some((t, at))
+        })
+        .min_by_key(|(_, r)| {
+            (
+                tier(rows[r.start].stored, config),
+                std::cmp::Reverse(r.len()),
+                r.start,
+            )
+        })?;
+    let older = &rows[at.end..];
+    Some(Plan {
+        kind: SectionKind::Rows,
+        oldest: !older
+            .iter()
+            .any(|c| c.times.is_none_or(|(lo, hi)| lo <= t && t <= hi)),
+        at,
+    })
+}
+
+/// The merge of a lane's set, if any.
+fn set_plan(set: &[Candidate], fanout: usize, config: &MergeConfig) -> Option<Plan> {
     let expiring = |c: &Candidate| c.times.is_some_and(|(_, hi)| hi != NEVER);
     let newest = set.iter().filter(|c| expiring(c)).map(|c| c.times);
     let (lo, hi) = newest.fold((i64::MAX, i64::MIN), |(lo, hi), t| match t {
@@ -115,13 +177,13 @@ pub fn plan(sections: &[Vec<Candidate>; 4], config: &MergeConfig) -> Option<Plan
         .unwrap_or(i64::MAX);
     let fresh = |c: &Candidate| {
         expiring(c)
+            && !c.stuck
             && c.stored <= config.small_bytes
             && c.times
                 .is_some_and(|(_, b)| b.div_euclid(width) == hi.div_euclid(width))
     };
-    let fanout = usize::try_from(config.fanout).unwrap_or(usize::MAX).max(2);
     let small = pick(set, fresh, fanout, config);
-    let kept = pick(set, |c| !expiring(c), fanout, config);
+    let kept = pick(set, |c| !expiring(c) && !c.stuck, fanout, config);
     let best = [small, kept].into_iter().flatten().min_by_key(|r| {
         (
             tier(set[r.start].stored, config),
@@ -360,7 +422,7 @@ pub async fn merge(
             }
         }
         let Some(v) = newest else {
-            return Err(Error::Store("a merge lost its least key".into()));
+            return Err(Error::Invalid("a merge lost its least key".into()));
         };
         if gone(kind, &least, v.as_deref(), oldest, &horizons) {
             continue;
@@ -384,26 +446,28 @@ pub async fn merge(
 }
 
 /// Whether a merge leaves out an entry, its key's newest: a delete with
-/// nothing older to shadow, or a set's entry the horizon passed.
+/// nothing older to shadow, or a row or a set's entry the horizon passed,
+/// which no read gives, and a delete of such a row.
 fn gone(kind: SectionKind, k: &[u8], v: Option<&[u8]>, oldest: bool, horizons: &Horizons) -> bool {
-    let Some(v) = v else {
-        return oldest;
+    let time = match kind {
+        SectionKind::Rows => layout::parse_row(k).map(|r| r.1),
+        SectionKind::Set => v.and_then(layout::parse_time_value).filter(|e| *e != NEVER),
+        _ => None,
     };
-    if kind != SectionKind::Set {
-        return false;
+    let passed = match (layout::operator_of(k), layout::group_of(k), time) {
+        (Some(op), Some(g), Some(t)) => {
+            let h = horizons
+                .get(&(OperatorId(op.0), g.into()))
+                .copied()
+                .unwrap_or(i64::MIN);
+            h > i64::MIN && t <= h
+        }
+        _ => false,
+    };
+    match v {
+        None => oldest || passed,
+        Some(_) => passed,
     }
-    let (Some(op), Some(g), Some(expiry)) = (
-        layout::operator_of(k),
-        layout::group_of(k),
-        layout::parse_time_value(v),
-    ) else {
-        return false;
-    };
-    let h = horizons
-        .get(&(OperatorId(op.0), g.into()))
-        .copied()
-        .unwrap_or(i64::MIN);
-    expiry != NEVER && h > i64::MIN && expiry <= h
 }
 
 #[cfg(test)]
@@ -417,6 +481,7 @@ mod tests {
             stored,
             raw: stored,
             times,
+            stuck: false,
         }
     }
 
@@ -526,6 +591,7 @@ mod tests {
                         stored: 1,
                         raw: next(50),
                         times: None,
+                        stuck: false,
                     }
                 })
                 .collect();
@@ -573,6 +639,72 @@ mod tests {
         // buckets hold more.
         let few: Vec<_> = secs[10..].to_vec();
         assert_eq!(plan(&of(SectionKind::Set, few), &config), None);
+    }
+
+    /// Rows merge among sections of one time, a read's versions, once four
+    /// of a tier are next to each other; sections of rows at several times
+    /// never; deletes go where no older section may hold a row at the time.
+    #[test]
+    fn rows_of_one_time_merge_by_tier() {
+        let config = MergeConfig::default();
+        let at = |e: u64, t: i64| c(e, 1000, Some((t, t)));
+        // Newest first: three of read 20's, then five of read 10's.
+        let mut secs: Vec<_> = (0..3).map(|i| at(30 - i, 20)).collect();
+        secs.extend((0..5).map(|i| at(20 - i, 10)));
+        let p = plan(&of(SectionKind::Rows, secs.clone()), &config).unwrap();
+        assert_eq!(
+            p,
+            Plan {
+                kind: SectionKind::Rows,
+                at: 3..8,
+                oldest: true
+            }
+        );
+        // A section of both times, older, may hold a row of read 10's.
+        let mut mixed = secs.clone();
+        mixed.push(c(5, 1000, Some((10, 20))));
+        assert!(!plan(&of(SectionKind::Rows, mixed), &config).unwrap().oldest);
+        // Four of read 20's, and five of read 10's: the most of one tier,
+        // and alone, read 20's four, whose time no older section holds.
+        let mut four = vec![at(31, 20)];
+        four.extend(secs.iter().copied());
+        let p = plan(&of(SectionKind::Rows, four.clone()), &config).unwrap();
+        assert_eq!((p.at, p.oldest), (4..9, true));
+        let p = plan(&of(SectionKind::Rows, four[..5].to_vec()), &config).unwrap();
+        assert_eq!((p.at, p.oldest), (0..4, true));
+        // Rows at several times each, and sections of runs a merge
+        // couldn't read, merge none.
+        let spread: Vec<_> = (0..9)
+            .map(|i| c(20 - i, 1000, Some((i as i64, 9))))
+            .collect();
+        assert_eq!(plan(&of(SectionKind::Rows, spread), &config), None);
+        let mut stuck = secs.clone();
+        stuck[5].stuck = true;
+        assert_eq!(plan(&of(SectionKind::Rows, stuck), &config), None);
+        // A tier apart, no four of one tier are next to each other.
+        let tiers: Vec<_> = (0..8)
+            .map(|i| c(20 - i, 100 << (2 * (i % 2)), Some((10, 10))))
+            .collect();
+        assert_eq!(plan(&of(SectionKind::Rows, tiers), &config), None);
+    }
+
+    /// A merge leaves out rows the horizon passed, and deletes where it
+    /// takes the oldest, or of rows the horizon passed.
+    #[test]
+    fn a_merge_leaves_out_what_no_read_gives() {
+        let op = OperatorId(3);
+        let mut h = Horizons::new();
+        h.insert((op, 1), 10);
+        let row = |g: u16, t: i64| layout::row(g, op, t, b"id", 0);
+        assert!(gone(SectionKind::Rows, &row(1, 10), Some(b"e"), false, &h));
+        assert!(!gone(SectionKind::Rows, &row(1, 11), Some(b"e"), false, &h));
+        assert!(!gone(SectionKind::Rows, &row(2, 5), Some(b"e"), false, &h));
+        assert!(gone(SectionKind::Rows, &row(1, 9), None, false, &h));
+        assert!(!gone(SectionKind::Rows, &row(1, 11), None, false, &h));
+        assert!(gone(SectionKind::Rows, &row(1, 11), None, true, &h));
+        let value = layout::value(1, op, b"k");
+        assert!(!gone(SectionKind::Values, &value, Some(b"v"), true, &h));
+        assert!(gone(SectionKind::Values, &value, None, true, &h));
     }
 
     #[test]

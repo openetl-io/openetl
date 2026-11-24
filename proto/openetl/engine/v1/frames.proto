@@ -46,6 +46,9 @@ enum FrameKind {
   // Between engines only: where the frames after it go, until the next
   // ROUTE.
   FRAME_KIND_ROUTE = 12;
+  // Between engines only: a BATCH of held values, to the writer lane their
+  // rows went to.
+  FRAME_KIND_HELD = 13;
 }
 
 message Hello {

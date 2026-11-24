@@ -50,12 +50,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::{Add, Range, Sub};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use bytes::Bytes;
+use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use futures_util::{StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions};
 use twox_hash::XxHash3_128;
@@ -162,6 +162,11 @@ pub struct Counts {
     /// Merges whose outputs took their inputs' place, written or, where
     /// nothing was left, not.
     pub merges: u64,
+    /// Merges dropped because storage failed a read of theirs, and of
+    /// those, the merges after which a lane gave up on their inputs, which
+    /// merge no more in its life, as an unreadable input's run.
+    pub merges_failed: u64,
+    pub merges_abandoned: u64,
     /// Keys' and values' bytes that barriers wrote: the changes, before the
     /// format's overhead and compression.
     pub changed_bytes: u64,
@@ -205,6 +210,8 @@ impl Add for Counts {
             merge_read: self.merge_read + o.merge_read,
             disk: self.disk + o.disk,
             merges: self.merges + o.merges,
+            merges_failed: self.merges_failed + o.merges_failed,
+            merges_abandoned: self.merges_abandoned + o.merges_abandoned,
             changed_bytes: self.changed_bytes + o.changed_bytes,
             changed: by_kind(self.changed, o.changed, u64::wrapping_add),
             flushed: by_kind(self.flushed, o.flushed, u64::wrapping_add),
@@ -239,6 +246,8 @@ impl Sub for Counts {
             merge_read: self.merge_read - o.merge_read,
             disk: self.disk - o.disk,
             merges: self.merges.saturating_sub(o.merges),
+            merges_failed: self.merges_failed.saturating_sub(o.merges_failed),
+            merges_abandoned: self.merges_abandoned.saturating_sub(o.merges_abandoned),
             changed_bytes: self.changed_bytes.saturating_sub(o.changed_bytes),
             changed: by_kind(self.changed, o.changed, u64::saturating_sub),
             flushed: by_kind(self.flushed, o.flushed, u64::saturating_sub),
@@ -278,6 +287,8 @@ struct Counters {
     merge_read: (AtomicU64, AtomicU64),
     disk: (AtomicU64, AtomicU64),
     merges: AtomicU64,
+    merges_failed: AtomicU64,
+    merges_abandoned: AtomicU64,
     changed_bytes: AtomicU64,
     changed: [AtomicU64; 4],
     flushed: [AtomicU64; 4],
@@ -314,6 +325,8 @@ impl Counters {
             merge_read: r(&self.merge_read),
             disk: r(&self.disk),
             merges: l(&self.merges),
+            merges_failed: l(&self.merges_failed),
+            merges_abandoned: l(&self.merges_abandoned),
             changed_bytes: l(&self.changed_bytes),
             changed: k(&self.changed),
             flushed: k(&self.flushed),
@@ -333,7 +346,7 @@ pub trait Objects: Send + Sync {
     fn put_new<'a>(&'a self, name: &'a str, data: Bytes) -> BoxFuture<'a, Result<()>>;
 
     /// Bytes `range` of `name`, all of them. A missing `name` is
-    /// [`Error::Corrupt`]: only a snapshot names a run to read.
+    /// [`Error::Gone`]: only a snapshot names a run to read.
     fn get_range<'a>(&'a self, name: &'a str, range: Range<u64>) -> BoxFuture<'a, Result<Bytes>>;
 }
 
@@ -353,7 +366,61 @@ impl ObjectStorage {
         name.split('/')
             .fold(self.prefix.clone(), |p, part| p.join(part))
     }
+
+    /// After a read of run `name` found it missing: [`Error::Gone`] once a
+    /// look after each wait of [`CONFIRM`] finds it missing too, as a run
+    /// a snapshot names won't be there on a retry. Ok where one finds it,
+    /// for a read again: a store can answer a read with not found while it
+    /// holds the object, as some do in a partial outage.
+    async fn confirm_gone(&self, name: &str, path: &Path) -> Result<()> {
+        for wait in CONFIRM {
+            tokio::time::sleep(wait).await;
+            let head = GetOptions::new().with_head(true);
+            match self.store.get_opts(path, head).await {
+                Err(object_store::Error::NotFound { .. }) => {}
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    return Err(Error::Store(format!(
+                        "reading run {name}: not found, then {e}"
+                    )));
+                }
+            }
+        }
+        Err(Error::Gone(vec![name.to_owned()]))
+    }
 }
+
+impl ObjectStorage {
+    /// What a read of `range` of run `name` that failed with `e` fails
+    /// with: [`Error::Unreadable`] where the object is shorter than the
+    /// range reaches, as a run cut short is, whose reads a store refuses
+    /// as of an invalid range, on every retry; else [`Error::Store`].
+    async fn failed(
+        &self,
+        name: &str,
+        path: &Path,
+        range: &Range<u64>,
+        e: object_store::Error,
+    ) -> Error {
+        let head = GetOptions::new().with_head(true);
+        match self.store.get_opts(path, head).await {
+            Ok(r) if r.meta.size < range.end => Error::Unreadable {
+                run: name.to_owned(),
+                why: format!(
+                    "{} bytes, where a read of bytes {} to {} found it short: {e}",
+                    r.meta.size, range.start, range.end
+                ),
+            },
+            _ => Error::Store(format!("reading run {name}: {e}")),
+        }
+    }
+}
+
+/// The waits before each look whether a run a read found missing is there.
+const CONFIRM: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(200),
+    std::time::Duration::from_secs(1),
+];
 
 impl Objects for ObjectStorage {
     fn put_new<'a>(&'a self, name: &'a str, data: Bytes) -> BoxFuture<'a, Result<()>> {
@@ -379,27 +446,28 @@ impl Objects for ObjectStorage {
     fn get_range<'a>(&'a self, name: &'a str, range: Range<u64>) -> BoxFuture<'a, Result<Bytes>> {
         Box::pin(async move {
             let want = range.end - range.start;
-            let opts = GetOptions::new().with_range(Some(range));
-            let read = async {
-                self.store
-                    .get_opts(&self.path(name), opts)
-                    .await?
-                    .bytes()
-                    .await
+            let path = self.path(name);
+            let read = || async {
+                let opts = GetOptions::new().with_range(Some(range.clone()));
+                self.store.get_opts(&path, opts).await?.bytes().await
             };
-            // A run a snapshot names that isn't there won't be on a retry.
-            let b = read.await.map_err(|e| match e {
-                object_store::Error::NotFound { .. } => {
-                    Error::Corrupt(format!("run {name}, which a snapshot names, is missing"))
+            let b = match read().await {
+                Ok(b) => b,
+                Err(object_store::Error::NotFound { .. }) => {
+                    self.confirm_gone(name, &path).await?;
+                    match read().await {
+                        Ok(b) => b,
+                        Err(e) => return Err(self.failed(name, &path, &range, e).await),
+                    }
                 }
-                e => Error::Store(format!("reading run {name}: {e}")),
-            })?;
+                Err(e) => return Err(self.failed(name, &path, &range, e).await),
+            };
             match b.len() as u64 == want {
                 true => Ok(b),
-                false => Err(Error::Corrupt(format!(
-                    "run {name}: {} bytes where {want} were asked for",
-                    b.len()
-                ))),
+                false => Err(Error::Unreadable {
+                    run: name.to_owned(),
+                    why: format!("{} bytes where {want} were asked for", b.len()),
+                }),
             }
         })
     }
@@ -411,19 +479,28 @@ struct Shared {
     /// The disk cache, and this store's namespace in it.
     disk: Option<(Arc<DiskCache>, String)>,
     counters: Counters,
-    cache: Mutex<BlockCache>,
-    /// The next run a lane opens or writes: its blocks' key in the cache.
-    next_id: AtomicU64,
+    /// Its own, or its [`Pool`]'s.
+    cache: Arc<Mutex<BlockCache>>,
     /// The most bytes a lane held at once reading values sections whole.
     learn_peak: AtomicU64,
     /// The bytes its lanes' merges in flight take, of the merge config's
-    /// `max_bytes`.
-    merging: AtomicU64,
+    /// `max_bytes`: its own, or its [`Pool`]'s.
+    merging: Arc<Budget>,
+    /// What its [`Pool`]'s records carry of pending sets, if it has one.
+    carried: Option<Arc<Carried>>,
+    /// Each lane's last early flush, by its generation and key groups: the
+    /// epoch, and the flush's number. A store opened again on a lane's
+    /// groups counts on from it, so no name is written twice.
+    early: Mutex<HashMap<(u64, KeyGroupRange), (u64, u32)>>,
 }
+
+/// The next run a lane opens or writes, of any store: its blocks' key in a
+/// cache, which a [`Pool`]'s stores share.
+static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
 
 impl Shared {
     fn id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        NEXT_RUN.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Bytes `offset` to `offset + len` of run `name`, if the disk cache
@@ -459,6 +536,84 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// What the stores of several operators share, where they take one budget
+/// rather than each its own: a block cache, the bytes their merges in
+/// flight take, and what a record carries of their lanes' pending sets.
+#[derive(Clone)]
+pub struct Pool {
+    cache: Arc<Mutex<BlockCache>>,
+    merging: Arc<Budget>,
+    carried: Arc<Carried>,
+}
+
+impl Pool {
+    /// A pool of a block cache of `cache_bytes`, whose records carry at
+    /// most `pending_bytes` of its stores' lanes' pending sets each. Its
+    /// stores' merges in flight take their config's `max_bytes` together.
+    pub fn new(cache_bytes: usize, pending_bytes: usize) -> Self {
+        Self {
+            cache: Arc::new(Mutex::new(BlockCache::new(cache_bytes))),
+            merging: Arc::default(),
+            carried: Arc::new(Carried {
+                bytes: pending_bytes,
+                epochs: Mutex::default(),
+            }),
+        }
+    }
+
+    /// The block cache's bytes.
+    pub fn cache_bytes(&self) -> usize {
+        lock(&self.cache).bytes()
+    }
+}
+
+/// What a pool's records carry of its lanes' pending sets, by epoch: a
+/// lane's barrier takes its set's bytes of its epoch's record, while they
+/// fit, so each record carries at most `bytes`, whichever lanes' sets
+/// those are and in whatever order their barriers come.
+struct Carried {
+    bytes: usize,
+    epochs: Mutex<CarriedEpochs>,
+}
+
+#[derive(Default)]
+struct CarriedEpochs {
+    /// The bytes each epoch's record carries so far.
+    taken: BTreeMap<u64, usize>,
+    /// Epochs before this one are no longer counted: a set of one is
+    /// committed.
+    floor: u64,
+}
+
+/// The epochs a pool counts at once: a lane further behind the newest
+/// commits its pending set.
+const CARRIED_EPOCHS: usize = 64;
+
+impl Carried {
+    /// Whether a lane's pending set of `bytes` rides in epoch `epoch`'s
+    /// record, which then carries them.
+    fn take(&self, epoch: u64, bytes: usize) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        let mut c = lock(&self.epochs);
+        if epoch < c.floor {
+            return false;
+        }
+        let taken = c.taken.entry(epoch).or_default();
+        let fits = taken.checked_add(bytes).is_some_and(|t| t <= self.bytes);
+        if fits {
+            *taken += bytes;
+        }
+        while c.taken.len() > CARRIED_EPOCHS {
+            if let Some((e, _)) = c.taken.pop_first() {
+                c.floor = e + 1;
+            }
+        }
+        fits
+    }
+}
+
 /// Stores of runs, for the lanes of a job or a worker: they share its
 /// config, its block cache and its counts.
 #[derive(Clone)]
@@ -469,7 +624,7 @@ pub struct RunStores {
 
 impl RunStores {
     pub fn new(objects: Arc<dyn Objects>, config: RunConfig) -> Self {
-        Self::cached(objects, config, None)
+        Self::cached(objects, config, None, None)
     }
 
     /// Stores over `disk`, if any, under namespace `space`: each name a
@@ -480,15 +635,38 @@ impl RunStores {
         disk: Arc<DiskCache>,
         space: &str,
     ) -> Self {
-        Self::cached(objects, config, Some((disk, space.to_owned())))
+        Self::cached(objects, config, Some((disk, space.to_owned())), None)
+    }
+
+    /// Stores that take `pool`'s block cache, merges' bytes and records'
+    /// pending sets with the other stores of it, in place of their own,
+    /// over `disk` as [`RunStores::with_disk`]'s, if any. `config`'s
+    /// `cache_bytes` is unused; its merges' `max_bytes` bounds the pool's
+    /// merges in flight, so its stores take the same.
+    pub fn pooled(
+        objects: Arc<dyn Objects>,
+        config: RunConfig,
+        disk: Option<(Arc<DiskCache>, &str)>,
+        pool: &Pool,
+    ) -> Self {
+        let disk = disk.map(|(d, space)| (d, space.to_owned()));
+        Self::cached(objects, config, disk, Some(pool))
     }
 
     fn cached(
         objects: Arc<dyn Objects>,
         config: RunConfig,
         disk: Option<(Arc<DiskCache>, String)>,
+        pool: Option<&Pool>,
     ) -> Self {
-        let cache = Mutex::new(BlockCache::new(config.cache_bytes));
+        let (cache, merging, carried) = match pool {
+            Some(p) => (p.cache.clone(), p.merging.clone(), Some(p.carried.clone())),
+            None => (
+                Arc::new(Mutex::new(BlockCache::new(config.cache_bytes))),
+                Arc::default(),
+                None,
+            ),
+        };
         Self {
             shared: Arc::new(Shared {
                 objects,
@@ -496,9 +674,10 @@ impl RunStores {
                 disk,
                 counters: Counters::default(),
                 cache,
-                next_id: AtomicU64::new(0),
                 learn_peak: AtomicU64::new(0),
-                merging: AtomicU64::new(0),
+                merging,
+                carried,
+                early: Mutex::default(),
             }),
             pending: PendingLimit::default(),
         }
@@ -626,8 +805,11 @@ impl RunStores {
             unopened: AtomicUsize::new(0),
             horizons,
             merging: None,
-            early: (0, 0),
             kept: HashSet::new(),
+            stuck: HashSet::new(),
+            lane: NEXT_LANE.fetch_add(1, Ordering::Relaxed),
+            failed: 0,
+            retry_at: 0,
         };
         for (_, b) in runs {
             if b.sections.is_empty() {
@@ -644,6 +826,7 @@ impl RunStores {
                 named: b.named,
                 keep,
                 open: OnceLock::new(),
+                read: AtomicBool::new(false),
             });
             let part = parts.get(&run.name).copied().unwrap_or(LAST);
             for s in b.sections {
@@ -723,6 +906,11 @@ struct Run {
     /// The key groups the lane reads each kind of section for.
     keep: [Vec<KeyGroupRange>; 4],
     open: OnceLock<Opened>,
+    /// A read of the lane's took a block of it, or the lane wrote it: what
+    /// it holds may be in what the lane gave, from a cache too. A run only
+    /// opened, as a merge or a filter's answer opens one, holds nothing a
+    /// read took.
+    read: AtomicBool,
 }
 
 struct Opened {
@@ -735,7 +923,7 @@ impl Run {
         self.open
             .get()
             .and_then(|o| o.sections[kind.index()].as_ref())
-            .ok_or_else(|| Error::Store(format!("run {} read before it was opened", self.name)))
+            .ok_or_else(|| Error::Invalid(format!("run {} read before it was opened", self.name)))
     }
 }
 
@@ -755,6 +943,15 @@ struct Sec {
 impl Sec {
     fn counts_for(&self, group: u16) -> bool {
         self.handle.groups.contains(group.into())
+    }
+
+    /// Whether it may hold a row at `time`, by the least and greatest time
+    /// it holds; any key of another kind, with no time.
+    fn may_hold_at(&self, time: Option<i64>) -> bool {
+        match (time, self.handle.times) {
+            (Some(t), Some((lo, hi))) => lo <= t && t <= hi,
+            _ => true,
+        }
     }
 
     fn id(&self) -> SecId {
@@ -799,6 +996,75 @@ struct Merging {
     _reserved: Reserved,
 }
 
+/// What lanes' merges in flight take of a bound of bytes, which lanes take
+/// in turns: a lane refused for want of room waits in line, and the first
+/// in line takes room once it fits, which others leave it: another takes
+/// only room the first's need leaves. So a lane whose barrier comes late
+/// in each epoch gets its turn, rather than lanes before it taking whatever
+/// their merges release. A lane asks at each of its barriers, so a place
+/// whose lane hasn't asked for a whole epoch lapses: a lane that stops
+/// coming to barriers, as one whose stream ended, holds no one up.
+#[derive(Default)]
+struct Budget(Mutex<Taken>);
+
+#[derive(Default)]
+struct Taken {
+    bytes: u64,
+    /// Lanes refused, by token, in the order they were, with what each
+    /// asked for last, and the epoch it asked at.
+    waiting: VecDeque<(u64, u64, u64)>,
+}
+
+impl Budget {
+    /// Takes `bytes` of `of` for lane `lane`, at its barrier of `epoch`,
+    /// where they fit and leave the first in line its room, or the lane is
+    /// first; else puts it in line, if it isn't, with what it asks for.
+    fn take(&self, lane: u64, bytes: u64, of: u64, epoch: u64) -> bool {
+        let mut t = lock(&self.0);
+        while t
+            .waiting
+            .front()
+            .is_some_and(|w| w.0 != lane && w.2.saturating_add(1) < epoch)
+        {
+            t.waiting.pop_front();
+        }
+        let kept = match t.waiting.front() {
+            Some(&(first, _, _)) if first == lane => 0,
+            Some(&(_, need, _)) => need,
+            None => 0,
+        };
+        let fits = t
+            .bytes
+            .checked_add(bytes)
+            .and_then(|n| n.checked_add(kept))
+            .is_some_and(|n| n <= of);
+        if fits {
+            t.bytes += bytes;
+            t.waiting.retain(|w| w.0 != lane);
+            return true;
+        }
+        match t.waiting.iter_mut().find(|w| w.0 == lane) {
+            Some(w) => (w.1, w.2) = (bytes, epoch),
+            None => t.waiting.push_back((lane, bytes, epoch)),
+        }
+        false
+    }
+
+    /// Lane `lane` wants no merge now, or is gone: it leaves the line.
+    fn leave(&self, lane: u64) {
+        let mut t = lock(&self.0);
+        t.waiting.retain(|w| w.0 != lane);
+    }
+
+    fn give(&self, bytes: u64) {
+        let mut t = lock(&self.0);
+        t.bytes = t.bytes.saturating_sub(bytes);
+    }
+}
+
+/// The next lane, of any store: its place in a [`Budget`]'s line.
+static NEXT_LANE: AtomicU64 = AtomicU64::new(0);
+
 /// Bytes a merge takes of what its [`RunStores`]' merges may take at once,
 /// until it's dropped.
 struct Reserved {
@@ -807,23 +1073,20 @@ struct Reserved {
 }
 
 impl Reserved {
-    fn take(shared: &Arc<Shared>, bytes: u64, of: u64) -> Option<Reserved> {
+    fn take(shared: &Arc<Shared>, lane: u64, bytes: u64, of: u64, epoch: u64) -> Option<Reserved> {
         shared
             .merging
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_add(bytes).filter(|t| *t <= of)
+            .take(lane, bytes, of, epoch)
+            .then(|| Reserved {
+                shared: shared.clone(),
+                bytes,
             })
-            .ok()?;
-        Some(Reserved {
-            shared: shared.clone(),
-            bytes,
-        })
     }
 }
 
 impl Drop for Reserved {
     fn drop(&mut self) {
-        self.shared.merging.fetch_sub(self.bytes, Ordering::Relaxed);
+        self.shared.merging.give(self.bytes);
     }
 }
 
@@ -941,48 +1204,63 @@ fn passed(s: &SectionRef, horizons: &Horizons) -> bool {
         })
 }
 
+/// What a read of `run` that it can't take as named fails with: damage,
+/// and a run other than the one named, as [`Error::Unreadable`]; a run
+/// that's gone and storage that failed as they are.
+fn unreadable(run: &str) -> impl Fn(Error) -> Error + '_ {
+    move |e| match e {
+        Error::Corrupt(why) | Error::Snapshot(why) => Error::Unreadable {
+            run: run.to_owned(),
+            why,
+        },
+        e => e,
+    }
+}
+
 /// Opens `run`, its named sections' indexes and filters, in one read
 /// that counts as one of `kind`. Whether this call opened it.
 async fn open_run(shared: &Shared, run: &Run, kind: &(AtomicU64, AtomicU64)) -> Result<bool> {
+    let damaged = unreadable(&run.name);
     let start = run.named.iter().map(|s| s.meta.0).min().unwrap_or(run.size);
     if start >= run.size {
-        return Err(Error::Snapshot(format!(
-            "run {} named past its end",
-            run.name
-        )));
+        return Err(damaged(Error::Snapshot("named past its end".into())));
     }
     let tail = match shared.disk_get(&run.name, start, run.size - start) {
         Some(t) => t,
         None => {
-            let t = shared.objects.get_range(&run.name, start..run.size).await?;
+            let t = shared
+                .objects
+                .get_range(&run.name, start..run.size)
+                .await
+                .map_err(&damaged)?;
             request(kind, t.len());
             shared.disk_put(&run.name, start, &t);
             t
         }
     };
-    let listed = format::footer(&tail)?;
+    let listed = format::footer(&tail).map_err(&damaged)?;
     let mut sections: [Option<OpenSection>; 4] = Default::default();
     let mut bytes = 0;
     for named in &run.named {
         let (offset, len) = named.meta;
         if !listed.contains(&(named.kind, offset, len)) {
-            return Err(Error::Corrupt(format!(
-                "run {} has no {:?} section where its snapshot says",
-                run.name, named.kind
-            )));
+            return Err(damaged(Error::Corrupt(format!(
+                "no {:?} section where its snapshot says",
+                named.kind
+            ))));
         }
         let at = usize::try_from(offset - start).unwrap_or(usize::MAX);
         let chunk = usize::try_from(len)
             .ok()
             .and_then(|len| tail.get(at..at.checked_add(len)?))
-            .ok_or_else(|| Error::Corrupt(format!("run {}: a section's meta", run.name)))?;
+            .ok_or_else(|| damaged(Error::Corrupt("a section's meta".into())))?;
         let keep = &run.keep[named.kind.index()];
-        let (info, open) = format::open_section(chunk, offset, keep)?;
+        let (info, open) = format::open_section(chunk, offset, keep).map_err(&damaged)?;
         if info.kind != named.kind || info.entries != named.entries {
-            return Err(Error::Corrupt(format!(
-                "run {}'s {:?} section isn't what its snapshot says",
-                run.name, named.kind
-            )));
+            return Err(damaged(Error::Corrupt(format!(
+                "its {:?} section isn't what its snapshot says",
+                named.kind
+            ))));
         }
         bytes += open.memory_bytes();
         sections[named.kind.index()] = Some(open);
@@ -1000,10 +1278,7 @@ async fn read_blocks(
     bs: Vec<&BlockMeta>,
     kind: &(AtomicU64, AtomicU64),
 ) -> Result<Vec<(BlockId, Bytes, bool)>> {
-    let named = |e: Error| match e {
-        Error::Corrupt(m) => Error::Corrupt(format!("run {}: {m}", run.name)),
-        e => e,
-    };
+    let damaged = unreadable(&run.name);
     let mut got: Vec<Option<(BlockId, Bytes, bool)>> = Vec::with_capacity(bs.len());
     let mut rest = Vec::new();
     for (i, b) in bs.iter().enumerate() {
@@ -1030,20 +1305,67 @@ async fn read_blocks(
                         .unwrap_or(bs[last].end())
             }
         };
-        let data = shared.objects.get_range(&run.name, span.clone()).await?;
+        let data = shared
+            .objects
+            .get_range(&run.name, span.clone())
+            .await
+            .map_err(&damaged)?;
         request(kind, data.len());
         for i in rest {
             let b = bs[i];
             let at = usize::try_from(b.offset - span.start).unwrap_or(usize::MAX);
             let stored = data
                 .get(at..at.saturating_add(b.stored as usize))
-                .ok_or_else(|| Error::Corrupt(format!("run {}: a block", run.name)))?;
-            let block = format::decode_block(stored, b.raw).map_err(named)?;
+                .ok_or_else(|| damaged(Error::Corrupt("a block".into())))?;
+            let block = format::decode_block(stored, b.raw).map_err(&damaged)?;
             shared.disk_put(&run.name, b.offset, stored);
             got[i] = Some(((run.id, b.offset), block, true));
         }
     }
     Ok(got.into_iter().flatten().collect())
+}
+
+/// The results of reads that each ran to its end: of their errors other
+/// than [`Error::Gone`], the one that most needs saying, whichever came
+/// first; else one that names every run they found gone, so that a reader
+/// finds them all in one pass, at the cost of one wait to confirm them.
+fn gather<T>(done: Vec<Result<T>>) -> Result<Vec<T>> {
+    let mut out = Vec::with_capacity(done.len());
+    let mut gone = Vec::new();
+    let mut worst: Option<Error> = None;
+    for r in done {
+        match r {
+            Ok(v) => out.push(v),
+            Err(Error::Gone(names)) => gone.extend(names),
+            Err(e) => {
+                if worst.as_ref().is_none_or(|w| rank(&e) < rank(w)) {
+                    worst = Some(e);
+                }
+            }
+        }
+    }
+    if let Some(e) = worst {
+        return Err(e);
+    }
+    if gone.is_empty() {
+        return Ok(out);
+    }
+    gone.sort();
+    gone.dedup();
+    Err(Error::Gone(gone))
+}
+
+/// Which of two errors of reads is said, the lower first: the engine's
+/// mistake; then state that can't be read, which a person deletes, and a
+/// retry would meet again; then storage that failed, which a retry may get
+/// past; then runs that are gone, which a reader may forget.
+fn rank(e: &Error) -> u8 {
+    match e {
+        Error::Invalid(_) => 0,
+        Error::Unreadable { .. } | Error::Corrupt(_) | Error::Snapshot(_) => 1,
+        Error::Store(_) => 2,
+        Error::Gone(_) => 3,
+    }
 }
 
 /// Writes a run placed in a lane, if any.
@@ -1068,11 +1390,30 @@ struct RunStore {
     /// keeps them.
     horizons: Horizons,
     merging: Option<Merging>,
-    /// The epoch of its last early flush, and that flush's number.
-    early: (u64, u32),
     /// The runs of early flushes of a pending set, which a discard of their
     /// epoch leaves.
     kept: HashSet<u64>,
+    /// Runs a merge couldn't read, gone or unreadable: they merge no more,
+    /// and the reads that need them meet them as they would have.
+    stuck: HashSet<u64>,
+    /// Its place in its merges' [`Budget`]'s line.
+    lane: u64,
+    /// Merges dropped in a row because storage failed a read of theirs,
+    /// and the epoch before which the lane starts none, waiting longer
+    /// after each.
+    failed: u32,
+    retry_at: u64,
+}
+
+/// Merges dropped in a row for storage that failed, after which a lane
+/// gives up on their inputs; and the most epochs it waits between them.
+const MERGE_TRIES: u32 = 5;
+const MERGE_WAIT: u64 = 64;
+
+impl Drop for RunStore {
+    fn drop(&mut self) {
+        self.shared.merging.leave(self.lane);
+    }
 }
 
 /// A key a lookup asks for, and how far down its sections it got.
@@ -1080,6 +1421,8 @@ struct Ask {
     at: usize,
     kind: SectionKind,
     group: u16,
+    /// A row's time.
+    time: Option<i64>,
     hash: u64,
     next: usize,
 }
@@ -1119,10 +1462,11 @@ impl RunStore {
             return Ok(());
         }
         let opens: Vec<_> = runs.into_iter().map(|r| self.open_run(r)).collect();
-        futures_util::stream::iter(opens)
+        let done = futures_util::stream::iter(opens)
             .buffer_unordered(self.shared.config.concurrency.max(1))
-            .try_collect::<Vec<()>>()
-            .await?;
+            .collect::<Vec<Result<()>>>()
+            .await;
+        gather(done)?;
         Ok(())
     }
 
@@ -1142,9 +1486,11 @@ impl RunStore {
     ) -> Result<HashMap<BlockId, (Bytes, bool)>> {
         let mut out = HashMap::new();
         let mut misses: BTreeMap<u64, (&Arc<Run>, Vec<&BlockMeta>)> = BTreeMap::new();
+        let mut took: Vec<&Arc<Run>> = Vec::new();
         {
             let mut cache = lock(&self.shared.cache);
             for (run, b) in want {
+                took.push(run);
                 let id = (run.id, b.offset);
                 if out.contains_key(&id) {
                     continue;
@@ -1169,14 +1515,18 @@ impl RunStore {
             .into_iter()
             .map(|(run, span, bs)| self.read_blocks(run, span, bs, lookup))
             .collect();
-        let read = futures_util::stream::iter(reads)
+        let done = futures_util::stream::iter(reads)
             .buffer_unordered(config.concurrency.max(1))
-            .try_collect::<Vec<_>>()
-            .await?;
+            .collect::<Vec<Result<_>>>()
+            .await;
+        let read = gather(done)?;
         let mut cache = lock(&self.shared.cache);
         for (id, block, fetched) in read.into_iter().flatten() {
             cache.put(id, block.clone());
             out.insert(id, (block, fetched));
+        }
+        for run in took {
+            run.read.store(true, Ordering::Relaxed);
         }
         Ok(out)
     }
@@ -1222,10 +1572,15 @@ impl RunStore {
             };
             if self.range.contains(group.into()) {
                 let hash = filter::hash(layout::filtered(k));
+                let time = match kind {
+                    SectionKind::Rows => layout::parse_row(k).map(|r| r.1),
+                    _ => None,
+                };
                 asks.push(Ask {
                     at,
                     kind,
                     group,
+                    time,
                     hash,
                     next: 0,
                 });
@@ -1236,7 +1591,7 @@ impl RunStore {
             secs.extend(
                 self.sections[a.kind.index()]
                     .iter()
-                    .filter(|s| s.counts_for(a.group)),
+                    .filter(|s| s.counts_for(a.group) && s.may_hold_at(a.time)),
             );
         }
         let need = self.unopened(secs.into_iter());
@@ -1248,7 +1603,7 @@ impl RunStore {
                 let secs = &self.sections[a.kind.index()];
                 while let Some(s) = secs.get(a.next) {
                     a.next += 1;
-                    if !s.counts_for(a.group) {
+                    if !s.counts_for(a.group) || !s.may_hold_at(a.time) {
                         continue;
                     }
                     let open = s.run.section(a.kind)?;
@@ -1274,7 +1629,7 @@ impl RunStore {
             for (a, run, b) in probes {
                 let (block, read) = got
                     .get(&(run.id, b.offset))
-                    .ok_or_else(|| Error::Store("a block asked for and not read".into()))?;
+                    .ok_or_else(|| Error::Invalid("a block asked for and not read".into()))?;
                 let found = format::find(block, &keys[a.at])?;
                 match (found.is_some(), read) {
                     (_, false) => cached += 1,
@@ -1389,7 +1744,7 @@ impl RunStore {
                 for b in &c.open.blocks[r.clone()] {
                     let (block, _) = got
                         .get(&(c.sec.run.id, b.offset))
-                        .ok_or_else(|| Error::Store("a block asked for and not read".into()))?;
+                        .ok_or_else(|| Error::Invalid("a block asked for and not read".into()))?;
                     let mut at = 0;
                     while at < block.len() {
                         let (k, v) = format::entry(block, &mut at)?;
@@ -1539,7 +1894,7 @@ impl RunStore {
             self.shared.disk_put_run(p);
         }
         let snapshot = self.snapshot();
-        self.start_merge();
+        self.start_merge(epoch);
         Ok(vec![snapshot])
     }
 
@@ -1591,14 +1946,20 @@ impl RunStore {
         if changes.is_empty() {
             return Ok(());
         }
-        let n = match self.early {
-            (e, n) if e == epoch => n
-                .checked_add(1)
-                .filter(|n| *n < LAST)
-                .ok_or_else(|| Error::Invalid(format!("epoch {epoch} flushed early {n} times")))?,
-            _ => 1,
+        let n = {
+            let mut early = lock(&self.shared.early);
+            let last = early.entry((self.generation, self.range)).or_default();
+            let n = match *last {
+                (e, n) if e == epoch => {
+                    n.checked_add(1).filter(|n| *n < LAST).ok_or_else(|| {
+                        Error::Invalid(format!("epoch {epoch} flushed early {n} times"))
+                    })?
+                }
+                _ => 1,
+            };
+            *last = (epoch, n);
+            n
         };
-        self.early = (epoch, n);
         let content = self.shared.config.drop.then(|| {
             let values = changes
                 .iter()
@@ -1706,6 +2067,7 @@ impl RunStore {
             named: named.clone(),
             keep,
             open,
+            read: AtomicBool::new(true),
         });
         for s in named {
             let content = match s.kind {
@@ -1746,9 +2108,55 @@ impl RunStore {
         let Some(mut m) = self.merging.take() else {
             return Ok(None);
         };
+        // A merge only saves later reads, so one whose reads fail goes, of
+        // any kind of section, and the lane reads its inputs as before.
+        // Storage that failed may not again: a later barrier tries again,
+        // after 2, 4, … epochs, up to MERGE_WAIT, and after MERGE_TRIES the
+        // lane gives up on those inputs, as on unreadable ones. An input
+        // that's gone or can't be read merges no more: a read that needs it
+        // meets it, and a lane that keeps versions forgets a run that's
+        // gone. A merge's own mistake fails the barrier.
         let merged = match (&mut m.task.0).await {
-            Ok(r) => r?,
-            Err(e) => return Err(Error::Store(format!("a merge: {e}"))),
+            Ok(Ok(merged)) => {
+                self.failed = 0;
+                merged
+            }
+            Ok(Err(Error::Store(_))) => {
+                self.failed += 1;
+                add(&self.shared.counters.merges_failed, 1);
+                if self.failed >= MERGE_TRIES {
+                    let inputs: HashSet<u64> = m.inputs.iter().map(|i| i.0).collect();
+                    self.stuck.extend(inputs);
+                    self.failed = 0;
+                    add(&self.shared.counters.merges_abandoned, 1);
+                } else {
+                    let wait = (1u64 << self.failed).min(MERGE_WAIT);
+                    self.retry_at = epoch.saturating_add(wait);
+                }
+                return Ok(None);
+            }
+            Ok(Err(
+                e @ (Error::Gone(_)
+                | Error::Unreadable { .. }
+                | Error::Corrupt(_)
+                | Error::Snapshot(_)),
+            )) => {
+                let names = match e {
+                    Error::Gone(names) => names,
+                    Error::Unreadable { run, .. } => vec![run],
+                    _ => Vec::new(),
+                };
+                let inputs: HashSet<u64> = m.inputs.iter().map(|i| i.0).collect();
+                for r in &self.runs {
+                    let named = names.contains(&r.name);
+                    if named || names.is_empty() && inputs.contains(&r.id) {
+                        self.stuck.insert(r.id);
+                    }
+                }
+                return Ok(None);
+            }
+            Ok(Err(e)) => return Err(e),
+            Err(e) => return Err(Error::Invalid(format!("a merge that panicked: {e}"))),
         };
         let kind = m.kind;
         let secs = &self.sections[kind.index()];
@@ -1779,12 +2187,19 @@ impl RunStore {
         Ok(placed)
     }
 
-    /// Starts the merge the policy picks, if none is in flight.
-    fn start_merge(&mut self) {
+    /// Starts the merge the policy picks, at epoch `epoch`'s barrier, if
+    /// none is in flight, and it's the lane's turn to take room for it; a
+    /// lane without one leaves the line.
+    fn start_merge(&mut self, epoch: u64) {
         let Some(config) = &self.shared.config.merge else {
             return;
         };
         if self.merging.is_some() {
+            return;
+        }
+        let lane = self.lane;
+        if epoch < self.retry_at {
+            self.shared.merging.leave(lane);
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -1798,15 +2213,18 @@ impl RunStore {
                     stored: s.handle.stored_bytes,
                     raw: s.handle.raw_bytes,
                     times: s.handle.times,
+                    stuck: self.stuck.contains(&s.run.id),
                 })
                 .collect()
         });
         let Some(plan) = merge::plan(&candidates, config) else {
+            self.shared.merging.leave(lane);
             return;
         };
         let secs = &self.sections[plan.kind.index()][plan.at.clone()];
         let need: u64 = secs.iter().map(|s| s.handle.raw_bytes).sum();
-        let Some(reserved) = Reserved::take(&self.shared, need, config.max_bytes) else {
+        let Some(reserved) = Reserved::take(&self.shared, lane, need, config.max_bytes, epoch)
+        else {
             return;
         };
         let inputs: Vec<merge::Input> = secs
@@ -1923,6 +2341,7 @@ impl RunStore {
                     reading.push(async move {
                         let refs: Vec<&BlockMeta> = bs.iter().collect();
                         let blocks = this.read_blocks(&run, span, refs, restore).await?;
+                        run.read.store(true, Ordering::Relaxed);
                         Ok::<_, Error>((i, weight, blocks))
                     });
                 }
@@ -1962,6 +2381,7 @@ impl RunStore {
         self.drop_values();
         let read: HashSet<u64> = self.sections.iter().flatten().map(|s| s.run.id).collect();
         self.runs.retain(|r| read.contains(&r.id));
+        self.stuck.retain(|id| read.contains(id));
         let unopened = self.runs.iter().filter(|r| r.open.get().is_none()).count();
         self.unopened.store(unopened, Ordering::Relaxed);
     }
@@ -2099,6 +2519,36 @@ impl Store for RunStore {
         Box::pin(self.lookup(keys))
     }
 
+    /// Not a run a read of the lane's took a block of, or that it wrote:
+    /// what a read found in one, from a cache, a later read would no longer
+    /// find. A run only opened, by a merge or a lookup its filters answered,
+    /// holds nothing a read took, and goes; a merge in flight that reads it
+    /// goes unadopted with it.
+    fn forget(&mut self, name: &str) -> bool {
+        let Some(id) = self
+            .runs
+            .iter()
+            .find(|r| r.name == name && !r.read.load(Ordering::Relaxed))
+            .map(|r| r.id)
+        else {
+            return false;
+        };
+        for secs in &mut self.sections {
+            secs.retain(|s| s.run.id != id);
+        }
+        self.runs.retain(|r| r.id != id);
+        if self
+            .merging
+            .as_ref()
+            .is_some_and(|m| m.inputs.iter().any(|i| i.0 == id))
+        {
+            self.merging = None;
+        }
+        let unopened = self.runs.iter().filter(|r| r.open.get().is_none()).count();
+        self.unopened.store(unopened, Ordering::Relaxed);
+        true
+    }
+
     fn scan<'a>(
         &'a self,
         start: &'a [u8],
@@ -2127,6 +2577,13 @@ impl Store for RunStore {
 
     fn flushes(&self) -> bool {
         true
+    }
+
+    fn carry(&self, epoch: u64, bytes: usize, share: usize) -> bool {
+        match &self.shared.carried {
+            Some(c) => c.take(epoch, bytes),
+            None => bytes <= share,
+        }
     }
 
     fn flush<'a>(
@@ -2165,5 +2622,74 @@ impl Store for RunStore {
             .as_ref()
             .map_or(0, |m| m.memory.load(Ordering::Relaxed));
         runs + known + merging
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Of reads that failed in other ways, the error said is the one that
+    /// most needs a person, whichever came first: unreadable state over
+    /// storage that failed, over runs that are gone.
+    #[test]
+    fn reads_that_failed_say_the_error_that_needs_a_person() {
+        let unreadable = || Error::Unreadable {
+            run: "r".into(),
+            why: "damaged".into(),
+        };
+        let store = || Error::Store("down".into());
+        let gone = || Error::Gone(vec!["g".into()]);
+        for done in [
+            vec![Err(store()), Err(unreadable()), Ok(())],
+            vec![Ok(()), Err(unreadable()), Err(gone()), Err(store())],
+        ] {
+            let got = gather(done);
+            assert!(matches!(got, Err(Error::Unreadable { .. })), "{got:?}");
+        }
+        let got = gather::<()>(vec![Err(gone()), Err(store())]);
+        assert!(matches!(got, Err(Error::Store(_))), "{got:?}");
+    }
+
+    /// A merge task that panicked, a bug and not storage's failure, fails
+    /// the barrier that adopts it as the engine's mistake.
+    #[tokio::test]
+    async fn a_merge_that_panicked_fails_the_barrier_as_a_bug() {
+        let objects: Arc<dyn Objects> = Arc::new(ObjectStorage::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            Path::from("state"),
+        ));
+        let config = RunConfig {
+            merge: Some(MergeConfig {
+                wait: true,
+                ..MergeConfig::default()
+            }),
+            ..RunConfig::default()
+        };
+        let stores = RunStores::new(objects, config);
+        let range = KeyGroupRange::new(0, 15);
+        let mut store = stores.open_store(1, range, &[]).unwrap();
+        let horizons = Horizons::new();
+        let op = crate::OperatorId(1);
+        let change = |e: u64| {
+            let key = layout::row(3, op, 10, format!("id{e}").as_bytes(), 0);
+            (key, Some(Bytes::from_static(b"e")))
+        };
+        store.write(1, vec![change(1)], &horizons).await.unwrap();
+        let task = tokio::spawn(async { panic!("a bug") });
+        store.merging = Some(Merging {
+            kind: SectionKind::Rows,
+            inputs: store.sections[SectionKind::Rows.index()]
+                .iter()
+                .map(Sec::id)
+                .collect(),
+            epoch: 1,
+            task: Task(task),
+            memory: Arc::default(),
+            _reserved: Reserved::take(&store.shared, store.lane, 0, 1, 1).unwrap(),
+        });
+        let got = store.write(2, vec![change(2)], &horizons).await;
+        assert!(matches!(got, Err(Error::Invalid(_))), "{:?}", got.err());
     }
 }

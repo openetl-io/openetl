@@ -16,8 +16,8 @@ use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
 use openetl_state::runs::{Counts, RunName, named_runs, runs};
 use openetl_state::{
-    BoxFuture, Error, KeyGroupRange, KeyRef, LAYOUT, Layer, NEVER, ObjectStorage, Objects,
-    OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
+    BoxFuture, Error, KeyGroupRange, KeyRef, LAYOUT, Layer, MergeConfig, NEVER, ObjectStorage,
+    Objects, OperatorId, Pool, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 
 const OP: OperatorId = OperatorId(1);
@@ -50,6 +50,8 @@ struct Bucket {
     memory: Arc<InMemory>,
     storage: ObjectStorage,
     puts: AtomicU8,
+    /// Reads from now on that fail, as storage that's down a moment does.
+    failing: std::sync::atomic::AtomicU64,
 }
 
 impl Bucket {
@@ -60,6 +62,7 @@ impl Bucket {
             memory,
             storage,
             puts: AtomicU8::new(Puts::Work as u8),
+            failing: Default::default(),
         })
     }
 
@@ -112,7 +115,14 @@ impl Objects for Bucket {
     }
 
     fn get_range<'a>(&'a self, name: &'a str, range: Range<u64>) -> BoxFuture<'a, Result<Bytes>> {
-        self.storage.get_range(name, range)
+        let fails = self
+            .failing
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok();
+        match fails {
+            true => Box::pin(async { Err(Error::Store("a read that failed".into())) }),
+            false => self.storage.get_range(name, range),
+        }
     }
 }
 
@@ -503,7 +513,8 @@ async fn a_run_is_never_written_twice() {
 }
 
 /// Changed bytes anywhere in a run, a run cut short, or a snapshot that
-/// doesn't match its run: a read fails as corrupt, never with wrong state.
+/// doesn't match its run: a read fails as the run's, unreadable, never
+/// with wrong state.
 #[tokio::test]
 async fn corruption_is_caught() {
     let bucket = Bucket::new();
@@ -540,7 +551,8 @@ async fn corruption_is_caught() {
         bad[at] ^= 0x10;
         bucket.write(name, bad).await;
         let got = read_all(record.clone()).await;
-        assert!(matches!(got, Err(Error::Corrupt(_))), "byte {at}: {got:?}");
+        let named = matches!(&got, Err(Error::Unreadable { run, .. }) if run == name);
+        assert!(named, "byte {at}: {got:?}");
     }
     bucket.write(name, good[..good.len() - 8].to_vec()).await;
     assert!(read_all(record.clone()).await.is_err());
@@ -552,7 +564,8 @@ async fn corruption_is_caught() {
         data: openetl_state::runs::encode(&runs),
         ..record[0].clone()
     }];
-    assert!(matches!(read_all(lying).await, Err(Error::Corrupt(_))));
+    let got = read_all(lying).await;
+    assert!(matches!(got, Err(Error::Unreadable { .. })), "{got:?}");
 }
 
 /// What a restore refuses: snapshots that overlap or leave a group out,
@@ -605,6 +618,247 @@ async fn a_restore_refuses_what_it_cant_read() {
         lying[0].data = openetl_state::runs::encode(&named);
         assert!(matches!(open(lying).await, Some(Error::Snapshot(_))));
     }
+}
+
+/// A row put in place of another reads back by its key, from the open
+/// epoch and from a restore's runs, newest first, until a horizon passes
+/// its time.
+#[tokio::test]
+async fn a_put_row_reads_back_by_its_key() {
+    let s = stores(&Bucket::new(), RunConfig::default());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    ls[0].put_row(OP, k, 10, b("b"));
+    ls[0].put_row(OP, k, 20, b("c"));
+    let slots = [(k, 10), (k, 20), (k, 30), (KeyRef::new(8, b"id"), 10)];
+    let want = vec![Some(b("b")), Some(b("c")), None, None];
+    assert_eq!(ls[0].row(OP, &slots).await.unwrap(), want);
+    let all = barrier(&mut ls, 1).await;
+    let mut ls = open(&s, 2, 2, 1, &all).await;
+    assert_eq!(ls[0].row(OP, &slots).await.unwrap(), want);
+    // Put again in a later epoch, the slot's row is in two runs, and the
+    // newer one's reads.
+    ls[0].put_row(OP, k, 10, b("d"));
+    let all = barrier(&mut ls, 2).await;
+    let mut ls = open(&s, 3, 3, 1, &all).await;
+    assert_eq!(
+        ls[0].row(OP, &slots).await.unwrap(),
+        vec![Some(b("d")), Some(b("c")), None, None]
+    );
+    ls[0].expire_in(OP, 7, 10);
+    assert_eq!(
+        ls[0].row(OP, &slots[..2]).await.unwrap(),
+        vec![None, Some(b("c"))]
+    );
+}
+
+/// A read's rows put over many epochs, as a writer lane's versions are,
+/// merge by size: the runs named, and the filters a lookup of an id none
+/// holds asks, stay few however many epochs the read had. A lookup at
+/// another read's time asks none of them, a restore onto other lanes reads
+/// every row, and once the horizon passes the read, nothing is named.
+#[tokio::test]
+async fn a_reads_rows_over_many_epochs_merge() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let id = |n: u32| format!("id-{n:06}").into_bytes();
+    let at = |n: u32| n * 7 % GROUPS;
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let mut record = Vec::new();
+    for e in 1..=64u32 {
+        for n in e * 200..(e + 1) * 200 {
+            ls[0].put_row(OP, KeyRef::new(at(n), &id(n)), 10, b(&format!("e{n}")));
+        }
+        record = barrier(&mut ls, e.into()).await;
+    }
+    let named = runs(&record[0]).unwrap().len();
+    assert!(named <= 12, "{named} runs named after 64 epochs");
+    assert!(s.counts().merges >= 10, "{:?}", s.counts());
+
+    let ids: Vec<Vec<u8>> = (0..1000).map(|n| id(1_000_000 + n)).collect();
+    let lookup = |time: i64| -> Vec<(KeyRef, i64)> {
+        ids.iter()
+            .enumerate()
+            .map(|(n, i)| (KeyRef::new(at(n as u32), i), time))
+            .collect()
+    };
+    let before = s.counts();
+    let got = ls[0].row(OP, &lookup(10)).await.unwrap();
+    assert!(got.iter().all(Option::is_none));
+    let asked = s.counts() - before;
+    println!(
+        "64 epochs: {named} runs named, {} merges, {} filters asked by 1000 lookups",
+        s.counts().merges,
+        asked.filtered
+    );
+    assert!(asked.filtered <= 12 * 1000, "{asked:?}");
+    let before = s.counts();
+    ls[0].row(OP, &lookup(20)).await.unwrap();
+    assert_eq!((s.counts() - before).filtered, 0, "another read's lookups");
+
+    let mut back = open(&s, 2, 65, 3, &record).await;
+    for n in 200..65 * 200 {
+        let key = id(n);
+        let slot = [(KeyRef::new(at(n), &key), 10)];
+        let got = lane(&mut back, at(n)).row(OP, &slot).await.unwrap();
+        assert_eq!(got, [Some(b(&format!("e{n}")))], "row {n}");
+    }
+    for l in &mut back {
+        l.expire(OP, 10);
+    }
+    let gone = barrier(&mut back, 65).await;
+    assert!(gone.iter().all(|s| runs(s).unwrap().is_empty()));
+}
+
+/// A store forgets a run its snapshots name only before it reads from it,
+/// as if it held nothing: a read could have found what one after it
+/// wouldn't.
+#[tokio::test]
+async fn a_run_is_forgotten_only_before_its_read() {
+    let s = stores(&Bucket::new(), RunConfig::default());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    let all = barrier(&mut ls, 1).await;
+    let name = runs(&all[0]).unwrap()[0].name.clone();
+    let mut ls = open(&s, 2, 2, 1, &all).await;
+    assert!(ls[0].forget(&name));
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![None]);
+    assert!(runs(&barrier(&mut ls, 2).await[0]).unwrap().is_empty());
+    let mut ls = open(&s, 3, 2, 1, &all).await;
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![Some(b("a"))]);
+    assert!(!ls[0].forget(&name), "a run read from");
+}
+
+/// An object store that answers its next `misses` reads, looks among
+/// them, with not found, whatever it holds, as some do in an outage.
+#[derive(Debug)]
+struct Missing {
+    inner: InMemory,
+    misses: std::sync::atomic::AtomicU64,
+}
+
+impl std::fmt::Display for Missing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Missing({})", self.inner)
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for Missing {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        let missed = self
+            .misses
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok();
+        match missed {
+            true => Err(object_store::Error::NotFound {
+                path: location.to_string(),
+                source: "missing".into(),
+            }),
+            false => self.inner.get_opts(location, options).await,
+        }
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<'static, object_store::Result<Path>>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&Path>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+/// A run read as missing is gone only once looks after a wait find it
+/// missing too: a store that answers not found once and then serves it
+/// gives what it holds, and one that goes on answering not found gives
+/// [`Error::Gone`], which a lane may forget.
+#[tokio::test]
+async fn a_run_is_gone_only_once_it_stays_missing() {
+    let store = Arc::new(Missing {
+        inner: InMemory::new(),
+        misses: Default::default(),
+    });
+    let s = RunStores::new(
+        Arc::new(ObjectStorage::new(store.clone(), Path::from("state"))),
+        RunConfig::default(),
+    );
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    let all = barrier(&mut ls, 1).await;
+    let name = runs(&all[0]).unwrap()[0].name.clone();
+
+    store.misses.store(1, Ordering::Relaxed);
+    let mut ls = open(&s, 2, 2, 1, &all).await;
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![Some(b("a"))]);
+    assert_eq!(store.misses.load(Ordering::Relaxed), 0);
+    assert_eq!(runs(&barrier(&mut ls, 2).await[0]).unwrap()[0].name, name);
+
+    store.misses.store(u64::MAX, Ordering::Relaxed);
+    let mut ls = open(&s, 3, 2, 1, &all).await;
+    let started = std::time::Instant::now();
+    match ls[0].row(OP, &[(k, 10)]).await {
+        Err(Error::Gone(runs)) => assert_eq!(runs, std::slice::from_ref(&name)),
+        got => panic!("{got:?}"),
+    }
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1200));
+    // A read and a look after each of the two waits.
+    assert_eq!(u64::MAX - store.misses.load(Ordering::Relaxed), 3);
+    assert!(ls[0].forget(&name));
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![None]);
 }
 
 /// Where the recorded runs of each format are, under this crate.
@@ -967,4 +1221,462 @@ async fn recorded_runs_restore() {
     let s = stores(&bucket, RunConfig::default());
     check_recorded(&s, &record).await;
     assert_eq!(s.counts().barrier.count, 0);
+}
+
+/// The runs a lookup needs that are gone are found in one pass, each
+/// confirmed at once, rather than one a pass: a lane whose runs were all
+/// deleted, as after a rollback, waits for one confirmation, not one a run.
+#[tokio::test]
+async fn gone_runs_are_found_together() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: None,
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let n = 5u64;
+    let mut all = Vec::new();
+    for e in 1..=n {
+        let id = format!("id{e}");
+        ls[0].put_row(OP, KeyRef::new(7, id.as_bytes()), 10, b("a"));
+        all = barrier(&mut ls, e).await;
+    }
+    let named: BTreeSet<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    assert_eq!(named.len(), n as usize);
+    for name in bucket.names().await {
+        bucket.memory.delete(&Bucket::path(&name)).await.unwrap();
+    }
+    let mut ls = open(&s, 2, n + 1, 1, &all).await;
+    let ids: Vec<String> = (1..=n).map(|e| format!("id{e}")).collect();
+    let slots: Vec<(KeyRef, i64)> = ids
+        .iter()
+        .map(|i| (KeyRef::new(7, i.as_bytes()), 10))
+        .collect();
+    let started = std::time::Instant::now();
+    let gone = match ls[0].row(OP, &slots).await {
+        Err(Error::Gone(runs)) => runs,
+        got => panic!("{got:?}"),
+    };
+    assert_eq!(gone.into_iter().collect::<BTreeSet<_>>(), named);
+    for run in &named {
+        assert!(ls[0].forget(run));
+    }
+    let got = ls[0].row(OP, &slots).await.unwrap();
+    assert!(got.iter().all(Option::is_none));
+    let took = started.elapsed();
+    println!("{n} gone runs found and forgotten in {took:?}");
+    assert!(took < std::time::Duration::from_millis(2400), "{took:?}");
+}
+
+/// A run cut short, before where the record says its index starts or
+/// within it, is unreadable, by its name, whatever the store answers a
+/// read past its end with: never a failure a retry clears.
+#[tokio::test]
+async fn a_run_cut_short_is_unreadable() {
+    let bucket = Bucket::new();
+    let s = stores(&bucket, RunConfig::default());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    let all = barrier(&mut ls, 1).await;
+    let name = runs(&all[0]).unwrap()[0].name.clone();
+    let whole = bucket.read(&name).await;
+    for keep in [whole.len() - 3, 10] {
+        bucket.memory.delete(&Bucket::path(&name)).await.unwrap();
+        bucket.write(&name, whole[..keep].to_vec()).await;
+        let mut ls = open(&s, 2, 2, 1, &all).await;
+        let got = ls[0].row(OP, &[(k, 10)]).await;
+        let named = matches!(&got, Err(Error::Unreadable { run, .. }) if *run == name);
+        assert!(named, "cut to {keep} of {}: {got:?}", whole.len());
+    }
+}
+
+/// Stores of one pool whose merges want more than the pool's bound take
+/// turns: none keeps winning because its barrier comes first, so the runs
+/// of each grow alike, rather than some stores' never merging.
+#[tokio::test]
+async fn stores_of_a_pool_take_turns_to_merge() {
+    // Two merges of four of a lane's runs fit the bound at once.
+    let run = 200 * 70;
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            max_bytes: 8 * run,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let pool = Pool::new(1 << 20, 0);
+    let stores: Vec<RunStores> = (0..16)
+        .map(|_| RunStores::pooled(Bucket::new(), config.clone(), None, &pool))
+        .collect();
+    let mut lanes = Vec::new();
+    for s in &stores {
+        lanes.push(open(s, 1, 1, 1, &[]).await.remove(0));
+    }
+    let mut named = vec![0; lanes.len()];
+    for e in 1..=200u32 {
+        for (i, l) in lanes.iter_mut().enumerate() {
+            for n in 0..200u32 {
+                let id = format!("id-{e}-{n}");
+                l.put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+            }
+            named[i] = runs(&l.barrier(e.into()).await.unwrap()[0]).unwrap().len();
+        }
+    }
+    let merges: Vec<u64> = stores.iter().map(|s| s.counts().merges).collect();
+    println!("runs named by store: {named:?}; merges: {merges:?}");
+    let (most, least) = (named.iter().max().unwrap(), named.iter().min().unwrap());
+    assert!(most - least <= least / 2, "runs named by store {named:?}");
+    let (most, least) = (merges.iter().max().unwrap(), merges.iter().min().unwrap());
+    assert!(least * 2 >= *most, "merges by store {merges:?}");
+}
+
+/// A merge whose read storage fails, as for a moment, goes, rather than
+/// fail the barrier: the lane reads its inputs as before, and a barrier two
+/// epochs later merges them.
+#[tokio::test]
+async fn a_merge_whose_storage_fails_goes_and_comes_again() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let put = |l: &mut Layer, e: u32| {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            l.put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+    };
+    for e in 1..=4u32 {
+        put(&mut ls[0], e);
+        barrier(&mut ls, e.into()).await;
+    }
+    // The merge the fourth barrier started reads next.
+    bucket.failing.store(1, Ordering::Relaxed);
+    put(&mut ls[0], 5);
+    let got = ls[0].barrier(5).await;
+    assert!(got.is_ok(), "{:?}", got.err());
+    assert_eq!(s.counts().merges, 0);
+    let mut all = Vec::new();
+    for e in 6..=8u32 {
+        put(&mut ls[0], e);
+        all = barrier(&mut ls, e.into()).await;
+        let merged = u64::from(e == 8);
+        assert_eq!(s.counts().merges, merged, "epoch {e}: {:?}", s.counts());
+    }
+    let key = b"id-2-7";
+    let mut back = open(&s, 2, 9, 1, &all).await;
+    let got = back[0].row(OP, &[(KeyRef::new(7, key), 10)]).await.unwrap();
+    assert_eq!(got, [Some(b("e"))]);
+}
+
+/// A run a merge opened and read, and no read of the lane's took a block
+/// of, is forgotten once it's found gone, and the merge in flight goes with
+/// it, unadopted; one a read took a block of still isn't.
+#[tokio::test]
+async fn a_run_only_a_merge_read_is_forgotten_when_gone() {
+    let bucket = Bucket::new();
+    let quiet = RunConfig {
+        merge: None,
+        ..RunConfig::default()
+    };
+    let mut ls = open(&stores(&bucket, quiet), 1, 1, 1, &[]).await;
+    let mut all = Vec::new();
+    for e in 1..=4u32 {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            ls[0].put_row(OP, KeyRef::new(7, id.as_bytes()), 10, b("e"));
+        }
+        all = barrier(&mut ls, e.into()).await;
+    }
+    let named: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    assert_eq!(named.len(), 4);
+    let merging = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, merging);
+    let mut ls = open(&s, 2, 5, 1, &all).await;
+    // The barrier starts a merge of the four, which opens and reads them.
+    barrier(&mut ls, 5).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(s.counts().merge_read.count >= 4, "{:?}", s.counts());
+    // A lookup takes a block of the newest run, epoch 4's.
+    let read = b"id-4-1";
+    let got = ls[0].row(OP, &[(KeyRef::new(7, read), 10)]).await.unwrap();
+    assert_eq!(got, [Some(b("e"))]);
+    let (newest, oldest) = (named[0].clone(), named[3].clone());
+    assert!(
+        newest.contains("/e4/") && oldest.contains("/e1/"),
+        "{named:?}"
+    );
+    for run in [&newest, &oldest] {
+        bucket.memory.delete(&Bucket::path(run)).await.unwrap();
+    }
+    let key = b"id-1-3";
+    match ls[0].row(OP, &[(KeyRef::new(7, key), 10)]).await {
+        Err(Error::Gone(runs)) => assert_eq!(runs, std::slice::from_ref(&oldest)),
+        got => panic!("{got:?}"),
+    }
+    assert!(ls[0].forget(&oldest), "a run only the merge read");
+    assert!(!ls[0].forget(&newest), "a run a lookup read");
+    let got = ls[0].row(OP, &[(KeyRef::new(7, key), 10)]).await.unwrap();
+    assert_eq!(got, [None]);
+    let all = barrier(&mut ls, 6).await;
+    assert_eq!(s.counts().merges, 0, "the merge of a forgotten run");
+    let left: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    assert_eq!(left, named[..3], "{left:?}");
+}
+
+/// Rows of one time, appended over epochs and then taken over more, which
+/// writes their deletes, merge, deletes and all, and read as they were, on
+/// the lane and restored onto three: a merge of an operator's newer
+/// sections of a time keeps their deletes while an older one holds rows
+/// of that time, and one of all of its sections of a time drops them.
+#[tokio::test]
+async fn rows_of_one_time_and_their_deletes_merge() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let op2 = OperatorId(2);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let t = 100;
+    let mut live: BTreeSet<(u32, Vec<u8>)> = BTreeSet::new();
+    let mut e = 1;
+    let mut all = Vec::new();
+    for _ in 0..8 {
+        for i in 0..10u32 {
+            let g = (e as u32 * 7 + i) % GROUPS;
+            let k = format!("k{e}-{i}");
+            ls[0].append(OP, KeyRef::new(g, k.as_bytes()), t, b(&k));
+            live.insert((g, k.into_bytes()));
+        }
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    for _ in 0..8 {
+        for r in ls[0].take_rows(OP, t, 7).await.unwrap() {
+            assert!(live.remove(&(r.group, r.key.to_vec())), "{r:?}");
+        }
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    // op2: appended and all taken within four epochs at another time, which
+    // merge together as the oldest of their time.
+    for _ in 0..2 {
+        for i in 0..10u32 {
+            let g = (e as u32 * 5 + i) % GROUPS;
+            let k = format!("q{e}-{i}");
+            ls[0].append(op2, KeyRef::new(g, k.as_bytes()), 200, b(&k));
+        }
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    for _ in 0..2 {
+        assert_eq!(ls[0].take_rows(op2, 200, 10).await.unwrap().len(), 10);
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    for _ in 0..3 {
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    let c = s.counts();
+    let rows = SectionKind::Rows as usize;
+    assert!(c.merged[rows] > 0, "{c:?}");
+    let mut back = open(&s, 2, e, 3, &all).await;
+    let mut left = BTreeSet::new();
+    for l in &mut back {
+        for r in l.take_rows(OP, t, usize::MAX).await.unwrap() {
+            left.insert((r.group, r.key.to_vec()));
+        }
+        assert!(l.take_rows(op2, 200, usize::MAX).await.unwrap().is_empty());
+    }
+    assert_eq!(left, live);
+}
+
+/// A lane refused room that then stops coming to barriers, as a stream's
+/// that has ended, loses its place in line once it hasn't asked for a whole
+/// epoch: another store of the pool merges on as if it had gone.
+#[tokio::test]
+async fn a_lane_that_stops_asking_loses_its_place() {
+    let put = |l: &mut Layer, e: u32| {
+        for n in 0..200u32 {
+            let id = format!("id-{e}-{n}");
+            l.put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+    };
+    // One run's raw bytes, measured.
+    let raw = {
+        let quiet = RunConfig {
+            merge: None,
+            ..RunConfig::default()
+        };
+        let s = stores(&Bucket::new(), quiet);
+        let mut ls = open(&s, 1, 1, 1, &[]).await;
+        put(&mut ls[0], 1);
+        let all = barrier(&mut ls, 1).await;
+        runs(&all[0]).unwrap()[0]
+            .sections
+            .iter()
+            .map(|s| s.raw_bytes)
+            .sum::<u64>()
+    };
+    // Room for one merge of four runs, not two.
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            max_bytes: 6 * raw,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let mut got = Vec::new();
+    for stops in [false, true] {
+        let pool = Pool::new(1 << 20, 0);
+        let sa = RunStores::pooled(Bucket::new(), config.clone(), None, &pool);
+        let sb = RunStores::pooled(Bucket::new(), config.clone(), None, &pool);
+        let mut a = open(&sa, 1, 1, 1, &[]).await.remove(0);
+        let mut bl = open(&sb, 1, 1, 1, &[]).await.remove(0);
+        // At epoch 4, B's barrier starts a merge of its four runs, and A's,
+        // after it, is refused and waits in line.
+        for e in 1..=4u32 {
+            put(&mut bl, e);
+            bl.barrier(e.into()).await.unwrap();
+            put(&mut a, e);
+            a.barrier(e.into()).await.unwrap();
+        }
+        // A's stream ends: it comes to no more barriers. Where it doesn't
+        // stop, it's dropped, and leaves the line.
+        let kept = stops.then_some(a);
+        let mut named = 0;
+        for e in 5..=60u32 {
+            put(&mut bl, e);
+            named = runs(&bl.barrier(e.into()).await.unwrap()[0]).unwrap().len();
+        }
+        println!(
+            "A stops at the head: {stops}; B merged {} times, names {named} runs",
+            sb.counts().merges,
+        );
+        got.push((sb.counts().merges, named));
+        drop(kept);
+    }
+    let (gone, stopped) = (got[0], got[1]);
+    assert!(
+        stopped.0 + 1 >= gone.0,
+        "B merged {stopped:?}, not as {gone:?}"
+    );
+    assert!(
+        stopped.1 <= gone.1 + 4,
+        "B names {stopped:?}, not as {gone:?}"
+    );
+}
+
+/// A merge whose storage keeps failing isn't started again at every
+/// barrier: the lane waits longer after each failure, and after five gives
+/// up on its inputs, which the counts say, rather than read a merge's worth
+/// at each barrier for good.
+#[tokio::test]
+async fn a_merge_whose_storage_keeps_failing_backs_off() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    for e in 1..=4u32 {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            ls[0].put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+        barrier(&mut ls, e.into()).await;
+    }
+    bucket.failing.store(u64::MAX, Ordering::Relaxed);
+    for e in 5..=100u64 {
+        barrier(&mut ls, e).await;
+    }
+    let reads = u64::MAX - bucket.failing.load(Ordering::Relaxed);
+    let c = s.counts();
+    println!(
+        "reads {reads}, merges failed {}, abandoned {}",
+        c.merges_failed, c.merges_abandoned
+    );
+    assert_eq!((c.merges_failed, c.merges_abandoned), (5, 1), "{c:?}");
+    assert!(reads <= 10, "{reads} reads in 96 barriers");
+}
+
+/// What a lane took from a run is in what it gave, so a run it wrote, a
+/// merge's output, and a values run it read whole to know what it holds,
+/// are never forgotten, while a run it only opened is.
+#[tokio::test]
+async fn runs_a_lane_took_from_are_never_forgotten() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        cache_bytes: 0,
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config.clone());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let mut all = Vec::new();
+    for e in 1..=5u32 {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            ls[0].put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+        all = barrier(&mut ls, e.into()).await;
+    }
+    assert_eq!(s.counts().merges, 1);
+    let named: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    let (written, merged): (Vec<&String>, Vec<&String>) =
+        named.iter().partition(|n| !n.ends_with(".merge.run"));
+    assert_eq!((written.len(), merged.len()), (1, 1), "{named:?}");
+    assert!(!ls[0].forget(written[0]), "a run the lane wrote");
+    assert!(!ls[0].forget(merged[0]), "a merge's output");
+    // Values runs, restored onto a lane that reads them whole once it
+    // writes a run.
+    let values = OperatorId(2);
+    let quiet = RunConfig {
+        merge: None,
+        ..config
+    };
+    let s = stores(&Bucket::new(), quiet);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    for e in 1..=2u32 {
+        ls[0].put(values, KeyRef::new(3, format!("k{e}").as_bytes()), b("v"));
+        all = barrier(&mut ls, e.into()).await;
+    }
+    let restored: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    let mut ls = open(&s, 2, 3, 1, &all).await;
+    ls[0].put(values, KeyRef::new(3, b"k3"), b("v"));
+    barrier(&mut ls, 3).await;
+    assert!(s.counts().restore.count > 0, "read whole: {:?}", s.counts());
+    for run in &restored {
+        assert!(!ls[0].forget(run), "a values run read whole: {run}");
+    }
+    let mut fresh = open(&s, 3, 3, 1, &all).await;
+    assert!(fresh[0].forget(&restored[0]), "a run only named");
 }

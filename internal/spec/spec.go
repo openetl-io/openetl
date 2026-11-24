@@ -403,6 +403,7 @@ type streamYAML struct {
 	EventTime   string         `yaml:"eventTime"`
 	Watermark   *watermarkYAML `yaml:"watermark"`
 	Dedupe      *dedupeYAML    `yaml:"dedupe"`
+	Volatile    []string       `yaml:"volatileColumns"`
 	Columns     map[string]struct {
 		Type     string `yaml:"type"`
 		heldYAML `yaml:",inline"`
@@ -633,7 +634,10 @@ func parsePipeline(b []byte) (*apiv1.PipelineSpec, error) {
 			return nil, fmt.Errorf("source.streams[%d]: missing or repeated name %q", i, s.Name)
 		}
 		seen[s.Name] = true
-		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor, Collapse: s.Collapse}
+		st := &apiv1.PipelineStream{Name: s.Name, Cursor: s.Cursor, Collapse: s.Collapse, VolatileColumns: s.Volatile}
+		if slices.Contains(s.Volatile, "") {
+			return nil, fmt.Errorf("source.streams[%d].volatileColumns: a column has a name", i)
+		}
 		if st.Sync, err = enum(apiv1.SyncMode_value, "SYNC_MODE_", "sync", s.Sync, apiv1.SyncMode_SYNC_MODE_UNSPECIFIED); err != nil {
 			return nil, fmt.Errorf("source.streams[%d]: %w", i, err)
 		}

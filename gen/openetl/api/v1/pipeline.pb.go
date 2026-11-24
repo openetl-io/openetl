@@ -3496,9 +3496,14 @@ type PipelineStream struct {
 	Watermark *Watermark `protobuf:"bytes,13,opt,name=watermark,proto3" json:"watermark,omitempty"`
 	// How long a SQL statement's dedupe over the stream that keeps each key's
 	// first row remembers a key. Only with event_time.
-	Dedupe        *Dedupe `protobuf:"bytes,14,opt,name=dedupe,proto3" json:"dedupe,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Dedupe *Dedupe `protobuf:"bytes,14,opt,name=dedupe,proto3" json:"dedupe,omitempty"`
+	// Columns, by source name, whose values can change on every read while
+	// the row doesn't, such as the time the source fetched it: they don't tell
+	// a version of a row from another, where a stream deduped at apply keeps
+	// its versions and where a window or OVER drops a row read again.
+	VolatileColumns []string `protobuf:"bytes,15,rep,name=volatile_columns,json=volatileColumns,proto3" json:"volatile_columns,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *PipelineStream) Reset() {
@@ -3625,6 +3630,13 @@ func (x *PipelineStream) GetWatermark() *Watermark {
 func (x *PipelineStream) GetDedupe() *Dedupe {
 	if x != nil {
 		return x.Dedupe
+	}
+	return nil
+}
+
+func (x *PipelineStream) GetVolatileColumns() []string {
+	if x != nil {
+		return x.VolatileColumns
 	}
 	return nil
 }
@@ -9199,7 +9211,7 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\atrigger\"\\\n" +
 	"\x0ePipelineSource\x12\x10\n" +
 	"\x03ref\x18\x01 \x01(\tR\x03ref\x128\n" +
-	"\astreams\x18\x02 \x03(\v2\x1e.openetl.api.v1.PipelineStreamR\astreams\"\x9a\x06\n" +
+	"\astreams\x18\x02 \x03(\v2\x1e.openetl.api.v1.PipelineStreamR\astreams\"\xc5\x06\n" +
 	"\x0ePipelineStream\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12,\n" +
 	"\x04sync\x18\x02 \x01(\x0e2\x18.openetl.api.v1.SyncModeR\x04sync\x12\x16\n" +
@@ -9218,7 +9230,8 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\n" +
 	"event_time\x18\f \x01(\tR\teventTime\x127\n" +
 	"\twatermark\x18\r \x01(\v2\x19.openetl.api.v1.WatermarkR\twatermark\x12.\n" +
-	"\x06dedupe\x18\x0e \x01(\v2\x16.openetl.api.v1.DedupeR\x06dedupe\x1aZ\n" +
+	"\x06dedupe\x18\x0e \x01(\v2\x16.openetl.api.v1.DedupeR\x06dedupe\x12)\n" +
+	"\x10volatile_columns\x18\x0f \x03(\tR\x0fvolatileColumns\x1aZ\n" +
 	"\fColumnsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x124\n" +
 	"\x05value\x18\x02 \x01(\v2\x1e.openetl.api.v1.PipelineColumnR\x05value:\x028\x01B\v\n" +

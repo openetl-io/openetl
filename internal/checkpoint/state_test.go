@@ -336,3 +336,22 @@ func TestPendingSetsRideInTheRecordAndNameNoState(t *testing.T) {
 		t.Fatalf("state %v, want none", got)
 	}
 }
+
+// Retention keeps the runs of the versions a kept record names, which it
+// keeps apart from its other snapshots.
+func TestPruneKeepsTheVersionsARecordNames(t *testing.T) {
+	store := checkpoint.NewMemStore()
+	a := claim(t, newLog(store), "a")
+	kept, gone := run(t, store, lane("versions.s", 1, 1)), run(t, store, lane("versions.s", 1, 2))
+	rec := &checkpoint.Record{Epoch: 3, Streams: map[string]checkpoint.StreamState{"s": {State: []byte{3}}},
+		Versions: []checkpoint.Snapshot{{Operator: "versions.s", KeyGroups: checkpoint.KeyGroupRange{Last: 255}, Layout: 1, Data: []byte("R"), Runs: []string{kept}}}}
+	if err := a.Commit(t.Context(), rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Prune(t.Context(), rec, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(t, store); !slices.Equal(got, []string{kept}) {
+		t.Errorf("state %v, want %v; %s goes", got, kept, gone)
+	}
+}

@@ -84,7 +84,7 @@ Read the complete error in the failing sync's log rather than only the shortened
 | Source rate limits | Check the source's limits and heal's overrides. Increase the interval or reduce request rate where supported. |
 | Out of memory | Inspect job peaks and `resources.max`. Increase the size or maximum where the data plane has room; a larger request still needs capacity. |
 | `POSITION_LOST` | Follow [Reading from the start again](./positions.md#after-a-lost-position). A reset can replay data and cannot recover history the source has discarded. |
-| `CHECKPOINT_CORRUPT` | If the error names a held file below `_held`, restore the file and resume the pipeline, as [a release that cannot read a held file](./schema-changes.md#repair-the-destination-and-release) explains. Otherwise, follow [checkpoint recovery](./positions.md#when-the-latest-checkpoint-cant-be-read). Read the delivery implications before allowing a rewind. |
+| `CHECKPOINT_CORRUPT` | If the error names a held file below `_held`, restore the file and resume the pipeline, as [a release that cannot read a held file](./schema-changes.md#repair-the-destination-and-release) explains. If the error says that a run `keeps the versions of the stream's records and can't be read`, follow [A run of a stream's versions cannot be read](#a-run-of-a-streams-versions-cannot-be-read). Otherwise, follow [checkpoint recovery](./positions.md#when-the-latest-checkpoint-cant-be-read). Read the delivery implications before allowing a rewind. |
 | Schema errors, held columns or quarantined values | Read [Holds and quarantine](./holds-and-quarantine.md) to tell them apart. For a hold, follow [Handle schema changes and holds](./schema-changes.md). |
 | `SCHEMA_DRIFT` with `can't go to a new column` or `went to a new version` | A column of the primary key, or the cursor, changed type in a way that is not a widening, or by a widening that changes how its values sort or the record IDs they give, such as an integer to a string. Follow [When a key or cursor changes type](./schema-changes.md#when-a-key-or-cursor-changes-type). |
 | `SCHEMA_DRIFT` with `can't be held` | The destination refused a change to a column that OpenETL cannot hold, such as a column of the primary key. Or a hold is in force on such a column. Run the statement that the error gives on the destination, or change the column back at the source. If the error names a hold, release it, as [Column holds](./holds-and-quarantine.md#column-holds) explains. |
@@ -134,9 +134,43 @@ Separate three questions:
 - **Is it behind the source?** Source-reported lag and retention show whether unread data is accumulating. Not every source reports these metrics.
 - **Did all values land?** Check the stream's **Quarantined** and **Held** counts, paused streams, and the destination's visibility rules.
 
-Confirm which streams and columns the pipeline selects. An incremental read depends on its cursor changing on every relevant update, to a value that differs from the one before. In a stream deduped at apply, a cursor stored as a date or in whole seconds can lose a change. See [Choose a cursor that changes on every update](./delivery.md#choose-a-cursor-that-changes-on-every-update). An incremental read does not see deletes. Check the connector's discovery result and documentation if a table or stream is missing.
+Confirm which streams and columns the pipeline selects. An incremental read depends on its cursor changing on every relevant update, to a value that differs from the one before. A cursor stored as a date or in whole seconds can give two changes of a row one cursor value. In a stream deduped at apply, OpenETL tells such versions apart by their values, except in the cases that [Choose a cursor that changes on every update](./delivery.md#choose-a-cursor-that-changes-on-every-update) lists, where the table keeps the first version. An incremental read does not see deletes. Check the connector's discovery result and documentation if a table or stream is missing.
 
 For a continuous pipeline with growing lag, compare read throughput, commit duration and capacity. If retention is at risk, restore progress before the source drops unread history. Do not treat resetting positions as a throughput fix.
+
+## A row lands again on every sync
+
+If an appended table gets the same rows again on every sync, each time with a new `_openetl_id`, a column of the stream probably changes on every read while the row does not: a computed value, the time the source fetched the row, or JSON that the source gives as text, with its keys in another order. An incremental read gives again the rows at the previous highest cursor value. In a stream deduped at apply, OpenETL tells the versions of a row apart by their values, so such a column makes each read of the row a new version, which lands. A group window or `OVER` over the stream counts such a row again in the same way.
+
+Compare two copies of a row to find the column whose value differs. Then list the column in the stream's [`volatileColumns`](../reference/specs/pipeline.md#source-and-streams), by the name that the source's catalog gives it, and apply the pipeline:
+
+```yaml
+source:
+  streams:
+    - name: products
+      volatileColumns: [fetched_at]
+```
+
+OpenETL then leaves the column out when it compares versions, so the rows read again from the next sync on keep their IDs. A change to that column alone no longer lands, so list only columns whose changes you do not need. Do not list a column that the source types as JSON (`arrow.json`): OpenETL already compares its values with their keys sorted. The plan warns of a column that the catalog does not have, and of a list that has no effect on the stream.
+
+## A run of a stream's versions cannot be read
+
+For a stream read with `incremental` and deduped at apply, OpenETL keeps the versions of the stream's records in the pipeline's state storage, in files called runs ([Choose a cursor that changes on every update](./delivery.md#choose-a-cursor-that-changes-on-every-update)). If a run is damaged, each sync fails with `CHECKPOINT_CORRUPT`, and the incident pauses the pipeline. The error names the stream and the run's location. For example, for a stream `users` whose state storage is the directory `/var/lib/openetl/state`:
+
+```text
+stream users: file:///var/lib/openetl/state/x.76657273696f6e732e7573657273/g1/e1/kg0-255.run keeps the versions of the stream's records and can't be read: a run's footer: no magic at its end. Delete it to go on: the next sync finds it gone and forgets it, and a row whose entry it held keeps its ID, so a second version of that row within one cursor value is skipped once
+```
+
+A reset does not fix this error, because a reset keeps the versions. A rewind usually does not fix it either, because the checkpoint before also names the run.
+
+> [!CAUTION]
+> After you delete the run, a row whose version it held can lose one change. If the row changes twice within one cursor value, the destination keeps the first version and skips the second once.
+
+1. If you want to examine the damage, copy the run to another location first.
+2. Delete the run at the location that the error gives. For example, for a run on S3, run `aws s3 rm s3://BUCKET/PATH/RUN`.
+3. Resume the pipeline with `openetl resume PIPELINE`.
+
+The next sync finds the run gone and logs the warning `a run of the record's versions of the stream's records is gone`. The sync then continues with the other runs. Check that the sync commits.
 
 ## Verify recovery
 

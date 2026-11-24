@@ -168,6 +168,11 @@ type Plan struct {
 	Snapshots     []checkpoint.Snapshot
 	StateURL      string
 	StateReadOnly bool
+	// By stream: the operator whose state keeps, at the writer lanes, the
+	// version that holds each of the stream's record IDs, below StateURL.
+	// Another version read at the same cursor value gets an ID of its own,
+	// which the destination's dedupe by _openetl_id takes. Missing: none.
+	Versions map[string]string
 	// out carries FrameSchema frames. An empty batch establishes its
 	// stream's schema without rows.
 	ReportSchemas bool

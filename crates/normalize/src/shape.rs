@@ -6,7 +6,7 @@ use arrow_array::builder::{ListBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions,
-    StringArray, TimestampMicrosecondArray, new_null_array,
+    StringArray, TimestampMicrosecondArray, UInt64Array, new_null_array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use serde_json::Value;
@@ -21,6 +21,7 @@ use crate::hold::{
 use crate::ids::Identity;
 use crate::naming::{METADATA_COLUMNS, Namer, Naming, SOURCE_NAMES_KEY, TABLE_KEY, source_names};
 use crate::typed::{Typed, Typer, input_rows, remap};
+use crate::versions;
 use crate::{
     EXTENSION_METADATA_KEY, EXTENSION_NAME_KEY, Error, NotHeld, Rejected, TypeOptions,
     UUID_EXTENSION, coerce,
@@ -101,6 +102,9 @@ pub struct Shaper {
     /// schema, what its metadata knows of the values, such as the columns
     /// that held integers past ±2^53, and the holds.
     changed: bool,
+    /// Shaped batches carry their rows' hashes, of the columns but these, in
+    /// [`versions::HASH_COLUMN`], their held values' too; None: no hashes.
+    versions: Option<Arc<[String]>>,
 }
 
 impl Shaper {
@@ -162,6 +166,7 @@ impl Shaper {
             changelog: false,
             holds: None,
             changed: false,
+            versions: None,
         };
         shaper.pin();
         Ok(shaper)
@@ -202,7 +207,17 @@ impl Shaper {
             changelog: self.changelog,
             holds: self.holds.clone(),
             changed: false,
+            versions: self.versions.clone(),
         }
+    }
+
+    /// Has shaped batches carry their rows' hashes, and their schema's
+    /// version, in a last column, [`versions::HASH_COLUMN`], which the held
+    /// values' batches carry too. It's no column of the stream's. The hashes
+    /// leave out `volatile`'s columns, by source name; None: no hashes.
+    pub fn with_versions(mut self, volatile: Option<Arc<[String]>>) -> Self {
+        self.versions = volatile;
+        self
     }
 
     /// Whether what lanes share has changed since the last call.
@@ -641,7 +656,19 @@ impl Shaper {
         };
         let unchanged = self.unchanged(&c.batch, &control)?;
         let lists = self.held_lists(c.batch.num_rows(), unchanged.as_ref(), &cells);
-        let batch = self.assemble(schema, &c.batch, ids, &control, unchanged, lists)?;
+        // The batch names a column the evolver versioned by its version, so
+        // each version of a volatile column is left out too.
+        let hashes = self.versions.as_ref().map(|volatile| {
+            let volatile = self.evolver.with_versions(volatile);
+            (
+                versions::row_hashes(&c.batch, &cells, &volatile),
+                versions::schema_version(&c.batch.schema(), &volatile),
+            )
+        });
+        let mut batch = self.assemble(schema, &c.batch, ids, &control, unchanged, lists)?;
+        if let Some((hashes, version)) = hashes {
+            batch = with_hashes(&batch, hashes, version)?;
+        }
         let (batch, held) = self.hold_back(batch, &cells)?;
         let cells = cells
             .iter()
@@ -896,7 +923,12 @@ impl Shaper {
         for k in &self.identity.key {
             take(self.namer.get(k).unwrap_or(k))?;
         }
-        for m in ["_openetl_id", "_openetl_seq", "_openetl_op"] {
+        for m in [
+            "_openetl_id",
+            "_openetl_seq",
+            "_openetl_op",
+            versions::HASH_COLUMN,
+        ] {
             take(m)?;
         }
         fields.push(Field::new(HELD_COLUMN, held_type(), true));
@@ -1338,6 +1370,25 @@ fn shown_value(h: &Holds, src: &str, f: &Field) -> Option<ArrayRef> {
 fn broadcast(v: &ArrayRef, n: usize) -> Result<ArrayRef, Error> {
     let zeros = arrow_array::UInt32Array::from(vec![0u32; n]);
     Ok(arrow_select::take::take(v.as_ref(), &zeros, None)?)
+}
+
+/// `batch` with a last column of its rows' hashes.
+fn with_hashes(batch: &RecordBatch, hashes: Vec<u64>, version: u64) -> Result<RecordBatch, Error> {
+    let schema = batch.schema();
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    fields.push(
+        Field::new(versions::HASH_COLUMN, DataType::UInt64, false).with_metadata(HashMap::from([
+            (versions::SCHEMA_KEY.to_owned(), version.to_string()),
+        ])),
+    );
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(UInt64Array::from(hashes)));
+    let opts = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    Ok(RecordBatch::try_new_with_options(
+        Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone())),
+        columns,
+        &opts,
+    )?)
 }
 
 /// The stream's schema as the destination gets it: each column held whole
@@ -1918,6 +1969,36 @@ mod tests {
         assert_eq!(n.batch.schema().fields(), schema.fields());
         assert_eq!(n.batch.column(0).null_count(), 1);
         assert!(n.versioned.is_empty());
+    }
+
+    /// A volatile column versioned to a new column, as an incompatible
+    /// type sends it, stays out of the hash and the schema's version in
+    /// each of its versions, as it's matched by its source name.
+    #[test]
+    fn a_volatile_columns_versions_stay_out_of_the_hash() {
+        let typed = |x: ArrayRef| {
+            let y: ArrayRef = Arc::new(Int64Array::from(vec![7]));
+            RecordBatch::try_from_iter(vec![("X", x), ("Y", y)]).unwrap()
+        };
+        let hashed = |b: &RecordBatch| {
+            let at = b.schema().index_of(versions::HASH_COLUMN).unwrap();
+            let schema = b.schema().field(at).metadata()[versions::SCHEMA_KEY].clone();
+            let hashes = b
+                .column(at)
+                .as_primitive::<arrow_array::types::UInt64Type>();
+            (hashes.values()[0], schema)
+        };
+        let mut s = shaper(None).with_versions(Some(Arc::from(["X".to_string()])));
+        let before = s
+            .batch(&typed(Arc::new(Int64Array::from(vec![1]))))
+            .unwrap();
+        s.seal();
+        let flag = |b: bool| typed(Arc::new(arrow_array::BooleanArray::from(vec![b])));
+        let first = s.batch(&flag(true)).unwrap();
+        assert_eq!(first.versioned.len(), 1, "X wasn't versioned");
+        let second = s.batch(&flag(false)).unwrap();
+        assert_eq!(hashed(&first.batch), hashed(&second.batch));
+        assert_eq!(hashed(&first.batch).1, hashed(&before.batch).1);
     }
 
     fn keyed_by(key: &str, cursor: &str) -> Shaper {

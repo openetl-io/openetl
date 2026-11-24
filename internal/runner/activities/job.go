@@ -145,6 +145,7 @@ func settleJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, src s
 			Schema:               cs.Schema,
 			Seq:                  cs.Seq,
 			NanosecondTimestamps: ps.GetTimestamps() == apiv1.TimestampUnit_TIMESTAMP_UNIT_NANOSECOND,
+			VolatileColumns:      ps.GetVolatileColumns(),
 			Require:              plan.Level(ps.GetRequire()),
 			Deletes:              deletes,
 			AllowTypeChanges:     plan.TypeChanges(p, ps),

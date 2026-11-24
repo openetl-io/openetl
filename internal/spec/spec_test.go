@@ -2,6 +2,7 @@ package spec
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -360,6 +361,7 @@ func TestParseHolds(t *testing.T) {
         unfitValues: hold
         heldValue: 0
         groups: [[amount, currency]]
+        volatileColumns: [fetched_at]
         columns:
           note: {held: last}
           code: {held: last, heldValue: "n/a"}
@@ -380,6 +382,8 @@ func TestParseHolds(t *testing.T) {
 		t.Errorf("columns = %v", st.GetColumns())
 	case st.GetColumns()["amount"].GetHeld() != nil:
 		t.Error("a column without held got one")
+	case !slices.Equal(st.GetVolatileColumns(), []string{"fetched_at"}):
+		t.Errorf("volatileColumns = %v", st.GetVolatileColumns())
 	}
 
 	for name, streams := range map[string]string{
@@ -388,6 +392,7 @@ func TestParseHolds(t *testing.T) {
 		"an unknown mode":       "      - {name: a, held: sometimes}\n",
 		"a one-column group":    "      - {name: a, groups: [[x]]}\n",
 		"an unknown choice":     "      - {name: a, unfitValues: cell}\n",
+		"an empty column name":  "      - {name: a, volatileColumns: [\"\"]}\n",
 	} {
 		if _, err := Parse([]byte(head + streams)); err == nil {
 			t.Errorf("%s: no error", name)

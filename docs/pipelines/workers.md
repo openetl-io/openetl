@@ -115,7 +115,7 @@ With a [SQL transform](./sql-transforms.md), these rules apply to each statement
 
 ## The exchange between workers
 
-A keyed stream that the source does not split by key, and a keyed stream read with `cdc`, has an **exchange** in the plan's [`partitioning` section](./plan-and-apply.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Every worker writes the keys that it owns, whichever worker read them.
+A keyed stream that the source does not split by key, a keyed stream read with `cdc`, and a keyed stream read with `incremental` and deduped at apply, whose writer lanes keep the [versions of its records](./delivery.md#choose-a-cursor-that-changes-on-every-update), has an **exchange** in the plan's [`partitioning` section](./plan-and-apply.md#partitioning-in-the-plan). On workers, the exchange sends each row to the writer lane that owns its key group, on whichever worker that writer lane is. Every worker writes the keys that it owns, whichever worker read them.
 
 Where the rows are read does not depend on the exchange. The workers can share a stream's splits, unless the stream is read with `cdc` or written with `overwrite`; then one worker reads all of them, as [Streams that one worker reads](#streams-that-one-worker-reads) says. A worker gets no split when there are fewer splits than workers.
 

@@ -17,6 +17,11 @@
 //! A SQL transform's output row has its source row's ID, except a row
 //! `UNNEST` gives: the k-th from its source row has the hash of
 //! `openetl.id.v1`, `0x03`, the source row's ID and k, a little-endian u64.
+//!
+//! A version of a keyed record read again with other values than the
+//! version its ID was first given to has the hash of `openetl.id.v1`,
+//! `0x04`, that ID and the version's hash ([`crate::versions`]), a
+//! little-endian u64.
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::ByteArrayType;
@@ -37,6 +42,7 @@ const VERSION: &[u8] = b"openetl.id.v1";
 const KEYED: u8 = 1;
 const UNKEYED: u8 = 2;
 const ELEMENT: u8 = 3;
+const VERSIONED: u8 = 4;
 const NULL: u32 = u32::MAX;
 
 /// What a stream's record IDs and sequence come from. Column names are the
@@ -182,6 +188,17 @@ pub fn element_ids(
         out.extend_from_slice(&uuid(&buf));
     }
     FixedSizeBinaryArray::try_new(16, out.into(), None)
+}
+
+/// The ID of a version of the record of ID `base` whose hash is `hash`,
+/// where another version holds `base`.
+pub fn version_id(base: &[u8], hash: u64) -> [u8; 16] {
+    let mut buf = Vec::with_capacity(VERSION.len() + 1 + base.len() + 8);
+    buf.extend_from_slice(VERSION);
+    buf.push(VERSIONED);
+    buf.extend_from_slice(base);
+    buf.extend_from_slice(&hash.to_le_bytes());
+    uuid(&buf)
 }
 
 fn part(buf: &mut Vec<u8>, bytes: Option<&[u8]>) {
@@ -515,5 +532,17 @@ mod tests {
             ..i
         };
         assert!(missing.typed(&batch, None).is_err());
+    }
+
+    /// A version's ID is in the destination's tables: a change here gives
+    /// every landed version a new ID, which lands again.
+    #[test]
+    fn version_ids_are_pinned() {
+        let base = [7u8; 16];
+        let a = version_id(&base, 42);
+        assert_eq!(hex(&a), "9c58ee317627859680344accc982efac");
+        assert_ne!(a, version_id(&base, 43));
+        assert_ne!(a, version_id(&[8u8; 16], 42));
+        assert_eq!(a[6] >> 4, 8, "not a version 8 UUID");
     }
 }

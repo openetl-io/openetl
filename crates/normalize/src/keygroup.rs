@@ -39,7 +39,9 @@ use crate::{EXTENSION_NAME_KEY, JSON_EXTENSION};
 pub const KEY_GROUP_HASH: &str = "openetl.kg.v1";
 
 /// The key group of each row of `batch`, from its columns named `key`, out
-/// of `groups`, a power of two.
+/// of `groups`, a power of two. A key column the batch lacks, as a page of
+/// raw rows none of which has a value of it does, or of type null, is null
+/// in every row.
 pub fn key_groups(
     batch: &RecordBatch,
     key: &[String],
@@ -53,17 +55,20 @@ pub fn key_groups(
     let schema = batch.schema();
     let mut cols = Vec::with_capacity(key.len());
     for k in key {
-        let i = schema.index_of(k).map_err(|_| {
-            ArrowError::SchemaError(format!("the primary key column {k:?} is missing"))
-        })?;
+        let Ok(i) = schema.index_of(k) else {
+            cols.push(None);
+            continue;
+        };
         let f = schema.field(i);
-        if !hashable(f.data_type()) {
-            return Err(ArrowError::NotYetImplemented(format!(
-                "a key group from column {k:?} of type {}",
-                f.data_type()
-            )));
+        match f.data_type() {
+            DataType::Null => cols.push(None),
+            dt if hashable(dt) => cols.push(Some((f, batch.column(i).as_ref()))),
+            dt => {
+                return Err(ArrowError::NotYetImplemented(format!(
+                    "a key group from column {k:?} of type {dt}"
+                )));
+            }
         }
-        cols.push((f, batch.column(i).as_ref()));
     }
     let mut buf = Vec::new();
     let mut text = String::new();
@@ -71,8 +76,11 @@ pub fn key_groups(
     for row in 0..batch.num_rows() {
         buf.clear();
         buf.extend_from_slice(KEY_GROUP_HASH.as_bytes());
-        for (f, a) in &cols {
-            value(&mut buf, &mut text, f, *a, row);
+        for c in &cols {
+            match c {
+                Some((f, a)) => value(&mut buf, &mut text, json(f), *a, row),
+                None => buf.extend_from_slice(&u32::MAX.to_le_bytes()),
+            }
         }
         out.push((XxHash3_64::oneshot(&buf) % u64::from(groups)) as u32);
     }
@@ -121,7 +129,7 @@ pub fn in_key_groups(
     }
 }
 
-fn hashable(dt: &DataType) -> bool {
+pub(crate) fn hashable(dt: &DataType) -> bool {
     use DataType as D;
     matches!(
         dt,
@@ -152,13 +160,14 @@ fn hashable(dt: &DataType) -> bool {
     )
 }
 
-fn part(buf: &mut Vec<u8>, b: &[u8]) {
+pub(crate) fn part(buf: &mut Vec<u8>, b: &[u8]) {
     buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
     buf.extend_from_slice(b);
 }
 
-/// Encodes row `i` of `a`, of field `f`, whose type is hashable.
-fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Array, i: usize) {
+/// Encodes row `i` of `a`, whose type is hashable; `json` where its field is
+/// JSON.
+pub(crate) fn value(buf: &mut Vec<u8>, text: &mut String, json: bool, a: &dyn Array, i: usize) {
     use DataType as D;
     use std::fmt::Write;
     if a.is_null(i) {
@@ -190,8 +199,8 @@ fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Array, i: usiz
             &a.as_primitive::<Decimal256Type>().values()[i].to_string(),
             *s,
         ),
-        D::Utf8 if json(f) => return json_part(buf, bytes(a.as_string::<i32>(), i)),
-        D::LargeUtf8 if json(f) => return json_part(buf, bytes(a.as_string::<i64>(), i)),
+        D::Utf8 if json => return json_part(buf, bytes(a.as_string::<i32>(), i)),
+        D::LargeUtf8 if json => return json_part(buf, bytes(a.as_string::<i64>(), i)),
         D::Utf8 => return part(buf, bytes(a.as_string::<i32>(), i)),
         D::LargeUtf8 => return part(buf, bytes(a.as_string::<i64>(), i)),
         D::Binary => return part(buf, bytes(a.as_binary::<i32>(), i)),
@@ -263,7 +272,7 @@ fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Array, i: usiz
     part(buf, text.as_bytes());
 }
 
-fn json(f: &Field) -> bool {
+pub(crate) fn json(f: &Field) -> bool {
     f.metadata().get(EXTENSION_NAME_KEY).map(String::as_str) == Some(JSON_EXTENSION)
 }
 
@@ -314,7 +323,7 @@ fn sorted(v: &serde_json::Value, out: &mut String) {
     }
 }
 
-fn json_part(buf: &mut Vec<u8>, s: &[u8]) {
+pub(crate) fn json_part(buf: &mut Vec<u8>, s: &[u8]) {
     match canonical_json(s) {
         Some(t) => part(buf, t.as_bytes()),
         None => part(buf, s),
@@ -338,7 +347,7 @@ fn float(text: &mut String, v: f64) -> std::fmt::Result {
 }
 
 /// `digits` is the unscaled value as an integer's text.
-fn decimal(text: &mut String, digits: &str, scale: i8) -> std::fmt::Result {
+pub(crate) fn decimal(text: &mut String, digits: &str, scale: i8) -> std::fmt::Result {
     let (neg, digits) = match digits.strip_prefix('-') {
         Some(d) => (true, d),
         None => (false, digits),
@@ -565,6 +574,28 @@ mod tests {
             assert_eq!(b % 256, *a);
         }
         assert!(g256.iter().all(|g| *g < 256));
+    }
+
+    /// A key column a batch lacks, or of type null, is null in every row,
+    /// as it is where the batch has it with nulls.
+    #[test]
+    fn a_missing_or_null_typed_key_column_is_null() {
+        let k: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+        let nulls: ArrayRef = Arc::new(Int64Array::from(vec![None, None]));
+        let key = ["id".to_owned(), "k".to_owned()];
+        let with_nulls = groups(&[("id", nulls), ("k", k.clone())], 256);
+        let typed_null: ArrayRef = Arc::new(arrow_array::NullArray::new(2));
+        assert_eq!(
+            groups(&[("id", typed_null), ("k", k.clone())], 256),
+            with_nulls
+        );
+        let without = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("k", DataType::Utf8, true)])),
+            vec![k],
+        )
+        .unwrap();
+        assert_eq!(key_groups(&without, &key, 256).unwrap(), with_nulls);
+        assert_ne!(with_nulls[0], with_nulls[1]);
     }
 
     #[test]

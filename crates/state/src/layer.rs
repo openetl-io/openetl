@@ -40,6 +40,10 @@ impl Memory {
     }
 }
 
+/// The seq of a row [`Layer::put_row`] puts, which no appended row has:
+/// their epochs start at 1.
+const PUT: u64 = 0;
+
 /// A lane's state, for its range of key groups and every operator of the
 /// lane, as [`StateBackend`] serves it. The open epoch's changes stay in
 /// memory until [`Layer::barrier`] adds them to the pending set, or
@@ -219,6 +223,14 @@ impl Layer {
         Ok(())
     }
 
+    /// Stops reading run `name`, one [`Error::Gone`] named, as if it held
+    /// nothing, for state the caller can do without: the snapshots no
+    /// longer name it. Whether it did: not where a read may have found
+    /// something in it already, so every read sees the same state.
+    pub fn forget(&mut self, name: &str) -> bool {
+        self.store.forget(name)
+    }
+
     pub fn range(&self) -> KeyGroupRange {
         self.range
     }
@@ -248,11 +260,60 @@ impl Layer {
         self.commits
     }
 
+    /// Puts `row` as the key's one row at `time`, in place of the one put
+    /// there before, which [`Layer::row`] reads by its key rather than a
+    /// scan. A slot takes these or [`StateBackend::append`]'s, not both. A
+    /// row at or before the operator's horizon is gone at once.
+    pub fn put_row(&mut self, op: OperatorId, key: KeyRef<'_>, time: i64, row: Bytes) {
+        if let Some(g) = self.place(key.group)
+            && !self.gone(op, g, time)
+        {
+            self.change(layout::row(g, op, time, key.key, PUT), Some(row));
+        }
+    }
+
+    /// The row [`Layer::put_row`] put at each key's time, or `None`, read
+    /// together.
+    pub async fn row(
+        &mut self,
+        op: OperatorId,
+        slots: &[(KeyRef<'_>, i64)],
+    ) -> Result<Vec<Option<Bytes>>> {
+        self.usable()?;
+        self.relieve().await?;
+        let mut out = Vec::with_capacity(slots.len());
+        let (mut missing, mut at) = (Vec::new(), Vec::new());
+        for (i, (k, time)) in slots.iter().enumerate() {
+            let g = self.group(k.group)?;
+            if self.gone(op, g, *time) {
+                out.push(None);
+                continue;
+            }
+            let key = layout::row(g, op, *time, k.key, PUT);
+            match self.changed(&key) {
+                Some(v) => out.push(v.clone()),
+                None => {
+                    out.push(None);
+                    missing.push(key);
+                    at.push(i);
+                }
+            }
+        }
+        if !missing.is_empty() {
+            let got = self.store.get(&missing).await?;
+            for (i, v) in at.into_iter().zip(got) {
+                out[i] = v;
+            }
+        }
+        Ok(out)
+    }
+
     /// The barrier of epoch `epoch`, the open one: adds its changes to the
     /// pending set, and returns the snapshots the record names for the
     /// lane. They carry the pending set while its encoding is within the
-    /// lane's share; past it, the barrier commits the set to the store,
-    /// and the set starts empty. What the horizons passed leaves the set,
+    /// lane's share, or what's left of its store's pool's for the epoch
+    /// ([`Store::carry`]); past it, the barrier commits the set to the
+    /// store, and the set starts empty. What the horizons passed leaves the set,
     /// and so do deletes of what the store can't hold. The snapshots count
     /// once the record is written. Another epoch is refused; after any
     /// other error the layer is unusable, and the lane opens again from a
@@ -275,7 +336,10 @@ impl Layer {
         pending.retain(|k, v| {
             !self.passed(k, v.as_deref()) && (v.is_some() || self.store.may_hold(k))
         });
-        let changes: Vec<Change> = match pending::encoded_len(pending.iter()) <= self.share {
+        let carried = self
+            .store
+            .carry(epoch, pending::encoded_len(pending.iter()), self.share);
+        let changes: Vec<Change> = match carried {
             true => Vec::new(),
             false => std::mem::take(&mut pending).into_iter().collect(),
         };

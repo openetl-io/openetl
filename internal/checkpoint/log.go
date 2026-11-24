@@ -413,6 +413,10 @@ type Record struct {
 	// the destination's stream.
 	Files     map[string][]StagedFile `json:"files,omitempty"`
 	Snapshots []Snapshot              `json:"snapshots,omitempty"`
+	// The state that keeps the versions of keyed streams' records, by
+	// stream, apart from Snapshots: a runner from before it, whose engine
+	// would refuse it there, restores the rest without it.
+	Versions []Snapshot `json:"versions,omitempty"`
 	// What each stateful operator did in the epoch, and held at its
 	// barrier.
 	Operators []Operator `json:"operators,omitempty"`
