@@ -660,6 +660,129 @@ async fn a_run_is_forgotten_only_before_its_read() {
     assert!(!ls[0].forget(&name), "a run read from");
 }
 
+/// An object store that answers its next `misses` reads, looks among
+/// them, with not found, whatever it holds, as some do in an outage.
+#[derive(Debug)]
+struct Missing {
+    inner: InMemory,
+    misses: std::sync::atomic::AtomicU64,
+}
+
+impl std::fmt::Display for Missing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Missing({})", self.inner)
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for Missing {
+    async fn put_opts(
+        &self,
+        location: &Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        let missed = self
+            .misses
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok();
+        match missed {
+            true => Err(object_store::Error::NotFound {
+                path: location.to_string(),
+                source: "missing".into(),
+            }),
+            false => self.inner.get_opts(location, options).await,
+        }
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<'static, object_store::Result<Path>>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<Path>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&Path>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+/// A run read as missing is gone only once looks after a wait find it
+/// missing too: a store that answers not found once and then serves it
+/// gives what it holds, and one that goes on answering not found gives
+/// [`Error::Gone`], which a lane may forget.
+#[tokio::test]
+async fn a_run_is_gone_only_once_it_stays_missing() {
+    let store = Arc::new(Missing {
+        inner: InMemory::new(),
+        misses: Default::default(),
+    });
+    let s = RunStores::new(
+        Arc::new(ObjectStorage::new(store.clone(), Path::from("state"))),
+        RunConfig::default(),
+    );
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    let all = barrier(&mut ls, 1).await;
+    let name = runs(&all[0]).unwrap()[0].name.clone();
+
+    store.misses.store(1, Ordering::Relaxed);
+    let mut ls = open(&s, 2, 2, 1, &all).await;
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![Some(b("a"))]);
+    assert_eq!(store.misses.load(Ordering::Relaxed), 0);
+    assert_eq!(runs(&barrier(&mut ls, 2).await[0]).unwrap()[0].name, name);
+
+    store.misses.store(u64::MAX, Ordering::Relaxed);
+    let mut ls = open(&s, 3, 2, 1, &all).await;
+    let started = std::time::Instant::now();
+    match ls[0].row(OP, &[(k, 10)]).await {
+        Err(Error::Gone(run)) => assert_eq!(run, name),
+        got => panic!("{got:?}"),
+    }
+    assert!(started.elapsed() >= std::time::Duration::from_millis(1200));
+    // A read and a look after each of the two waits.
+    assert_eq!(u64::MAX - store.misses.load(Ordering::Relaxed), 3);
+    assert!(ls[0].forget(&name));
+    assert_eq!(ls[0].row(OP, &[(k, 10)]).await.unwrap(), vec![None]);
+}
+
 /// Where the recorded runs of each format are, under this crate.
 const RECORDED: &str = "tests/testdata/runs-v1";
 

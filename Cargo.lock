@@ -2346,6 +2346,7 @@ dependencies = [
 name = "openetl-state"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "futures-util",
  "lz4_flex",

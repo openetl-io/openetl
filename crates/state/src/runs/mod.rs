@@ -353,7 +353,35 @@ impl ObjectStorage {
         name.split('/')
             .fold(self.prefix.clone(), |p, part| p.join(part))
     }
+
+    /// After a read of run `name` found it missing: [`Error::Gone`] once a
+    /// look after each wait of [`CONFIRM`] finds it missing too, as a run
+    /// a snapshot names won't be there on a retry. Ok where one finds it,
+    /// for a read again: a store can answer a read with not found while it
+    /// holds the object, as some do in a partial outage.
+    async fn confirm_gone(&self, name: &str, path: &Path) -> Result<()> {
+        for wait in CONFIRM {
+            tokio::time::sleep(wait).await;
+            let head = GetOptions::new().with_head(true);
+            match self.store.get_opts(path, head).await {
+                Err(object_store::Error::NotFound { .. }) => {}
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    return Err(Error::Store(format!(
+                        "reading run {name}: not found, then {e}"
+                    )));
+                }
+            }
+        }
+        Err(Error::Gone(name.to_owned()))
+    }
 }
+
+/// The waits before each look whether a run a read found missing is there.
+const CONFIRM: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(200),
+    std::time::Duration::from_secs(1),
+];
 
 impl Objects for ObjectStorage {
     fn put_new<'a>(&'a self, name: &'a str, data: Bytes) -> BoxFuture<'a, Result<()>> {
@@ -379,19 +407,20 @@ impl Objects for ObjectStorage {
     fn get_range<'a>(&'a self, name: &'a str, range: Range<u64>) -> BoxFuture<'a, Result<Bytes>> {
         Box::pin(async move {
             let want = range.end - range.start;
-            let opts = GetOptions::new().with_range(Some(range));
-            let read = async {
-                self.store
-                    .get_opts(&self.path(name), opts)
-                    .await?
-                    .bytes()
-                    .await
+            let path = self.path(name);
+            let read = || async {
+                let opts = GetOptions::new().with_range(Some(range.clone()));
+                self.store.get_opts(&path, opts).await?.bytes().await
             };
-            // A run a snapshot names that isn't there won't be on a retry.
-            let b = read.await.map_err(|e| match e {
-                object_store::Error::NotFound { .. } => Error::Gone(name.to_owned()),
-                e => Error::Store(format!("reading run {name}: {e}")),
-            })?;
+            let failed = |e| Error::Store(format!("reading run {name}: {e}"));
+            let b = match read().await {
+                Ok(b) => b,
+                Err(object_store::Error::NotFound { .. }) => {
+                    self.confirm_gone(name, &path).await?;
+                    read().await.map_err(failed)?
+                }
+                Err(e) => return Err(failed(e)),
+            };
             match b.len() as u64 == want {
                 true => Ok(b),
                 false => Err(Error::Corrupt(format!(

@@ -21,6 +21,7 @@ arrow-cast = { version = "59.3.2", default-features = false }
 arrow-ipc = "59.3.2"
 arrow-schema = "59.3.2"
 arrow-select = "59.3.2"
+async-trait = "0.1.92"
 base64 = "0.22.1"
 bytes = "1.12.1"
 chrono = { version = "0.4.45", default-features = false }
