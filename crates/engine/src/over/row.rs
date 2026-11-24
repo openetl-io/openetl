@@ -731,6 +731,24 @@ mod tests {
             }
             dictionary_lists.push(Arc::new(b.finish()) as ArrayRef);
         }
+        // ["a", null], ["a", "a"] by two keys of equal values, ["b"]; then
+        // ["a", "a"] by one key.
+        for (keys, values, offsets) in [
+            (
+                vec![Some(0), None, Some(2), Some(0), Some(1)],
+                vec!["a", "b", "a"],
+                vec![0, 2, 4, 5],
+            ),
+            (vec![Some(0), Some(0)], vec!["a"], vec![0, 2]),
+        ] {
+            let d = DictionaryArray::<Int8Type>::try_new(
+                arrow_array::Int8Array::from(keys),
+                Arc::new(StringArray::from(values)),
+            )
+            .unwrap();
+            let valid = vec![true; offsets.len() - 1];
+            dictionary_lists.push(list(Arc::new(d), &offsets, &valid));
+        }
         let view_lists = vec![
             views(
                 &[Some("short"), None, Some("a long one, past twelve bytes")],
@@ -881,6 +899,42 @@ mod tests {
         );
         assert!(a[0] == b[1] && a[1] == b[2] && a[3] == b[0], "runs");
         assert!(a[0] != a[3], "runs");
+
+        // A union's slot under a null struct, or whose value is null, is
+        // null whatever its type id: [null, {u: 1}], with the int 5 or the
+        // string "junk" under the null struct; and [null], an int's null or
+        // a string's.
+        for mode in ["sparse", "dense"] {
+            let under = |id: i8| {
+                let five_and_one = ints(&[Some(5), Some(1)], 0);
+                let u = match mode {
+                    "sparse" => sparse(&[id, 0], five_and_one, texts(&[Some("junk"), None])),
+                    _ => dense(&[id, 0], &[0, 1], five_and_one, texts(&[Some("junk")])),
+                };
+                let s = structs(u, ints_column(&[7, 8]), &[false, true]);
+                list(s, &[0, 2], &[true])
+            };
+            assert!(
+                kept(&under(0), 0) == kept(&under(1), 0),
+                "{mode}: under a null struct"
+            );
+            let null_of = |id: i8| {
+                let u = match mode {
+                    "sparse" => sparse(&[id], ints(&[None], 3), texts(&[None])),
+                    _ => dense(&[id], &[0], ints(&[None], 3), texts(&[None])),
+                };
+                list(u, &[0, 1], &[true])
+            };
+            assert!(
+                kept(&null_of(0), 0) == kept(&null_of(1), 0),
+                "{mode}: a null"
+            );
+            assert!(kept(&null_of(0), 0) != kept(&under(0), 0), "{mode}");
+        }
+    }
+
+    fn ints_column(values: &[i64]) -> ArrayRef {
+        Arc::new(Int64Array::from(values.to_vec()))
     }
 
     /// A value is kept under its type exactly, whatever its nested fields'
