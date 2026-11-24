@@ -29,10 +29,9 @@ type GetSyncSpecRequest struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	PipelineId string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
 	Version    string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
-	// The caller is an attempt, which applies the pipeline's hold releases:
-	// the response has them, and the server records that a run has taken
-	// them. Without it, the response has none.
-	TakeReleases  bool `protobuf:"varint,3,opt,name=take_releases,json=takeReleases,proto3" json:"take_releases,omitempty"`
+	// The caller is an attempt, which applies the pipeline's hold releases,
+	// ends among them: the response has them. Without it, it has none.
+	ApplyReleases bool `protobuf:"varint,3,opt,name=apply_releases,json=applyReleases,proto3" json:"apply_releases,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -81,9 +80,9 @@ func (x *GetSyncSpecRequest) GetVersion() string {
 	return ""
 }
 
-func (x *GetSyncSpecRequest) GetTakeReleases() bool {
+func (x *GetSyncSpecRequest) GetApplyReleases() bool {
 	if x != nil {
-		return x.TakeReleases
+		return x.ApplyReleases
 	}
 	return false
 }
@@ -117,7 +116,7 @@ type GetSyncSpecResponse struct {
 	// secret stores.
 	FlinkAccessSecrets []*ExternalSecret `protobuf:"bytes,15,rep,name=flink_access_secrets,json=flinkAccessSecrets,proto3" json:"flink_access_secrets,omitempty"`
 	// Holds released or discarded, for the holds still open in the
-	// pipeline's last mirrored checkpoint, with take_releases. A release
+	// pipeline's last mirrored checkpoint, with apply_releases. A release
 	// applies to the hold it names only while that hold is open, so sending
 	// it again does nothing.
 	Releases []*HoldRelease `protobuf:"bytes,16,rep,name=releases,proto3" json:"releases,omitempty"`
@@ -430,10 +429,12 @@ type HoldRelease struct {
 	// A column hold's values go to a new version of the column, col__v2, as
 	// allow_all's do, and the column keeps the type the destination has.
 	NewVersion bool `protobuf:"varint,5,opt,name=new_version,json=newVersion,proto3" json:"new_version,omitempty"`
-	// A release that a person discarded once a run had taken it: a run in
-	// which its stream holds goes on with it, and one in which the stream
-	// doesn't hold drops the values it hasn't patched in. It ends with the
-	// release, so the values a finished release leaves held stay held.
+	// A release that a person discarded: a discard of its hold, unless the
+	// replay in the pipeline's record took it, as a run may have started
+	// patching it in. Then a run in which the stream holds goes on with it,
+	// and one in which the stream doesn't hold drops the values it hasn't
+	// patched in. It ends with the replay, so the values a finished release
+	// leaves held stay held.
 	Ends          bool `protobuf:"varint,7,opt,name=ends,proto3" json:"ends,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3776,12 +3777,12 @@ var File_openetl_dataplane_v1_dataplane_proto protoreflect.FileDescriptor
 
 const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
-	"$openetl/dataplane/v1/dataplane.proto\x12\x14openetl.dataplane.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1fopenetl/api/v1/connection.proto\x1a\x1aopenetl/api/v1/flink.proto\x1a\x1dopenetl/api/v1/pipeline.proto\x1a\x1aopenetl/api/v1/spark.proto\x1a\x19openetl/api/v1/sync.proto\x1a!openetl/connector/v1/source.proto\"t\n" +
+	"$openetl/dataplane/v1/dataplane.proto\x12\x14openetl.dataplane.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1fopenetl/api/v1/connection.proto\x1a\x1aopenetl/api/v1/flink.proto\x1a\x1dopenetl/api/v1/pipeline.proto\x1a\x1aopenetl/api/v1/spark.proto\x1a\x19openetl/api/v1/sync.proto\x1a!openetl/connector/v1/source.proto\"v\n" +
 	"\x12GetSyncSpecRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\x12#\n" +
-	"\rtake_releases\x18\x03 \x01(\bR\ftakeReleases\"\xd1\f\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12%\n" +
+	"\x0eapply_releases\x18\x03 \x01(\bR\rapplyReleases\"\xd1\f\n" +
 	"\x13GetSyncSpecResponse\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x1f\n" +
 	"\vpipeline_id\x18\x02 \x01(\tR\n" +

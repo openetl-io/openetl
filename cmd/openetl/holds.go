@@ -68,15 +68,18 @@ func runHolds(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	h = res.Msg.GetHold()
-	if h.GetReleasing() {
-		fmt.Fprintf(out, "discarded the release of %s.%s of %s, which a run has taken; a run in which the stream doesn't hold drops the values the release hasn't patched in, and while the stream holds, the release goes on, and the values it leaves held stay held\n", h.GetStream(), h.GetColumn(), parent)
-		return nil
-	}
 	later := ""
 	if h.GetWhole() {
 		later = ", and the column's later values until you release it"
 	}
-	fmt.Fprintf(out, "discarded %s.%s of %s; the pipeline's next run drops its held values%s\n", h.GetStream(), h.GetColumn(), parent, later)
+	switch {
+	case res.Msg.GetEndsRelease() && h.GetReleasing():
+		fmt.Fprintf(out, "discarded the release of %s.%s of %s, which is being patched in; it goes on while the stream holds, and the values it leaves held stay held, and a run in which the stream doesn't hold drops the values it hasn't patched in\n", h.GetStream(), h.GetColumn(), parent)
+	case res.Msg.GetEndsRelease():
+		fmt.Fprintf(out, "discarded %s.%s of %s; the pipeline's next run drops its held values%s, unless a run has already started patching in their release, which then goes on while the stream holds\n", h.GetStream(), h.GetColumn(), parent, later)
+	default:
+		fmt.Fprintf(out, "discarded %s.%s of %s; the pipeline's next run drops its held values%s\n", h.GetStream(), h.GetColumn(), parent, later)
+	}
 	return nil
 }
 

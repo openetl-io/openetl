@@ -64,10 +64,12 @@ type Release struct {
 	// A column hold's values go to a new version of the column, col__v2,
 	// and the column keeps the type the destination has.
 	NewVersion bool
-	// A release that a person discarded once a run had taken it. Where the
-	// stream holds, it is a release, and the replay that took it goes on; a
-	// job in which the stream doesn't hold takes it as a discard of that
-	// replay, or of its hold if no replay took it.
+	// A release that a person discarded: a discard of its hold, unless the
+	// replay in the record took it, as a run had started patching it in.
+	// Records are where an attempt commits, so one that never recorded the
+	// replay patched nothing in. Where the stream holds, that replay goes
+	// on; a job in which it doesn't hold takes the release as a discard of
+	// the replay.
 	Ends bool
 }
 
@@ -382,20 +384,22 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		for _, r := range j.Releases {
 			// Releases wait for a replay to end. One of the replay's that a
 			// person discarded ends it only where the stream doesn't hold
-			// (keptHolds).
+			// (keptHolds); one that no replay took is a discard.
 			if r.Stream != s.Name || h.Replay != nil {
 				continue
 			}
+			// A release refused isn't taken again, nor its discard.
 			again := func(f *checkpoint.Refused) bool { return f != nil && r.ID != "" && f.Release == r.ID && !r.Discard }
+			discard := r.Discard || r.Ends
 			if i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool {
-				return c.Column == r.Column && c.Since == r.Since && (!c.Discarded || !r.Discard) && !again(c.Refused)
+				return c.Column == r.Column && c.Since == r.Since && (!c.Discarded || !discard) && !again(c.Refused)
 			}); i >= 0 {
 				switch {
 				case h.Columns[i].Discarded:
 					// Released, a discarded hold ends without a replay, as its
 					// values are gone; refused again, the column is held anew.
 					h.Columns = slices.Delete(h.Columns, i, i+1)
-				case r.Discard:
+				case discard:
 					h.Columns[i].Discarded, h.Columns[i].Refused = true, nil
 				default:
 					taken = append(taken, h.Columns[i])
@@ -408,7 +412,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				}
 			}
 			if c, ok := h.Cells[r.Column]; ok && c.Since == r.Since && !again(c.Refused) {
-				if r.Discard {
+				if discard {
 					delete(h.Cells, r.Column)
 				} else {
 					released = append(released, r.Column)

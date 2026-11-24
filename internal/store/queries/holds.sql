@@ -34,36 +34,26 @@ ON CONFLICT (org_id, pipeline_id, stream, column_name, whole, since_generation, 
     DO UPDATE SET id = hold_releases.id, ends = hold_releases.ends AND EXCLUDED.discard
 RETURNING id, discard, new_version;
 
--- name: TakeHoldReleases :many
+-- name: PendingHoldReleases :many
 -- The releases of holds still open, not being patched in, and not refused,
 -- for a run to take: of a hold not discarded, or a release that ends a
--- discarded one. And while its column is being patched in, a release a
--- person discarded, which a run in which the stream doesn't hold takes as
--- a discard. Each is recorded as taken in the statement that reads it, so
--- a discard that finds one no run has taken (LockHoldRelease) and deletes
--- it is never too late.
-WITH taken AS (
-    UPDATE hold_releases r SET take_time = coalesce(r.take_time, now())
-    WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND (
-        EXISTS (
-            SELECT 1 FROM holds h
-            WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
-                AND h.column_name = r.column_name AND h.whole = r.whole
-                AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch
-                AND (NOT h.discarded OR NOT r.discard) AND NOT h.releasing AND r.id IS DISTINCT FROM h.refused_release)
-        OR r.ends AND EXISTS (
-            SELECT 1 FROM holds h
-            WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
-                AND h.column_name = r.column_name AND h.releasing))
-    RETURNING r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version, r.ends, r.create_time
-)
-SELECT id, stream, column_name, since_generation, since_epoch, discard, new_version, ends FROM taken
-ORDER BY create_time, id;
-
--- name: LockHoldRelease :one
--- When a run first took the release, null if none has, locked until the
--- transaction ends: a run can't take it meanwhile.
-SELECT take_time FROM hold_releases WHERE org_id = @org_id AND id = @id FOR UPDATE;
+-- discarded one. A release a person discarded counts as a discard, and
+-- while its column is being patched in, a run gets it too: in one in which
+-- the stream doesn't hold, it ends the replay that took it.
+SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version, r.ends
+FROM hold_releases r
+WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND (
+    EXISTS (
+        SELECT 1 FROM holds h
+        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+            AND h.column_name = r.column_name AND h.whole = r.whole
+            AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch
+            AND (NOT h.discarded OR NOT (r.discard OR r.ends)) AND NOT h.releasing AND r.id IS DISTINCT FROM h.refused_release)
+    OR r.ends AND EXISTS (
+        SELECT 1 FROM holds h
+        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+            AND h.column_name = r.column_name AND h.releasing))
+ORDER BY r.create_time, r.id;
 
 -- name: EndHoldReleases :execrows
 -- Marks a person's discard on the releases of the stream's column, but

@@ -3926,6 +3926,13 @@ components:
             properties:
                 hold:
                     $ref: '#/components/schemas/Hold'
+                endsRelease:
+                    type: boolean
+                    description: |-
+                        The column had a release, which the discard ends instead. The next run
+                         drops its values, unless a run has already started patching them in:
+                         that release goes on while the stream holds, and a run in which the
+                         stream doesn't hold drops the values it hasn't patched in.
         DiscoverSourceRequest:
             type: object
             properties:

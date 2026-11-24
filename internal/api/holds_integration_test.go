@@ -171,10 +171,10 @@ func (e *holdsEnv) holds(t *testing.T) map[string]*apiv1.Hold {
 	return out
 }
 
-// taken are the releases a run of the pipeline takes.
+// taken are the releases an attempt of the pipeline gets.
 func (e *holdsEnv) taken(t *testing.T) []*dataplanev1.HoldRelease {
 	t.Helper()
-	spec, err := e.runner.GetSyncSpec(t.Context(), connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1", TakeReleases: true}))
+	spec, err := e.runner.GetSyncSpec(t.Context(), connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1", ApplyReleases: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,12 +300,17 @@ func TestHoldsReleasesAndTheirIncident(t *testing.T) {
 	}
 }
 
-// A discard replaces a release that waits for the pipeline's next run. Of
-// a release being patched in, it marks the release, which a run gets while
-// the column is being patched in, and which lapses once the release is
-// over: a later hold of the column, released, doesn't take it. A release
-// can't end a release in progress.
-func TestADiscardReplacesARelease(t *testing.T) {
+// A discard of a hold with a release marks the release, and says so: the
+// next run drops its values, unless a run has started patching them in. The
+// hold lists as pending, and a run gets the release marked, which a release
+// made again clears. One taken as a discard leaves its hold discarded, not
+// pending, and a release replaces it. A hold with no release takes a
+// discard. Of a release being patched in, a discard says that it goes on,
+// and a run gets it while the column is being patched in; the mark lapses
+// once the release is over, so a later hold of the column, released,
+// doesn't take it. A release can't end a release in progress. A fetch of
+// the spec that doesn't apply releases gets none.
+func TestADiscardEndsARelease(t *testing.T) {
 	ctx := t.Context()
 	e := newHoldsEnv(t)
 	since := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}
@@ -319,55 +324,89 @@ func TestADiscardReplacesARelease(t *testing.T) {
 		_, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: col}))
 		return err
 	}
-	discard := func(col string) *apiv1.Hold {
+	discard := func(col string) *apiv1.DiscardHoldResponse {
 		t.Helper()
 		res, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: col}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return res.Msg.GetHold()
+		return res.Msg
 	}
-	e.report(t, 1, 3, held("amount", since), held("price", since))
+	note := &dataplanev1.CheckpointHold{Column: "note", Cells: 2, Reason: "nan", Since: since, StartTime: timestamppb.Now()}
+	e.report(t, 1, 3, held("amount", since), held("price", since), note)
 	if err := errors.Join(release("amount"), release("price")); err != nil {
 		t.Fatal(err)
 	}
-	if h := discard("price"); !h.GetPending() {
-		t.Errorf("discarded %v", h)
+	spec, err := e.runner.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := e.releases(t); len(got) != 2 || got[0] != "orders.amount" || got[1] != "orders.price discard" {
-		t.Errorf("releases %v, once a discard replaces price's release", got)
+	if n := len(spec.Msg.GetReleases()); n != 0 {
+		t.Errorf("a fetch that doesn't apply releases got %d", n)
+	}
+	if res := discard("price"); !res.GetEndsRelease() || !res.GetHold().GetPending() || res.GetHold().GetReleasing() {
+		t.Errorf("discarded %v", res)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount orders.price ends]" {
+		t.Errorf("releases %v, once price's release is discarded", got)
+	}
+	if h := e.holds(t)["price"]; !h.GetPending() {
+		t.Errorf("price %v", h)
+	}
+	if err := release("price"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount orders.price]" {
+		t.Errorf("releases %v, once price is released again", got)
+	}
+	discard("price")
+	if res := discard("note"); res.GetEndsRelease() || !res.GetHold().GetPending() {
+		t.Errorf("discarded %v, a hold with no release", res)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount orders.price ends orders.note discard]" {
+		t.Errorf("releases %v", got)
 	}
 
-	// The run takes them: amount is being patched in.
+	// The run takes them: price's release as a discard; amount is being
+	// patched in.
 	discarded := held("price", since)
 	discarded.Discarded = true
 	e.report(t, 1, 4, releasing("amount", since), discarded)
 	if got := e.releases(t); len(got) != 0 {
 		t.Errorf("releases %v, once taken", got)
 	}
+	if h := e.holds(t)["price"]; !h.GetDiscarded() || h.GetPending() {
+		t.Errorf("price %v, once its discarded release is taken", h)
+	}
 	if err := release("amount"); code(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "discard it") {
 		t.Errorf("releasing a hold being patched in: %v", err)
 	}
-	if h := discard("amount"); !h.GetReleasing() || h.GetPending() {
-		t.Errorf("discarded %v", h)
+	if res := discard("amount"); !res.GetEndsRelease() || !res.GetHold().GetReleasing() || res.GetHold().GetPending() {
+		t.Errorf("discarded %v", res)
 	}
 	discard("amount")
-	if got := e.releases(t); len(got) != 1 || got[0] != "orders.amount ends" {
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount ends]" {
 		t.Errorf("releases %v, once a release being patched in is discarded", got)
 	}
+	if err := release("price"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount ends orders.price]" {
+		t.Errorf("releases %v, once the discarded price is released", got)
+	}
 
-	// The release ended. A later hold of the column, released, is patched
-	// in without the discard.
+	// The release of amount ended. A later hold of the column, released, is
+	// patched in without the discard.
 	e.report(t, 1, 5, discarded)
-	if got := e.releases(t); len(got) != 0 {
-		t.Errorf("releases %v, once the release ended", got)
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.price]" {
+		t.Errorf("releases %v, once the release of amount ended", got)
 	}
 	later := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 6}
-	e.report(t, 1, 6, held("amount", later), discarded)
+	e.report(t, 1, 6, held("amount", later))
 	if err := release("amount"); err != nil {
 		t.Fatal(err)
 	}
-	e.report(t, 1, 7, releasing("amount", later), discarded)
+	e.report(t, 1, 7, releasing("amount", later))
 	if got := e.releases(t); len(got) != 0 {
 		t.Errorf("releases %v, of a later hold being patched in", got)
 	}
@@ -399,8 +438,8 @@ func TestADiscardOfAReleaseInProgressLapsesWithIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Msg.GetHold().GetReleasing() {
-		t.Errorf("discarded %v", res.Msg.GetHold())
+	if !res.Msg.GetEndsRelease() || !res.Msg.GetHold().GetReleasing() {
+		t.Errorf("discarded %v", res.Msg)
 	}
 	if got := e.taken(t); len(got) != 1 || got[0].GetId() != rs[0].GetId() || !got[0].GetEnds() || got[0].GetDiscard() {
 		t.Errorf("releases %v, once the release in progress is discarded", got)
@@ -461,69 +500,6 @@ func TestADiscardOfAReleaseInProgressFollowsTheRelease(t *testing.T) {
 	ends("once the column holds cells")
 	discard()
 	ends("once discarded again")
-}
-
-// A discard takes the place of a release that no run has taken, and ends
-// one a run has taken, though the run hasn't recorded it being patched in
-// yet: the answer says which, by the release's row when the discard is
-// made. A fetch of the spec that isn't an attempt's takes nothing. A
-// release made again clears the discard of a taken release.
-func TestADiscardOfATakenReleaseEndsIt(t *testing.T) {
-	ctx := t.Context()
-	e := newHoldsEnv(t)
-	since := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}
-	held := func(col string) *dataplanev1.CheckpointHold {
-		return &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "a view depends on it", Since: since, StartTime: timestamppb.Now()}
-	}
-	release := func(col string) {
-		t.Helper()
-		if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: col})); err != nil {
-			t.Fatal(err)
-		}
-	}
-	discard := func(col string) *apiv1.Hold {
-		t.Helper()
-		res, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: col}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return res.Msg.GetHold()
-	}
-	e.report(t, 1, 2, held("amount"), held("price"))
-	release("amount")
-	spec, err := e.runner.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n := len(spec.Msg.GetReleases()); n != 0 {
-		t.Errorf("a fetch that takes no releases got %d", n)
-	}
-	// No run has taken it: the discard takes its place.
-	if h := discard("amount"); !h.GetPending() || h.GetReleasing() {
-		t.Errorf("discarded %v, a release no run has taken", h)
-	}
-	if got := e.releases(t); len(got) != 1 || got[0] != "orders.amount discard" {
-		t.Errorf("releases %v", got)
-	}
-
-	// A run takes price's release, and hasn't recorded it yet.
-	release("price")
-	if got := e.releases(t); len(got) != 2 || got[1] != "orders.price" {
-		t.Fatalf("releases %v", got)
-	}
-	if h := discard("price"); !h.GetReleasing() || h.GetPending() {
-		t.Errorf("discarded %v, a release a run has taken", h)
-	}
-	if got := e.releases(t); len(got) != 2 || got[1] != "orders.price ends" {
-		t.Errorf("releases %v, once a taken release is discarded", got)
-	}
-	if h := e.holds(t)["price"]; !h.GetPending() {
-		t.Errorf("price %v", h)
-	}
-	release("price")
-	if got := e.releases(t); len(got) != 2 || got[1] != "orders.price" {
-		t.Errorf("releases %v, once the taken release is made again", got)
-	}
 }
 
 // A discarded column hold drops the column's values until it's released: a

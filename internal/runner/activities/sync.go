@@ -339,10 +339,9 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 }
 
 // syncSpec fetches a pipeline version, with its source and destination,
-// and with releases, the hold releases an attempt applies, which the
-// server then records as taken.
+// and with releases, the hold releases an attempt applies.
 func syncSpec(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient, org, pipeline, version string, releases bool) (*dataplanev1.GetSyncSpecResponse, error) {
-	resp, err := api.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: pipeline, Version: version, TakeReleases: releases}))
+	resp, err := api.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: pipeline, Version: version, ApplyReleases: releases}))
 	if err != nil {
 		code := errs.Transient
 		if c := connect.CodeOf(err); c == connect.CodeNotFound || c == connect.CodeInvalidArgument {
