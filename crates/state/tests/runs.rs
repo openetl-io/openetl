@@ -1506,3 +1506,80 @@ async fn rows_of_one_time_and_their_deletes_merge() {
     }
     assert_eq!(left, live);
 }
+
+/// A lane refused room that then stops coming to barriers, as a stream's
+/// that has ended, loses its place in line once it hasn't asked for a whole
+/// epoch: another store of the pool merges on as if it had gone.
+#[tokio::test]
+async fn a_lane_that_stops_asking_loses_its_place() {
+    let put = |l: &mut Layer, e: u32| {
+        for n in 0..200u32 {
+            let id = format!("id-{e}-{n}");
+            l.put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+    };
+    // One run's raw bytes, measured.
+    let raw = {
+        let quiet = RunConfig {
+            merge: None,
+            ..RunConfig::default()
+        };
+        let s = stores(&Bucket::new(), quiet);
+        let mut ls = open(&s, 1, 1, 1, &[]).await;
+        put(&mut ls[0], 1);
+        let all = barrier(&mut ls, 1).await;
+        runs(&all[0]).unwrap()[0]
+            .sections
+            .iter()
+            .map(|s| s.raw_bytes)
+            .sum::<u64>()
+    };
+    // Room for one merge of four runs, not two.
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            max_bytes: 6 * raw,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let mut got = Vec::new();
+    for stops in [false, true] {
+        let pool = Pool::new(1 << 20, 0);
+        let sa = RunStores::pooled(Bucket::new(), config.clone(), None, &pool);
+        let sb = RunStores::pooled(Bucket::new(), config.clone(), None, &pool);
+        let mut a = open(&sa, 1, 1, 1, &[]).await.remove(0);
+        let mut bl = open(&sb, 1, 1, 1, &[]).await.remove(0);
+        // At epoch 4, B's barrier starts a merge of its four runs, and A's,
+        // after it, is refused and waits in line.
+        for e in 1..=4u32 {
+            put(&mut bl, e);
+            bl.barrier(e.into()).await.unwrap();
+            put(&mut a, e);
+            a.barrier(e.into()).await.unwrap();
+        }
+        // A's stream ends: it comes to no more barriers. Where it doesn't
+        // stop, it's dropped, and leaves the line.
+        let kept = stops.then_some(a);
+        let mut named = 0;
+        for e in 5..=60u32 {
+            put(&mut bl, e);
+            named = runs(&bl.barrier(e.into()).await.unwrap()[0]).unwrap().len();
+        }
+        println!(
+            "A stops at the head: {stops}; B merged {} times, names {named} runs",
+            sb.counts().merges,
+        );
+        got.push((sb.counts().merges, named));
+        drop(kept);
+    }
+    let (gone, stopped) = (got[0], got[1]);
+    assert!(
+        stopped.0 + 1 >= gone.0,
+        "B merged {stopped:?}, not as {gone:?}"
+    );
+    assert!(
+        stopped.1 <= gone.1 + 4,
+        "B names {stopped:?}, not as {gone:?}"
+    );
+}

@@ -986,7 +986,9 @@ struct Merging {
 /// in line takes room once it fits, which others leave it: another takes
 /// only room the first's need leaves. So a lane whose barrier comes late
 /// in each epoch gets its turn, rather than lanes before it taking whatever
-/// their merges release.
+/// their merges release. A lane asks at each of its barriers, so a place
+/// whose lane hasn't asked for a whole epoch lapses: a lane that stops
+/// coming to barriers, as one whose stream ended, holds no one up.
 #[derive(Default)]
 struct Budget(Mutex<Taken>);
 
@@ -994,19 +996,26 @@ struct Budget(Mutex<Taken>);
 struct Taken {
     bytes: u64,
     /// Lanes refused, by token, in the order they were, with what each
-    /// asked for last.
-    waiting: VecDeque<(u64, u64)>,
+    /// asked for last, and the epoch it asked at.
+    waiting: VecDeque<(u64, u64, u64)>,
 }
 
 impl Budget {
-    /// Takes `bytes` of `of` for lane `lane`, where they fit and leave the
-    /// first in line its room, or the lane is first; else puts it in line,
-    /// if it isn't, with what it asks for.
-    fn take(&self, lane: u64, bytes: u64, of: u64) -> bool {
+    /// Takes `bytes` of `of` for lane `lane`, at its barrier of `epoch`,
+    /// where they fit and leave the first in line its room, or the lane is
+    /// first; else puts it in line, if it isn't, with what it asks for.
+    fn take(&self, lane: u64, bytes: u64, of: u64, epoch: u64) -> bool {
         let mut t = lock(&self.0);
+        while t
+            .waiting
+            .front()
+            .is_some_and(|w| w.0 != lane && w.2.saturating_add(1) < epoch)
+        {
+            t.waiting.pop_front();
+        }
         let kept = match t.waiting.front() {
-            Some(&(first, _)) if first == lane => 0,
-            Some(&(_, need)) => need,
+            Some(&(first, _, _)) if first == lane => 0,
+            Some(&(_, need, _)) => need,
             None => 0,
         };
         let fits = t
@@ -1020,8 +1029,8 @@ impl Budget {
             return true;
         }
         match t.waiting.iter_mut().find(|w| w.0 == lane) {
-            Some(w) => w.1 = bytes,
-            None => t.waiting.push_back((lane, bytes)),
+            Some(w) => (w.1, w.2) = (bytes, epoch),
+            None => t.waiting.push_back((lane, bytes, epoch)),
         }
         false
     }
@@ -1049,11 +1058,14 @@ struct Reserved {
 }
 
 impl Reserved {
-    fn take(shared: &Arc<Shared>, lane: u64, bytes: u64, of: u64) -> Option<Reserved> {
-        shared.merging.take(lane, bytes, of).then(|| Reserved {
-            shared: shared.clone(),
-            bytes,
-        })
+    fn take(shared: &Arc<Shared>, lane: u64, bytes: u64, of: u64, epoch: u64) -> Option<Reserved> {
+        shared
+            .merging
+            .take(lane, bytes, of, epoch)
+            .then(|| Reserved {
+                shared: shared.clone(),
+                bytes,
+            })
     }
 }
 
@@ -1836,7 +1848,7 @@ impl RunStore {
             self.shared.disk_put_run(p);
         }
         let snapshot = self.snapshot();
-        self.start_merge();
+        self.start_merge(epoch);
         Ok(vec![snapshot])
     }
 
@@ -2111,10 +2123,10 @@ impl RunStore {
         Ok(placed)
     }
 
-    /// Starts the merge the policy picks, if none is in flight, and it's
-    /// the lane's turn to take room for it; a lane without one leaves the
-    /// line.
-    fn start_merge(&mut self) {
+    /// Starts the merge the policy picks, at epoch `epoch`'s barrier, if
+    /// none is in flight, and it's the lane's turn to take room for it; a
+    /// lane without one leaves the line.
+    fn start_merge(&mut self, epoch: u64) {
         let Some(config) = &self.shared.config.merge else {
             return;
         };
@@ -2143,7 +2155,8 @@ impl RunStore {
         };
         let secs = &self.sections[plan.kind.index()][plan.at.clone()];
         let need: u64 = secs.iter().map(|s| s.handle.raw_bytes).sum();
-        let Some(reserved) = Reserved::take(&self.shared, lane, need, config.max_bytes) else {
+        let Some(reserved) = Reserved::take(&self.shared, lane, need, config.max_bytes, epoch)
+        else {
             return;
         };
         let inputs: Vec<merge::Input> = secs
