@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -16,7 +18,9 @@ import (
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/delivery"
+	partition "github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/runner"
+	"github.com/openetl-io/openetl/internal/runner/attempt"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
@@ -303,6 +307,174 @@ func TestASecondVersionAtOneCursorValueLands(t *testing.T) {
 	}
 	if got := p.dest.names("users", 2); !slices.Equal(got, []string{"x"}) {
 		t.Errorf("row 2, read three times unchanged, applied as %q", got)
+	}
+}
+
+// A row that changes back within one cursor value to a version a read
+// already gave keeps that version's ID, so the apply skips it, and the
+// table ends with the version before: v1, v2, v3, then v2 again, ends at
+// v3.
+func TestAChangeBackToAnEarlierVersionAtOneCursorValueIsSkipped(t *testing.T) {
+	ctx := testContext(t)
+	p := newVersionsPipeline(t, nil, eightRows("v1"), eightRows("v2"), eightRows("v3"), eightRows("v2"))
+	for range 4 {
+		p.sync(ctx)
+	}
+	for id := range int64(8) {
+		if got := p.dest.names("users", id); !slices.Equal(got, []string{"v1", "v2", "v3"}) {
+			t.Errorf("row %d applied %q, want v1, v2 and v3, the change back to v2 skipped", id, got)
+		}
+	}
+}
+
+// eightRows are rows 0 to 7 of stream users, named name, at one cursor
+// value.
+func eightRows(name string) []string {
+	var out []string
+	for id := range 8 {
+		out = append(out, fmt.Sprintf(`{"id": %d, "name": %q, "at": "2024-05-01"}`, id, name))
+	}
+	return out
+}
+
+// A destination's writer lanes, rescaled between syncs, take the versions
+// of their key groups with them: a second version at one cursor value
+// lands after the rescale, and a version read again unchanged doesn't.
+func TestVersionsMoveWithTheirKeyGroupsAcrossWriterLanes(t *testing.T) {
+	for _, tc := range []struct{ from, to int }{{1, 2}, {2, 1}, {2, 3}} {
+		t.Run(fmt.Sprintf("%d to %d", tc.from, tc.to), func(t *testing.T) {
+			ctx := testContext(t)
+			p := newVersionsPipeline(t, nil, eightRows("v1"), eightRows("v2"), eightRows("v2"))
+			writers := tc.from
+			p.edit = func(j *runner.Job) {
+				p.dest.writers = writers
+				j.Source, j.Lanes = twoSplits{p.src}, max(writers, 2)
+			}
+			p.sync(ctx)
+			writers = tc.to
+			p.sync(ctx)
+			p.sync(ctx)
+			for id := range int64(8) {
+				if got := p.dest.names("users", id); !slices.Equal(got, []string{"v1", "v2"}) {
+					t.Errorf("row %d applied %q, want v1 then v2", id, got)
+				}
+			}
+		})
+	}
+}
+
+// fourSplits reads stream users in four splits of eight rows each, whole on
+// every read, its rows named version.
+type fourSplits struct {
+	version atomic.Value
+}
+
+func (s *fourSplits) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
+	out := make([]source.Split, 4)
+	for i := range out {
+		out[i] = source.Split{ID: strconv.Itoa(i)}
+	}
+	return out, nil
+}
+
+func (s *fourSplits) Read(ctx context.Context, req source.ReadRequest, out source.Emitter) error {
+	name := s.version.Load().(string)
+	return source.ReadSplits(ctx, req, out, func(_ context.Context, _ source.ConfiguredStream, sp source.Split, e source.SplitEmitter) error {
+		split, err := strconv.Atoi(sp.ID)
+		if err != nil {
+			return err
+		}
+		var page []json.RawMessage
+		for r := range 8 {
+			page = append(page, json.RawMessage(fmt.Sprintf(`{"id": %d, "name": %q, "at": "2024-05-01"}`, split*100+r, name)))
+		}
+		if err := e.Rows(page); err != nil {
+			return err
+		}
+		return e.Complete([]byte("1"))
+	})
+}
+
+// syncOnWorkers runs a sync of p's job, its source src, on workers workers,
+// or without workers where it's 0.
+// Each worker's job and the coordinator's have one owner.
+func (p *versionsPipeline) syncOnWorkers(ctx context.Context, src *fourSplits, srv *attempt.Server, workers int, splitByKey bool) {
+	p.t.Helper()
+	owner := fmt.Sprintf("w%d", p.syncs)
+	mk := func() runner.Job {
+		j := p.job()
+		j.Owner, j.Source, j.Lanes = owner, src, 2
+		j.Streams[0].Partitioning = partition.SourcePartitioning([]string{"id"}, splitByKey, false)
+		return j
+	}
+	ip := &inProcess{ctx: ctx, mk: mk}
+	j := mk()
+	if workers > 0 {
+		ip.on(&j, srv, workers)
+	}
+	if _, err := runner.RunAttempt(ctx, j); err != nil {
+		p.t.Fatalf("sync by %s: %v", owner, err)
+	}
+	if workers > 0 {
+		for w, err := range ip.wait() {
+			if err != nil {
+				p.t.Errorf("sync by %s, worker %d: %v", owner, w, err)
+			}
+		}
+	}
+}
+
+// On two workers, a stream whose versions are kept is exchanged by key
+// group to the writer lane that keeps them, also where its source splits
+// it by key: a second version at one cursor value lands for every key, and
+// one read again unchanged doesn't.
+func TestASecondVersionAtOneCursorValueLandsOnWorkers(t *testing.T) {
+	for _, split := range []bool{true, false} {
+		t.Run(fmt.Sprint("split by key ", split), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+			defer cancel()
+			p := newVersionsPipeline(t, nil)
+			p.dest.writers = 4
+			src := &fourSplits{}
+			srv := listen(t)
+			for _, v := range []string{"v1", "v2", "v2", "v3"} {
+				src.version.Store(v)
+				p.syncOnWorkers(ctx, src, srv, 2, split)
+			}
+			for s := range 4 {
+				for r := range 8 {
+					id := int64(s*100 + r)
+					if got := p.dest.names("users", id); !slices.Equal(got, []string{"v1", "v2", "v3"}) {
+						t.Errorf("row %d applied %q, want v1, v2, v3", id, got)
+					}
+				}
+			}
+		})
+	}
+}
+
+// The versions follow a job whose count of workers changes between syncs,
+// to one pod and back: each sync's second version at one cursor value
+// lands.
+func TestVersionsFollowAChangeInWorkers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+	p := newVersionsPipeline(t, nil)
+	p.dest.writers = 4
+	src := &fourSplits{}
+	srv := listen(t)
+	versions := []string{"v1", "v2", "v3", "v4", "v5"}
+	for i, workers := range []int{2, 3, 0, 1, 2} {
+		src.version.Store(versions[i])
+		p.syncOnWorkers(ctx, src, srv, workers, true)
+	}
+	for s := range 4 {
+		for r := range 8 {
+			id := int64(s*100 + r)
+			if got := p.dest.names("users", id); !slices.Equal(got, versions) {
+				t.Errorf("row %d applied %q, want %q", id, got, versions)
+			}
+		}
 	}
 }
 

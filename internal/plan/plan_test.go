@@ -110,20 +110,34 @@ var cursors = &apiv1.Catalog{Streams: []*apiv1.CatalogStream{
 
 // A stream's volatileColumns are the source's names of its catalog's
 // columns: another name, as a typo or the destination's name, would leave
-// the column in the versions' hash, so the plan warns of it. It's not a
-// problem, as a column a source gives only as it reads isn't in the catalog.
+// the column in the versions' hash, so the plan warns of it, once however
+// often it's listed. It's not a problem, as a column a source gives only as
+// it reads isn't in the catalog. Where no hash of the stream's rows reads
+// the list, the plan warns once that it has no effect.
 func TestVolatileColumnsNotInTheCatalogWarn(t *testing.T) {
-	for _, tc := range []struct{ name, columns, want string }{
-		{"the catalog's", `["version", "at"]`, ""},
-		{"a typo", `["version", "fetchd"]`, `orders: volatileColumns names column "fetchd", which the source's latest catalog doesn't have`},
-		{"none", `[]`, ""},
+	const ignored = "orders: volatileColumns has no effect on this stream, so it's ignored"
+	orders := func(columns, more string) string {
+		return `{"source": {"streams": [{"name": "orders", "volatileColumns": ` + columns + more + `}]}}`
+	}
+	for _, tc := range []struct{ name, spec, want string }{
+		{"the catalog's", orders(`["version", "at"]`, ""), ""},
+		{"a typo", orders(`["version", "fetchd"]`, ""), `orders: volatileColumns names column "fetchd", which the source's latest catalog doesn't have`},
+		{"a typo twice", orders(`["fetchd", "version", "fetchd"]`, ""), `orders: volatileColumns names column "fetchd", which the source's latest catalog doesn't have`},
+		{"none", orders(`[]`, ""), ""},
+		{"under at_least_once", orders(`["version", "fetchd"]`, `, "require": "DELIVERY_LEVEL_AT_LEAST_ONCE"`), ignored},
+		{"read with full_refresh", orders(`["version"]`, `, "sync": "SYNC_MODE_FULL_REFRESH"`), ignored},
+		{"read by Spark code", `{"transform": {"spark": {}}, "source": {"streams": [{"name": "orders", "volatileColumns": ["version"]}]}}`, ignored},
+		{"read by Flink code", `{"transform": {"flink": {}}, "source": {"streams": [{"name": "orders", "volatileColumns": ["version"]}]}}`, ignored},
+		{"read by SQL without an eventTime", `{"transform": {"sql": {"sql": "…"}}, "source": {"streams": [{"name": "orders", "volatileColumns": ["version"]}]}}`, ignored},
+		// A group window or OVER over it may read it again.
+		{"read by SQL by its eventTime", `{"transform": {"sql": {"sql": "…"}}, "source": {"streams": [{"name": "orders", "eventTime": "us", "volatileColumns": ["version"]}]}}`, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec := &apiv1.PipelineSpec{}
-			if err := protojsonUnmarshal(`{"source": {"streams": [{"name": "orders", "volatileColumns": `+tc.columns+`}]}}`, spec); err != nil {
+			if err := protojsonUnmarshal(tc.spec, spec); err != nil {
 				t.Fatal(err)
 			}
-			_, problems, warnings := Pipeline(spec, cursors, warehouse)
+			_, problems, warnings := PipelineSQL(spec, cursors, warehouse, nil)
 			for _, p := range problems {
 				if strings.Contains(p.Error(), "volatileColumns") {
 					t.Errorf("problem %q: a column the catalog lacks is a warning, as one may come only at read time", p)
@@ -148,7 +162,7 @@ func TestVolatileColumnsNotInTheCatalogWarn(t *testing.T) {
 // Two changes of a row inside one unit of a coarse cursor get one record ID,
 // so the plan warns where the apply skips one as a repeat, or a merge may.
 func TestCursorWarning(t *testing.T) {
-	const reverts = "and the latest version in the table is B"
+	const reverts = "a row that changes back within one cursor value to a version a read already gave keeps that version's _openetl_id, so the apply skips it, and the table ends with the version before"
 	orders := func(cursor string) string {
 		return `{"source": {"streams": [{"name": "orders", "cursor": "` + cursor + `"}]}}`
 	}

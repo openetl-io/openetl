@@ -1680,10 +1680,10 @@ func (j *Job) exchangeKey(d Stream) []string {
 
 // keyGrouped says a stream's rows meet the writer through an exchange by key
 // group when there is more than one writer lane; a stateful statement's
-// output's never do (exchanges).
-func (j *Job) keyGrouped(s Stream) bool {
+// output's never do (exchanges). versions is j.versions().
+func (j *Job) keyGrouped(s Stream, versions map[string]string) bool {
 	_, keyed := j.keyedBy(s.Name)
-	return !keyed && exchange(s, 2, j.versions()[s.Name] != "") != nil
+	return !keyed && exchange(s, 2, versions[s.Name] != "") != nil
 }
 
 // sinkStarts are the starts of the reads of the destination's streams that

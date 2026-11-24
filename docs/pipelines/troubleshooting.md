@@ -140,9 +140,9 @@ For a continuous pipeline with growing lag, compare read throughput, commit dura
 
 ## A row lands again on every sync
 
-If an appended table gets the same rows again on every sync, each time with a new `_openetl_id`, a column of the stream probably changes on every read while the row does not: a computed value, the time the source fetched the row, or JSON whose keys come in another order. An incremental read gives again the rows at the previous highest cursor value. In a stream deduped at apply, OpenETL tells the versions of a row apart by their values, so such a column makes each read of the row a new version, which lands. A group window or `OVER` over the stream counts such a row again in the same way.
+If an appended table gets the same rows again on every sync, each time with a new `_openetl_id`, a column of the stream probably changes on every read while the row does not: a computed value, the time the source fetched the row, or JSON that the source gives as text, with its keys in another order. An incremental read gives again the rows at the previous highest cursor value. In a stream deduped at apply, OpenETL tells the versions of a row apart by their values, so such a column makes each read of the row a new version, which lands. A group window or `OVER` over the stream counts such a row again in the same way.
 
-Compare two copies of a row to find the column whose value differs. Then list the column in the stream's [`volatileColumns`](../reference/specs/pipeline.md#source-and-streams), by the name that the source's catalog gives it, and apply the pipeline. The plan warns of a column that the catalog does not have:
+Compare two copies of a row to find the column whose value differs. Then list the column in the stream's [`volatileColumns`](../reference/specs/pipeline.md#source-and-streams), by the name that the source's catalog gives it, and apply the pipeline:
 
 ```yaml
 source:
@@ -151,7 +151,7 @@ source:
       volatileColumns: [fetched_at]
 ```
 
-OpenETL then leaves the column out when it compares versions, so the rows read again from the next sync on keep their IDs. A change to that column alone no longer lands, so list only columns whose changes you do not need.
+OpenETL then leaves the column out when it compares versions, so the rows read again from the next sync on keep their IDs. A change to that column alone no longer lands, so list only columns whose changes you do not need. Do not list a column that the source types as JSON (`arrow.json`): OpenETL already compares its values with their keys sorted. The plan warns of a column that the catalog does not have, and of a list that has no effect on the stream.
 
 ## A run of a stream's versions cannot be read
 

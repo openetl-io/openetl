@@ -195,12 +195,16 @@ The table keeps the first version, and the second is skipped as a repeat, in the
 - **The first read after an upgrade** to a version of OpenETL that keeps these hashes, or after the stream becomes deduped at apply. A second version that was waiting to be read is skipped. Later versions land.
 - **A row that neither of the last two reads gave.** Its hash is gone.
 - **A schema change.** A column that the stream gains or loses, or a column that changes to another kind of value, such as from a number to text, starts the hashes again. A widening, such as from `int32` to `int64`, does not.
-- **A stream that a SQL transform reads, and the outputs of a transform.** OpenETL keeps no hashes for them.
+- **A stream that passes through a SQL transform.** OpenETL keeps no hashes for it.
+
+A version skipped in these cases gets the `_openetl_id` of the version that the table has. `openetl reset --stream` does not bring it back: the new read gives the version the same `_openetl_id`, and the destination skips it again. The table keeps the version before until the row next changes and moves the cursor to a new value.
+
+The outputs of a transform are not deduped at apply, so OpenETL keeps no hashes for them. The destination writes every row that the transform gives, a second version at one cursor value included. It also writes again each row that a read gives again. A stream that a SQL transform reads and does not pass through is not written.
 
 In these cases, the table ends with another row than the source has:
 
-- **A row that changes back within one cursor value**, from A to B and back to A. A holds the `_openetl_id`, so the destination skips A's second read as a repeat, and the latest version in the table is B.
-- **A column whose value changes on every read** while the row does not change, such as a computed value, the time a source fetched the row, or JSON whose keys come in another order. Each read gives the row new values, so the rows at the previous highest cursor value land again on every sync. List such columns in the stream's [`volatileColumns`](../reference/specs/pipeline.md#source-and-streams), which OpenETL leaves out of the hash.
+- **A row that changes back within one cursor value** to a version that a read already gave. That version holds its `_openetl_id`, so the destination skips the change back as a repeat, and the table ends with the version before. For example, the reads give the versions A, B, C and then B again: the table ends with C.
+- **A column whose value changes on every read** while the row does not change, such as a computed value, the time a source fetched the row, or JSON that the source gives as text, with its keys in another order. Each read gives the row new values, so the rows at the previous highest cursor value land again on every sync. List such columns in the stream's [`volatileColumns`](../reference/specs/pipeline.md#source-and-streams), which OpenETL leaves out of the hash. Do not list a column that the source types as JSON (`arrow.json`): OpenETL compares its values with their keys sorted, and listing it hides its real changes.
 - **A held cell whose source text differs from its value's shortest form.** For example, `amount` is an `int64` column, the source sends `12.50`, and OpenETL holds the cell. While the cell is held, the row's hash is of its text, `12.50`. Then the column becomes a decimal, as when the source's table changes it to `DECIMAL(10,2)`, and the [release](./schema-changes.md) patches the value in. From then on, the row's hash is of its value, `12.5`. So the next read of the row at the previous highest cursor value lands it once more, beside the row that the table has.
 - **A destination with lane commits on workers** reads a lane's part of an epoch again from the source when the lane did not commit ([When a pod fails](./workers.md#when-a-pod-fails)). If the source changed a row since the epoch, the newer version lands under an `_openetl_id` of its own, and the version that the epoch read does not land. A later read that has no hash for the row lands the newer version again, under the row's first `_openetl_id`: for example, a read after a [reset](../reference/pipeline-cli.md#reset-and-rewind) once the row's hash has expired.
 
@@ -216,7 +220,7 @@ The plan warns about a stream that has these properties:
 - It is deduped at apply.
 - The source's catalog gives its cursor one of these types: `date32`, `date64`, `timestamp[s]` with or without a time zone, or `time32[s]`.
 
-The warning starts with `its cursor "updated_at" is timestamp[s, tz=UTC], so two changes of a row can have one cursor value`. For a stream whose versions OpenETL tells apart, it goes on with the change back: a row that changes from A to B and back to A within one cursor value ends as B. For a stream that a SQL transform reads, where OpenETL keeps no hashes, it says that the apply skips the second version. The plan cannot see the precision of these cursors, so check them yourself:
+The warning starts with `its cursor "updated_at" is timestamp[s, tz=UTC], so two changes of a row can have one cursor value`. For a stream whose versions OpenETL tells apart, it goes on with the change back: a row that changes back within one cursor value to a version that a read already gave ends as the version before. For a stream that passes through a SQL transform, where OpenETL keeps no hashes, it says that the apply skips the second version. The plan cannot see the precision of these cursors, so check them yourself:
 
 - an integer that holds seconds since 1970, such as a declarative source's `unix` cursor;
 - a timestamp with microseconds whose values are whole seconds, a type that a source can give to a database column that stores whole seconds;

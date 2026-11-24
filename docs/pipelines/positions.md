@@ -16,7 +16,9 @@ openetl reset --stream public.orders orders-to-warehouse
 
 A continuous pipeline restarts at a checkpoint to apply the reset. A paused pipeline applies it after you resume the pipeline. A separately paused stream applies it after you resume that stream.
 
-A reset also drops the state of each SQL [group window](../reference/sql-windows.md#group-windows) that reads a reset stream, and any state that no statement keeps now, such as a changed statement's. A reset stream also starts with no watermark. The window builds its state again only from the rows that the new read returns, so a read that starts partway through a window writes that window's row from part of its rows ([State](../reference/sql-windows.md#state)).
+A reset also drops the state of each SQL [group window](../reference/sql-windows.md#group-windows) that reads a reset stream, and the state of any statement that the pipeline no longer has, such as a changed statement's. A reset stream also starts with no watermark. The window builds its state again only from the rows that the new read returns, so a read that starts partway through a window writes that window's row from part of its rows ([State](../reference/sql-windows.md#state)).
+
+A reset keeps the hashes that tell apart two versions of a row at one cursor value ([Choose a cursor that changes on every update](./delivery.md#choose-a-cursor-that-changes-on-every-update)). So a version that the destination skipped as a repeat stays skipped: the new read gives it the same `_openetl_id`. The destination writes the row's current version when the row next changes and moves the cursor to a new value.
 
 A reset keeps the versions that OpenETL keeps of the records of a stream deduped at apply. So a reset does not fix a run of those versions that cannot be read. For that error, follow [A run of a stream's versions cannot be read](./troubleshooting.md#a-run-of-a-streams-versions-cannot-be-read).
 
