@@ -462,30 +462,46 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			is := func(col string) bool { return col == r.Column }
 			released = slices.DeleteFunc(released, is)
 			versioned = slices.DeleteFunc(versioned, func(c checkpoint.ColumnHold) bool { return is(c.Column) })
+			// A column refused again while the restored replay patches it in
+			// is held again from where that release's holds started, refused
+			// by it: a later release reads its values from there, and those
+			// the replay patched in it patches in again, by their IDs.
+			var replayed *checkpoint.Replay
+			if h.Replay != nil && slices.Contains(h.Replay.Columns, r.Column) {
+				replayed = h.Replay
+			}
 			if h.Replay != nil {
 				if h.Replay.Columns = slices.DeleteFunc(h.Replay.Columns, is); len(h.Replay.Columns) == 0 {
 					h.Replay = nil
 				}
 			}
-			if id, ok := cells[r.Column]; ok {
-				c := h.Cells[r.Column]
+			id, ok := cells[r.Column]
+			if replayed != nil {
+				id, ok = replayed.CellReleases[r.Column], replayed.CellReleases[r.Column] != ""
+			}
+			if c, held := h.Cells[r.Column]; ok && held {
 				c.Refused = &checkpoint.Refused{Release: id, Reason: "the destination refused the column: " + r.Reason}
 				h.Cells[r.Column] = c
-				delete(cells, r.Column)
 			}
+			delete(cells, r.Column)
 			if slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
 				continue
 			}
+			c := checkpoint.ColumnHold{Column: r.Column, Delivered: r.Delivered}
 			if i := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }); i >= 0 {
-				c := taken[i]
-				c.Reason, c.Cause = "the destination refused it: "+r.Reason, r.cause()
+				c = taken[i]
 				c.Refused = &checkpoint.Refused{Release: wholes[r.Column], Reason: "the destination refused it again"}
-				h.Columns = append(h.Columns, c)
-			} else {
-				h.Columns = append(h.Columns, checkpoint.ColumnHold{
-					Column: r.Column, Delivered: r.Delivered, Reason: "the destination refused it: " + r.Reason, Cause: r.cause(),
-				})
+			} else if replayed != nil {
+				if at, ok := replayed.Since[r.Column]; ok {
+					// The replay doesn't keep when the hold started.
+					c.Since, c.Started = at, time.Now()
+					if id := replayed.WholeReleases[r.Column]; id != "" {
+						c.Refused = &checkpoint.Refused{Release: id, Reason: "the destination refused it again"}
+					}
+				}
 			}
+			c.Reason, c.Cause = "the destination refused it: "+r.Reason, r.cause()
+			h.Columns = append(h.Columns, c)
 		}
 		if len(released) > 0 {
 			slices.Sort(released)
