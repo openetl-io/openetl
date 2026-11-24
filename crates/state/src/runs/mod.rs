@@ -50,7 +50,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::{Add, Range, Sub};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use bytes::Bytes;
@@ -811,6 +811,7 @@ impl RunStores {
                 named: b.named,
                 keep,
                 open: OnceLock::new(),
+                read: AtomicBool::new(false),
             });
             let part = parts.get(&run.name).copied().unwrap_or(LAST);
             for s in b.sections {
@@ -890,6 +891,11 @@ struct Run {
     /// The key groups the lane reads each kind of section for.
     keep: [Vec<KeyGroupRange>; 4],
     open: OnceLock<Opened>,
+    /// A read of the lane's took a block of it, or the lane wrote it: what
+    /// it holds may be in what the lane gave, from a cache too. A run only
+    /// opened, as a merge or a filter's answer opens one, holds nothing a
+    /// read took.
+    read: AtomicBool,
 }
 
 struct Opened {
@@ -1422,9 +1428,11 @@ impl RunStore {
     ) -> Result<HashMap<BlockId, (Bytes, bool)>> {
         let mut out = HashMap::new();
         let mut misses: BTreeMap<u64, (&Arc<Run>, Vec<&BlockMeta>)> = BTreeMap::new();
+        let mut took: Vec<&Arc<Run>> = Vec::new();
         {
             let mut cache = lock(&self.shared.cache);
             for (run, b) in want {
+                took.push(run);
                 let id = (run.id, b.offset);
                 if out.contains_key(&id) {
                     continue;
@@ -1458,6 +1466,9 @@ impl RunStore {
         for (id, block, fetched) in read.into_iter().flatten() {
             cache.put(id, block.clone());
             out.insert(id, (block, fetched));
+        }
+        for run in took {
+            run.read.store(true, Ordering::Relaxed);
         }
         Ok(out)
     }
@@ -1998,6 +2009,7 @@ impl RunStore {
             named: named.clone(),
             keep,
             open,
+            read: AtomicBool::new(true),
         });
         for s in named {
             let content = match s.kind {
@@ -2248,6 +2260,7 @@ impl RunStore {
                     reading.push(async move {
                         let refs: Vec<&BlockMeta> = bs.iter().collect();
                         let blocks = this.read_blocks(&run, span, refs, restore).await?;
+                        run.read.store(true, Ordering::Relaxed);
                         Ok::<_, Error>((i, weight, blocks))
                     });
                 }
@@ -2425,13 +2438,16 @@ impl Store for RunStore {
         Box::pin(self.lookup(keys))
     }
 
-    /// Not a run it opened: what a lookup found in one, from a cache, a
-    /// later lookup would no longer find, nor one it wrote.
+    /// Not a run a read of the lane's took a block of, or that it wrote:
+    /// what a read found in one, from a cache, a later read would no longer
+    /// find. A run only opened, by a merge or a lookup its filters answered,
+    /// holds nothing a read took, and goes; a merge in flight that reads it
+    /// goes unadopted with it.
     fn forget(&mut self, name: &str) -> bool {
         let Some(id) = self
             .runs
             .iter()
-            .find(|r| r.name == name && r.open.get().is_none())
+            .find(|r| r.name == name && !r.read.load(Ordering::Relaxed))
             .map(|r| r.id)
         else {
             return false;

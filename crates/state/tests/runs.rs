@@ -1372,3 +1372,64 @@ async fn a_merge_whose_storage_fails_goes_and_comes_again() {
     let got = back[0].row(OP, &[(KeyRef::new(7, key), 10)]).await.unwrap();
     assert_eq!(got, [Some(b("e"))]);
 }
+
+/// A run a merge opened and read, and no read of the lane's took a block
+/// of, is forgotten once it's found gone, and the merge in flight goes with
+/// it, unadopted; one a read took a block of still isn't.
+#[tokio::test]
+async fn a_run_only_a_merge_read_is_forgotten_when_gone() {
+    let bucket = Bucket::new();
+    let quiet = RunConfig {
+        merge: None,
+        ..RunConfig::default()
+    };
+    let mut ls = open(&stores(&bucket, quiet), 1, 1, 1, &[]).await;
+    let mut all = Vec::new();
+    for e in 1..=4u32 {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            ls[0].put_row(OP, KeyRef::new(7, id.as_bytes()), 10, b("e"));
+        }
+        all = barrier(&mut ls, e.into()).await;
+    }
+    let named: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    assert_eq!(named.len(), 4);
+    let merging = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, merging);
+    let mut ls = open(&s, 2, 5, 1, &all).await;
+    // The barrier starts a merge of the four, which opens and reads them.
+    barrier(&mut ls, 5).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(s.counts().merge_read.count >= 4, "{:?}", s.counts());
+    // A lookup takes a block of the newest run, epoch 4's.
+    let read = b"id-4-1";
+    let got = ls[0].row(OP, &[(KeyRef::new(7, read), 10)]).await.unwrap();
+    assert_eq!(got, [Some(b("e"))]);
+    let (newest, oldest) = (named[0].clone(), named[3].clone());
+    assert!(
+        newest.contains("/e4/") && oldest.contains("/e1/"),
+        "{named:?}"
+    );
+    for run in [&newest, &oldest] {
+        bucket.memory.delete(&Bucket::path(run)).await.unwrap();
+    }
+    let key = b"id-1-3";
+    match ls[0].row(OP, &[(KeyRef::new(7, key), 10)]).await {
+        Err(Error::Gone(runs)) => assert_eq!(runs, std::slice::from_ref(&oldest)),
+        got => panic!("{got:?}"),
+    }
+    assert!(ls[0].forget(&oldest), "a run only the merge read");
+    assert!(!ls[0].forget(&newest), "a run a lookup read");
+    let got = ls[0].row(OP, &[(KeyRef::new(7, key), 10)]).await.unwrap();
+    assert_eq!(got, [None]);
+    let all = barrier(&mut ls, 6).await;
+    assert_eq!(s.counts().merges, 0, "the merge of a forgotten run");
+    let left: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    assert_eq!(left, named[..3], "{left:?}");
+}
