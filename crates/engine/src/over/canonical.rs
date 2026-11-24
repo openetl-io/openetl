@@ -13,7 +13,7 @@ use arrow_array::builder::{BinaryViewBuilder, StringViewBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int16Type, Int32Type, Int64Type, RunEndIndexType};
 use arrow_array::{
-    Array, ArrayRef, OffsetSizeTrait, PrimitiveArray, RunArray, UInt64Array, UnionArray, make_array,
+    Array, ArrayRef, OffsetSizeTrait, PrimitiveArray, UInt64Array, UnionArray, make_array,
 };
 use arrow_buffer::{
     ArrowNativeType, BooleanBuffer, Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer,
@@ -23,10 +23,11 @@ use arrow_schema::{ArrowError, DataType, UnionFields, UnionMode};
 
 /// `a` in new buffers that depend on its values alone: no offset, offsets
 /// from 0, zeros under nulls, null lists empty, bitmaps clear past their
-/// end, a dictionary of the values its keys use in the order they first
-/// do, and a run per value. A slot is null too where `mask` is false, as
-/// under a null parent; a union, which has no nulls, and a run-end array
-/// pass `mask` to their values.
+/// end, a dictionary of the values its keys use, each once, in the order
+/// they first do, a null union slot of the first field, and a run per
+/// value. A slot is null too where `mask` is false, as under a null parent;
+/// a union, which has no nulls, and a run-end array pass `mask` to their
+/// values.
 pub(super) fn canonical(
     a: &dyn Array,
     mask: Option<&BooleanBuffer>,
@@ -241,8 +242,8 @@ fn viewed<O: OffsetSizeTrait>(
         .add_child_data(values.to_data()))
 }
 
-/// A dictionary of the values its keys use, in the order they first do: a
-/// key whose value is null is null.
+/// A dictionary of the values its keys use, each once, in the order they
+/// first do: a key whose value is null is null.
 fn dictionary(
     a: &dyn Array,
     keys: &DataType,
@@ -259,15 +260,28 @@ fn dictionary(
         valid.value(i) && !values.is_empty() && values.is_valid(at[i])
     });
     let w = keys.primitive_width().ok_or_else(|| unsupported(keys))?;
-    let mut first: HashMap<usize, u64> = HashMap::new();
+    // Each index's key, and each value's, by its bytes as a row keeps it:
+    // a dictionary can hold a value at two indexes.
+    let mut by_index: HashMap<usize, u64> = HashMap::new();
+    let mut by_value: HashMap<Vec<u8>, u64> = HashMap::new();
     let mut used = Vec::new();
     let mut out = MutableBuffer::from_len_zeroed(n * w);
     for i in set.set_indices() {
-        let next = first.len() as u64;
-        let k = *first.entry(at[i]).or_insert_with(|| {
-            used.push(Some(at[i] as u64));
-            next
-        });
+        let k = match by_index.get(&at[i]) {
+            Some(k) => *k,
+            None => {
+                let mut v = Vec::new();
+                super::row::value(values, values.data_type(), at[i], &mut v)
+                    .map_err(ArrowError::ComputeError)?;
+                let next = by_value.len() as u64;
+                let k = *by_value.entry(v).or_insert_with(|| {
+                    used.push(Some(at[i] as u64));
+                    next
+                });
+                by_index.insert(at[i], k);
+                k
+            }
+        };
         // A key's little-endian bytes, of a number its type held already.
         out.as_slice_mut()[i * w..(i + 1) * w].copy_from_slice(&k.to_le_bytes()[..w]);
     }
@@ -282,9 +296,10 @@ fn dictionary(
     Ok(make_array(data))
 }
 
-/// A union of each child's values of its slots alone, null where `mask`
-/// is false: a sparse union's other slots null, a dense union's in the
-/// order of its slots.
+/// A union of each child's values of its slots alone: a sparse union's
+/// other slots null, a dense union's in the order of its slots. A slot
+/// whose value is null, or where `mask` is false, is the first field's
+/// null, as Arrow's null union is, whatever its type id was.
 fn union(
     a: &dyn Array,
     fields: &UnionFields,
@@ -293,8 +308,13 @@ fn union(
 ) -> Result<ArrayRef, ArrowError> {
     let u = a.as_union();
     let n = u.len();
-    let ids: Vec<i8> = (0..n).map(|i| u.type_id(i)).collect();
-    let on = |i: usize| mask.is_none_or(|m| m.value(i));
+    let nulls = u.logical_nulls();
+    let on =
+        |i: usize| mask.is_none_or(|m| m.value(i)) && nulls.as_ref().is_none_or(|x| x.is_valid(i));
+    let first = fields.iter().next().map_or(0, |(id, _)| id);
+    let ids: Vec<i8> = (0..n)
+        .map(|i| if on(i) { u.type_id(i) } else { first })
+        .collect();
     let mut children = Vec::with_capacity(fields.len());
     let offsets = match mode {
         UnionMode::Sparse => {
@@ -308,14 +328,20 @@ fn union(
             let mut offsets = vec![0i32; n];
             for (id, _) in fields.iter() {
                 let slots: Vec<usize> = (0..n).filter(|&i| ids[i] == id).collect();
+                // A null slot points at the child's first value, which
+                // `kept` makes null; an empty child gets a null to point at.
+                let child = match u.child(id) {
+                    c if c.is_empty() => arrow_array::new_null_array(c.data_type(), 1),
+                    c => c.clone(),
+                };
                 let mut ranges = Vec::with_capacity(slots.len());
                 for (j, &i) in slots.iter().enumerate() {
                     offsets[i] = offset::<i32>(j)?;
-                    let at = u.value_offset(i);
+                    let at = if on(i) { u.value_offset(i) } else { 0 };
                     ranges.push(at..at + 1);
                 }
                 let kept = BooleanBuffer::collect_bool(slots.len(), |j| on(slots[j]));
-                children.push(canonical(&gather(u.child(id), &ranges)?, Some(&kept))?);
+                children.push(canonical(&gather(&child, &ranges)?, Some(&kept))?);
             }
             Some(ScalarBuffer::from(offsets))
         }
@@ -345,5 +371,12 @@ fn runs<R: RunEndIndexType>(
         .map(|e| R::Native::from_usize(e).ok_or(ArrowError::OffsetOverflowError(e)))
         .collect::<Result<Vec<_>, _>>()?;
     let ends = PrimitiveArray::<R>::new(ends.into(), None);
-    Ok(Arc::new(RunArray::<R>::try_new(&ends, values.as_ref())?))
+    // Under `a`'s own type: RunArray::try_new would give its fields Arrow's
+    // default names and nullability.
+    let data = ArrayDataBuilder::new(a.data_type().clone())
+        .len(n)
+        .add_child_data(ends.into_data())
+        .add_child_data(values.to_data())
+        .build()?;
+    Ok(make_array(data))
 }

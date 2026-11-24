@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -52,6 +54,9 @@ func hold(r db.ListHoldsRow) (*apiv1.Hold, error) {
 	}
 	if refused && !r.Discarded {
 		h.Refused = &apiv1.HoldRefusal{Reason: r.Refusal}
+		if r.ReleaseEnds != nil && *r.ReleaseEnds {
+			h.Refused.Reason += "; it was discarded while being patched in, and ended in a run in which the stream held, so the discard dropped nothing"
+		}
 	}
 	if r.StartTime != nil {
 		h.StartTime = timestamppb.New(*r.StartTime)
@@ -71,18 +76,17 @@ func refusedBy(r db.ListHoldsRow) bool {
 	return r.ReleaseID != nil && r.RefusedRelease != nil && *r.ReleaseID == *r.RefusedRelease
 }
 
-// replacedBy reports whether a release of the hold, a discard if discard
-// is set, replaces the one it has: a release replaces the discard a
-// discarded hold took, and a discard a release, whether it waits for the
-// pipeline's next run or is being patched in.
-func replacedBy(r db.ListHoldsRow, discard bool) bool {
-	if r.ReleaseID == nil || r.ReleaseDiscards == nil {
-		return false
-	}
-	if discard {
-		return !r.Discarded && !*r.ReleaseDiscards
-	}
-	return r.Discarded && *r.ReleaseDiscards
+// replacedBy reports whether a release of the hold replaces the one it
+// has: the discard a discarded hold took.
+func replacedBy(r db.ListHoldsRow) bool {
+	return r.Discarded && r.ReleaseID != nil && r.ReleaseDiscards != nil && *r.ReleaseDiscards
+}
+
+// released reports whether the hold has a release that a discard takes the
+// place of or ends: one being patched in, or one that waits for the
+// pipeline's next run, unless it ends a discarded hold.
+func released(r db.ListHoldsRow) bool {
+	return r.Releasing || !r.Discarded && r.ReleaseID != nil && r.ReleaseDiscards != nil && !*r.ReleaseDiscards
 }
 
 func (s *Server) ReleaseHold(ctx context.Context, req *connect.Request[apiv1.ReleaseHoldRequest]) (*connect.Response[apiv1.ReleaseHoldResponse], error) {
@@ -105,10 +109,12 @@ func (s *Server) DiscardHold(ctx context.Context, req *connect.Request[apiv1.Dis
 // column: the column held whole, its held cells, or both. With newVersion,
 // the column held whole goes to a new version of it, and its cells with
 // it. A release of a discarded column hold ends it: the column is delivered
-// again, and the values it dropped stay dropped. A discard replaces a
-// release that waits for the next run, and is the only way to end a
-// release being patched in, which a run takes only once the stream stops
-// holding. A continuous pipeline's run restarts to take it.
+// again, and the values it dropped stay dropped. A discard takes the place
+// of a release no run has taken. One a run has taken, being patched in or
+// not yet, it ends: it marks the release, which a run in which the stream
+// doesn't hold takes as a discard, and which lapses once the release ends.
+// The release's row decides which, locked, so that no run takes the
+// release between the two. A continuous pipeline's run restarts to take it.
 func (s *Server) release(ctx context.Context, parent, stream, column string, discard, newVersion bool) (*apiv1.Hold, error) {
 	audit(ctx).set("stream", stream)
 	audit(ctx).set("column", column)
@@ -140,8 +146,8 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			whole = whole || r.Whole && !r.Discarded && !r.Releasing
 			discarded = discarded || r.Whole && r.Discarded
 			// A new release replaces the one the hold refused, or the discard
-			// it took; a discard, a release not taken or being patched in.
-			if refusedBy(r) || replacedBy(r, discard) {
+			// it took.
+			if refusedBy(r) || !discard && replacedBy(r) {
 				if err := q.DeleteHoldRelease(ctx, db.DeleteHoldReleaseParams{OrgID: s.Tenant.Org, ID: *r.ReleaseID}); err != nil {
 					return err
 				}
@@ -154,11 +160,42 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 		case newVersion && !whole:
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s.%s isn't held whole, so it can't go to a new version", stream, column))
 		}
+		ends := false
 		for _, r := range rows {
 			if r.Stream != stream || r.ColumnName != column {
 				continue
 			}
 			found = true
+			if discard && released(r) {
+				taken := r.Releasing || r.ReleaseID == nil
+				if !taken {
+					at, err := q.LockHoldRelease(ctx, db.LockHoldReleaseParams{OrgID: s.Tenant.Org, ID: *r.ReleaseID})
+					switch {
+					case errors.Is(err, pgx.ErrNoRows):
+						// Another discard took its place.
+					case err != nil:
+						return err
+					case at != nil:
+						taken = true
+					default:
+						if err := q.DeleteHoldRelease(ctx, db.DeleteHoldReleaseParams{OrgID: s.Tenant.Org, ID: *r.ReleaseID}); err != nil {
+							return err
+						}
+					}
+				}
+				if taken {
+					// Answered as being patched in: a run has it.
+					ends = true
+					if out == nil {
+						r.Releasing = true
+						if out, err = hold(r); err != nil {
+							return err
+						}
+					}
+					continue
+				}
+				r.ReleaseID, r.ReleaseDiscards = nil, nil
+			}
 			if r.Releasing && !discard || r.Discarded && discard {
 				continue
 			}
@@ -166,6 +203,8 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			if err != nil {
 				return err
 			}
+			// A release made again of a hold whose release a person
+			// discarded clears the discard.
 			got, err := q.InsertHoldRelease(ctx, db.InsertHoldReleaseParams{
 				OrgID: s.Tenant.Org, ID: id, PipelineID: p.ID, Stream: stream, ColumnName: column, Whole: r.Whole,
 				SinceGeneration: r.SinceGeneration, SinceEpoch: r.SinceEpoch, Discard: discard, NewVersion: newVersion, Principal: callerOf(ctx).principal,
@@ -188,6 +227,17 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 				if out, err = hold(r); err != nil {
 					return err
 				}
+			}
+		}
+		if ends {
+			// A run knows the release it patches in by its ID, as the
+			// column's holds can change while it does.
+			n, err := q.EndHoldReleases(ctx, db.EndHoldReleasesParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Stream: stream, ColumnName: column})
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("the hold on %s.%s is being released, and the server has no record of the release to discard", stream, column))
 			}
 		}
 		switch {
@@ -266,7 +316,8 @@ func (s *Server) holdRows(pipeline uuid.UUID, m *dataplanev1.ReportCheckpointReq
 }
 
 // recordHolds replaces the pipeline's holds with rows, a checkpoint's, if
-// it's newer than the one they come from.
+// it's newer than the one they come from, and unmarks the discarded
+// releases that are over.
 func (s *Server) recordHolds(ctx context.Context, pipeline uuid.UUID, generation, epoch int64, rows []db.InsertHoldParams) error {
 	return s.Store.Tx(ctx, func(q *db.Queries) error {
 		n, err := q.ClaimHoldCheckpoint(ctx, db.ClaimHoldCheckpointParams{
@@ -283,7 +334,7 @@ func (s *Server) recordHolds(ctx context.Context, pipeline uuid.UUID, generation
 				return err
 			}
 		}
-		return nil
+		return q.LapseHoldReleases(ctx, db.LapseHoldReleasesParams{OrgID: s.Tenant.Org, PipelineID: pipeline})
 	})
 }
 
@@ -389,18 +440,23 @@ func plural(n int, what string) string {
 	return strconv.Itoa(n) + " " + what + "s"
 }
 
-// pendingReleases are the releases a run of the pipeline takes.
-func (s *Server) pendingReleases(ctx context.Context, pipeline uuid.UUID) ([]*dataplanev1.HoldRelease, error) {
-	rows, err := s.Store.PendingHoldReleases(ctx, db.PendingHoldReleasesParams{OrgID: s.Tenant.Org, PipelineID: pipeline})
+// takeReleases are the releases a run of the pipeline takes, recorded as
+// taken.
+func (s *Server) takeReleases(ctx context.Context, pipeline uuid.UUID) ([]*dataplanev1.HoldRelease, error) {
+	rows, err := s.Store.TakeHoldReleases(ctx, db.TakeHoldReleasesParams{OrgID: s.Tenant.Org, PipelineID: pipeline})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]*dataplanev1.HoldRelease, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, &dataplanev1.HoldRelease{
-			Id: r.ID.String(), Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion,
-			Since: &dataplanev1.CheckpointRef{Generation: ints.Uint64(r.SinceGeneration), Epoch: ints.Uint64(r.SinceEpoch)},
-		})
+		out = append(out, holdRelease(r))
 	}
 	return out, nil
+}
+
+func holdRelease(r db.TakeHoldReleasesRow) *dataplanev1.HoldRelease {
+	return &dataplanev1.HoldRelease{
+		Id: r.ID.String(), Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion, Ends: r.Ends,
+		Since: &dataplanev1.CheckpointRef{Generation: ints.Uint64(r.SinceGeneration), Epoch: ints.Uint64(r.SinceEpoch)},
+	}
 }

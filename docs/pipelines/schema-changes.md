@@ -149,20 +149,27 @@ The next run writes the column as the stream has it. The values that the discard
 
 ## When a key or cursor changes type
 
-A column of the primary key cannot go to a new column, such as `id__v2`. Neither can the cursor of a stream with a primary key, unless the stream is read with `cdc`. Such a column takes only these changes of type, which keep the order of its values and the record IDs (`_openetl_id`) that they give:
+A column of the primary key cannot go to a new column, such as `id__v2`. Neither can the cursor of a stream with a primary key, unless the stream is read with `cdc`.
+
+Until the first checkpoint that records the stream's schema, such a column takes any widening. The stream's first schema has the type that its first rows give. For example, if a source sends `id` as a number in some of the first rows and as text in others, `id` is a `string`. A sync that fails before that checkpoint starts again with no schema.
+
+After that checkpoint, such a column takes only these changes of type, which keep the order of its values and the record IDs (`_openetl_id`) that they give:
 
 - An integer to a wider integer: `int16` to `int32` or `int64`, or `int32` to `int64`.
 - A decimal to more digits at the same scale, such as `decimal(10, 2)` to `decimal(12, 2)`.
 - A `json` column to a `string`, with the same text.
+- For the cursor, an integer to a float, such as `int64` to `float64`. Each integer keeps its exact value: a column that has held an integer beyond ±2^53 becomes a `string` instead, which fails.
 
-A timestamp that the source sends in another unit, such as milliseconds, does not change the column's type. OpenETL converts it to the stream's unit.
+A timestamp that the source sends in another unit, such as milliseconds, does not change the column's type. OpenETL converts it to the stream's unit. In the same way, a string or binary value in another Arrow representation, such as `large_utf8` for `utf8`, keeps the column's type, for any column.
 
-Any other change to such a column's type fails the sync with `SCHEMA_DRIFT`. This includes the other widenings: to a string, which sorts `10` before `9`, and to a float, which can round values. It also includes an integer to a decimal, and a decimal to another scale, because they change the record IDs. Changes that are not widenings fail too, such as `bigint` to `uuid` or `timestamptz` to `timestamp`. The error names the column, its old and new types, and the way out. This happens under `allow_all` too. Under `ignore_new`, once the policy applies, the values are cast to the column's type instead.
+When the cursor changes from an integer to a float, `_openetl_seq` changes to the float too. The destination changes the type of the cursor's column and of `_openetl_seq` only if `destination.typeChanges` allows it. Otherwise it refuses, and the sync fails with `SCHEMA_DRIFT`, because the cursor cannot be held. The error gives the statement that changes the column on the destination. Run it, then start a sync. Do the same for each such error that follows, such as one for `_openetl_seq`. If the destination cannot make the change, the error gives no statement. Then use a new destination table, as described below.
+
+Any other change to such a column's type fails the sync with `SCHEMA_DRIFT`. This includes the other widenings: to a string, which sorts `10` before `9`, and a key from an integer to a float. It also includes a `float32` to a `float64`, an integer to a decimal, and a decimal to another scale, because they change the record IDs. Changes that are not widenings fail too, before the first checkpoint as well, such as `bigint` to `uuid` or `timestamptz` to `timestamp`. The error names the column, its old and new types, and the way out. This happens under `allow_all` too. Under `ignore_new`, once the policy applies, the values are cast to the column's type instead.
 
 A reset does not clear the error, because the stream keeps its schema. Choose one of these ways out:
 
 - Change the column back to its old type at the source. Then start a sync.
-- To keep the new type, delete the pipeline through the API. Then apply it again with a new destination table in `destination.tables`. The new pipeline has no checkpoints, so it reads the stream from the start.
+- To keep the new type, delete the pipeline through the API. Then apply it again with a new destination table in `destination.tables`. The new pipeline has no checkpoints, so it reads the stream from the start. Its first schema has the new type if the rows before its first checkpoint have it, as all the rows of a database table do after a change to the column's type. If the source sends values of both types in one column, such as numbers in its first rows and text in later rows, the new pipeline can fail in the same way.
 
 A sync can fail because the key or cursor went to a new column, such as `id__v2`, in an earlier sync. The rows written since then have a null key or a null `_openetl_seq`. Delete the pipeline and apply it again with a new destination table.
 

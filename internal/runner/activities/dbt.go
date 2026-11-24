@@ -60,7 +60,7 @@ func (a *Dbt) RunDbt(ctx context.Context, in contract.DbtInput) (contract.DbtRes
 
 func (a *Dbt) run(ctx context.Context, in contract.DbtInput, log *slog.Logger) (contract.DbtResult, error) {
 	res := contract.DbtResult{Project: in.Step.Project, Digest: in.Step.Digest, Command: in.Step.Command}
-	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
+	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version, false)
 	if err != nil {
 		return res, err
 	}

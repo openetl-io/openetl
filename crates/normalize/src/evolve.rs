@@ -77,17 +77,21 @@ pub fn widens(from: &Field, to: &Field) -> bool {
 }
 
 /// Whether a widening from `from` to `to` keeps each value's order and the
-/// record ID it gives, as a key or a cursor must: an integer to a wider
-/// one, or a decimal to more digits at its scale. A string sorts "10"
-/// before "9", a float rounds past 2^53 and orders other values than the
-/// source's, and another scale, or a decimal from an integer, gives other
-/// record IDs.
-fn keeps_order(from: &Field, to: &Field) -> bool {
+/// record ID it gives, as a key or a cursor (`why`) must once the stream's
+/// schema is established: an integer to a wider one, or a decimal to more
+/// digits at its scale. A cursor also takes an integer to a float, which
+/// holds it exactly, as [`Evolver::conform`] sends a column past ±2^53 to a
+/// string instead, with the same ID text; a key doesn't, as a float's 0 and
+/// -0 are one key at a destination but two IDs. A string sorts "10" before
+/// "9", a float32 widened to float64 has other text, and another scale, or
+/// a decimal from an integer, gives other record IDs.
+fn keeps_order(from: &Field, to: &Field, why: NotHeld) -> bool {
     use DataType as D;
     match (from.data_type(), to.data_type()) {
         // JSON to a string: the same text.
         (a, b) if a == b => true,
         (D::Int16, D::Int32 | D::Int64) | (D::Int32, D::Int64) => true,
+        (D::Int16 | D::Int32 | D::Int64, D::Float32 | D::Float64) => why == NotHeld::Cursor,
         (D::Decimal128(_, s1), D::Decimal128(_, s2)) => s1 == s2,
         _ => false,
     }
@@ -433,6 +437,14 @@ impl Evolver {
             } else {
                 (f, col)
             };
+            let (bytes_field, bytes_col);
+            let (f, col) = if same_family(cur.data_type(), f.data_type()) {
+                bytes_field = Arc::new(f.as_ref().clone().with_data_type(cur.data_type().clone()));
+                bytes_col = arrow_cast::cast(col, cur.data_type())?;
+                (&bytes_field, &bytes_col)
+            } else {
+                (f, col)
+            };
             if cur.data_type() == f.data_type() && widens(f, &cur) {
                 columns.insert(name, col.clone());
                 continue;
@@ -467,10 +479,13 @@ impl Evolver {
                     why.clause()
                 )));
             }
+            // Until the schema is established, a widening is part of the
+            // stream's first schema, which no checkpoint has recorded yet.
             if widening
+                && strict
                 && !casts
-                && !keeps_order(&cur, f)
                 && let Some(why) = self.pinned.get(f.name())
+                && !keeps_order(&cur, f, *why)
             {
                 return Err(Error::Drift(format!(
                     "{what}, a widening that changes how its values sort or the record IDs they give; it can't be held or go to a new column, as {}: change the column back at the source, or, to keep the new type, {REREAD}",
@@ -603,6 +618,16 @@ impl Evolver {
             big_ints_grew: self.big_ints.len() > big_ints,
         })
     }
+}
+
+/// Whether `a` and `b` are two representations of strings, or of binary,
+/// as `large_utf8` and `utf8` are: a value casts between them as the same
+/// bytes, so a column of one takes the other as its own type.
+fn same_family(a: &DataType, b: &DataType) -> bool {
+    use DataType as D;
+    let strings = |t: &D| matches!(t, D::Utf8 | D::LargeUtf8 | D::Utf8View);
+    let binary = |t: &D| matches!(t, D::Binary | D::LargeBinary | D::BinaryView);
+    a != b && ((strings(a) && strings(b)) || (binary(a) && binary(b)))
 }
 
 /// `cur` widened to `to`'s type, keeping its name.
@@ -975,5 +1000,42 @@ mod tests {
         let mut e = Evolver::new(Policy::Block, None, BTreeMap::new());
         e.conform(&new_col).unwrap();
         assert!(e.conform(&wider).unwrap().changed);
+    }
+
+    // A string or binary in another of its family's representations is the
+    // column's type: no policy sees a change, and it's never versioned.
+    #[test]
+    fn another_representation_of_strings_or_bytes_is_no_change() {
+        use arrow_array::{
+            BinaryArray, BinaryViewArray, LargeBinaryArray, LargeStringArray, StringViewArray,
+        };
+        let v: Vec<&[u8]> = vec![b"a", b"b"];
+        let families: [Vec<ArrayRef>; 2] = [
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(LargeStringArray::from(vec!["a", "b"])),
+                Arc::new(StringViewArray::from(vec!["a", "b"])),
+            ],
+            vec![
+                Arc::new(BinaryArray::from_vec(v.clone())),
+                Arc::new(LargeBinaryArray::from_vec(v.clone())),
+                Arc::new(BinaryViewArray::from(v)),
+            ],
+        ];
+        for family in &families {
+            for first in family {
+                for then in family {
+                    let case = format!("{} then {}", first.data_type(), then.data_type());
+                    let mut e = Evolver::new(Policy::Block, None, BTreeMap::new());
+                    e.conform(&batch(vec![("x", first.clone())])).unwrap();
+                    e.establish();
+                    let c = e
+                        .conform(&batch(vec![("x", then.clone())]))
+                        .unwrap_or_else(|err| panic!("{case}: {err}"));
+                    assert!(!c.changed && c.versioned.is_empty(), "{case}");
+                    assert_eq!(c.batch.column(0).to_data(), first.to_data(), "{case}");
+                }
+            }
+        }
     }
 }

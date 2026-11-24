@@ -324,7 +324,7 @@ func mirroredHolds(h *checkpoint.Holds) []*dataplanev1.CheckpointHold {
 	}
 	for _, col := range replay {
 		if _, ok := h.Cells[col]; !ok {
-			out = append(out, &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "released", Since: ref(h.Releasing(col)), Releasing: true})
+			out = append(out, &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "released", Since: ref(h.Replay.Since[col]), Releasing: true})
 		}
 	}
 	return out

@@ -43,7 +43,7 @@ const (
 // error.
 func (a *Ops) PreflightPipeline(ctx context.Context, in contract.ConnectorOpInput) (contract.ConnectorOpResult, error) {
 	var res contract.ConnectorOpResult
-	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
+	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version, false)
 	if err != nil {
 		return res, err
 	}

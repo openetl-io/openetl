@@ -138,7 +138,7 @@ These commands have no flags beyond the common flags. Use the `FIELD` value from
 |---|---|
 | `openetl holds PIPELINE` | List held columns and cells, their states and available actions. `holds list` is an alias. |
 | `openetl holds release PIPELINE STREAM COLUMN` | Request release of the held values on the next run. |
-| `openetl holds discard PIPELINE STREAM COLUMN` | Request deletion of the saved values on the next run. A discard replaces a release that waits for the next run. Of a release in progress, it deletes the values not yet patched in, on a run in which the stream does not hold. |
+| `openetl holds discard PIPELINE STREAM COLUMN` | Request deletion of the saved values on the next run. A discard replaces a release that no run has taken. Of a release that a run has taken, it deletes the values not yet patched in, on a run in which the stream does not hold. While the stream holds, the release goes on. If the release ends first, the discard deletes nothing, and the values the release leaves held stay held. |
 
 | Flag | Command | Type | Required | Default | Meaning |
 |---|---|---|---|---|---|

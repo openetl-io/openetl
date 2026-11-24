@@ -26,9 +26,13 @@ const (
 )
 
 type GetSyncSpecRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PipelineId    string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
-	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	PipelineId string                 `protobuf:"bytes,1,opt,name=pipeline_id,json=pipelineId,proto3" json:"pipeline_id,omitempty"`
+	Version    string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// The caller is an attempt, which applies the pipeline's hold releases:
+	// the response has them, and the server records that a run has taken
+	// them. Without it, the response has none.
+	TakeReleases  bool `protobuf:"varint,3,opt,name=take_releases,json=takeReleases,proto3" json:"take_releases,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -77,6 +81,13 @@ func (x *GetSyncSpecRequest) GetVersion() string {
 	return ""
 }
 
+func (x *GetSyncSpecRequest) GetTakeReleases() bool {
+	if x != nil {
+		return x.TakeReleases
+	}
+	return false
+}
+
 type GetSyncSpecResponse struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	OrgId       string                 `protobuf:"bytes,1,opt,name=org_id,json=orgId,proto3" json:"org_id,omitempty"`
@@ -106,8 +117,9 @@ type GetSyncSpecResponse struct {
 	// secret stores.
 	FlinkAccessSecrets []*ExternalSecret `protobuf:"bytes,15,rep,name=flink_access_secrets,json=flinkAccessSecrets,proto3" json:"flink_access_secrets,omitempty"`
 	// Holds released or discarded, for the holds still open in the
-	// pipeline's last mirrored checkpoint. A release applies to the hold it
-	// names only while that hold is open, so sending it again does nothing.
+	// pipeline's last mirrored checkpoint, with take_releases. A release
+	// applies to the hold it names only while that hold is open, so sending
+	// it again does nothing.
 	Releases []*HoldRelease `protobuf:"bytes,16,rep,name=releases,proto3" json:"releases,omitempty"`
 	// The pipeline's key groups, fixed when it was created. A
 	// restore from a record with another count fails.
@@ -417,7 +429,12 @@ type HoldRelease struct {
 	Discard bool `protobuf:"varint,4,opt,name=discard,proto3" json:"discard,omitempty"`
 	// A column hold's values go to a new version of the column, col__v2, as
 	// allow_all's do, and the column keeps the type the destination has.
-	NewVersion    bool `protobuf:"varint,5,opt,name=new_version,json=newVersion,proto3" json:"new_version,omitempty"`
+	NewVersion bool `protobuf:"varint,5,opt,name=new_version,json=newVersion,proto3" json:"new_version,omitempty"`
+	// A release that a person discarded once a run had taken it: a run in
+	// which its stream holds goes on with it, and one in which the stream
+	// doesn't hold drops the values it hasn't patched in. It ends with the
+	// release, so the values a finished release leaves held stay held.
+	Ends          bool `protobuf:"varint,7,opt,name=ends,proto3" json:"ends,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -490,6 +507,13 @@ func (x *HoldRelease) GetDiscard() bool {
 func (x *HoldRelease) GetNewVersion() bool {
 	if x != nil {
 		return x.NewVersion
+	}
+	return false
+}
+
+func (x *HoldRelease) GetEnds() bool {
+	if x != nil {
+		return x.Ends
 	}
 	return false
 }
@@ -3752,11 +3776,12 @@ var File_openetl_dataplane_v1_dataplane_proto protoreflect.FileDescriptor
 
 const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\n" +
-	"$openetl/dataplane/v1/dataplane.proto\x12\x14openetl.dataplane.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1fopenetl/api/v1/connection.proto\x1a\x1aopenetl/api/v1/flink.proto\x1a\x1dopenetl/api/v1/pipeline.proto\x1a\x1aopenetl/api/v1/spark.proto\x1a\x19openetl/api/v1/sync.proto\x1a!openetl/connector/v1/source.proto\"O\n" +
+	"$openetl/dataplane/v1/dataplane.proto\x12\x14openetl.dataplane.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1fopenetl/api/v1/connection.proto\x1a\x1aopenetl/api/v1/flink.proto\x1a\x1dopenetl/api/v1/pipeline.proto\x1a\x1aopenetl/api/v1/spark.proto\x1a\x19openetl/api/v1/sync.proto\x1a!openetl/connector/v1/source.proto\"t\n" +
 	"\x12GetSyncSpecRequest\x12\x1f\n" +
 	"\vpipeline_id\x18\x01 \x01(\tR\n" +
 	"pipelineId\x12\x18\n" +
-	"\aversion\x18\x02 \x01(\tR\aversion\"\xd1\f\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12#\n" +
+	"\rtake_releases\x18\x03 \x01(\bR\ftakeReleases\"\xd1\f\n" +
 	"\x13GetSyncSpecResponse\x12\x15\n" +
 	"\x06org_id\x18\x01 \x01(\tR\x05orgId\x12\x1f\n" +
 	"\vpipeline_id\x18\x02 \x01(\tR\n" +
@@ -3797,7 +3822,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedFlinkClusterR\x05value:\x028\x01\"1\n" +
 	"\x05Reset\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\astreams\x18\x02 \x03(\tR\astreams\"\xc3\x01\n" +
+	"\astreams\x18\x02 \x03(\tR\astreams\"\xd7\x01\n" +
 	"\vHoldRelease\x12\x0e\n" +
 	"\x02id\x18\x06 \x01(\tR\x02id\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
@@ -3805,7 +3830,8 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05since\x18\x03 \x01(\v2#.openetl.dataplane.v1.CheckpointRefR\x05since\x12\x18\n" +
 	"\adiscard\x18\x04 \x01(\bR\adiscard\x12\x1f\n" +
 	"\vnew_version\x18\x05 \x01(\bR\n" +
-	"newVersion\"\xf1\x01\n" +
+	"newVersion\x12\x12\n" +
+	"\x04ends\x18\a \x01(\bR\x04ends\"\xf1\x01\n" +
 	"\x12PinnedFlinkCluster\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x124\n" +
 	"\x04spec\x18\x02 \x01(\v2 .openetl.api.v1.FlinkClusterSpecR\x04spec\x12>\n" +
