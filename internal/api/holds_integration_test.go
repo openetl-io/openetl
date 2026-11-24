@@ -461,7 +461,7 @@ func TestADiscardOfAReleaseInProgressLapsesWithIt(t *testing.T) {
 // A release in progress is the release a run took for its whole life: a
 // column released whole that holds cells while it's patched in, which the
 // API then lists by its cells, keeps the discard of it, and a discard then
-// marks the same release.
+// marks the same release, with the cells the person saw.
 func TestADiscardOfAReleaseInProgressFollowsTheRelease(t *testing.T) {
 	ctx := t.Context()
 	e := newHoldsEnv(t)
@@ -484,22 +484,22 @@ func TestADiscardOfAReleaseInProgressFollowsTheRelease(t *testing.T) {
 			t.Errorf("discarded %v", res.Msg.GetHold())
 		}
 	}
-	ends := func(when string) {
+	ends := func(cells uint64, when string) {
 		t.Helper()
-		if got := e.taken(t); len(got) != 1 || got[0].GetId() != rs[0].GetId() || !got[0].GetEnds() {
+		if got := e.taken(t); len(got) != 1 || got[0].GetId() != rs[0].GetId() || !got[0].GetEnds() || got[0].GetEndsCells() != cells {
 			t.Errorf("releases %v, %s", got, when)
 		}
 	}
 	e.report(t, 1, 3, &dataplanev1.CheckpointHold{Column: "amount", Whole: true, Reason: "released", Since: since, Releasing: true})
 	discard()
-	ends("once the release is discarded")
+	ends(0, "once the release is discarded")
 
 	// A value of amount doesn't fit while the release goes on.
 	cells := &dataplanev1.CheckpointHold{Column: "amount", Cells: 1, Reason: "nan", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 4}, Releasing: true}
 	e.report(t, 1, 4, cells)
-	ends("once the column holds cells")
+	ends(0, "once the column holds cells")
 	discard()
-	ends("once discarded again")
+	ends(1, "once discarded again")
 }
 
 // A discarded column hold drops the column's values until it's released: a

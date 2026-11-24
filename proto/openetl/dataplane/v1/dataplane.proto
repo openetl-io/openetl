@@ -162,6 +162,10 @@ message HoldRelease {
   // patched in. It ends with the replay, so the values a finished release
   // leaves held stay held.
   bool ends = 7;
+  // With ends, the held cells of the column that the person saw when they
+  // discarded the release: a run in which the stream doesn't hold drops the
+  // column's cells with the replay only while it holds no more than these.
+  uint64 ends_cells = 8;
 }
 
 // PinnedFlinkCluster's secret references that this server holds are

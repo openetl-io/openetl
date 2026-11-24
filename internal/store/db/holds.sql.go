@@ -68,8 +68,8 @@ func (q *Queries) DeleteHolds(ctx context.Context, arg DeleteHoldsParams) error 
 }
 
 const endHoldReleases = `-- name: EndHoldReleases :execrows
-UPDATE hold_releases r SET ends = true
-WHERE r.org_id = $1 AND r.pipeline_id = $2 AND r.stream = $3 AND r.column_name = $4
+UPDATE hold_releases r SET ends = true, ends_cells = $1
+WHERE r.org_id = $2 AND r.pipeline_id = $3 AND r.stream = $4 AND r.column_name = $5
     AND NOT r.discard AND NOT EXISTS (
         SELECT 1 FROM holds h
         WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
@@ -78,6 +78,7 @@ WHERE r.org_id = $1 AND r.pipeline_id = $2 AND r.stream = $3 AND r.column_name =
 `
 
 type EndHoldReleasesParams struct {
+	Cells      int64
 	OrgID      uuid.UUID
 	PipelineID uuid.UUID
 	Stream     string
@@ -85,10 +86,12 @@ type EndHoldReleasesParams struct {
 }
 
 // Marks a person's discard on the releases of the stream's column, but
-// those that end a discarded hold. A run matches them to the releases its
-// replay took by ID, so one of an older hold, marked too, does nothing.
+// those that end a discarded hold, with the held cells of the column they
+// saw. A run matches them to the releases its replay took by ID, so one of
+// an older hold, marked too, does nothing.
 func (q *Queries) EndHoldReleases(ctx context.Context, arg EndHoldReleasesParams) (int64, error) {
 	result, err := q.db.Exec(ctx, endHoldReleases,
+		arg.Cells,
 		arg.OrgID,
 		arg.PipelineID,
 		arg.Stream,
@@ -333,7 +336,7 @@ func (q *Queries) NewestHoldReleaseAt(ctx context.Context, arg NewestHoldRelease
 }
 
 const pendingHoldReleases = `-- name: PendingHoldReleases :many
-SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version, r.ends
+SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version, r.ends, r.ends_cells
 FROM hold_releases r
 WHERE r.org_id = $1 AND r.pipeline_id = $2 AND (
     EXISTS (
@@ -363,6 +366,7 @@ type PendingHoldReleasesRow struct {
 	Discard         bool
 	NewVersion      bool
 	Ends            bool
+	EndsCells       int64
 }
 
 // The releases of holds still open, not being patched in, and not refused,
@@ -388,6 +392,7 @@ func (q *Queries) PendingHoldReleases(ctx context.Context, arg PendingHoldReleas
 			&i.Discard,
 			&i.NewVersion,
 			&i.Ends,
+			&i.EndsCells,
 		); err != nil {
 			return nil, err
 		}

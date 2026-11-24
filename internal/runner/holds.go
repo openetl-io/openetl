@@ -71,6 +71,10 @@ type Release struct {
 	// on; a job in which it doesn't hold takes the release as a discard of
 	// the replay.
 	Ends bool
+	// With Ends, the held cells of the column that the person saw when they
+	// discarded it. Cells held after the discard aren't the person's to
+	// drop: with more, the replay's cells stay held.
+	EndsCells uint64
 }
 
 // RefusedError: the destination refused columns of an epoch's schemas
@@ -315,8 +319,9 @@ func (j *Job) keptHolds(restored *checkpoint.Record) error {
 // nothing. A discard, or a release a person discarded, names a hold by
 // where it started, and doesn't apply to one that refused it. A release
 // being patched in ends by a release it took that a person discarded,
-// whatever holds its column has since, and its column's cells, which the
-// API lists as being released, go with it.
+// whatever holds its column has since. Its column's cells, which the API
+// lists as being released, go with it, unless the column holds more than
+// the person saw: some were held since.
 func heldValues(h *checkpoint.Holds, releases []Release, stream string) (held, cols []string) {
 	if h == nil {
 		return nil, nil
@@ -327,10 +332,20 @@ func heldValues(h *checkpoint.Holds, releases []Release, stream string) (held, c
 		})
 	}
 	replayed := func(col string) bool { return h.Replay != nil && slices.Contains(h.Replay.Columns, col) }
-	ended := func(col string) bool {
-		return slices.ContainsFunc(releases, func(r Release) bool {
-			return r.Ends && r.Stream == stream && r.Column == col && h.Replay.Took(col, r.ID)
-		})
+	// ended reports whether the replay of col ends, and the cells of col
+	// held that the person saw.
+	ended := func(col string) (bool, uint64) {
+		var ends bool
+		var seen uint64
+		if !replayed(col) {
+			return false, 0
+		}
+		for _, r := range releases {
+			if r.Ends && r.Stream == stream && r.Column == col && h.Replay.Took(col, r.ID) {
+				ends, seen = true, max(seen, r.EndsCells)
+			}
+		}
+		return ends, seen
 	}
 	for _, c := range h.Columns {
 		if !c.Discarded && !discarded(c.Column, c.Since, c.Refused) {
@@ -338,14 +353,16 @@ func heldValues(h *checkpoint.Holds, releases []Release, stream string) (held, c
 		}
 	}
 	for _, col := range slices.Sorted(maps.Keys(h.Cells)) {
-		if c := h.Cells[col]; replayed(col) && !ended(col) || !replayed(col) && !discarded(col, c.Since, c.Refused) {
+		c := h.Cells[col]
+		ends, seen := ended(col)
+		if replayed(col) && (!ends || c.Cells > seen) || !replayed(col) && !discarded(col, c.Since, c.Refused) {
 			held, cols = append(held, fmt.Sprintf("%d held cells of %s", c.Cells, col)), append(cols, col)
 		}
 	}
 	if h.Replay != nil {
 		var releasing []string
 		for _, col := range h.Replay.Columns {
-			if !ended(col) {
+			if ends, _ := ended(col); !ends {
 				releasing = append(releasing, col)
 			}
 		}

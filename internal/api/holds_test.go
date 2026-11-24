@@ -129,9 +129,9 @@ func TestWhatAReleaseReplaces(t *testing.T) {
 // A run gets each release as it was made, marked if a person discarded it.
 func TestARunGetsAReleaseAsMade(t *testing.T) {
 	id := uuid.New()
-	r := holdRelease(db.PendingHoldReleasesRow{ID: id, Stream: "s", ColumnName: "x", SinceGeneration: 1, SinceEpoch: 2, NewVersion: true, Ends: true})
+	r := holdRelease(db.PendingHoldReleasesRow{ID: id, Stream: "s", ColumnName: "x", SinceGeneration: 1, SinceEpoch: 2, NewVersion: true, Ends: true, EndsCells: 4})
 	if r.GetId() != id.String() || r.GetStream() != "s" || r.GetColumn() != "x" || r.GetSince().GetGeneration() != 1 || r.GetSince().GetEpoch() != 2 ||
-		r.GetDiscard() || !r.GetNewVersion() || !r.GetEnds() {
+		r.GetDiscard() || !r.GetNewVersion() || !r.GetEnds() || r.GetEndsCells() != 4 {
 		t.Errorf("release %v", r)
 	}
 	if r := holdRelease(db.PendingHoldReleasesRow{ID: id, Discard: true}); !r.GetDiscard() || r.GetEnds() || r.GetNewVersion() {

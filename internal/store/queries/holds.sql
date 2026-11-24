@@ -40,7 +40,7 @@ RETURNING id, discard, new_version;
 -- discarded one. A release a person discarded counts as a discard, and
 -- while its column is being patched in, a run gets it too: in one in which
 -- the stream doesn't hold, it ends the replay that took it.
-SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version, r.ends
+SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version, r.ends, r.ends_cells
 FROM hold_releases r
 WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND (
     EXISTS (
@@ -57,9 +57,10 @@ ORDER BY r.create_time, r.id;
 
 -- name: EndHoldReleases :execrows
 -- Marks a person's discard on the releases of the stream's column, but
--- those that end a discarded hold. A run matches them to the releases its
--- replay took by ID, so one of an older hold, marked too, does nothing.
-UPDATE hold_releases r SET ends = true
+-- those that end a discarded hold, with the held cells of the column they
+-- saw. A run matches them to the releases its replay took by ID, so one of
+-- an older hold, marked too, does nothing.
+UPDATE hold_releases r SET ends = true, ends_cells = @cells
 WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND r.stream = @stream AND r.column_name = @column_name
     AND NOT r.discard AND NOT EXISTS (
         SELECT 1 FROM holds h

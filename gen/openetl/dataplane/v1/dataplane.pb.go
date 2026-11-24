@@ -435,7 +435,11 @@ type HoldRelease struct {
 	// and one in which the stream doesn't hold drops the values it hasn't
 	// patched in. It ends with the replay, so the values a finished release
 	// leaves held stay held.
-	Ends          bool `protobuf:"varint,7,opt,name=ends,proto3" json:"ends,omitempty"`
+	Ends bool `protobuf:"varint,7,opt,name=ends,proto3" json:"ends,omitempty"`
+	// With ends, the held cells of the column that the person saw when they
+	// discarded the release: a run in which the stream doesn't hold drops the
+	// column's cells with the replay only while it holds no more than these.
+	EndsCells     uint64 `protobuf:"varint,8,opt,name=ends_cells,json=endsCells,proto3" json:"ends_cells,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -517,6 +521,13 @@ func (x *HoldRelease) GetEnds() bool {
 		return x.Ends
 	}
 	return false
+}
+
+func (x *HoldRelease) GetEndsCells() uint64 {
+	if x != nil {
+		return x.EndsCells
+	}
+	return 0
 }
 
 // PinnedFlinkCluster's secret references that this server holds are
@@ -3823,7 +3834,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedFlinkClusterR\x05value:\x028\x01\"1\n" +
 	"\x05Reset\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\astreams\x18\x02 \x03(\tR\astreams\"\xd7\x01\n" +
+	"\astreams\x18\x02 \x03(\tR\astreams\"\xf6\x01\n" +
 	"\vHoldRelease\x12\x0e\n" +
 	"\x02id\x18\x06 \x01(\tR\x02id\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
@@ -3832,7 +3843,9 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\adiscard\x18\x04 \x01(\bR\adiscard\x12\x1f\n" +
 	"\vnew_version\x18\x05 \x01(\bR\n" +
 	"newVersion\x12\x12\n" +
-	"\x04ends\x18\a \x01(\bR\x04ends\"\xf1\x01\n" +
+	"\x04ends\x18\a \x01(\bR\x04ends\x12\x1d\n" +
+	"\n" +
+	"ends_cells\x18\b \x01(\x04R\tendsCells\"\xf1\x01\n" +
 	"\x12PinnedFlinkCluster\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x124\n" +
 	"\x04spec\x18\x02 \x01(\v2 .openetl.api.v1.FlinkClusterSpecR\x04spec\x12>\n" +

@@ -146,9 +146,14 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			return err
 		}
 		found, whole, discarded := false, false, false
+		// The column's held cells, which a discard marks a release with.
+		var cells int64
 		for i, r := range rows {
 			if r.Stream != stream || r.ColumnName != column {
 				continue
+			}
+			if !r.Whole {
+				cells = r.Cells
 			}
 			whole = whole || r.Whole && !r.Discarded && !r.Releasing
 			discarded = discarded || r.Whole && r.Discarded
@@ -221,7 +226,7 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			// A run knows the release it patches in by its ID, and the
 			// column's holds can change while it does, so the column's
 			// releases are marked.
-			n, err := q.EndHoldReleases(ctx, db.EndHoldReleasesParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Stream: stream, ColumnName: column})
+			n, err := q.EndHoldReleases(ctx, db.EndHoldReleasesParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Stream: stream, ColumnName: column, Cells: cells})
 			if err != nil {
 				return err
 			}
@@ -444,7 +449,8 @@ func (s *Server) pendingReleases(ctx context.Context, pipeline uuid.UUID) ([]*da
 
 func holdRelease(r db.PendingHoldReleasesRow) *dataplanev1.HoldRelease {
 	return &dataplanev1.HoldRelease{
-		Id: r.ID.String(), Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion, Ends: r.Ends,
+		Id: r.ID.String(), Stream: r.Stream, Column: r.ColumnName, Discard: r.Discard, NewVersion: r.NewVersion,
+		Ends: r.Ends, EndsCells: ints.Uint64(r.EndsCells),
 		Since: &dataplanev1.CheckpointRef{Generation: ints.Uint64(r.SinceGeneration), Epoch: ints.Uint64(r.SinceEpoch)},
 	}
 }
