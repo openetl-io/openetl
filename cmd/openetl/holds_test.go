@@ -50,7 +50,7 @@ func (f *fakeHolds) ReleaseHold(_ context.Context, req *connect.Request[apiv1.Re
 
 func (f *fakeHolds) DiscardHold(_ context.Context, req *connect.Request[apiv1.DiscardHoldRequest]) (*connect.Response[apiv1.DiscardHoldResponse], error) {
 	f.discarded = append(f.discarded, req.Msg.GetParent()+" "+req.Msg.GetStream()+"."+req.Msg.GetColumn())
-	return connect.NewResponse(&apiv1.DiscardHoldResponse{Hold: &apiv1.Hold{Stream: req.Msg.GetStream(), Column: req.Msg.GetColumn()}}), nil
+	return connect.NewResponse(&apiv1.DiscardHoldResponse{Hold: &apiv1.Hold{Stream: req.Msg.GetStream(), Column: req.Msg.GetColumn(), Releasing: req.Msg.GetColumn() == "price"}}), nil
 }
 
 func TestHolds(t *testing.T) {
@@ -106,6 +106,15 @@ orders.note (cells)
 		f.released[1] != "workspaces/default/pipelines/p orders.amount (new version)" ||
 		len(f.discarded) != 1 || f.discarded[0] != "workspaces/default/pipelines/p orders.note" {
 		t.Errorf("released %v, discarded %v", f.released, f.discarded)
+	}
+	// A release in progress, discarded, goes on unless the stream stops
+	// holding.
+	out.Reset()
+	if err := run(t.Context(), []string{"holds", "discard", "--api-url", srv.URL, "p", "orders", "price"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "discarded the release of orders.price of workspaces/default/pipelines/p in progress; if the stream doesn't hold") {
+		t.Errorf("printed %q", out.String())
 	}
 	if err := run(t.Context(), []string{"holds", "release", "--api-url", srv.URL, "p", "orders"}, &out); err == nil {
 		t.Error("release without a column worked")

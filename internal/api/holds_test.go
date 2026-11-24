@@ -84,3 +84,30 @@ func TestADiscardedColumnHoldsWayOutIsARelease(t *testing.T) {
 		t.Errorf("released after its discard, pending %v, %v", h.GetPending(), err)
 	}
 }
+
+// A discard replaces a release of a hold not discarded, whether it waits
+// for the next run or is being patched in, and a release replaces the
+// discard a discarded hold took. Neither replaces one of its own kind, nor
+// a discard the release that ends a discarded hold.
+func TestWhatAReleaseReplaces(t *testing.T) {
+	id, yes, no := uuid.New(), true, false
+	for _, tc := range []struct {
+		name    string
+		row     db.ListHoldsRow
+		discard bool
+		want    bool
+	}{
+		{"a discard, a release pending", db.ListHoldsRow{ReleaseID: &id, ReleaseDiscards: &no}, true, true},
+		{"a discard, a release being patched in", db.ListHoldsRow{Releasing: true, ReleaseID: &id, ReleaseDiscards: &no}, true, true},
+		{"a discard, the release that ends a discarded hold", db.ListHoldsRow{Discarded: true, ReleaseID: &id, ReleaseDiscards: &no}, true, false},
+		{"a discard, a discard pending", db.ListHoldsRow{ReleaseID: &id, ReleaseDiscards: &yes}, true, false},
+		{"a discard, nothing", db.ListHoldsRow{}, true, false},
+		{"a release, the discard a discarded hold took", db.ListHoldsRow{Discarded: true, ReleaseID: &id, ReleaseDiscards: &yes}, false, true},
+		{"a release, a discard pending", db.ListHoldsRow{ReleaseID: &id, ReleaseDiscards: &yes}, false, false},
+		{"a release, a release pending", db.ListHoldsRow{ReleaseID: &id, ReleaseDiscards: &no}, false, false},
+	} {
+		if got := replacedBy(tc.row, tc.discard); got != tc.want {
+			t.Errorf("%s: replaced %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

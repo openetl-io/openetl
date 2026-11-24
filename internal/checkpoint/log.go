@@ -266,6 +266,20 @@ type Replay struct {
 	Versioned []ColumnHold `json:"versioned,omitempty"`
 	// The IDs of the releases of cell holds, by column.
 	CellReleases map[string]string `json:"cell_releases,omitempty"`
+	// By column, where the hold it ends that held the column whole started;
+	// missing for a column whose cells alone it releases, and in records
+	// from before it.
+	Since map[string]RecordRef `json:"since,omitempty"`
+}
+
+// Releasing is where the hold that h's replay releases on col started, by
+// which a discard names the release: its cell hold's start if it has one,
+// and otherwise its hold's held whole.
+func (h *Holds) Releasing(col string) RecordRef {
+	if c, ok := h.Cells[col]; ok || h.Replay == nil {
+		return c.Since
+	}
+	return h.Replay.Since[col]
 }
 
 // HeldDir holds a pipeline's held values, next to its checkpoints:

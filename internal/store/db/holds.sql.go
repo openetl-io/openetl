@@ -274,7 +274,7 @@ FROM hold_releases r
 JOIN holds h ON h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
     AND h.column_name = r.column_name AND h.whole = r.whole
     AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch
-WHERE r.org_id = $1 AND r.pipeline_id = $2 AND (NOT h.discarded OR NOT r.discard) AND NOT h.releasing
+WHERE r.org_id = $1 AND r.pipeline_id = $2 AND (NOT h.discarded OR NOT r.discard) AND (NOT h.releasing OR r.discard)
     AND r.id IS DISTINCT FROM h.refused_release
 ORDER BY r.create_time, r.id
 `
@@ -294,9 +294,9 @@ type PendingHoldReleasesRow struct {
 	NewVersion      bool
 }
 
-// The releases of holds still open, not being patched in, and not refused,
-// for a run to take: of a hold not discarded, or a release that ends a
-// discarded one.
+// The releases of holds still open and not refused, for a run to take: of a
+// hold not discarded, or a release that ends a discarded one; of a hold
+// being patched in, only a discard.
 func (q *Queries) PendingHoldReleases(ctx context.Context, arg PendingHoldReleasesParams) ([]PendingHoldReleasesRow, error) {
 	rows, err := q.db.Query(ctx, pendingHoldReleases, arg.OrgID, arg.PipelineID)
 	if err != nil {

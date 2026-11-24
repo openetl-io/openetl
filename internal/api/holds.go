@@ -71,6 +71,20 @@ func refusedBy(r db.ListHoldsRow) bool {
 	return r.ReleaseID != nil && r.RefusedRelease != nil && *r.ReleaseID == *r.RefusedRelease
 }
 
+// replacedBy reports whether a release of the hold, a discard if discard
+// is set, replaces the one it has: a release replaces the discard a
+// discarded hold took, and a discard a release, whether it waits for the
+// pipeline's next run or is being patched in.
+func replacedBy(r db.ListHoldsRow, discard bool) bool {
+	if r.ReleaseID == nil || r.ReleaseDiscards == nil {
+		return false
+	}
+	if discard {
+		return !r.Discarded && !*r.ReleaseDiscards
+	}
+	return r.Discarded && *r.ReleaseDiscards
+}
+
 func (s *Server) ReleaseHold(ctx context.Context, req *connect.Request[apiv1.ReleaseHoldRequest]) (*connect.Response[apiv1.ReleaseHoldResponse], error) {
 	h, err := s.release(ctx, req.Msg.GetParent(), req.Msg.GetStream(), req.Msg.GetColumn(), false, req.Msg.GetNewVersion())
 	if err != nil {
@@ -91,8 +105,10 @@ func (s *Server) DiscardHold(ctx context.Context, req *connect.Request[apiv1.Dis
 // column: the column held whole, its held cells, or both. With newVersion,
 // the column held whole goes to a new version of it, and its cells with
 // it. A release of a discarded column hold ends it: the column is delivered
-// again, and the values it dropped stay dropped. A continuous pipeline's
-// run restarts to take it.
+// again, and the values it dropped stay dropped. A discard replaces a
+// release that waits for the next run, and is the only way to end a
+// release being patched in, which a run takes only once the stream stops
+// holding. A continuous pipeline's run restarts to take it.
 func (s *Server) release(ctx context.Context, parent, stream, column string, discard, newVersion bool) (*apiv1.Hold, error) {
 	audit(ctx).set("stream", stream)
 	audit(ctx).set("column", column)
@@ -124,8 +140,8 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 			whole = whole || r.Whole && !r.Discarded && !r.Releasing
 			discarded = discarded || r.Whole && r.Discarded
 			// A new release replaces the one the hold refused, or the discard
-			// it took.
-			if refusedBy(r) || !discard && r.Discarded && r.ReleaseID != nil && r.ReleaseDiscards != nil && *r.ReleaseDiscards {
+			// it took; a discard, a release not taken or being patched in.
+			if refusedBy(r) || replacedBy(r, discard) {
 				if err := q.DeleteHoldRelease(ctx, db.DeleteHoldReleaseParams{OrgID: s.Tenant.Org, ID: *r.ReleaseID}); err != nil {
 					return err
 				}
@@ -143,7 +159,7 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 				continue
 			}
 			found = true
-			if r.Releasing || r.Discarded && discard {
+			if r.Releasing && !discard || r.Discarded && discard {
 				continue
 			}
 			id, err := uuid.NewV7()
@@ -177,8 +193,10 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 		switch {
 		case !found:
 			return notFound("stream %s of %s holds nothing in column %s", stream, parent, column)
+		case out == nil && discard:
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("the hold on %s.%s is already discarded", stream, column))
 		case out == nil:
-			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("the hold on %s.%s is already discarded or being released", stream, column))
+			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("the hold on %s.%s is being released; to drop what it hasn't patched in once the stream stops holding, discard it", stream, column))
 		}
 		return nil
 	})
