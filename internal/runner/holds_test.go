@@ -807,6 +807,74 @@ func TestAColumnRefusedWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
 	}
 }
 
+// A column that the engine holds whole again while its release is being
+// patched in, as the stream changed it again or a column held with it, is
+// held from where its hold started, refused by the release, as one the
+// destination refuses again is: the replay skips its values from then on,
+// and a later release reads every value held since then. Its released
+// cells are refused too. A discard of the hold as the API lists it ends it
+// where the stream doesn't hold; a discard of the release made before
+// ended with it, so it drops nothing. A column whose cells alone were
+// released is held whole from then.
+func TestAColumnHeldWholeAgainWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
+	files, start := heldEpochs(t)
+	h := &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Reason: "refused"}},
+		Cells:   map[string]checkpoint.CellHold{"c": {Cells: 1, Since: epoch(3)}, "d": {Cells: 2, Since: epoch(3)}},
+		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
+	}
+	r := start(h, &Job{Releases: []Release{
+		{ID: "rw", Stream: "s", Column: "c", Since: epoch(2)}, {ID: "rc", Stream: "s", Column: "c", Since: epoch(3)},
+		{ID: "rd", Stream: "s", Column: "d", Since: epoch(3)},
+	}})
+	if r == nil || !slices.Equal(r.Columns, []string{"c", "d"}) || !slices.Equal(r.Files, files[1:]) {
+		t.Fatalf("replay %+v", r)
+	}
+	h = mergeHolds(&checkpoint.Holds{Cells: h.Cells, Epochs: h.Epochs, Replay: r}, &ReadyHolds{Replayed: &ReplayProgress{File: 2}}, epoch(7), time.Now())
+	// In epoch 8 the engine holds c whole again, and d, whose cells alone
+	// are released, with it.
+	group := &checkpoint.HoldCause{Kind: checkpoint.HoldGroup, With: "c"}
+	h = mergeHolds(h, &ReadyHolds{
+		Holding:  []checkpoint.ColumnHold{{Column: "c", Reason: "policy"}, {Column: "d", Reason: "held with c", Cause: group}},
+		Replayed: &ReplayProgress{File: 3},
+	}, epoch(8), time.Now())
+	if h.Replay != nil || len(h.Columns) != 2 {
+		t.Fatalf("held again: columns %+v, replay %+v", h.Columns, h.Replay)
+	}
+	if c := h.Columns[0]; c.Column != "c" || c.Since != epoch(2) || c.Reason != "policy" || c.Refused == nil || c.Refused.Release != "rw" {
+		t.Errorf("c, held whole again, is held %+v", c)
+	}
+	if d := h.Columns[1]; d.Column != "d" || d.Since != epoch(8) || d.Refused != nil || d.Cause.Kind != checkpoint.HoldGroup {
+		t.Errorf("d, held whole with c, is held %+v", d)
+	}
+	for col, id := range map[string]string{"c": "rc", "d": "rd"} {
+		if cells := h.Cells[col]; cells.Since != epoch(3) || cells.Refused == nil || cells.Refused.Release != id {
+			t.Errorf("%s's cells are held %+v", col, cells)
+		}
+	}
+	// The stream stops holding. The discard made before c was held again
+	// ended with the release; one of the hold the API lists ends it.
+	j := &Job{
+		HeldURL: "file:///held", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"), Destination: holdingDest{},
+		Streams:  []Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}},
+		Releases: []Release{{ID: "rw", Stream: "s", Column: "c", Since: epoch(2), Ends: true}},
+	}
+	stopped := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{Columns: h.Columns[:1], Epochs: h.Epochs}}}}
+	if _, _, err := j.startHolds(t.Context(), stopped, nil); errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "column c held whole") {
+		t.Errorf("with the discard made before, got %v, want c held", err)
+	}
+	j.Releases = []Release{{ID: "d", Stream: "s", Column: "c", Since: epoch(2), Discard: true}}
+	if _, _, err := j.startHolds(t.Context(), stopped, nil); err != nil {
+		t.Errorf("discarded: %v", err)
+	}
+	// A later release reads every value of c held since epoch 2.
+	h = mergeHolds(h, &ReadyHolds{Holding: h.Columns}, epoch(9), time.Now())
+	r = start(h, &Job{Releases: []Release{{ID: "r2", Stream: "s", Column: "c", Since: h.Columns[0].Since}}})
+	if r == nil || !slices.Equal(r.Files, files[1:]) || r.First["c"] != 0 {
+		t.Errorf("the later release reads %+v, from file %d for c held whole, want %v from the first", r, r.First["c"], files[1:])
+	}
+}
+
 // Columns released together are read from one list of files, each from its
 // own holds' start: a held cells in epochs 1-2, which a release patched in
 // or the user discarded, and holds cells again since epoch 5; b holds since
