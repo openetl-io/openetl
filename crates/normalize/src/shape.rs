@@ -2193,12 +2193,14 @@ mod tests {
         assert_eq!(n.versioned.len(), 1, "{:?}", n.versioned);
     }
 
-    // A key column, or a cursor that gives `_openetl_seq`, takes a widening
-    // only where each value keeps its order and the record ID it gives: to
-    // a wider integer, or to a decimal of more digits at the same scale.
-    // Another widening, as to a string, which sorts "10" before "9", or to
-    // a float, stops the stream as other changes do. A column that is
-    // neither widens as before.
+    // Once its stream's schema is established, a key column, or a cursor
+    // that gives `_openetl_seq`, takes a widening only where each value
+    // keeps its order and the record ID it gives: to a wider integer, or to
+    // a decimal of more digits at the same scale, and for the cursor, from
+    // an integer to a float. Another widening, as to a string, which sorts
+    // "10" before "9", stops the stream as other changes do. So does an
+    // integer to a float where the column held one past ±2^53, as it goes
+    // to a string. A column that is neither widens as before.
     #[test]
     fn a_key_or_cursor_widens_only_where_its_order_and_ids_hold() {
         use arrow_array::{
@@ -2212,15 +2214,24 @@ mod tests {
             )
         };
         let ints = || -> ArrayRef { Arc::new(Int64Array::from(vec![9, 10])) };
+        let floats = || -> ArrayRef { Arc::new(Float64Array::from(vec![9.0, 10.0])) };
         let micros = TimestampMicrosecondArray::from(vec![1_000, 2_000]).with_timezone("UTC");
         let millis = TimestampMillisecondArray::from(vec![1, 2]).with_timezone("UTC");
-        // The column before and after, and the type it then has, or None
-        // where the sync fails.
-        let cases: Vec<(&str, ArrayRef, ArrayRef, Option<&str>)> = vec![
+        // The column before and after, and the type it then has as the key
+        // and as the cursor, or None where the sync fails.
+        type Case<'a> = (
+            &'a str,
+            ArrayRef,
+            ArrayRef,
+            Option<&'a str>,
+            Option<&'a str>,
+        );
+        let cases: Vec<Case> = vec![
             (
                 "int32 to int64",
                 Arc::new(Int32Array::from(vec![9, 10])),
                 ints(),
+                Some("int64"),
                 Some("int64"),
             ),
             (
@@ -2228,11 +2239,13 @@ mod tests {
                 decimals(vec![150, 250], 10, 2),
                 decimals(vec![150, 250], 12, 2),
                 Some("decimal(12, 2)"),
+                Some("decimal(12, 2)"),
             ),
             (
                 "timestamp_tz in milliseconds",
                 Arc::new(micros),
                 Arc::new(millis),
+                Some("timestamp_tz"),
                 Some("timestamp_tz"),
             ),
             (
@@ -2240,11 +2253,21 @@ mod tests {
                 ints(),
                 Arc::new(StringArray::from(vec!["9", "10"])),
                 None,
+                None,
+            ),
+            ("int64 to float64", ints(), floats(), None, Some("float64")),
+            (
+                "int32 to float64",
+                Arc::new(Int32Array::from(vec![9, 10])),
+                floats(),
+                None,
+                Some("float64"),
             ),
             (
-                "int64 to float64",
-                ints(),
-                Arc::new(Float64Array::from(vec![9.0, 10.0])),
+                "int64 past 2^53 to float64",
+                Arc::new(Int64Array::from(vec![(1 << 53) + 1, 10])),
+                floats(),
+                None,
                 None,
             ),
             (
@@ -2252,11 +2275,13 @@ mod tests {
                 Arc::new(Float32Array::from(vec![1.1, 2.5])),
                 Arc::new(Float64Array::from(vec![1.1, 2.5])),
                 None,
+                None,
             ),
             (
                 "int64 to decimal(20, 0)",
                 ints(),
                 decimals(vec![9, 10], 20, 0),
+                None,
                 None,
             ),
             (
@@ -2264,11 +2289,13 @@ mod tests {
                 decimals(vec![150, 250], 10, 2),
                 decimals(vec![15_000, 25_000], 12, 4),
                 None,
+                None,
             ),
             (
                 "uuid to string",
                 uuids(2).1,
                 Arc::new(StringArray::from(vec!["a", "b"])),
+                None,
                 None,
             ),
         ];
@@ -2281,7 +2308,8 @@ mod tests {
         };
         let (mut got, mut want) = (Vec::new(), Vec::new());
         for (role, column, other) in [("key", "k", "c"), ("cursor", "c", "k")] {
-            for (what, first, then, takes) in &cases {
+            for (what, first, then, as_key, as_cursor) in &cases {
+                let takes = if role == "key" { as_key } else { as_cursor };
                 for restored in [false, true] {
                     let steady: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
                     let b = |a: &ArrayRef| batch_of(vec![col(column, a), col(other, &steady)]);
@@ -2384,6 +2412,85 @@ mod tests {
             .unwrap();
         let v = n.batch.schema().field_with_name("v").unwrap().clone();
         assert_eq!(v.data_type(), &DataType::Utf8);
+    }
+
+    // Until a barrier establishes the stream's schema, raw rows' types are
+    // still inferred, and a key or cursor takes any widening: its type is
+    // what the first schema's rows give, on every retry of the read. Once
+    // established, by a barrier or a restore, the change stops the stream,
+    // but a cursor's integer to a float.
+    #[test]
+    fn a_key_or_cursor_widens_as_its_first_schema_is_inferred() {
+        let cases = [
+            (
+                "key int then text",
+                r#"{"id": "A12", "at": 6}"#,
+                "id",
+                "string",
+            ),
+            (
+                "cursor int then float",
+                r#"{"id": 2, "at": 6.5}"#,
+                "at",
+                "float64",
+            ),
+            (
+                "cursor int then text",
+                r#"{"id": 2, "at": "x"}"#,
+                "at",
+                "string",
+            ),
+        ];
+        let first = r#"{"id": 1, "at": 5}"#;
+        let (mut got, mut want) = (Vec::new(), Vec::new());
+        for (what, then, column, t) in cases {
+            for (when, sealed, restored) in [
+                ("unsealed", false, false),
+                ("sealed", true, false),
+                ("restored", true, true),
+            ] {
+                let mut s = keyed_by("id", "at");
+                let before = rows(&mut s, &[first]);
+                if sealed {
+                    s.seal();
+                }
+                if restored {
+                    s = Shaper::new(
+                        Naming::default(),
+                        "t".into(),
+                        s.identity.clone(),
+                        Policy::AllowAll,
+                        Some(before.batch.schema()),
+                        None,
+                        TypeOptions::default(),
+                    )
+                    .unwrap();
+                }
+                got.push(match s.rows([then.as_bytes()]) {
+                    Ok(n) => {
+                        let schema = n.batch.schema();
+                        let seq = schema.field_with_name("_openetl_seq").unwrap();
+                        format!(
+                            "{what}, {when}: takes {}, _openetl_seq {}",
+                            crate::logical_type(schema.field_with_name(column).unwrap()),
+                            crate::logical_type(seq),
+                        )
+                    }
+                    Err(Error::Drift(m)) if m.contains("changes how its values sort") => {
+                        format!("{what}, {when}: fails")
+                    }
+                    Err(e) => format!("{what}, {when}: fails with {e}"),
+                });
+                let seq = if column == "at" { t } else { "int64" };
+                want.push(match (when, what) {
+                    ("unsealed", _) | (_, "cursor int then float") => {
+                        format!("{what}, {when}: takes {t}, _openetl_seq {seq}")
+                    }
+                    _ => format!("{what}, {when}: fails"),
+                });
+            }
+        }
+        assert_eq!(got, want);
     }
 
     #[test]
