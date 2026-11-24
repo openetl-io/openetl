@@ -406,6 +406,15 @@ impl Stream {
                 &e,
             )
         })?;
+        if let Some(n) = plan
+            .state
+            .job
+            .as_ref()
+            .and_then(|j| j.abandoned_merges(&self.id))
+        {
+            let abandoned = crate::state::ABANDONED;
+            tracing::warn!(operator = %self.id, merges = n, "{abandoned}");
+        }
         let named = snapshots
             .into_iter()
             .map(|sn| {

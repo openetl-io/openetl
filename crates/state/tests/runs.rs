@@ -1334,8 +1334,8 @@ async fn stores_of_a_pool_take_turns_to_merge() {
 }
 
 /// A merge whose read storage fails, as for a moment, goes, rather than
-/// fail the barrier: the lane reads its inputs as before, and a later
-/// barrier merges them.
+/// fail the barrier: the lane reads its inputs as before, and a barrier two
+/// epochs later merges them.
 #[tokio::test]
 async fn a_merge_whose_storage_fails_goes_and_comes_again() {
     let bucket = Bucket::new();
@@ -1364,11 +1364,15 @@ async fn a_merge_whose_storage_fails_goes_and_comes_again() {
     let got = ls[0].barrier(5).await;
     assert!(got.is_ok(), "{:?}", got.err());
     assert_eq!(s.counts().merges, 0);
-    put(&mut ls[0], 6);
-    let all = barrier(&mut ls, 6).await;
-    assert_eq!(s.counts().merges, 1, "{:?}", s.counts());
+    let mut all = Vec::new();
+    for e in 6..=8u32 {
+        put(&mut ls[0], e);
+        all = barrier(&mut ls, e.into()).await;
+        let merged = u64::from(e == 8);
+        assert_eq!(s.counts().merges, merged, "epoch {e}: {:?}", s.counts());
+    }
     let key = b"id-2-7";
-    let mut back = open(&s, 2, 7, 1, &all).await;
+    let mut back = open(&s, 2, 9, 1, &all).await;
     let got = back[0].row(OP, &[(KeyRef::new(7, key), 10)]).await.unwrap();
     assert_eq!(got, [Some(b("e"))]);
 }
@@ -1582,4 +1586,41 @@ async fn a_lane_that_stops_asking_loses_its_place() {
         stopped.1 <= gone.1 + 4,
         "B names {stopped:?}, not as {gone:?}"
     );
+}
+
+/// A merge whose storage keeps failing isn't started again at every
+/// barrier: the lane waits longer after each failure, and after five gives
+/// up on its inputs, which the counts say, rather than read a merge's worth
+/// at each barrier for good.
+#[tokio::test]
+async fn a_merge_whose_storage_keeps_failing_backs_off() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    for e in 1..=4u32 {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            ls[0].put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+        barrier(&mut ls, e.into()).await;
+    }
+    bucket.failing.store(u64::MAX, Ordering::Relaxed);
+    for e in 5..=100u64 {
+        barrier(&mut ls, e).await;
+    }
+    let reads = u64::MAX - bucket.failing.load(Ordering::Relaxed);
+    let c = s.counts();
+    println!(
+        "reads {reads}, merges failed {}, abandoned {}",
+        c.merges_failed, c.merges_abandoned
+    );
+    assert_eq!((c.merges_failed, c.merges_abandoned), (5, 1), "{c:?}");
+    assert!(reads <= 10, "{reads} reads in 96 barriers");
 }

@@ -162,6 +162,11 @@ pub struct Counts {
     /// Merges whose outputs took their inputs' place, written or, where
     /// nothing was left, not.
     pub merges: u64,
+    /// Merges dropped because storage failed a read of theirs, and of
+    /// those, the merges after which a lane gave up on their inputs, which
+    /// merge no more in its life, as an unreadable input's run.
+    pub merges_failed: u64,
+    pub merges_abandoned: u64,
     /// Keys' and values' bytes that barriers wrote: the changes, before the
     /// format's overhead and compression.
     pub changed_bytes: u64,
@@ -205,6 +210,8 @@ impl Add for Counts {
             merge_read: self.merge_read + o.merge_read,
             disk: self.disk + o.disk,
             merges: self.merges + o.merges,
+            merges_failed: self.merges_failed + o.merges_failed,
+            merges_abandoned: self.merges_abandoned + o.merges_abandoned,
             changed_bytes: self.changed_bytes + o.changed_bytes,
             changed: by_kind(self.changed, o.changed, u64::wrapping_add),
             flushed: by_kind(self.flushed, o.flushed, u64::wrapping_add),
@@ -239,6 +246,8 @@ impl Sub for Counts {
             merge_read: self.merge_read - o.merge_read,
             disk: self.disk - o.disk,
             merges: self.merges.saturating_sub(o.merges),
+            merges_failed: self.merges_failed.saturating_sub(o.merges_failed),
+            merges_abandoned: self.merges_abandoned.saturating_sub(o.merges_abandoned),
             changed_bytes: self.changed_bytes.saturating_sub(o.changed_bytes),
             changed: by_kind(self.changed, o.changed, u64::saturating_sub),
             flushed: by_kind(self.flushed, o.flushed, u64::saturating_sub),
@@ -278,6 +287,8 @@ struct Counters {
     merge_read: (AtomicU64, AtomicU64),
     disk: (AtomicU64, AtomicU64),
     merges: AtomicU64,
+    merges_failed: AtomicU64,
+    merges_abandoned: AtomicU64,
     changed_bytes: AtomicU64,
     changed: [AtomicU64; 4],
     flushed: [AtomicU64; 4],
@@ -314,6 +325,8 @@ impl Counters {
             merge_read: r(&self.merge_read),
             disk: r(&self.disk),
             merges: l(&self.merges),
+            merges_failed: l(&self.merges_failed),
+            merges_abandoned: l(&self.merges_abandoned),
             changed_bytes: l(&self.changed_bytes),
             changed: k(&self.changed),
             flushed: k(&self.flushed),
@@ -795,6 +808,8 @@ impl RunStores {
             kept: HashSet::new(),
             stuck: HashSet::new(),
             lane: NEXT_LANE.fetch_add(1, Ordering::Relaxed),
+            failed: 0,
+            retry_at: 0,
         };
         for (_, b) in runs {
             if b.sections.is_empty() {
@@ -1362,7 +1377,17 @@ struct RunStore {
     stuck: HashSet<u64>,
     /// Its place in its merges' [`Budget`]'s line.
     lane: u64,
+    /// Merges dropped in a row because storage failed a read of theirs,
+    /// and the epoch before which the lane starts none, waiting longer
+    /// after each.
+    failed: u32,
+    retry_at: u64,
 }
+
+/// Merges dropped in a row for storage that failed, after which a lane
+/// gives up on their inputs; and the most epochs it waits between them.
+const MERGE_TRIES: u32 = 5;
+const MERGE_WAIT: u64 = 64;
 
 impl Drop for RunStore {
     fn drop(&mut self) {
@@ -2064,13 +2089,31 @@ impl RunStore {
         };
         // A merge only saves later reads, so one whose reads fail goes, of
         // any kind of section, and the lane reads its inputs as before.
-        // Storage that failed may not again: a later barrier tries again.
-        // An input that's gone or can't be read merges no more: a read that
-        // needs it meets it, and a lane that keeps versions forgets a run
-        // that's gone. A merge's own mistake fails the barrier.
+        // Storage that failed may not again: a later barrier tries again,
+        // after 2, 4, … epochs, up to MERGE_WAIT, and after MERGE_TRIES the
+        // lane gives up on those inputs, as on unreadable ones. An input
+        // that's gone or can't be read merges no more: a read that needs it
+        // meets it, and a lane that keeps versions forgets a run that's
+        // gone. A merge's own mistake fails the barrier.
         let merged = match (&mut m.task.0).await {
-            Ok(Ok(merged)) => merged,
-            Ok(Err(Error::Store(_))) => return Ok(None),
+            Ok(Ok(merged)) => {
+                self.failed = 0;
+                merged
+            }
+            Ok(Err(Error::Store(_))) => {
+                self.failed += 1;
+                add(&self.shared.counters.merges_failed, 1);
+                if self.failed >= MERGE_TRIES {
+                    let inputs: HashSet<u64> = m.inputs.iter().map(|i| i.0).collect();
+                    self.stuck.extend(inputs);
+                    self.failed = 0;
+                    add(&self.shared.counters.merges_abandoned, 1);
+                } else {
+                    let wait = (1u64 << self.failed).min(MERGE_WAIT);
+                    self.retry_at = epoch.saturating_add(wait);
+                }
+                return Ok(None);
+            }
             Ok(Err(
                 e @ (Error::Gone(_)
                 | Error::Unreadable { .. }
@@ -2133,10 +2176,14 @@ impl RunStore {
         if self.merging.is_some() {
             return;
         }
+        let lane = self.lane;
+        if epoch < self.retry_at {
+            self.shared.merging.leave(lane);
+            return;
+        }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let lane = self.lane;
         let candidates: [Vec<merge::Candidate>; 4] = std::array::from_fn(|i| {
             self.sections[i]
                 .iter()

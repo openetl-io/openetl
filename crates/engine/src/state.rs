@@ -65,6 +65,10 @@ const STATE_SHARE: u64 = 2;
 /// this much, so it doesn't write a run per batch.
 pub const MIN_EARLY: usize = 256 << 10;
 
+/// What the engine logs where an operator's lanes gave up on merging runs
+/// whose storage kept failing.
+pub const ABANDONED: &str = "storage failed reads of an operator's merges time after time, so its lanes merge those runs no more until the next attempt, and lookups ask more runs meanwhile";
+
 /// The engine's scratch: a directory of its own on local disk, and what
 /// the job may keep there.
 #[derive(Clone, Debug)]
@@ -94,6 +98,8 @@ pub struct JobState {
     disk: Option<Arc<DiskCache>>,
     /// What each operator's lanes hold in memory, by operator and lane.
     held: Mutex<HashMap<(String, usize), usize>>,
+    /// The merges each operator's lanes gave up on, as last logged.
+    abandoned: Mutex<HashMap<String, u64>>,
     /// A test's: the engine is near its memory limit whatever it holds.
     #[cfg(test)]
     pub pressed: std::sync::atomic::AtomicBool,
@@ -177,6 +183,7 @@ impl JobState {
             memory,
             disk,
             held: Mutex::new(HashMap::new()),
+            abandoned: Mutex::new(HashMap::new()),
             #[cfg(test)]
             pressed: Default::default(),
             #[cfg(test)]
@@ -276,6 +283,22 @@ impl JobState {
         self.peak
             .fetch_max(all, std::sync::atomic::Ordering::Relaxed);
         all
+    }
+
+    /// The merges `operator`'s lanes gave up on, storage having failed
+    /// their reads time after time, where that's more than when last
+    /// asked: the engine logs each rise once.
+    pub fn abandoned_merges(&self, operator: &str) -> Option<u64> {
+        let now = self.stores(operator).counts().merges_abandoned;
+        let mut seen = self
+            .abandoned
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let was = seen.entry(operator.to_owned()).or_default();
+        (now > *was).then(|| {
+            *was = now;
+            now
+        })
     }
 
     /// What the block caches of the job's operators hold: a pool's once.

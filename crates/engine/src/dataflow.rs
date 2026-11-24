@@ -2698,6 +2698,10 @@ impl Flow {
                 op.lookup = requests(now.lookup, was.lookup);
                 op.restore = requests(now.restore, was.restore);
                 op.merge_read = requests(now.merge_read, was.merge_read);
+                if let Some(n) = state.abandoned_merges(&op.operator) {
+                    let abandoned = crate::state::ABANDONED;
+                    tracing::warn!(operator = %op.operator, merges = n, "{abandoned}");
+                }
                 let disk = requests(now.disk, was.disk);
                 op.disk = disk.map(|d| DiskReads {
                     count: d.count,
