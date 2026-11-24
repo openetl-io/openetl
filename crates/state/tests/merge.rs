@@ -2,8 +2,10 @@
 //! any point of one loses nothing, and retention, deleting what no kept
 //! record names as the runner's does, never deletes what a restore reads.
 //!
-//! Each seed runs lanes of values, a set with expiry and a set kept for
-//! good through epochs with merges at every chance, and a request to
+//! Each seed runs lanes of values, a set with expiry, a set kept for good
+//! and rows put in place at a read's time, as a writer lane's versions are,
+//! which expire two reads later, through epochs with merges at every
+//! chance, and a request to
 //! storage that fails at random: a read, a put that writes nothing, or a
 //! put that writes and fails. A failure, or a record that's never written,
 //! kills the attempt; the next restores a kept record onto any number of
@@ -26,12 +28,15 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use openetl_state::runs::{Counts, RunName, named_runs};
 use openetl_state::{
     BoxFuture, Error, KeyGroupRange, KeyRef, Layer, MergeConfig, NEVER, ObjectStorage, Objects,
-    OperatorId, Result, RunConfig, RunStores, Snapshot, StateBackend,
+    OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 
 const VALUES: OperatorId = OperatorId(1);
 const IDS: OperatorId = OperatorId(2);
 const KEPT: OperatorId = OperatorId(3);
+const ROWS: OperatorId = OperatorId(4);
+/// The ids whose rows [`ROWS`] puts.
+const ROW_IDS: u32 = 120;
 const GROUPS: u32 = 8;
 const KEYS: u32 = 24;
 const EPOCHS: u64 = 60;
@@ -162,6 +167,10 @@ struct Model {
     ids: BTreeMap<(OperatorId, u32, u32), i64>,
     /// [`IDS`]'s horizon; [`KEPT`] has none.
     horizon: i64,
+    /// [`ROWS`]'s rows by group, id and time, and its horizon: the read
+    /// two before the last.
+    rows: BTreeMap<(u32, u32, i64), Bytes>,
+    rows_horizon: i64,
 }
 
 impl Model {
@@ -210,6 +219,8 @@ struct World {
     stores: RunStores,
     generation: u64,
     epoch: u64,
+    /// [`ROWS`]'s read, which moves on every few epochs.
+    read: i64,
     lanes: Vec<Layer>,
     now: Model,
     /// The kept records, oldest first.
@@ -300,6 +311,20 @@ impl World {
                 );
                 self.compared += 1;
             }
+            let ids: Vec<Vec<u8>> = (0..ROW_IDS).map(id).collect();
+            for t in [self.read, self.read - 1, self.read - 2] {
+                let slots: Vec<(KeyRef, i64)> =
+                    ids.iter().map(|i| (KeyRef::new(g, i), t)).collect();
+                let got = self.lane(g).row(ROWS, &slots).await?;
+                for (n, v) in (0..ROW_IDS).zip(got) {
+                    let want = match t > self.now.rows_horizon {
+                        true => self.now.rows.get(&(g, n, t)).cloned(),
+                        false => None,
+                    };
+                    assert_eq!(v, want, "{ctx}: row {g}/{n} at {t}");
+                    self.compared += 1;
+                }
+            }
             // An id asked for with an expiry already passed is never kept.
             for (op, n) in [(IDS, 60), (KEPT, 400)] {
                 let ids: Vec<Vec<u8>> = (0..n).map(id).collect();
@@ -356,11 +381,34 @@ impl World {
                 }
             }
         }
+        if self.rng.chance(25) {
+            self.read += 1;
+        }
+        for _ in 0..self.rng.below(30) {
+            let (g, n) = (
+                self.rng.below(GROUPS.into()) as u32,
+                self.rng.below(ROW_IDS.into()) as u32,
+            );
+            let t = match self.rng.chance(90) {
+                true => self.read,
+                false => self.read - 1,
+            };
+            let v = Bytes::from(format!("{e}:{n}:{t}"));
+            self.lane(g)
+                .put_row(ROWS, KeyRef::new(g, &id(n)), t, v.clone());
+            if t > self.now.rows_horizon {
+                self.now.rows.insert((g, n, t), v);
+            }
+        }
         let horizon = (e as i64) * 10;
+        let rows_horizon = (self.read - 2).max(self.now.rows_horizon);
         for l in &mut self.lanes {
             l.expire(IDS, horizon);
+            l.expire(ROWS, rows_horizon);
         }
         self.now.horizon = horizon;
+        self.now.rows_horizon = rows_horizon;
+        self.now.rows.retain(|k, _| k.2 > rows_horizon);
         let mut snapshots = Vec::new();
         for l in &mut self.lanes {
             snapshots.extend(l.barrier(e).await?);
@@ -412,6 +460,7 @@ async fn run(seed: u64) -> (Counts, World) {
         stores,
         generation: 0,
         epoch: 1,
+        read: 10,
         lanes: Vec::new(),
         now: Model::default(),
         records: Vec::new(),
@@ -454,6 +503,11 @@ fn seeds() -> Vec<u64> {
 fn a_kill_at_any_point_of_a_merge_loses_nothing() {
     let (mut merges, mut written, mut kills, mut failed, mut pruned, mut compared) =
         (0, 0, 0, 0, 0, 0);
+    let rows = SectionKind::ALL
+        .iter()
+        .position(|k| *k == SectionKind::Rows)
+        .unwrap();
+    let mut rows_merged = 0;
     for seed in seeds() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -461,6 +515,7 @@ fn a_kill_at_any_point_of_a_merge_loses_nothing() {
         let (c, w) = rt.block_on(run(seed));
         merges += c.merges;
         written += c.merge_write.count;
+        rows_merged += u64::from(c.merged[rows] > 0);
         kills += w.kills;
         failed += w.bucket.failed.load(Ordering::Relaxed);
         pruned += w.pruned;
@@ -468,8 +523,9 @@ fn a_kill_at_any_point_of_a_merge_loses_nothing() {
     }
     let n = seeds().len() as u64;
     println!(
-        "{n} seeds: {merges} merges, {written} written, {kills} kills, {failed} failed requests, {pruned} runs pruned, {compared} values compared"
+        "{n} seeds: {merges} merges, {written} written, of rows in {rows_merged} seeds, {kills} kills, {failed} failed requests, {pruned} runs pruned, {compared} values compared"
     );
+    assert!(rows_merged >= n / 2, "rows merged in {rows_merged} seeds");
     assert!(merges >= 5 * n, "{merges} merges");
     assert!(written >= 3 * n, "{written} merges written");
     assert!(kills >= n, "{kills} kills");

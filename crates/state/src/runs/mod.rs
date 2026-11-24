@@ -659,6 +659,7 @@ impl RunStores {
             horizons,
             merging: None,
             kept: HashSet::new(),
+            stuck: HashSet::new(),
         };
         for (_, b) in runs {
             if b.sections.is_empty() {
@@ -786,6 +787,15 @@ struct Sec {
 impl Sec {
     fn counts_for(&self, group: u16) -> bool {
         self.handle.groups.contains(group.into())
+    }
+
+    /// Whether it may hold a row at `time`, by the least and greatest time
+    /// it holds; any key of another kind, with no time.
+    fn may_hold_at(&self, time: Option<i64>) -> bool {
+        match (time, self.handle.times) {
+            (Some(t), Some((lo, hi))) => lo <= t && t <= hi,
+            _ => true,
+        }
     }
 
     fn id(&self) -> SecId {
@@ -1118,6 +1128,9 @@ struct RunStore {
     /// The runs of early flushes of a pending set, which a discard of their
     /// epoch leaves.
     kept: HashSet<u64>,
+    /// Runs a merge couldn't read, gone or unreadable: they merge no more,
+    /// and the reads that need them meet them as they would have.
+    stuck: HashSet<u64>,
 }
 
 /// A key a lookup asks for, and how far down its sections it got.
@@ -1125,6 +1138,8 @@ struct Ask {
     at: usize,
     kind: SectionKind,
     group: u16,
+    /// A row's time.
+    time: Option<i64>,
     hash: u64,
     next: usize,
 }
@@ -1267,10 +1282,15 @@ impl RunStore {
             };
             if self.range.contains(group.into()) {
                 let hash = filter::hash(layout::filtered(k));
+                let time = match kind {
+                    SectionKind::Rows => layout::parse_row(k).map(|r| r.1),
+                    _ => None,
+                };
                 asks.push(Ask {
                     at,
                     kind,
                     group,
+                    time,
                     hash,
                     next: 0,
                 });
@@ -1281,7 +1301,7 @@ impl RunStore {
             secs.extend(
                 self.sections[a.kind.index()]
                     .iter()
-                    .filter(|s| s.counts_for(a.group)),
+                    .filter(|s| s.counts_for(a.group) && s.may_hold_at(a.time)),
             );
         }
         let need = self.unopened(secs.into_iter());
@@ -1293,7 +1313,7 @@ impl RunStore {
                 let secs = &self.sections[a.kind.index()];
                 while let Some(s) = secs.get(a.next) {
                     a.next += 1;
-                    if !s.counts_for(a.group) {
+                    if !s.counts_for(a.group) || !s.may_hold_at(a.time) {
                         continue;
                     }
                     let open = s.run.section(a.kind)?;
@@ -1798,7 +1818,17 @@ impl RunStore {
             return Ok(None);
         };
         let merged = match (&mut m.task.0).await {
-            Ok(r) => r?,
+            Ok(Ok(merged)) => merged,
+            // A merge that can't read an input goes, and the input's run
+            // merges no more: a read that needs it meets it, and a lane
+            // that keeps versions forgets a run that's gone.
+            Ok(Err(Error::Gone(run) | Error::Unreadable { run, .. })) => {
+                if let Some(r) = self.runs.iter().find(|r| r.name == run) {
+                    self.stuck.insert(r.id);
+                }
+                return Ok(None);
+            }
+            Ok(Err(e)) => return Err(e),
             Err(e) => return Err(Error::Store(format!("a merge: {e}"))),
         };
         let kind = m.kind;
@@ -1849,6 +1879,7 @@ impl RunStore {
                     stored: s.handle.stored_bytes,
                     raw: s.handle.raw_bytes,
                     times: s.handle.times,
+                    stuck: self.stuck.contains(&s.run.id),
                 })
                 .collect()
         });
@@ -2013,6 +2044,7 @@ impl RunStore {
         self.drop_values();
         let read: HashSet<u64> = self.sections.iter().flatten().map(|s| s.run.id).collect();
         self.runs.retain(|r| read.contains(&r.id));
+        self.stuck.retain(|id| read.contains(id));
         let unopened = self.runs.iter().filter(|r| r.open.get().is_none()).count();
         self.unopened.store(unopened, Ordering::Relaxed);
     }

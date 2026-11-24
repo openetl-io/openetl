@@ -16,8 +16,8 @@ use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
 use openetl_state::runs::{Counts, RunName, named_runs, runs};
 use openetl_state::{
-    BoxFuture, Error, KeyGroupRange, KeyRef, LAYOUT, Layer, NEVER, ObjectStorage, Objects,
-    OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
+    BoxFuture, Error, KeyGroupRange, KeyRef, LAYOUT, Layer, MergeConfig, NEVER, ObjectStorage,
+    Objects, OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 
 const OP: OperatorId = OperatorId(1);
@@ -641,6 +641,71 @@ async fn a_put_row_reads_back_by_its_key() {
         ls[0].row(OP, &slots[..2]).await.unwrap(),
         vec![None, Some(b("c"))]
     );
+}
+
+/// A read's rows put over many epochs, as a writer lane's versions are,
+/// merge by size: the runs named, and the filters a lookup of an id none
+/// holds asks, stay few however many epochs the read had. A lookup at
+/// another read's time asks none of them, a restore onto other lanes reads
+/// every row, and once the horizon passes the read, nothing is named.
+#[tokio::test]
+async fn a_reads_rows_over_many_epochs_merge() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let id = |n: u32| format!("id-{n:06}").into_bytes();
+    let at = |n: u32| n * 7 % GROUPS;
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let mut record = Vec::new();
+    for e in 1..=64u32 {
+        for n in e * 200..(e + 1) * 200 {
+            ls[0].put_row(OP, KeyRef::new(at(n), &id(n)), 10, b(&format!("e{n}")));
+        }
+        record = barrier(&mut ls, e.into()).await;
+    }
+    let named = runs(&record[0]).unwrap().len();
+    assert!(named <= 12, "{named} runs named after 64 epochs");
+    assert!(s.counts().merges >= 10, "{:?}", s.counts());
+
+    let ids: Vec<Vec<u8>> = (0..1000).map(|n| id(1_000_000 + n)).collect();
+    let lookup = |time: i64| -> Vec<(KeyRef, i64)> {
+        ids.iter()
+            .enumerate()
+            .map(|(n, i)| (KeyRef::new(at(n as u32), i), time))
+            .collect()
+    };
+    let before = s.counts();
+    let got = ls[0].row(OP, &lookup(10)).await.unwrap();
+    assert!(got.iter().all(Option::is_none));
+    let asked = s.counts() - before;
+    println!(
+        "64 epochs: {named} runs named, {} merges, {} filters asked by 1000 lookups",
+        s.counts().merges,
+        asked.filtered
+    );
+    assert!(asked.filtered <= 12 * 1000, "{asked:?}");
+    let before = s.counts();
+    ls[0].row(OP, &lookup(20)).await.unwrap();
+    assert_eq!((s.counts() - before).filtered, 0, "another read's lookups");
+
+    let mut back = open(&s, 2, 65, 3, &record).await;
+    for n in 200..65 * 200 {
+        let key = id(n);
+        let slot = [(KeyRef::new(at(n), &key), 10)];
+        let got = lane(&mut back, at(n)).row(OP, &slot).await.unwrap();
+        assert_eq!(got, [Some(b(&format!("e{n}")))], "row {n}");
+    }
+    for l in &mut back {
+        l.expire(OP, 10);
+    }
+    let gone = barrier(&mut back, 65).await;
+    assert!(gone.iter().all(|s| runs(s).unwrap().is_empty()));
 }
 
 /// A store forgets a run its snapshots name only before it reads from it,

@@ -864,10 +864,12 @@ async fn a_reads_versions_go_to_runs_under_the_jobs_memory() {
 /// of them, `MEMORY` the job's memory and `SCRATCH` its scratch, in bytes,
 /// none by default, and `READS=1` for the first read alone. `CHANGED=k`
 /// makes each read after the first give `k` rows spread over the table, each
-/// changed, rather than all of them again, and `PENDING` sets the job's
-/// pending bytes, as tests do. Each read prints its time, the runs its
-/// record names and their bytes, and its storage requests. A measure, not a
-/// check:
+/// changed, rather than all of them again, `PENDING` sets the job's
+/// pending bytes, as tests do, and `EPOCHS=e` cuts each read into `e`
+/// epochs of about as many rows. Each read prints its time, the runs its
+/// record names and their bytes, and its storage requests: the lookups'
+/// filter probes, the blocks they read and those that held nothing. A
+/// measure, not a check:
 /// `cargo test -p openetl-engine first_read_times -- --ignored --nocapture`.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
@@ -896,6 +898,11 @@ async fn first_read_times() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let pending: Option<u64> = std::env::var("PENDING").ok().and_then(|v| v.parse().ok());
+    let epochs: u64 = std::env::var("EPOCHS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let modes = match std::env::var("VERSIONS").as_deref() {
         Ok("on") => vec![true],
         Ok("off") => vec![false],
@@ -906,6 +913,7 @@ async fn first_read_times() {
         let mut from = Restored::default();
         for sync in 1..=reads {
             let mut req = users(dir.path(), sync, sync as i64 * 1000, &from, 1);
+            req.first_epoch = 1 + (sync - 1) * epochs;
             req.state_pending_bytes = pending;
             if memory > 0 || scratch > 0 {
                 req.limits = Some(openetl_proto::engine::v1::Limits {
@@ -938,18 +946,32 @@ async fn first_read_times() {
             let plan = Arc::new(Plan::from_request(req).unwrap());
             let mut h = start_plan(plan.clone());
             let mut ins = std::mem::take(&mut h.ins);
+            let first = 1 + (sync - 1) * epochs;
+            // The epochs' events, taken as they come: more than the
+            // harness's channel holds would hold up the job.
+            let (closed, none) = tokio::sync::mpsc::channel(1);
+            drop(closed);
+            let mut events = std::mem::replace(&mut h.events, none);
+            let readies = tokio::spawn(async move { ready(&mut events).await });
             let feed = tokio::spawn(async move {
                 let w = &mut ins[0];
-                for p in pages {
+                let per = pages.len().div_ceil(epochs as usize).max(1);
+                let mut epoch = first;
+                for (i, p) in pages.into_iter().enumerate() {
                     put(w, FrameKind::Rows, 0, p).await;
+                    if (i + 1) % per == 0 && epoch + 1 < first + epochs {
+                        put(w, FrameKind::Barrier, 0, epoch_barrier(sync, epoch)).await;
+                        epoch += 1;
+                    }
                 }
-                put(w, FrameKind::Barrier, 0, epoch_barrier(sync, sync)).await;
+                put(w, FrameKind::Barrier, 0, epoch_barrier(sync, epoch)).await;
                 put(w, FrameKind::EndOfStream, 0, vec![]).await;
                 w.shutdown().await.unwrap();
             });
-            let (outs, ready) = h.finish().await;
+            let (outs, _) = h.finish().await;
             feed.await.unwrap();
             let took = started.elapsed();
+            let last = readies.await.unwrap().pop().unwrap();
             assert_eq!(written(&outs).len(), given);
             fn size(p: &Path) -> u64 {
                 std::fs::read_dir(p).map_or(0, |d| {
@@ -962,14 +984,14 @@ async fn first_read_times() {
                         .sum()
                 })
             }
-            let named: u64 = ready[0]
+            let named: u64 = last
                 .snapshots
                 .iter()
                 .flat_map(|s| &s.runs)
                 .map(|r| std::fs::metadata(dir.path().join("state").join(r)).map_or(0, |m| m.len()))
                 .sum();
-            let runs: usize = ready[0].snapshots.iter().map(|s| s.runs.len()).sum();
-            let carried: usize = ready[0]
+            let runs: usize = last.snapshots.iter().map(|s| s.runs.len()).sum();
+            let carried: usize = last
                 .snapshots
                 .iter()
                 .map(|s| s.data.len() + s.pending.len())
@@ -979,9 +1001,18 @@ async fn first_read_times() {
                 size(&dir.path().join("state"))
             );
             if let Some(j) = &plan.state.job {
-                eprintln!("counts: {:?}", j.stores(OP).counts());
+                let c = j.stores(OP).counts();
+                eprintln!(
+                    "filter probes {}, blocks read {} ({} cached, {} held nothing), merges {}",
+                    c.filtered,
+                    c.hits + c.false_positives + c.cached,
+                    c.cached,
+                    c.false_positives,
+                    c.merges
+                );
+                eprintln!("counts: {c:?}");
             }
-            from = Restored::of(&ready[0]);
+            from = Restored::of(&last);
         }
     }
 }
