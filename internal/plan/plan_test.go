@@ -148,7 +148,7 @@ func TestVolatileColumnsNotInTheCatalogWarn(t *testing.T) {
 // Two changes of a row inside one unit of a coarse cursor get one record ID,
 // so the plan warns where the apply skips one as a repeat, or a merge may.
 func TestCursorWarning(t *testing.T) {
-	const reverts = "and the latest version in the table is B"
+	const reverts = "a row that changes back within one cursor value to a version a read already gave keeps that version's _openetl_id, so the apply skips it, and the table ends with the version before"
 	orders := func(cursor string) string {
 		return `{"source": {"streams": [{"name": "orders", "cursor": "` + cursor + `"}]}}`
 	}

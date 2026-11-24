@@ -306,6 +306,33 @@ func TestASecondVersionAtOneCursorValueLands(t *testing.T) {
 	}
 }
 
+// A row that changes back within one cursor value to a version a read
+// already gave keeps that version's ID, so the apply skips it, and the
+// table ends with the version before: v1, v2, v3, then v2 again, ends at
+// v3.
+func TestAChangeBackToAnEarlierVersionAtOneCursorValueIsSkipped(t *testing.T) {
+	ctx := testContext(t)
+	p := newVersionsPipeline(t, nil, eightRows("v1"), eightRows("v2"), eightRows("v3"), eightRows("v2"))
+	for range 4 {
+		p.sync(ctx)
+	}
+	for id := range int64(8) {
+		if got := p.dest.names("users", id); !slices.Equal(got, []string{"v1", "v2", "v3"}) {
+			t.Errorf("row %d applied %q, want v1, v2 and v3, the change back to v2 skipped", id, got)
+		}
+	}
+}
+
+// eightRows are rows 0 to 7 of stream users, named name, at one cursor
+// value.
+func eightRows(name string) []string {
+	var out []string
+	for id := range 8 {
+		out = append(out, fmt.Sprintf(`{"id": %d, "name": %q, "at": "2024-05-01"}`, id, name))
+	}
+	return out
+}
+
 // A row read again whose volatile columns alone changed, such as the time
 // the source fetched it, lands once.
 func TestAVolatileColumnDoesntMakeAVersion(t *testing.T) {

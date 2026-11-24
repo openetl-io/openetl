@@ -633,8 +633,9 @@ func keepsVersions(read apiv1.SyncMode, keyed bool, cursor string, dedupe destin
 // inside one such unit give it one cursor value, and so one _openetl_id.
 // Where the stream's writer lanes keep the versions of its records
 // (versions), the second gets an ID of its own, but a row that changes back
-// within the unit doesn't: its first version holds the ID, so the apply
-// skips the change back, and the table ends with the change between. Where
+// within the unit to a version a read already gave doesn't: that version
+// holds its ID, so the apply skips the change back, and the table ends
+// with the version before it. Where
 // they don't, once a read has written the first, the apply skips the second
 // as a repeat. Empty means no warning, as for a cursor the catalog gives no
 // type.
@@ -649,8 +650,8 @@ func cursorWarning(read apiv1.SyncMode, keyed bool, dedupe destination.Dedupe, v
 	const finer = "use a cursor that every update changes, at a finer precision, such as a microsecond timestamp, a row version or a sequence"
 	if versions {
 		return fmt.Sprintf("its cursor %q is %s, so two changes of a row can have one cursor value: "+
-			"OpenETL tells the versions apart by their values, but a row that changes back within one cursor value, from A to B and back to A, "+
-			"keeps A's _openetl_id, so the apply skips the change back, and the latest version in the table is B; "+finer, cursor, columns[i].GetType())
+			"OpenETL tells the versions apart by their values, but a row that changes back within one cursor value to a version a read already gave "+
+			"keeps that version's _openetl_id, so the apply skips it, and the table ends with the version before; "+finer, cursor, columns[i].GetType())
 	}
 	return fmt.Sprintf("its cursor %q is %s, so two changes of a row can have one cursor value, and then one _openetl_id: "+
 		"once a read has written the first, the apply skips the second as a repeat, and the table keeps the first until a change moves the cursor; "+
