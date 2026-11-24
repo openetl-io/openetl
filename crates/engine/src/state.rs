@@ -315,20 +315,44 @@ impl Drop for LaneState {
 
 /// The directory below the state URL that holds an operator's runs: its ID,
 /// where that's only letters, digits, `-` and `_`, and otherwise `x.` and
-/// the ID's bytes in hex, which no such ID can be.
+/// the ID's bytes in hex, which no such ID can be. Where that's longer than
+/// [`MAX_DIR`], it's `h.`, the ID's first [`DIR_PREFIX`] bytes with any
+/// other than those as `_`, `.` and a 128-bit hash of the ID in hex: two
+/// dots, which neither of the others has.
 pub fn dir(operator: &str) -> String {
     let plain = !operator.is_empty()
         && operator
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    match plain {
+    let named = match plain {
         true => operator.to_owned(),
         false => {
             let hex: String = operator.bytes().map(|b| format!("{b:02x}")).collect();
             format!("x.{hex}")
         }
+    };
+    if named.len() <= MAX_DIR {
+        return named;
     }
+    let readable: String = operator
+        .bytes()
+        .take(DIR_PREFIX)
+        .map(
+            |b| match b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
+                true => char::from(b),
+                false => '_',
+            },
+        )
+        .collect();
+    let hash = twox_hash::XxHash3_128::oneshot(operator.as_bytes());
+    format!("h.{readable}.{hash:032x}")
 }
+
+/// The longest directory name [`dir`] gives as the ID or its hex: file
+/// systems refuse a name over 255 bytes.
+const MAX_DIR: usize = 255;
+/// The bytes of a longer ID that its directory's name keeps.
+const DIR_PREFIX: usize = 64;
 
 /// The record's name for a lane's snapshot of `operator`, with the runs it
 /// names below the state URL.
@@ -540,5 +564,50 @@ mod tests {
         assert_eq!(dir("a/b"), "x.612f62");
         assert_eq!(dir("x.61"), "x.782e3631");
         assert_eq!(dir(""), "x.");
+        // The longest ID whose hex fits keeps it; a byte more doesn't.
+        let fits = format!("versions.{}", "s".repeat(117));
+        assert_eq!(dir(&fits).len(), 254);
+        assert!(dir(&fits).starts_with("x.76657273696f6e73"));
+        assert!(dir(&format!("{fits}s")).starts_with("h.versions_sss"));
+    }
+
+    /// A long ID's directory is bounded, readable, and its own: IDs that
+    /// share their first bytes get others, and none is another form's.
+    #[test]
+    fn a_long_ids_directory_is_bounded_and_its_own() {
+        let long = |tail: &str| format!("versions.public.{}{tail}", "t".repeat(200));
+        let (a, b) = (dir(&long("a")), dir(&long("b")));
+        assert_ne!(a, b);
+        for d in [&a, &b] {
+            assert!(d.len() <= MAX_DIR, "{d}");
+            assert!(d.starts_with("h.versions_public_ttt"), "{d}");
+            assert_eq!(d.matches('.').count(), 2, "{d}");
+        }
+        let plain = "w".repeat(300);
+        assert!(dir(&plain).starts_with("h.www") && dir(&plain).len() <= MAX_DIR);
+        // A run under it is written and read back on a file system.
+        let tmp = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", tmp.path().display());
+        let state = JobState::open(&url, false, 1, 0, 16, Some(0), None).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            use openetl_state::{KeyRef, Layer, OperatorId};
+            let stores = state.stores(&long("a"));
+            let range = KeyGroupRange::new(0, 15);
+            let mut lane = Layer::open(&stores, 1, 1, range, &[]).await.unwrap();
+            lane.put_row(
+                OperatorId(0),
+                KeyRef::new(3, b"id"),
+                7,
+                Bytes::from_static(b"e"),
+            );
+            let record = lane.barrier(1).await.unwrap();
+            let mut back = Layer::open(&stores, 2, 2, range, &record).await.unwrap();
+            let slot = [(KeyRef::new(3, b"id"), 7)];
+            let got = back.row(OperatorId(0), &slot).await.unwrap();
+            assert_eq!(got, [Some(Bytes::from_static(b"e"))]);
+        });
     }
 }

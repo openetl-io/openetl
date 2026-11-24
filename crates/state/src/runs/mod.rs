@@ -333,7 +333,7 @@ pub trait Objects: Send + Sync {
     fn put_new<'a>(&'a self, name: &'a str, data: Bytes) -> BoxFuture<'a, Result<()>>;
 
     /// Bytes `range` of `name`, all of them. A missing `name` is
-    /// [`Error::Corrupt`]: only a snapshot names a run to read.
+    /// [`Error::Gone`]: only a snapshot names a run to read.
     fn get_range<'a>(&'a self, name: &'a str, range: Range<u64>) -> BoxFuture<'a, Result<Bytes>>;
 }
 
