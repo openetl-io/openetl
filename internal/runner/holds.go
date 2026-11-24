@@ -64,9 +64,10 @@ type Release struct {
 	// A column hold's values go to a new version of the column, col__v2,
 	// and the column keeps the type the destination has.
 	NewVersion bool
-	// A release being patched in that a person discarded. Where the stream
-	// holds, it is a release, and the replay that took it goes on; a job in
-	// which the stream doesn't hold takes it as a discard of that replay.
+	// A release that a person discarded once a run had taken it. Where the
+	// stream holds, it is a release, and the replay that took it goes on; a
+	// job in which the stream doesn't hold takes it as a discard of that
+	// replay, or of its hold if no replay took it.
 	Ends bool
 }
 

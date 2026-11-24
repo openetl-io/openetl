@@ -171,10 +171,10 @@ func (e *holdsEnv) holds(t *testing.T) map[string]*apiv1.Hold {
 	return out
 }
 
-// taken are the releases a run of the pipeline gets.
+// taken are the releases a run of the pipeline takes.
 func (e *holdsEnv) taken(t *testing.T) []*dataplanev1.HoldRelease {
 	t.Helper()
-	spec, err := e.runner.GetSyncSpec(t.Context(), connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
+	spec, err := e.runner.GetSyncSpec(t.Context(), connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1", TakeReleases: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,6 +463,69 @@ func TestADiscardOfAReleaseInProgressFollowsTheRelease(t *testing.T) {
 	ends("once discarded again")
 }
 
+// A discard takes the place of a release that no run has taken, and ends
+// one a run has taken, though the run hasn't recorded it being patched in
+// yet: the answer says which, by the release's row when the discard is
+// made. A fetch of the spec that isn't an attempt's takes nothing. A
+// release made again clears the discard of a taken release.
+func TestADiscardOfATakenReleaseEndsIt(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	since := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}
+	held := func(col string) *dataplanev1.CheckpointHold {
+		return &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "a view depends on it", Since: since, StartTime: timestamppb.Now()}
+	}
+	release := func(col string) {
+		t.Helper()
+		if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: col})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	discard := func(col string) *apiv1.Hold {
+		t.Helper()
+		res, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: col}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Msg.GetHold()
+	}
+	e.report(t, 1, 2, held("amount"), held("price"))
+	release("amount")
+	spec, err := e.runner.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(spec.Msg.GetReleases()); n != 0 {
+		t.Errorf("a fetch that takes no releases got %d", n)
+	}
+	// No run has taken it: the discard takes its place.
+	if h := discard("amount"); !h.GetPending() || h.GetReleasing() {
+		t.Errorf("discarded %v, a release no run has taken", h)
+	}
+	if got := e.releases(t); len(got) != 1 || got[0] != "orders.amount discard" {
+		t.Errorf("releases %v", got)
+	}
+
+	// A run takes price's release, and hasn't recorded it yet.
+	release("price")
+	if got := e.releases(t); len(got) != 2 || got[1] != "orders.price" {
+		t.Fatalf("releases %v", got)
+	}
+	if h := discard("price"); !h.GetReleasing() || h.GetPending() {
+		t.Errorf("discarded %v, a release a run has taken", h)
+	}
+	if got := e.releases(t); len(got) != 2 || got[1] != "orders.price ends" {
+		t.Errorf("releases %v, once a taken release is discarded", got)
+	}
+	if h := e.holds(t)["price"]; !h.GetPending() {
+		t.Errorf("price %v", h)
+	}
+	release("price")
+	if got := e.releases(t); len(got) != 2 || got[1] != "orders.price" {
+		t.Errorf("releases %v, once the taken release is made again", got)
+	}
+}
+
 // A discarded column hold drops the column's values until it's released: a
 // release replaces the discard the run took, and a run takes it.
 func TestADiscardedColumnHoldIsReleasedToEndIt(t *testing.T) {
@@ -628,11 +691,7 @@ func TestARefusedReleaseIsntSentAgain(t *testing.T) {
 
 	released := func() []*dataplanev1.HoldRelease {
 		t.Helper()
-		spec, err := e.runner.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return spec.Msg.GetReleases()
+		return e.taken(t)
 	}
 	if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"})); err != nil {
 		t.Fatal(err)

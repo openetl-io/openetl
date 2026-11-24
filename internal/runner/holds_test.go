@@ -561,6 +561,32 @@ func TestADiscardOfAReleaseInProgressEndsWithIt(t *testing.T) {
 	}
 }
 
+// A release that a person discarded once a run had taken it, though no
+// run recorded patching it in, is a release where the stream holds, and a
+// discard of its hold where the stream doesn't.
+func TestADiscardOfATakenReleaseGoesOnWhereTheStreamHolds(t *testing.T) {
+	w := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+	j := &Job{
+		HeldURL: "file:///held", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"), Destination: holdingDest{},
+		Streams:  []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}},
+		Releases: []Release{{ID: "r1", Stream: "s", Column: "y", Since: w, Ends: true}},
+	}
+	restored := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{{Column: "y", Since: w, Reason: "a view depends on it"}},
+	}}}}
+	holds, _, err := j.startHolds(t.Context(), restored, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := holds["s"]; h.Replay == nil || !h.Replay.Took("y", "r1") || len(h.Columns) != 0 {
+		t.Errorf("holds %+v, where the stream holds", h)
+	}
+	j.Streams = []Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}}
+	if _, _, err := j.startHolds(t.Context(), restored, nil); err != nil {
+		t.Errorf("where the stream doesn't hold: %v", err)
+	}
+}
+
 // A release in progress is named by the release it took for its whole
 // life: a column released whole that holds cells while it's patched in,
 // which the API then lists by its cells, is still ended by a discard of

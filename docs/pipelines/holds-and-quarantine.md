@@ -130,9 +130,9 @@ A stream holds values only while it meets every requirement for holds. These cha
 If the stream has held values, the sync fails with `SCHEMA_DRIFT`. OpenETL keeps the holds and their held values. The error names the stream, what it holds and why it does not hold now. Choose one of these ways on:
 
 - Undo the change, release the holds, and make the change again after the release.
-- Discard the holds with `openetl holds discard PIPELINE STREAM COLUMN`. The next sync then makes the change, and the held values are dropped. A discard also replaces a release that waits for the next sync.
+- Discard the holds with `openetl holds discard PIPELINE STREAM COLUMN`. The next sync then makes the change, and the held values are dropped. A discard also replaces a release that no sync has taken yet.
 
-A release that is being patched in (**Releasing**) can finish only while the stream holds. If you cannot undo the change, discard the release with `openetl holds discard PIPELINE STREAM COLUMN`. If the stream does not hold in the next sync, that sync drops the values that the release has not patched in. While the stream holds, the release goes on, and the discard applies only if the stream stops holding before the release ends. If the release ends first, the discard drops nothing, and values that the release leaves held stay held.
+A release that a sync has taken can finish only while the stream holds. This applies when it is being patched in (**Releasing**), and also before the sync patches anything in. If you cannot undo the change, discard the release with `openetl holds discard PIPELINE STREAM COLUMN`. If the stream does not hold in the next sync, that sync drops the values that the release has not patched in. While the stream holds, the release goes on, and the discard applies only if the stream stops holding before the release ends. If the release ends first, the discard drops nothing, and values that the release leaves held stay held.
 
 A paused stream keeps its holds. No destination patches `overwrite`, so a change to `overwrite` stops the stream holding. Unless the stream sets how it holds, which is then a problem in the plan, the change does not fail the sync. Each sync reads the whole stream again and replaces the table, so the stream's holds end, and their held values are not patched in.
 

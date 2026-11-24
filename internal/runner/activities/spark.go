@@ -79,7 +79,7 @@ func (a *Spark) run(ctx context.Context, in contract.SparkInput, log *slog.Logge
 	if a.Storage == "" {
 		return res, errs.New(errs.ConfigInvalid, "a Spark step needs the data plane's object store, and this runner has none")
 	}
-	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version)
+	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version, false)
 	if err != nil {
 		return res, err
 	}

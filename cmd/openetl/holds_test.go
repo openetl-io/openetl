@@ -107,13 +107,13 @@ orders.note (cells)
 		len(f.discarded) != 1 || f.discarded[0] != "workspaces/default/pipelines/p orders.note" {
 		t.Errorf("released %v, discarded %v", f.released, f.discarded)
 	}
-	// A release in progress, discarded, goes on unless the stream stops
+	// A release a run has taken, discarded, goes on unless the stream stops
 	// holding, and what it leaves held stays held.
 	out.Reset()
 	if err := run(t.Context(), []string{"holds", "discard", "--api-url", srv.URL, "p", "orders", "price"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "discarded the release of orders.price of workspaces/default/pipelines/p in progress; a run in which the stream doesn't hold") ||
+	if !strings.Contains(out.String(), "discarded the release of orders.price of workspaces/default/pipelines/p, which a run has taken; a run in which the stream doesn't hold") ||
 		!strings.Contains(out.String(), "the values it leaves held stay held") {
 		t.Errorf("printed %q", out.String())
 	}
