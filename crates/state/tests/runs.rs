@@ -50,6 +50,8 @@ struct Bucket {
     memory: Arc<InMemory>,
     storage: ObjectStorage,
     puts: AtomicU8,
+    /// Reads from now on that fail, as storage that's down a moment does.
+    failing: std::sync::atomic::AtomicU64,
 }
 
 impl Bucket {
@@ -60,6 +62,7 @@ impl Bucket {
             memory,
             storage,
             puts: AtomicU8::new(Puts::Work as u8),
+            failing: Default::default(),
         })
     }
 
@@ -112,7 +115,14 @@ impl Objects for Bucket {
     }
 
     fn get_range<'a>(&'a self, name: &'a str, range: Range<u64>) -> BoxFuture<'a, Result<Bytes>> {
-        self.storage.get_range(name, range)
+        let fails = self
+            .failing
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .is_ok();
+        match fails {
+            true => Box::pin(async { Err(Error::Store("a read that failed".into())) }),
+            false => self.storage.get_range(name, range),
+        }
     }
 }
 
@@ -1321,4 +1331,44 @@ async fn stores_of_a_pool_take_turns_to_merge() {
     assert!(most - least <= least / 2, "runs named by store {named:?}");
     let (most, least) = (merges.iter().max().unwrap(), merges.iter().min().unwrap());
     assert!(least * 2 >= *most, "merges by store {merges:?}");
+}
+
+/// A merge whose read storage fails, as for a moment, goes, rather than
+/// fail the barrier: the lane reads its inputs as before, and a later
+/// barrier merges them.
+#[tokio::test]
+async fn a_merge_whose_storage_fails_goes_and_comes_again() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let put = |l: &mut Layer, e: u32| {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            l.put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+    };
+    for e in 1..=4u32 {
+        put(&mut ls[0], e);
+        barrier(&mut ls, e.into()).await;
+    }
+    // The merge the fourth barrier started reads next.
+    bucket.failing.store(1, Ordering::Relaxed);
+    put(&mut ls[0], 5);
+    let got = ls[0].barrier(5).await;
+    assert!(got.is_ok(), "{:?}", got.err());
+    assert_eq!(s.counts().merges, 0);
+    put(&mut ls[0], 6);
+    let all = barrier(&mut ls, 6).await;
+    assert_eq!(s.counts().merges, 1, "{:?}", s.counts());
+    let key = b"id-2-7";
+    let mut back = open(&s, 2, 7, 1, &all).await;
+    let got = back[0].row(OP, &[(KeyRef::new(7, key), 10)]).await.unwrap();
+    assert_eq!(got, [Some(b("e"))]);
 }

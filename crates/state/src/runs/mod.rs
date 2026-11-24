@@ -2038,19 +2038,32 @@ impl RunStore {
         let Some(mut m) = self.merging.take() else {
             return Ok(None);
         };
+        // A merge only saves later reads, so one whose reads fail goes, of
+        // any kind of section, and the lane reads its inputs as before.
+        // Storage that failed may not again: a later barrier tries again.
+        // An input that's gone or can't be read merges no more: a read that
+        // needs it meets it, and a lane that keeps versions forgets a run
+        // that's gone. A merge's own mistake fails the barrier.
         let merged = match (&mut m.task.0).await {
             Ok(Ok(merged)) => merged,
-            // A merge that can't read an input goes, and the input's run
-            // merges no more: a read that needs it meets it, and a lane
-            // that keeps versions forgets a run that's gone.
-            Ok(Err(e @ (Error::Gone(_) | Error::Unreadable { .. }))) => {
+            Ok(Err(Error::Store(_))) => return Ok(None),
+            Ok(Err(
+                e @ (Error::Gone(_)
+                | Error::Unreadable { .. }
+                | Error::Corrupt(_)
+                | Error::Snapshot(_)),
+            )) => {
                 let names = match e {
                     Error::Gone(names) => names,
                     Error::Unreadable { run, .. } => vec![run],
                     _ => Vec::new(),
                 };
-                for r in self.runs.iter().filter(|r| names.contains(&r.name)) {
-                    self.stuck.insert(r.id);
+                let inputs: HashSet<u64> = m.inputs.iter().map(|i| i.0).collect();
+                for r in &self.runs {
+                    let named = names.contains(&r.name);
+                    if named || names.is_empty() && inputs.contains(&r.id) {
+                        self.stuck.insert(r.id);
+                    }
                 }
                 return Ok(None);
             }
