@@ -18,6 +18,8 @@ A continuous pipeline restarts at a checkpoint to apply the reset. A paused pipe
 
 A reset also drops the state of each SQL [group window](../reference/sql-windows.md#group-windows) that reads a reset stream, and any state that no statement keeps now, such as a changed statement's. A reset stream also starts with no watermark. The window builds its state again only from the rows that the new read returns, so a read that starts partway through a window writes that window's row from part of its rows ([State](../reference/sql-windows.md#state)).
 
+A reset keeps the versions that OpenETL keeps of the records of a stream deduped at apply. So a reset does not fix a run of those versions that cannot be read. For that error, follow [A run of a stream's versions cannot be read](./troubleshooting.md#a-run-of-a-streams-versions-cannot-be-read).
+
 A reset does not directly delete destination data. The next write depends on the write mode:
 
 | Write mode | What a reset does |

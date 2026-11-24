@@ -46,7 +46,7 @@ pub use layer::{Layer, Memory};
 pub use layout::{LAYOUT, SectionKind};
 pub use memory::MemoryBucket;
 pub use pending::VERSION as PENDING_VERSION;
-pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, RunConfig, RunStores};
+pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, Pool, RunConfig, RunStores};
 pub use store::{BoxFuture, Change, Horizons, PendingLimit, Snapshot, Store, Stores};
 
 /// A key's group, out of the pipeline's key groups, as routing gives it.
@@ -129,6 +129,11 @@ pub enum Error {
     /// retention does, rather than unreadable.
     #[error("corrupt state: run {0}, which a snapshot names, is missing")]
     Gone(String),
+    /// A run a snapshot names is in the store, by its name, and can't be
+    /// read as the snapshot says: its bytes are damaged, or it isn't the
+    /// run named.
+    #[error("corrupt state: run {run}: {why}")]
+    Unreadable { run: String, why: String },
     #[error("store: {0}")]
     Store(String),
 }

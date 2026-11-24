@@ -432,22 +432,33 @@ impl Plan {
                     "transform.sql has a statement with state, as a group window or OVER, and the job has no state URL to keep it at",
                 ));
             }
-            (n, url) => Some(std::sync::Arc::new(crate::state::JobState::open(
-                url,
-                req.state_read_only,
-                n,
-                req.limits.as_ref().map_or(0, |l| l.memory_bytes),
-                key_groups,
-                req.state_pending_bytes,
-                req.limits
-                    .as_ref()
-                    .filter(|l| !l.scratch_dir.is_empty())
-                    .map(|l| crate::state::Scratch {
-                        dir: l.scratch_dir.clone().into(),
-                        bytes: l.scratch_bytes,
-                    })
-                    .as_ref(),
-            )?)),
+            (n, url) => {
+                let state = crate::state::JobState::open(
+                    url,
+                    req.state_read_only,
+                    n,
+                    req.limits.as_ref().map_or(0, |l| l.memory_bytes),
+                    key_groups,
+                    req.state_pending_bytes,
+                    req.limits
+                        .as_ref()
+                        .filter(|l| !l.scratch_dir.is_empty())
+                        .map(|l| crate::state::Scratch {
+                            dir: l.scratch_dir.clone().into(),
+                            bytes: l.scratch_bytes,
+                        })
+                        .as_ref(),
+                )?;
+                // The streams' versions share one pool, sized by the key
+                // groups of this engine's writer lanes, which keep them.
+                let attempt = (req.attempt_writer_lanes as usize).max(writer_lanes) as u64;
+                let first = req.first_writer_lane as u64;
+                let upto = |w: u64| (w * u64::from(key_groups)).div_ceil(attempt);
+                let groups = upto(first + writer_lanes as u64).saturating_sub(upto(first));
+                let versions = versioned.iter().map(|o| o.to_string()).collect();
+                let groups = u32::try_from(groups).unwrap_or(key_groups);
+                Some(std::sync::Arc::new(state.pooled(versions, groups)))
+            }
         };
         let sinks = match transform {
             Some(_) => &req.outputs,

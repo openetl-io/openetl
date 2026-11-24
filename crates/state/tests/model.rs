@@ -1,5 +1,6 @@
 //! The layer against a model of a few maps, over random sequences of the
-//! primitives, barriers, recorded or not, failed epochs, kills and restores
+//! primitives, rows put in place by reads as a writer lane's versions are,
+//! barriers, recorded or not, failed epochs, kills and restores
 //! of a recorded epoch onto other numbers of lanes, older attempts still
 //! writing, released versions, merges landing at any barrier, and early
 //! flushes at any point, kills between them and the barrier among them,
@@ -19,12 +20,15 @@ use object_store::memory::InMemory;
 use object_store::path::Path;
 use openetl_state::{
     DiskCache, DueRow, KeyGroupRange, KeyRef, Layer, MemoryBucket, MergeConfig, NEVER,
-    ObjectStorage, OperatorId, PendingLimit, Result, RunConfig, RunStores, Snapshot, StateBackend,
-    Stores, Timer,
+    ObjectStorage, OperatorId, PendingLimit, Result, RunConfig, RunStores, SectionKind, Snapshot,
+    StateBackend, Stores, Timer,
 };
 
 const GROUPS: u32 = 16;
 const OPS: [OperatorId; 2] = [OperatorId(3), OperatorId(u32::MAX)];
+/// An operator whose rows are put in place, one a key and time, at a read's
+/// time, as a writer lane's versions are; no other primitive takes it.
+const PUT: OperatorId = OperatorId(5);
 const KEYS: [&[u8]; 7] = [b"", b"a", b"b", b"ab", b"ba", b"\x00", b"\xff\xff"];
 const LANES: [u32; 6] = [1, 2, 3, 4, 5, 8];
 const STEPS: usize = 400;
@@ -42,6 +46,8 @@ struct Logical {
     horizons: BTreeMap<(OperatorId, u32), i64>,
     /// By operator, time, group, key length and key.
     timers: BTreeSet<(OperatorId, i64, u32, usize, Key)>,
+    /// [`PUT`]'s rows, by group, time and key.
+    put: BTreeMap<(u32, i64, Key), Bytes>,
 }
 
 impl Logical {
@@ -60,6 +66,7 @@ impl Logical {
     fn holds(&self, range: KeyGroupRange) -> bool {
         self.values.keys().any(|k| range.contains(k.1))
             || self.rows.keys().any(|k| range.contains(k.1))
+            || self.put.keys().any(|k| range.contains(k.0))
             || self.timers.iter().any(|k| range.contains(k.2))
             || self.set.iter().any(|((op, g, _), &e)| {
                 range.contains(*g) && (e == NEVER || e > self.horizon(*op, *g))
@@ -243,6 +250,9 @@ impl View<'_> {
         self.s
             .set
             .retain(|k, e| *e == NEVER || !(mine(k.0, k.1) && s.gone(k.0, k.1, *e)));
+        self.s
+            .put
+            .retain(|k, _| !(mine(PUT, k.0) && s.gone(PUT, k.0, k.1)));
     }
 }
 
@@ -382,6 +392,8 @@ struct World {
     generation: u64,
     /// The open epoch.
     epoch: u64,
+    /// The time of [`PUT`]'s read, which moves on now and then.
+    read: i64,
     lanes: Vec<Lane>,
     /// Lanes of older attempts, still writing.
     zombies: Vec<Lane>,
@@ -460,6 +472,9 @@ impl World {
     async fn step(&mut self) {
         if self.rng.chance(4) {
             return self.flush().await;
+        }
+        if self.rng.chance(12) {
+            return self.versions().await;
         }
         if self.disk.as_ref().is_some_and(|d| d.1 == Disk::Corrupted) && self.rng.chance(3) {
             return self.corrupt();
@@ -628,6 +643,76 @@ impl World {
         }
     }
 
+    /// [`PUT`]'s rows, as a writer lane's versions: a row put at the read's
+    /// time, or the read's before; a new read, which moves each key group's
+    /// horizon to the read two before; or a lookup of some slots.
+    async fn versions(&mut self) {
+        let ctx = self.ctx();
+        let all = KeyGroupRange::new(0, GROUPS - 1);
+        match self.rng.below(10) {
+            0 => {
+                self.read += 1;
+                let h = self.read - 2;
+                for l in &mut self.lanes {
+                    for g in l.range.first..=l.range.last {
+                        l.layer.expire_in(PUT, g, h);
+                    }
+                    let mut m = View {
+                        s: &mut self.now,
+                        range: l.range,
+                    };
+                    m.expire(PUT, h);
+                }
+            }
+            1..=6 => {
+                let (g, key) = self.some_key(all);
+                let time = match self.rng.chance(85) {
+                    true => self.read,
+                    false => self.read - 1,
+                };
+                let value = Bytes::from(format!("{}", self.step));
+                let lane = self.lane_of(g);
+                self.lanes[lane]
+                    .layer
+                    .put_row(PUT, KeyRef::new(g, key), time, value.clone());
+                if !self.now.gone(PUT, g, time) {
+                    self.now.put.insert((g, time, key.to_vec()), value);
+                }
+            }
+            _ => {
+                let lane = self.rng.below(self.lanes.len());
+                let range = self.lanes[lane].range;
+                let mut slots = Vec::new();
+                for _ in 0..self.rng.below(8) {
+                    let (g, key) = self.some_key(range);
+                    let time = match self.rng.below(4) {
+                        0 => self.rng.time(),
+                        n => self.read + 1 - n as i64,
+                    };
+                    slots.push((g, key, time));
+                }
+                let want: Vec<Option<Bytes>> = slots
+                    .iter()
+                    .map(|(g, k, t)| self.put_at(*g, k, *t))
+                    .collect();
+                let slots: Vec<(KeyRef, i64)> = slots
+                    .iter()
+                    .map(|(g, k, t)| (KeyRef::new(*g, k), *t))
+                    .collect();
+                let got = self.lanes[lane].layer.row(PUT, &slots).await.unwrap();
+                assert_eq!(got, want, "{ctx}: row");
+            }
+        }
+    }
+
+    /// [`PUT`]'s row of a key at a time, as the model has it.
+    fn put_at(&self, g: u32, key: &[u8], time: i64) -> Option<Bytes> {
+        match self.now.gone(PUT, g, time) {
+            true => None,
+            false => self.now.put.get(&(g, time, key.to_vec())).cloned(),
+        }
+    }
+
     /// Early flushes of some lanes' open epoch, and at times a kill
     /// before the barrier: a restore from a record sees none of it.
     async fn flush(&mut self) {
@@ -782,6 +867,20 @@ impl World {
                 let (g, key) = self.some_key(range);
                 slots.push((KeyRef::new(g, key), self.rng.time()));
             }
+            let put: Vec<((u32, i64, Key), Bytes)> = self
+                .now
+                .put
+                .iter()
+                .filter(|(k, _)| range.contains(k.0))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let at: Vec<(KeyRef, i64)> = put
+                .iter()
+                .map(|((g, t, k), _)| (KeyRef::new(*g, k), *t))
+                .collect();
+            let got = self.lanes[lane].layer.row(PUT, &at).await.unwrap();
+            let want: Vec<Option<Bytes>> = put.into_iter().map(|(_, v)| Some(v)).collect();
+            assert_eq!(got, want, "{ctx}: sweep of rows put");
             let l = &mut self.lanes[lane];
             let mut m = View {
                 s: &mut self.now,
@@ -904,6 +1003,7 @@ async fn run(
         exact,
         generation: 0,
         epoch: 1,
+        read: 0,
         lanes: Vec::new(),
         zombies: Vec::new(),
         now: Logical::default(),
@@ -975,7 +1075,11 @@ fn the_layer_matches_the_model_over_runs() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let (mut merges, mut early) = (0, 0);
+    let (mut merges, mut early, mut rows_merged) = (0, 0, 0);
+    let rows = SectionKind::ALL
+        .iter()
+        .position(|k| *k == SectionKind::Rows)
+        .unwrap();
     let mut tally = Tally::default();
     let mut by_disk: std::collections::HashMap<&str, u64> = Default::default();
     for seed in seeds() {
@@ -994,6 +1098,7 @@ fn the_layer_matches_the_model_over_runs() {
         let c = stores.counts();
         merges += c.merges;
         early += c.early.count;
+        rows_merged += u64::from(c.merged[rows] > 0);
         let mut count = |k: &'static str, n: u64| *by_disk.entry(k).or_default() += n;
         match &disk {
             None => {
@@ -1017,13 +1122,14 @@ fn the_layer_matches_the_model_over_runs() {
     let mut by_disk: Vec<_> = by_disk.into_iter().collect();
     by_disk.sort();
     println!(
-        "{} seeds over runs: {merges} merges, {early} early runs; {by_disk:?}",
+        "{} seeds over runs: {merges} merges, of rows in {rows_merged} seeds, {early} early runs; {by_disk:?}",
         seeds().len()
     );
     // A seed may merge nothing, as most of one seed's configs do.
     if std::env::var("OPENETL_STATE_SEED").is_err() && seeds().len() >= 100 {
         let n = seeds().len() as u64;
         assert!(merges >= n, "{merges} merges");
+        assert!(rows_merged >= n / 10, "rows merged in {rows_merged} seeds");
         assert!(
             tally.flushes >= n && early >= n,
             "{} early flushes, {early} runs",
