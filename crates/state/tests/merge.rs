@@ -2,10 +2,12 @@
 //! any point of one loses nothing, and retention, deleting what no kept
 //! record names as the runner's does, never deletes what a restore reads.
 //!
-//! Each seed runs lanes of values, a set with expiry, a set kept for good
-//! and rows put in place at a read's time, as a writer lane's versions are,
-//! which expire two reads later, through epochs with merges at every
-//! chance, and a request to
+//! Each seed runs lanes of values, a set with expiry, a set kept for good,
+//! and rows: on even seeds rows put in place at a read's time, as a writer
+//! lane's versions are, which expire two reads later; on odd seeds a
+//! window's rows, appended at its end's time and then taken a few at a
+//! time, whose deletes merge with them, as a group window's do. They go
+//! through epochs with merges at every chance, and a request to
 //! storage that fails at random: a read, a put that writes nothing, or a
 //! put that writes and fails. A failure, or a record that's never written,
 //! kills the attempt; the next restores a kept record onto any number of
@@ -27,14 +29,17 @@ use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
 use openetl_state::runs::{Counts, RunName, named_runs};
 use openetl_state::{
-    BoxFuture, Error, KeyGroupRange, KeyRef, Layer, MergeConfig, NEVER, ObjectStorage, Objects,
-    OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
+    BoxFuture, DueRow, Error, KeyGroupRange, KeyRef, Layer, MergeConfig, NEVER, ObjectStorage,
+    Objects, OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 
 const VALUES: OperatorId = OperatorId(1);
 const IDS: OperatorId = OperatorId(2);
 const KEPT: OperatorId = OperatorId(3);
 const ROWS: OperatorId = OperatorId(4);
+const WIN: OperatorId = OperatorId(5);
+/// A window's epochs: appending, then taking, then closed.
+const WINDOW: u32 = 12;
 /// The ids whose rows [`ROWS`] puts.
 const ROW_IDS: u32 = 120;
 const GROUPS: u32 = 8;
@@ -171,9 +176,20 @@ struct Model {
     /// two before the last.
     rows: BTreeMap<(u32, u32, i64), Bytes>,
     rows_horizon: i64,
+    /// [`WIN`]'s open window, its `n`th: its rows not taken yet, all at its
+    /// time, by group and key; every key it appended; and its epochs so far.
+    win: BTreeMap<(u32, Vec<u8>), Bytes>,
+    win_keys: BTreeSet<(u32, Vec<u8>)>,
+    win_n: i64,
+    win_epoch: u32,
 }
 
 impl Model {
+    /// [`WIN`]'s open window's time.
+    fn win_time(&self) -> i64 {
+        1000 * (self.win_n + 1)
+    }
+
     fn now(&self, op: OperatorId, at: i64) -> i64 {
         match op {
             IDS => at.max(self.horizon),
@@ -221,6 +237,8 @@ struct World {
     epoch: u64,
     /// [`ROWS`]'s read, which moves on every few epochs.
     read: i64,
+    /// Whether the seed's rows are [`WIN`]'s, not [`ROWS`]'.
+    windows: bool,
     lanes: Vec<Layer>,
     now: Model,
     /// The kept records, oldest first.
@@ -311,6 +329,22 @@ impl World {
                 );
                 self.compared += 1;
             }
+            let t = self.now.win_time();
+            let keys: Vec<(u32, Vec<u8>)> = self
+                .now
+                .win_keys
+                .iter()
+                .filter(|k| k.0 == g)
+                .cloned()
+                .collect();
+            let slots: Vec<(KeyRef, i64)> =
+                keys.iter().map(|k| (KeyRef::new(g, &k.1), t)).collect();
+            let got = self.lane(g).rows(WIN, &slots).await?;
+            for (k, v) in keys.iter().zip(got) {
+                let want: Vec<Bytes> = self.now.win.get(k).cloned().into_iter().collect();
+                assert_eq!(v, want, "{ctx}: window row {g}/{:?}", k.1);
+                self.compared += 1;
+            }
             let ids: Vec<Vec<u8>> = (0..ROW_IDS).map(id).collect();
             for t in [self.read, self.read - 1, self.read - 2] {
                 let slots: Vec<(KeyRef, i64)> =
@@ -381,10 +415,13 @@ impl World {
                 }
             }
         }
+        if self.windows {
+            self.window(e).await?;
+        }
         if self.rng.chance(25) {
             self.read += 1;
         }
-        for _ in 0..self.rng.below(30) {
+        for _ in 0..self.rng.below(30).min(u64::from(!self.windows) * 30) {
             let (g, n) = (
                 self.rng.below(GROUPS.into()) as u32,
                 self.rng.below(ROW_IDS.into()) as u32,
@@ -437,6 +474,69 @@ impl World {
     }
 }
 
+impl World {
+    /// [`WIN`]'s epoch: rows appended at its window's time, then taken a
+    /// few at a time on each lane, as the model has them, then the window
+    /// closed and the next one opened.
+    async fn window(&mut self, e: u64) -> Result<()> {
+        let t = self.now.win_time();
+        let p = self.now.win_epoch;
+        if p < WINDOW / 2 {
+            for i in 0..self.rng.below(12) {
+                let g = self.rng.below(GROUPS.into()) as u32;
+                let k = format!("w{e}-{i}").into_bytes();
+                let v = Bytes::from(format!(
+                    "{e}:{i}:{}",
+                    "x".repeat(self.rng.below(20) as usize)
+                ));
+                self.lane(g).append(WIN, KeyRef::new(g, &k), t, v.clone());
+                self.now.win.insert((g, k.clone()), v);
+                self.now.win_keys.insert((g, k));
+            }
+        } else if p < WINDOW - 1 {
+            let ctx = self.ctx();
+            for i in 0..self.lanes.len() {
+                let limit = 1 + self.rng.below(4) as usize;
+                let range = self.lanes[i].range();
+                let want: Vec<DueRow> = {
+                    let mut mine: Vec<(&(u32, Vec<u8>), &Bytes)> = self
+                        .now
+                        .win
+                        .iter()
+                        .filter(|(k, _)| range.contains(k.0))
+                        .collect();
+                    mine.sort_by_key(|(k, _)| (k.0, k.1.len(), k.1.clone()));
+                    mine.into_iter()
+                        .take(limit)
+                        .map(|((g, k), v)| DueRow {
+                            group: *g,
+                            time: t,
+                            key: Bytes::from(k.clone()),
+                            row: v.clone(),
+                        })
+                        .collect()
+                };
+                let got = self.lanes[i].take_rows(WIN, t, limit).await?;
+                assert_eq!(got, want, "{ctx}: window rows taken");
+                for r in got {
+                    self.now.win.remove(&(r.group, r.key.to_vec()));
+                }
+            }
+        } else {
+            for l in &mut self.lanes {
+                l.expire(WIN, t);
+            }
+            self.now.win.clear();
+            self.now.win_keys.clear();
+            self.now.win_n += 1;
+            self.now.win_epoch = 0;
+            return Ok(());
+        }
+        self.now.win_epoch += 1;
+        Ok(())
+    }
+}
+
 async fn run(seed: u64) -> (Counts, World) {
     let mut rng = Rng(seed);
     let bucket = Bucket::new();
@@ -461,6 +561,7 @@ async fn run(seed: u64) -> (Counts, World) {
         generation: 0,
         epoch: 1,
         read: 10,
+        windows: seed % 2 == 1,
         lanes: Vec::new(),
         now: Model::default(),
         records: Vec::new(),
@@ -507,7 +608,7 @@ fn a_kill_at_any_point_of_a_merge_loses_nothing() {
         .iter()
         .position(|k| *k == SectionKind::Rows)
         .unwrap();
-    let mut rows_merged = 0;
+    let (mut rows_merged, mut window_merged) = (0, 0);
     for seed in seeds() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
@@ -516,6 +617,7 @@ fn a_kill_at_any_point_of_a_merge_loses_nothing() {
         merges += c.merges;
         written += c.merge_write.count;
         rows_merged += u64::from(c.merged[rows] > 0);
+        window_merged += u64::from(w.windows && c.merged[rows] > 0);
         kills += w.kills;
         failed += w.bucket.failed.load(Ordering::Relaxed);
         pruned += w.pruned;
@@ -523,9 +625,13 @@ fn a_kill_at_any_point_of_a_merge_loses_nothing() {
     }
     let n = seeds().len() as u64;
     println!(
-        "{n} seeds: {merges} merges, {written} written, of rows in {rows_merged} seeds, {kills} kills, {failed} failed requests, {pruned} runs pruned, {compared} values compared"
+        "{n} seeds: {merges} merges, {written} written, of rows in {rows_merged} seeds, {window_merged} of them a window's, {kills} kills, {failed} failed requests, {pruned} runs pruned, {compared} values compared"
     );
     assert!(rows_merged >= n / 2, "rows merged in {rows_merged} seeds");
+    assert!(
+        window_merged >= n / 4,
+        "a window's rows merged in {window_merged} seeds"
+    );
     assert!(merges >= 5 * n, "{merges} merges");
     assert!(written >= 3 * n, "{written} merges written");
     assert!(kills >= n, "{kills} kills");

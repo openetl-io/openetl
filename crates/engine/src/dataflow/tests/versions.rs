@@ -1162,6 +1162,8 @@ struct Many {
 }
 
 struct Kept {
+    /// The runs each lane of each stream names, fewest first.
+    by_lane: Vec<usize>,
     runs: u64,
     written: u64,
     merges: u64,
@@ -1289,7 +1291,10 @@ async fn many_streams(
                 written += c.barrier.bytes;
                 merges += c.merges;
             }
+            let mut by_lane: Vec<usize> = last.snapshots.iter().map(|s| s.runs.len()).collect();
+            by_lane.sort_unstable();
             Kept {
+                by_lane,
                 runs,
                 written,
                 merges,
@@ -1364,15 +1369,27 @@ async fn versions_of_many_streams() {
         );
         match &r.kept {
             None => eprintln!("{what}, no versions"),
-            Some(k) => eprintln!(
-                "{what}, {} runs written ({} KiB), {} merges, {} runs named, pending sets {} bytes, block caches {} KiB",
-                k.runs,
-                k.written >> 10,
-                k.merges,
-                k.named,
-                k.pending,
-                k.caches >> 10
-            ),
+            Some(k) => {
+                let at = |q: usize| {
+                    k.by_lane
+                        .get(k.by_lane.len() * q / 100)
+                        .copied()
+                        .unwrap_or(0)
+                };
+                eprintln!(
+                    "{what}, {} runs written ({} KiB), {} merges, {} runs named, a lane's: least {}, median {}, 99th {}, most {}, pending sets {} bytes, block caches {} KiB",
+                    k.runs,
+                    k.written >> 10,
+                    k.merges,
+                    k.named,
+                    at(0),
+                    at(50),
+                    at(99),
+                    k.by_lane.last().copied().unwrap_or(0),
+                    k.pending,
+                    k.caches >> 10
+                )
+            }
         }
     }
 }

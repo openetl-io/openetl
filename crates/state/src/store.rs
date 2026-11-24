@@ -166,7 +166,7 @@ pub trait Store: Send + Sync {
     /// What it holds in memory, in bytes, about.
     fn memory_bytes(&self) -> usize;
 
-    /// Stops reading run `name`, which [`crate::Error::Gone`] named, as if
+    /// Stops reading run `name`, one [`crate::Error::Gone`] named, as if
     /// it held nothing: for state a consumer can do without. Whether it
     /// did: not where a read may have found something in it already.
     fn forget(&mut self, _name: &str) -> bool {
