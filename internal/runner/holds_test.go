@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow-go/v18/arrow"
+
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/sdk/go/destination"
@@ -22,13 +24,13 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 		Holding: []checkpoint.ColumnHold{{Column: "y", Reason: "new"}},
 		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 2, Reason: "nan"}},
 		Files:   files,
-	}, at(1, 3), now)
+	}, at(1, 3), now, nil)
 	h = mergeHolds(h, &ReadyHolds{
 		Holding: []checkpoint.ColumnHold{{Column: "y", Reason: "new"}},
 		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 1, Reason: "range"}},
 		Files:   files,
-	}, at(1, 5), now.Add(time.Hour))
-	h = mergeHolds(h, &ReadyHolds{Holding: h.Columns, Files: files}, at(2, 6), now)
+	}, at(1, 5), now.Add(time.Hour), nil)
+	h = mergeHolds(h, &ReadyHolds{Holding: h.Columns, Files: files}, at(2, 6), now, nil)
 	if c := h.Columns[0]; c.Since != at(1, 3) || !c.Started.Equal(now) {
 		t.Errorf("column hold %+v", c)
 	}
@@ -39,7 +41,7 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 	if !reflect.DeepEqual(h.Epochs, want) {
 		t.Errorf("epochs %+v, want %+v", h.Epochs, want)
 	}
-	if got := mergeHolds(h, nil, at(2, 7), now); !reflect.DeepEqual(got, h) {
+	if got := mergeHolds(h, nil, at(2, 7), now, nil); !reflect.DeepEqual(got, h) {
 		t.Errorf("a stream that reported nothing changed: %+v", got)
 	}
 
@@ -47,7 +49,7 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 	// column needs no values.
 	h.Replay = &checkpoint.Replay{Columns: []string{"x"}}
 	h.Columns[0].Discarded = true
-	got := mergeHolds(h, &ReadyHolds{Holding: h.Columns, Replayed: &ReplayProgress{Done: true}}, at(2, 8), now)
+	got := mergeHolds(h, &ReadyHolds{Holding: h.Columns, Replayed: &ReplayProgress{Done: true}}, at(2, 8), now, nil)
 	if len(got.Cells) != 0 || got.Replay != nil || got.Epochs != nil || len(got.Columns) != 1 {
 		t.Errorf("after the replay: %+v", got)
 	}
@@ -58,8 +60,8 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 3, To: 3}},
 		Replay: &checkpoint.Replay{Columns: []string{"x"}, Files: []string{"1/3/s/part-00000.parquet"}},
 	}
-	h = mergeHolds(h, &ReadyHolds{Cells: map[string]checkpoint.CellHold{"x": {Cells: 1, Reason: "type"}}, Files: files, Replayed: &ReplayProgress{}}, at(3, 4), now)
-	got = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 1, Done: true}}, at(3, 5), now)
+	h = mergeHolds(h, &ReadyHolds{Cells: map[string]checkpoint.CellHold{"x": {Cells: 1, Reason: "type"}}, Files: files, Replayed: &ReplayProgress{}}, at(3, 4), now, nil)
+	got = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 1, Done: true}}, at(3, 5), now, nil)
 	if c := got.Cells["x"]; c.Cells != 1 || c.Since != at(3, 4) || got.Replay != nil || len(got.Epochs) != 2 {
 		t.Errorf("after a replay with a cell held during it: %+v", got)
 	}
@@ -70,11 +72,11 @@ func TestMergeHoldsKeepsWhenEachHoldStarted(t *testing.T) {
 		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 3, To: 3}},
 		Replay: &checkpoint.Replay{Columns: []string{"x"}, CellReleases: map[string]string{"x": "r"}},
 	}
-	got = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 1, StillHeld: 2, Done: true}}, at(3, 5), now)
+	got = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 1, StillHeld: 2, Done: true}}, at(3, 5), now, nil)
 	if c := got.Cells["x"]; c.Since != at(1, 3) || c.Refused == nil || *c.Refused != (checkpoint.Refused{Release: "r", Reason: "2 released values still don't fit"}) {
 		t.Errorf("after a replay with cells that still don't fit: %+v", c)
 	}
-	if mergeHolds(&checkpoint.Holds{}, &ReadyHolds{}, at(2, 9), now) != nil {
+	if mergeHolds(&checkpoint.Holds{}, &ReadyHolds{}, at(2, 9), now, nil) != nil {
 		t.Error("nothing held, and still holds")
 	}
 }
@@ -143,14 +145,15 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	engine := z
 	engine.Since, engine.Refused = checkpoint.RecordRef{}, nil
 	engine.Cause = &checkpoint.HoldCause{Kind: checkpoint.HoldRefused, Source: "Z", From: "int32", To: "int64"}
-	merged := mergeHolds(h, &ReadyHolds{Holding: []checkpoint.ColumnHold{engine}}, checkpoint.RecordRef{Generation: 2, Epoch: 1}, time.Now())
+	merged := mergeHolds(h, &ReadyHolds{Holding: []checkpoint.ColumnHold{engine}}, checkpoint.RecordRef{Generation: 2, Epoch: 1}, time.Now(), nil)
 	got := merged.Columns[0]
 	if got.Since != since || got.Refused == nil || got.Refused.Release != "r1" || got.Cause.Fix != "ALTER z" || got.Cause.From != "int32" || got.Cause.Source != "Z" {
 		t.Errorf("merged %+v, cause %+v", got, got.Cause)
 	}
 
 	// A release already refused isn't taken again, unless it's a new one.
-	merged.Replay, merged.Cells = nil, nil
+	// The record holds z alone.
+	merged.Replay, merged.Cells, merged.Columns = nil, nil, merged.Columns[:1]
 	refused := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: merged}}}
 	j.Releases, j.refused = []Release{{ID: "r1", Stream: "s", Column: "z", Since: since}}, nil
 	holds, _, err = j.startHolds(t.Context(), refused, nil)
@@ -225,7 +228,7 @@ func TestAReleasedDiscardedHoldEndsWithoutItsValues(t *testing.T) {
 		t.Fatalf("refused again, the column's hold %+v, replay %+v", h.Columns, h.Replay)
 	}
 	at := checkpoint.RecordRef{Generation: 2, Epoch: 1}
-	merged := mergeHolds(h, &ReadyHolds{Holding: h.Columns}, at, time.Now())
+	merged := mergeHolds(h, &ReadyHolds{Holding: h.Columns}, at, time.Now(), nil)
 	if c := merged.Columns[0]; c.Since != at || c.Discarded {
 		t.Errorf("the new hold %+v starts at %v, not %v", c, c.Since, at)
 	}
@@ -544,7 +547,7 @@ func TestADiscardOfAReleaseInProgressEndsWithIt(t *testing.T) {
 		t.Fatalf("a run in which the stream holds dropped something: %+v", h)
 	}
 	// The replay ends with 2 values that still don't fit.
-	h = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{Done: true, StillHeld: 2}}, checkpoint.RecordRef{Generation: 1, Epoch: 9}, time.Now())
+	h = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{Done: true, StillHeld: 2}}, checkpoint.RecordRef{Generation: 1, Epoch: 9}, time.Now(), nil)
 	if h.Replay != nil || h.Cells["x"].Since != c || h.Cells["x"].Refused == nil || h.Cells["x"].Refused.Release != "r1" {
 		t.Fatalf("after the replay %+v", h)
 	}
@@ -632,7 +635,7 @@ func TestADiscardEndsAReleaseWhoseColumnHoldsCellsSince(t *testing.T) {
 	// The person discards the release, before any cell of y is held.
 	discarded := Release{ID: "r1", Stream: "s", Column: "y", Since: w, Ends: true}
 	// Values of y don't fit while the replay goes on.
-	h = mergeHolds(h, &ReadyHolds{Cells: map[string]checkpoint.CellHold{"y": {Cells: 3, Reason: "nan"}}}, checkpoint.RecordRef{Generation: 1, Epoch: 5}, time.Now())
+	h = mergeHolds(h, &ReadyHolds{Cells: map[string]checkpoint.CellHold{"y": {Cells: 3, Reason: "nan"}}}, checkpoint.RecordRef{Generation: 1, Epoch: 5}, time.Now(), nil)
 	if h.Replay == nil || h.Cells["y"].Since == w {
 		t.Fatalf("holds %+v", h)
 	}
@@ -707,7 +710,7 @@ func TestAReleaseReadsOnlyTheFilesOfTheHoldsItReleases(t *testing.T) {
 		Epochs: []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 2}},
 		Replay: &checkpoint.Replay{Columns: []string{"a"}, Files: files[:2], CellReleases: map[string]string{"a": "r1"}},
 	}
-	h = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 2, Done: true}}, epoch(3), time.Now())
+	h = mergeHolds(h, &ReadyHolds{Replayed: &ReplayProgress{File: 2, Done: true}}, epoch(3), time.Now(), nil)
 	if _, ok := h.Cells["a"]; ok {
 		t.Fatalf("a still held after its replay: %+v", h)
 	}
@@ -716,7 +719,7 @@ func TestAReleaseReadsOnlyTheFilesOfTheHoldsItReleases(t *testing.T) {
 		if n >= 5 {
 			r.Cells = map[string]checkpoint.CellHold{"a": {Cells: 1}}
 		}
-		h = mergeHolds(h, r, epoch(n), time.Now())
+		h = mergeHolds(h, r, epoch(n), time.Now(), nil)
 	}
 	if h.Cells["a"].Since != epoch(5) {
 		t.Fatalf("a's new hold %+v", h.Cells["a"])
@@ -774,7 +777,7 @@ func TestAColumnRefusedWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
 		t.Fatalf("replay %+v", r)
 	}
 	// The replay is recorded with the files of epochs 2 and 3 patched in.
-	h = mergeHolds(&checkpoint.Holds{Cells: h.Cells, Epochs: h.Epochs, Replay: r}, &ReadyHolds{Replayed: &ReplayProgress{File: 2}}, epoch(7), time.Now())
+	h = mergeHolds(&checkpoint.Holds{Cells: h.Cells, Epochs: h.Epochs, Replay: r}, &ReadyHolds{Replayed: &ReplayProgress{File: 2}}, epoch(7), time.Now(), nil)
 
 	// The stream widens c again, and the destination refuses it.
 	j = &Job{
@@ -798,7 +801,7 @@ func TestAColumnRefusedWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
 	}
 	// The engine holds c whole, and a later release, as the API lists it,
 	// reads the files of every value held since epoch 2.
-	h = mergeHolds(h, &ReadyHolds{Holding: []checkpoint.ColumnHold{{Column: "c", Reason: "refused"}}}, epoch(8), time.Now())
+	h = mergeHolds(h, &ReadyHolds{Holding: []checkpoint.ColumnHold{{Column: "c", Reason: "refused"}}}, epoch(8), time.Now(), nil)
 	r = start(h, &Job{Releases: []Release{
 		{ID: "r2", Stream: "s", Column: "c", Since: h.Columns[0].Since}, {ID: "r2c", Stream: "s", Column: "c", Since: h.Cells["c"].Since},
 	}})
@@ -830,14 +833,14 @@ func TestAColumnHeldWholeAgainWhileItsReleaseIsPatchedInKeepsItsValues(t *testin
 	if r == nil || !slices.Equal(r.Columns, []string{"c", "d"}) || !slices.Equal(r.Files, files[1:]) {
 		t.Fatalf("replay %+v", r)
 	}
-	h = mergeHolds(&checkpoint.Holds{Cells: h.Cells, Epochs: h.Epochs, Replay: r}, &ReadyHolds{Replayed: &ReplayProgress{File: 2}}, epoch(7), time.Now())
+	h = mergeHolds(&checkpoint.Holds{Cells: h.Cells, Epochs: h.Epochs, Replay: r}, &ReadyHolds{Replayed: &ReplayProgress{File: 2}}, epoch(7), time.Now(), nil)
 	// In epoch 8 the engine holds c whole again, and d, whose cells alone
 	// are released, with it.
 	group := &checkpoint.HoldCause{Kind: checkpoint.HoldGroup, With: "c"}
 	h = mergeHolds(h, &ReadyHolds{
 		Holding:  []checkpoint.ColumnHold{{Column: "c", Reason: "policy"}, {Column: "d", Reason: "held with c", Cause: group}},
 		Replayed: &ReplayProgress{File: 3},
-	}, epoch(8), time.Now())
+	}, epoch(8), time.Now(), nil)
 	if h.Replay != nil || len(h.Columns) != 2 {
 		t.Fatalf("held again: columns %+v, replay %+v", h.Columns, h.Replay)
 	}
@@ -868,10 +871,62 @@ func TestAColumnHeldWholeAgainWhileItsReleaseIsPatchedInKeepsItsValues(t *testin
 		t.Errorf("discarded: %v", err)
 	}
 	// A later release reads every value of c held since epoch 2.
-	h = mergeHolds(h, &ReadyHolds{Holding: h.Columns}, epoch(9), time.Now())
+	h = mergeHolds(h, &ReadyHolds{Holding: h.Columns}, epoch(9), time.Now(), nil)
 	r = start(h, &Job{Releases: []Release{{ID: "r2", Stream: "s", Column: "c", Since: h.Columns[0].Since}}})
 	if r == nil || !slices.Equal(r.Files, files[1:]) || r.First["c"] != 0 {
 		t.Errorf("the later release reads %+v, from file %d for c held whole, want %v from the first", r, r.First["c"], files[1:])
+	}
+}
+
+// A replay that ends with released values that still don't fit holds each
+// column it released whole again, from where its hold started, refused by
+// its release, at the type the destination has: those values are in the
+// held files alone, and a later release reads them from there. The column
+// stays held through the attempt, though the engine holds it only from the
+// next one. Its released cells are refused, and stay held. A replay with
+// none left holds nothing again.
+func TestAReplayThatLeavesValuesHoldsItsColumnsAgain(t *testing.T) {
+	files, start := heldEpochs(t)
+	h := &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Reason: "refused"}},
+		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 3, Since: epoch(3)}},
+		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
+	}
+	r := start(h, &Job{Releases: []Release{{ID: "rw", Stream: "s", Column: "c", Since: epoch(2)}, {ID: "rx", Stream: "s", Column: "x", Since: epoch(3)}}})
+	if r == nil || !slices.Equal(r.Columns, []string{"c", "x"}) {
+		t.Fatalf("replay %+v", r)
+	}
+	field := arrow.Field{Name: "c", Type: arrow.PrimitiveTypes.Int64, Nullable: true}
+	delivered, err := encodeSchema(arrow.NewSchema([]arrow.Field{{Name: "id", Type: arrow.PrimitiveTypes.Int64}, field}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaying := &checkpoint.Holds{Cells: h.Cells, Epochs: h.Epochs, Replay: r}
+	if done := mergeHolds(replaying, &ReadyHolds{Replayed: &ReplayProgress{File: len(r.Files), Done: true}}, epoch(7), time.Now(), delivered); done != nil {
+		t.Errorf("a replay with nothing left holds %+v", done)
+	}
+	h = mergeHolds(replaying, &ReadyHolds{Replayed: &ReplayProgress{File: len(r.Files), StillHeld: 2, Done: true}}, epoch(7), time.Now(), delivered)
+	if h == nil || h.Replay != nil || len(h.Columns) != 1 {
+		t.Fatalf("after a replay that left 2 values: %+v", h)
+	}
+	want, err := encodeSchema(arrow.NewSchema([]arrow.Field{field}, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := h.Columns[0]; c.Column != "c" || c.Since != epoch(2) || c.Refused == nil || c.Refused.Release != "rw" ||
+		c.Refused.Reason != "2 released values still don't fit" || !slices.Equal(c.Delivered, want) {
+		t.Errorf("c is held %+v", c)
+	}
+	if x := h.Cells["x"]; x.Since != epoch(3) || x.Refused == nil || x.Refused.Release != "rx" {
+		t.Errorf("x's cells are held %+v", x)
+	}
+	// The engine doesn't hold c in this attempt.
+	if h = mergeHolds(h, &ReadyHolds{}, epoch(8), time.Now(), delivered); len(h.Columns) != 1 || h.Columns[0].Since != epoch(2) {
+		t.Fatalf("in the attempt's next epoch, columns %+v", h.Columns)
+	}
+	r = start(h, &Job{Releases: []Release{{ID: "r2", Stream: "s", Column: "c", Since: h.Columns[0].Since}}})
+	if r == nil || !slices.Equal(r.Files, files[1:]) || r.First["c"] != 0 {
+		t.Errorf("the later release reads %+v, want %v from the first", r, files[1:])
 	}
 }
 

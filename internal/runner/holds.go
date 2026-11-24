@@ -631,9 +631,10 @@ func before(a, b checkpoint.RecordRef) bool {
 }
 
 // mergeHolds is a stream's holds once epoch at is recorded: base's, with
-// what the dataflow reported at the stream's barrier. Nil once nothing is
-// held.
-func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, now time.Time) *checkpoint.Holds {
+// what the dataflow reported at the stream's barrier. delivered is the
+// stream's schema as the destination has it there, which gives a column
+// held again the field the destination has. Nil once nothing is held.
+func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, now time.Time, delivered []byte) *checkpoint.Holds {
 	h := &checkpoint.Holds{}
 	if base != nil {
 		h = cloneHolds(base)
@@ -656,6 +657,13 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 				c, _ = heldAgain(h, c, "the column was held whole again while the release patched it in", now)
 			}
 			cols = append(cols, c)
+		}
+		// One the engine doesn't hold yet, as one held again when a replay
+		// ended, stays held; the engine holds it from the next attempt.
+		for _, p := range h.Columns {
+			if !slices.ContainsFunc(cols, func(c checkpoint.ColumnHold) bool { return c.Column == p.Column }) {
+				cols = append(cols, p)
+			}
 		}
 		h.Columns = cols
 		add := func(cells map[string]checkpoint.CellHold, col string, c checkpoint.CellHold) map[string]checkpoint.CellHold {
@@ -699,6 +707,7 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 						h.Cells[col] = c
 					}
 				}
+				h.Columns = append(h.Columns, leftHeld(h, p.StillHeld, now, delivered)...)
 				h.Replay = nil
 			}
 		}
@@ -711,6 +720,57 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 		return nil
 	}
 	return h
+}
+
+// leftHeld are the columns that h's replay released whole, held again as
+// it ends with n of its values that still don't fit: from where their holds
+// started, refused by their releases, as values of theirs are left in the
+// held files, which nothing else would keep. The engine counts the values
+// left of all the replay's columns in one, so any held again, though only
+// some may have values left; the next release patches in again, by their
+// IDs, those that fit. A count by column would hold only those.
+func leftHeld(h *checkpoint.Holds, n uint64, now time.Time, delivered []byte) []checkpoint.ColumnHold {
+	if n == 0 {
+		return nil
+	}
+	var out []checkpoint.ColumnHold
+	for _, col := range h.Replay.Columns {
+		at, ok := h.Replay.Since[col]
+		if !ok || slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == col }) {
+			continue
+		}
+		c := checkpoint.ColumnHold{Column: col, Delivered: fieldOf(delivered, col)}
+		if i := slices.IndexFunc(h.Replay.Versioned, func(v checkpoint.ColumnHold) bool { return v.Column == col }); i >= 0 {
+			c = h.Replay.Versioned[i]
+		}
+		c.Since, c.Started, c.Reason = at, now, "its released values don't all fit its type"
+		if id := h.Replay.WholeReleases[col]; id != "" {
+			c.Refused = &checkpoint.Refused{Release: id, Reason: stillHeld(n)}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// fieldOf is col's field in schema, an Arrow IPC stream, as a schema with
+// only it; nil if schema has none.
+func fieldOf(schema []byte, col string) []byte {
+	if schema == nil {
+		return nil
+	}
+	s, err := decodeSchema(schema)
+	if err != nil {
+		return nil
+	}
+	fs, ok := s.FieldsByName(col)
+	if !ok || len(fs) != 1 {
+		return nil
+	}
+	b, err := encodeSchema(arrow.NewSchema(fs, nil))
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 func stillHeld(n uint64) string {
