@@ -199,6 +199,17 @@ impl Versions {
                 }
                 Ok(Out::Barrier(s, e))
             }
+            // A stream's end is the last the writer lane gets of it: a lane
+            // takes no frame of a stream after its end, and sends its rows
+            // and held values before it, and the writer lane passes the end
+            // on once each lane it takes the stream from has ended, dropping
+            // what waited at a barrier. So its versions go: the layer's
+            // place in its pool's line, and a merge in flight with the room
+            // it took, which no record will name.
+            Out::End(s) => {
+                self.streams[s] = None;
+                Ok(Out::End(s))
+            }
             out => Ok(out),
         }
     }

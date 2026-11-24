@@ -1393,3 +1393,72 @@ async fn versions_of_many_streams() {
         }
     }
 }
+
+/// A stream that ends, whose versions were in line for merge room or
+/// merging at its last barrier, holds none of the room after its end:
+/// another stream's versions merge on for many epochs. Each stream's runs
+/// of an epoch are about a sixth of the job's merge room, so a merge of four
+/// fits, and two at once don't.
+#[tokio::test]
+async fn a_stream_that_ends_holds_no_merge_room() {
+    const ROWS: usize = 2600;
+    for a_first in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut req = crate::plan::tests::lanes_request(&["a", "b"], 1, 1);
+        req.state_url = format!("file://{}", dir.path().join("state").display());
+        req.state_pending_bytes = Some(0);
+        req.limits = Some(openetl_proto::engine::v1::Limits {
+            memory_bytes: 16 << 20,
+            ..Default::default()
+        });
+        for s in &mut req.streams {
+            s.primary_key = vec!["id".into()];
+            s.cursor_field = "at".into();
+            s.read_start_micros = 1000;
+            s.versions_operator = format!("versions.{}", s.name);
+        }
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let mut h = start_plan(plan.clone());
+        let (closed, none) = tokio::sync::mpsc::channel(1);
+        drop(closed);
+        let mut events = std::mem::replace(&mut h.events, none);
+        let readies = tokio::spawn(async move { ready(&mut events).await });
+        let mut ins = std::mem::take(&mut h.ins);
+        let feed = tokio::spawn(async move {
+            let w = &mut ins[0];
+            for e in 1..=30u64 {
+                let rows = page(e as usize * ROWS..(e as usize + 1) * ROWS);
+                // At epoch 4, the stream whose barrier comes first starts a
+                // merge of its four runs, and the other's is refused.
+                let order: &[u32] = match (e <= 4, a_first) {
+                    (false, _) => &[1],
+                    (true, true) => &[0, 1],
+                    (true, false) => &[1, 0],
+                };
+                for &s in order {
+                    put(w, FrameKind::Rows, s, rows.clone()).await;
+                    put(w, FrameKind::Barrier, s, epoch_barrier(1, e)).await;
+                }
+                if e == 4 {
+                    put(w, FrameKind::EndOfStream, 0, vec![]).await;
+                }
+            }
+            put(w, FrameKind::EndOfStream, 1, vec![]).await;
+            w.shutdown().await.unwrap();
+        });
+        h.finish().await;
+        feed.await.unwrap();
+        let last = readies.await.unwrap().pop().unwrap();
+        let named: usize = last
+            .snapshots
+            .iter()
+            .filter(|s| s.operator == "versions.b")
+            .map(|s| s.runs.len())
+            .sum();
+        let job = plan.state.job.as_ref().unwrap();
+        let merges = job.stores("versions.b").counts().merges;
+        println!("a first at epoch 4: {a_first}; b merged {merges} times, names {named} runs");
+        let what = format!("b merged {merges} times, names {named} runs, a first: {a_first}");
+        assert!(merges >= 2 && named <= 20, "{what}");
+    }
+}
