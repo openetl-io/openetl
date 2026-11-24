@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -90,6 +91,10 @@ type StreamState struct {
 	// How the stream's current read started. An attempt goes on with an
 	// unfinished read only if it would start the stream's read the same way.
 	ReadKind ReadKind `json:"read_kind,omitempty"`
+	// What the stream's current read replaces, for an overwrite. An attempt
+	// goes on with an unfinished overwrite only if it would replace the
+	// same tables.
+	ReadTarget *ReadTarget `json:"read_target,omitempty"`
 	// The stream completed: every split did, and their states are where its
 	// next sync starts.
 	Complete bool `json:"complete,omitempty"`
@@ -134,6 +139,25 @@ const (
 	// table with what it wrote when it ends.
 	ReadOverwrite ReadKind = "overwrite"
 )
+
+// ReadTarget is what an overwrite read replaces, as the job names it.
+type ReadTarget struct {
+	// The destination's namespace; empty: its default.
+	Namespace string `json:"namespace,omitempty"`
+	// By the stream each table is of, its name in destination.tables;
+	// empty: from the stream's name, by the naming.
+	Tables map[string]string `json:"tables,omitempty"`
+	// The naming keeps the source's names.
+	SourceNames bool `json:"source_names,omitempty"`
+}
+
+// Equal reports whether t and u name the same tables; nil names none.
+func (t *ReadTarget) Equal(u *ReadTarget) bool {
+	if t == nil || u == nil {
+		return t == u
+	}
+	return t.Namespace == u.Namespace && t.SourceNames == u.SourceNames && maps.Equal(t.Tables, u.Tables)
+}
 
 // WholeStream is the ID of the split that is the whole stream. A stream
 // with only it keeps its state in StreamState.State, as records from before

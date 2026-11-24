@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -385,6 +386,152 @@ func TestASwitchOfModeDuringAReadStartsANewOne(t *testing.T) {
 			})
 		})
 	}
+}
+
+// An unfinished overwrite starts a new read when the tables it replaces
+// change: by destination.tables, the destination's namespace, or the
+// naming. A destination keeps what an overwrite wrote with the table it
+// replaces, so one that went on would replace the new table with only the
+// rows read after the change. One whose tables stay goes on.
+func TestAChangeOfTableDuringAnOverwriteStartsANewRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// The change, made to the job of the attempt after the failed one,
+		// and the table the destination names.
+		change func(j *runner.Job, d *tableDest)
+		// The state the read after the change starts from.
+		from string
+	}{
+		{"destination.tables", func(j *runner.Job, d *tableDest) {
+			j.Streams[0].Table, d.tables = "orders", map[string]string{"s": "orders"}
+		}, ""},
+		{"destination.namespace", func(j *runner.Job, _ *tableDest) { j.Namespace = "analytics" }, ""},
+		{"destination.naming", func(j *runner.Job, _ *tableDest) { j.KeepSourceNames = true }, ""},
+		{"nothing", func(*runner.Job, *tableDest) {}, "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+				dest := &tableDest{}
+				var starts []string
+				// Reads 1 to 3, each with its resume point, and with fail,
+				// fails once the first is committed.
+				attempt := func(fail bool, change func(*runner.Job, *tableDest)) error {
+					committed := make(chan uint64, 64)
+					src := sdk.Resumable("s", func(_ *sdk.Ctx[struct{}], state json.RawMessage, out *sdk.Out) error {
+						starts = append(starts, string(state))
+						after := 0
+						if state != nil {
+							if err := json.Unmarshal(state, &after); err != nil {
+								return err
+							}
+						}
+						for i := after + 1; i <= 3; i++ {
+							if err := out.Emit(map[string]int{"id": i}); err != nil {
+								return err
+							}
+							if err := out.Checkpoint(i); err != nil {
+								return err
+							}
+							select {
+							case <-committed:
+							case <-ctx.Done():
+								return ctx.Err()
+							}
+							if fail {
+								return errors.New("the source broke")
+							}
+						}
+						return nil
+					})
+					bound, err := (&sdk.Source[struct{}]{Name: "src", Streams: []sdk.Stream[struct{}]{src}}).New(nil)
+					if err != nil {
+						return err
+					}
+					j := job(log, "a"+strconv.Itoa(len(starts)), bound, runner.Passthrough{Convert: columnless}, committed)
+					j.Sync, j.Destination, j.Settings.Require = "s1", dest, delivery.AtLeastOnce
+					j.Streams = []runner.Stream{{Name: "s", Replay: source.Superset, Read: source.FullRefresh, Mode: destination.Overwrite}}
+					change(&j, dest)
+					_, err = runner.RunAttempt(ctx, j)
+					time.Sleep(time.Second)
+					return err
+				}
+				if err := attempt(true, func(*runner.Job, *tableDest) {}); err == nil {
+					t.Fatal("the failing attempt succeeded")
+				}
+				if err := attempt(false, tc.change); err != nil {
+					t.Fatal(err)
+				}
+				if got := dest.table[dest.target("s")]; got != 3 {
+					t.Errorf("the table the overwrite replaced has %d rows, want 3", got)
+				}
+				if len(starts) != 2 || starts[1] != tc.from {
+					t.Errorf("the reads started from %q, want the last from %q", starts, tc.from)
+				}
+			})
+		})
+	}
+}
+
+// What an overwrite replaces is its stream's table, or with a SQL
+// transform, the tables of the overwritten outputs that read it, in the
+// destination's namespace, by the naming. Another read replaces none.
+func TestAnOverwriteNamesTheTablesItReplaces(t *testing.T) {
+	s := runner.Stream{Name: "s", Mode: destination.Overwrite, Table: "orders"}
+	j := &runner.Job{Namespace: "analytics", Streams: []runner.Stream{s}}
+	if got := runner.ReadTarget(j, s); !got.Equal(&checkpoint.ReadTarget{Namespace: "analytics", Tables: map[string]string{"s": "orders"}}) {
+		t.Errorf("target %+v", got)
+	}
+	if got := runner.ReadTarget(j, runner.Stream{Name: "s", Mode: destination.Append}); got != nil {
+		t.Errorf("an append replaces %+v", got)
+	}
+	j = &runner.Job{
+		KeepSourceNames: true, SQL: &runner.SQLTransform{}, Streams: []runner.Stream{{Name: "s"}},
+		Outputs: []runner.Stream{{Name: "a", From: "s", Mode: destination.Overwrite}, {Name: "b", From: "t", Mode: destination.Overwrite}, {Name: "c", From: "s", Mode: destination.Append}},
+	}
+	if got := runner.ReadTarget(j, j.Streams[0]); !got.Equal(&checkpoint.ReadTarget{Tables: map[string]string{"a": ""}, SourceNames: true}) {
+		t.Errorf("a SQL transform's target %+v", got)
+	}
+}
+
+// tableDest is overwriteDest for a destination that keeps an overwrite's
+// rows with the table it replaces, in the namespace it writes, by the name
+// the engine gives it: another table's read starts with none of them. The
+// test names the tables of the streams that the job renames.
+type tableDest struct {
+	overwriteDest
+	tables map[string]string
+	ns     string
+}
+
+func (d *tableDest) target(stream string) string {
+	return d.ns + "." + cmp.Or(d.tables[stream], stream)
+}
+
+func (d *tableDest) Open(ctx context.Context, cfg destination.OpenConfig) (destination.Writer, error) {
+	d.ns = cfg.Namespace
+	if _, err := d.overwriteDest.Open(ctx, cfg); err != nil {
+		return nil, err
+	}
+	return d, nil
+}
+
+func (d *tableDest) StartReads(ctx context.Context, starts map[string]time.Time) error {
+	by := map[string]time.Time{}
+	for s, at := range starts {
+		by[d.target(s)] = at
+	}
+	return d.overwriteDest.StartReads(ctx, by)
+}
+
+func (d *tableDest) Write(ctx context.Context, e destination.Epoch, s string, b arrow.RecordBatch) error {
+	return d.overwriteDest.Write(ctx, e, d.target(s), b)
+}
+
+func (d *tableDest) EndRead(ctx context.Context, e destination.Epoch, s string) error {
+	return d.overwriteDest.EndRead(ctx, e, d.target(s))
 }
 
 // startsSource keeps the state each read of its one stream starts from.

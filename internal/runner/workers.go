@@ -1066,9 +1066,9 @@ func restoredSchemas(r *checkpoint.Record) map[string][]byte {
 func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, done map[string]bool) (map[string][]checkpoint.SplitState, bool, error) {
 	out := make(map[string][]checkpoint.SplitState, len(f.job.Streams))
 	req := &attemptv1.SplitRead{}
-	kinds := f.job.readKinds()
+	kinds, targets := f.job.readKinds(), f.job.readTargets()
 	for _, s := range f.job.Streams {
-		prev, starts := f.job.startsRead(restored, done, s, kinds[s.Name])
+		prev, starts := f.job.startsRead(restored, done, s, kinds[s.Name], targets[s.Name])
 		if !starts {
 			out[s.Name] = prev
 			continue
@@ -1103,7 +1103,7 @@ func (f *fleet) readSplits(ctx context.Context, restored *checkpoint.Record, don
 		}
 	}
 	for _, s := range f.job.Streams {
-		if _, starts := f.job.startsRead(restored, done, s, kinds[s.Name]); starts && restored != nil {
+		if _, starts := f.job.startsRead(restored, done, s, kinds[s.Name], targets[s.Name]); starts && restored != nil {
 			out[s.Name] = carryMarks(s.EventTime, restored.Splits(s.Name), out[s.Name])
 		}
 	}

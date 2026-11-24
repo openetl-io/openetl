@@ -150,11 +150,11 @@ func (j *Job) redoFloors(rec, start *checkpoint.Record) map[string]int64 {
 	if start == nil {
 		return nil
 	}
-	kinds := make(map[string]checkpoint.ReadKind, len(rec.Streams))
+	kinds, targets := make(map[string]checkpoint.ReadKind, len(rec.Streams)), make(map[string]*checkpoint.ReadTarget, len(rec.Streams))
 	for name, st := range rec.Streams {
-		kinds[name] = st.ReadKind
+		kinds[name], targets[name] = st.ReadKind, st.ReadTarget
 	}
-	splits, _ := j.startSplits(start, doneIn(start, rec.Sync), kinds, func(s Stream, _ []source.Split) ([]checkpoint.SplitState, error) {
+	splits, _ := j.startSplits(start, doneIn(start, rec.Sync), kinds, targets, func(s Stream, _ []source.Split) ([]checkpoint.SplitState, error) {
 		var out []checkpoint.SplitState
 		for _, sp := range rec.Splits(s.Name) {
 			out = append(out, checkpoint.SplitState{ID: sp.ID})
