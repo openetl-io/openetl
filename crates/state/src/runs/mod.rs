@@ -377,6 +377,32 @@ impl ObjectStorage {
     }
 }
 
+impl ObjectStorage {
+    /// What a read of `range` of run `name` that failed with `e` fails
+    /// with: [`Error::Unreadable`] where the object is shorter than the
+    /// range reaches, as a run cut short is, whose reads a store refuses
+    /// as of an invalid range, on every retry; else [`Error::Store`].
+    async fn failed(
+        &self,
+        name: &str,
+        path: &Path,
+        range: &Range<u64>,
+        e: object_store::Error,
+    ) -> Error {
+        let head = GetOptions::new().with_head(true);
+        match self.store.get_opts(path, head).await {
+            Ok(r) if r.meta.size < range.end => Error::Unreadable {
+                run: name.to_owned(),
+                why: format!(
+                    "{} bytes, where a read of bytes {} to {} found it short: {e}",
+                    r.meta.size, range.start, range.end
+                ),
+            },
+            _ => Error::Store(format!("reading run {name}: {e}")),
+        }
+    }
+}
+
 /// The waits before each look whether a run a read found missing is there.
 const CONFIRM: [std::time::Duration; 2] = [
     std::time::Duration::from_millis(200),
@@ -412,14 +438,16 @@ impl Objects for ObjectStorage {
                 let opts = GetOptions::new().with_range(Some(range.clone()));
                 self.store.get_opts(&path, opts).await?.bytes().await
             };
-            let failed = |e| Error::Store(format!("reading run {name}: {e}"));
             let b = match read().await {
                 Ok(b) => b,
                 Err(object_store::Error::NotFound { .. }) => {
                     self.confirm_gone(name, &path).await?;
-                    read().await.map_err(failed)?
+                    match read().await {
+                        Ok(b) => b,
+                        Err(e) => return Err(self.failed(name, &path, &range, e).await),
+                    }
                 }
-                Err(e) => return Err(failed(e)),
+                Err(e) => return Err(self.failed(name, &path, &range, e).await),
             };
             match b.len() as u64 == want {
                 true => Ok(b),

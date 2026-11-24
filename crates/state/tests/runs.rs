@@ -1258,3 +1258,26 @@ async fn gone_runs_are_found_together() {
     println!("{n} gone runs found and forgotten in {took:?}");
     assert!(took < std::time::Duration::from_millis(2400), "{took:?}");
 }
+
+/// A run cut short, before where the record says its index starts or
+/// within it, is unreadable, by its name, whatever the store answers a
+/// read past its end with: never a failure a retry clears.
+#[tokio::test]
+async fn a_run_cut_short_is_unreadable() {
+    let bucket = Bucket::new();
+    let s = stores(&bucket, RunConfig::default());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let k = KeyRef::new(7, b"id");
+    ls[0].put_row(OP, k, 10, b("a"));
+    let all = barrier(&mut ls, 1).await;
+    let name = runs(&all[0]).unwrap()[0].name.clone();
+    let whole = bucket.read(&name).await;
+    for keep in [whole.len() - 3, 10] {
+        bucket.memory.delete(&Bucket::path(&name)).await.unwrap();
+        bucket.write(&name, whole[..keep].to_vec()).await;
+        let mut ls = open(&s, 2, 2, 1, &all).await;
+        let got = ls[0].row(OP, &[(k, 10)]).await;
+        let named = matches!(&got, Err(Error::Unreadable { run, .. }) if *run == name);
+        assert!(named, "cut to {keep} of {}: {got:?}", whole.len());
+    }
+}
