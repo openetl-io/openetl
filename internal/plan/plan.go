@@ -190,18 +190,32 @@ func eventTimeProblem(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream) error {
 	return fmt.Errorf("stream %q: eventTime names column %q, which the source's latest catalog doesn't have; if it's new, openetl discover refreshes that", cs.GetName(), column)
 }
 
-// volatileWarnings warns of each of a stream's volatileColumns that isn't one
-// of the columns the catalog lists for it, by the source's names, which the
-// versions' hash matches: a typo stays in the hash. It's a warning, not a
-// problem, as a column a source gives only as it reads, a column dropped
-// since, or a stale catalog would otherwise refuse every apply. A stream the
-// catalog lists no columns for passes.
-func volatileWarnings(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream) []*apiv1.PlanWarning {
+// volatileWarnings warns once of a stream's volatileColumns where no hash of
+// its rows' values reads them (matters is false), and otherwise of each name
+// that isn't one of the columns the catalog lists for it, by the source's
+// names, which the hash matches: a typo stays in the hash. It's a warning,
+// not a problem, as a column a source gives only as it reads, a column
+// dropped since, or a stale catalog would otherwise refuse every apply. A
+// stream the catalog lists no columns for passes.
+func volatileWarnings(cs *apiv1.CatalogStream, ps *apiv1.PipelineStream, matters bool) []*apiv1.PlanWarning {
+	if len(ps.GetVolatileColumns()) == 0 {
+		return nil
+	}
+	if !matters {
+		return []*apiv1.PlanWarning{{Stream: cs.GetName(), Message: "volatileColumns has no effect on this stream, so it's ignored: OpenETL compares a row's versions by their values " +
+			"only in a keyed stream read with incremental, deduped at apply and read by no transform, and in a SQL transform's group window or OVER " +
+			"over a stream with an eventTime whose reads can give a row again"}}
+	}
 	if len(cs.GetColumns()) == 0 {
 		return nil
 	}
 	var out []*apiv1.PlanWarning
+	seen := map[string]bool{}
 	for _, column := range ps.GetVolatileColumns() {
+		if seen[column] {
+			continue
+		}
+		seen[column] = true
 		if !slices.ContainsFunc(cs.GetColumns(), func(c *apiv1.CatalogColumn) bool { return c.GetName() == column }) {
 			out = append(out, &apiv1.PlanWarning{Stream: cs.GetName(), Message: fmt.Sprintf("volatileColumns names column %q, which the source's latest catalog doesn't have, so the column stays in the versions' hash unless the source gives it by that name as it reads; it takes the source's names of columns, not the destination's, and if the column is new, openetl discover refreshes the catalog", column)})
 		}
@@ -411,7 +425,6 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		if err := eventTimeProblem(s.cs, s.ps); err != nil {
 			problems = append(problems, err)
 		}
-		warnings = append(warnings, volatileWarnings(s.cs, s.ps)...)
 	}
 
 	var plans []*apiv1.StreamPlan
@@ -438,6 +451,9 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		if err := CursorProblem(name, read, len(s.cs.GetPrimaryKey()) > 0, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField())); err != nil {
 			problems = append(problems, err)
 		}
+		// A group window or OVER drops a row that a read gives again by
+		// the hash of its values (delivery.Stream.Rereads).
+		rehashed := sql && s.ps.GetEventTime() != "" && deliveryStream(s.cs, s.ps, read, 0).Rereads(settings.Require)
 		if ownCode(spec) || sql {
 			in := Input{Name: name, PrimaryKey: s.cs.GetPrimaryKey(), Read: read, Replay: Replay(replay(s.cs.GetReplay()), read),
 				Cursor: cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField()), Spec: s.ps}
@@ -450,6 +466,7 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 					problems = append(problems, err)
 				}
 			}
+			warnings = append(warnings, volatileWarnings(s.cs, s.ps, rehashed)...)
 			continue
 		}
 		mode := StreamMode(spec, caps, read, len(s.cs.GetPrimaryKey()) > 0)
@@ -471,6 +488,7 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		if w := cursorWarning(read, d.Keyed, p.Dedupe, versions, cursor, s.cs.GetColumns()); w != "" {
 			warnings = append(warnings, &apiv1.PlanWarning{Stream: name, Message: w})
 		}
+		warnings = append(warnings, volatileWarnings(s.cs, s.ps, versions || rehashed)...)
 		sp := &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
 			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]}
 		w := WriterOperator(s.cs.GetPrimaryKey(), oneLane)
