@@ -139,9 +139,9 @@ func TestARunGetsAReleaseAsMade(t *testing.T) {
 	}
 }
 
-// A release a person discarded while it was being patched in, which ended
-// with values left held, says that the discard dropped nothing, and the
-// hold isn't pending: the discard lapsed with the release.
+// A release a person discarded after a run took it, which ended with
+// values left held, says that the discard dropped nothing, and the hold
+// isn't pending: the discard lapsed with the release.
 func TestARefusedReleaseSaysItsDiscardLapsed(t *testing.T) {
 	id, no, yes := uuid.New(), false, true
 	row := db.ListHoldsRow{Stream: "s", ColumnName: "x", Cells: 2, Reason: "nan", ReleaseID: &id, ReleaseDiscards: &no, ReleaseEnds: &yes,
@@ -151,7 +151,8 @@ func TestARefusedReleaseSaysItsDiscardLapsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if h.GetPending() || !strings.HasPrefix(h.GetRefused().GetReason(), "2 released values still don't fit; ") ||
-		!strings.Contains(h.GetRefused().GetReason(), "so the discard dropped nothing") || len(h.GetWaysOut()) == 0 {
+		!strings.Contains(h.GetRefused().GetReason(), "after a run took it, and it ended first, in a run in which the stream held, so the discard dropped nothing") ||
+		strings.Contains(h.GetRefused().GetReason(), "while being patched in") || len(h.GetWaysOut()) == 0 {
 		t.Errorf("hold %v", h)
 	}
 	row.ReleaseEnds = &no

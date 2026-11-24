@@ -365,6 +365,8 @@ Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases pa
 
 New orchestrators resume existing workflows, and syncs resume from their checkpoints. Old runners checkpoint their jobs before stopping, then those jobs are placed again. Existing job pods finish with the image they started with.
 
+A runner of 0.1.0-alpha applies no releases or discards of [held values](../pipelines/holds-and-quarantine.md). They wait until a runner of the new version runs the pipeline.
+
 A newer version can write a checkpoint format that older runners cannot read. An older runner refuses that pipeline with `CONFIG_INVALID`. If this occurs after a downgrade, run the affected pipelines with the newer version.
 
 ## Uninstall

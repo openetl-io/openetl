@@ -53,7 +53,7 @@ func hold(r db.ListHoldsRow) (*apiv1.Hold, error) {
 	if refused && !r.Discarded {
 		h.Refused = &apiv1.HoldRefusal{Reason: r.Refusal}
 		if r.ReleaseEnds != nil && *r.ReleaseEnds {
-			h.Refused.Reason += "; it was discarded while being patched in, and ended in a run in which the stream held, so the discard dropped nothing"
+			h.Refused.Reason += "; it was discarded after a run took it, and it ended first, in a run in which the stream held, so the discard dropped nothing"
 		}
 	}
 	if r.StartTime != nil {
