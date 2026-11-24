@@ -2,11 +2,13 @@
 //!
 //! - Timers are never merged: they die whole as the horizon passes them.
 //! - Rows merge only among sections of one time, all of whose rows are at
-//!   that time, as a read's versions are, by size: they die whole as the
-//!   horizon passes it, the output with them, and a lookup at another time
-//!   passes over them all. Sections of rows at several times are left to
-//!   die whole. A merge drops rows the horizon passed, and deletes where
-//!   no older section may hold a row at that time.
+//!   that time, by size, whichever operators' rows they are: a read's
+//!   versions, a window's rows at its end, OVER's or a dedupe's rows at a
+//!   coarse event time. They die whole as the horizon passes it, the
+//!   output with them, and a lookup at another time passes over them all.
+//!   Sections of rows at several times are left to die whole. A merge
+//!   drops rows the horizon passed, and deletes where no older section may
+//!   hold a row at that time.
 //! - Values merge lazily, by size: only while a lane names more values
 //!   sections than [`MergeConfig::values_bound`], since most windows'
 //!   accumulators die before a merge would reach them. A merge that takes

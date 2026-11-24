@@ -1433,3 +1433,76 @@ async fn a_run_only_a_merge_read_is_forgotten_when_gone() {
     let left: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
     assert_eq!(left, named[..3], "{left:?}");
 }
+
+/// Rows of one time, appended over epochs and then taken over more, which
+/// writes their deletes, merge, deletes and all, and read as they were, on
+/// the lane and restored onto three: a merge of an operator's newer
+/// sections of a time keeps their deletes while an older one holds rows
+/// of that time, and one of all of its sections of a time drops them.
+#[tokio::test]
+async fn rows_of_one_time_and_their_deletes_merge() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let op2 = OperatorId(2);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let t = 100;
+    let mut live: BTreeSet<(u32, Vec<u8>)> = BTreeSet::new();
+    let mut e = 1;
+    let mut all = Vec::new();
+    for _ in 0..8 {
+        for i in 0..10u32 {
+            let g = (e as u32 * 7 + i) % GROUPS;
+            let k = format!("k{e}-{i}");
+            ls[0].append(OP, KeyRef::new(g, k.as_bytes()), t, b(&k));
+            live.insert((g, k.into_bytes()));
+        }
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    for _ in 0..8 {
+        for r in ls[0].take_rows(OP, t, 7).await.unwrap() {
+            assert!(live.remove(&(r.group, r.key.to_vec())), "{r:?}");
+        }
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    // op2: appended and all taken within four epochs at another time, which
+    // merge together as the oldest of their time.
+    for _ in 0..2 {
+        for i in 0..10u32 {
+            let g = (e as u32 * 5 + i) % GROUPS;
+            let k = format!("q{e}-{i}");
+            ls[0].append(op2, KeyRef::new(g, k.as_bytes()), 200, b(&k));
+        }
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    for _ in 0..2 {
+        assert_eq!(ls[0].take_rows(op2, 200, 10).await.unwrap().len(), 10);
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    for _ in 0..3 {
+        all = barrier(&mut ls, e).await;
+        e += 1;
+    }
+    let c = s.counts();
+    let rows = SectionKind::Rows as usize;
+    assert!(c.merged[rows] > 0, "{c:?}");
+    let mut back = open(&s, 2, e, 3, &all).await;
+    let mut left = BTreeSet::new();
+    for l in &mut back {
+        for r in l.take_rows(OP, t, usize::MAX).await.unwrap() {
+            left.insert((r.group, r.key.to_vec()));
+        }
+        assert!(l.take_rows(op2, 200, usize::MAX).await.unwrap().is_empty());
+    }
+    assert_eq!(left, live);
+}
