@@ -1624,3 +1624,59 @@ async fn a_merge_whose_storage_keeps_failing_backs_off() {
     assert_eq!((c.merges_failed, c.merges_abandoned), (5, 1), "{c:?}");
     assert!(reads <= 10, "{reads} reads in 96 barriers");
 }
+
+/// What a lane took from a run is in what it gave, so a run it wrote, a
+/// merge's output, and a values run it read whole to know what it holds,
+/// are never forgotten, while a run it only opened is.
+#[tokio::test]
+async fn runs_a_lane_took_from_are_never_forgotten() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        cache_bytes: 0,
+        merge: Some(MergeConfig {
+            wait: true,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config.clone());
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let mut all = Vec::new();
+    for e in 1..=5u32 {
+        for n in 0..50u32 {
+            let id = format!("id-{e}-{n}");
+            ls[0].put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+        }
+        all = barrier(&mut ls, e.into()).await;
+    }
+    assert_eq!(s.counts().merges, 1);
+    let named: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    let (written, merged): (Vec<&String>, Vec<&String>) =
+        named.iter().partition(|n| !n.ends_with(".merge.run"));
+    assert_eq!((written.len(), merged.len()), (1, 1), "{named:?}");
+    assert!(!ls[0].forget(written[0]), "a run the lane wrote");
+    assert!(!ls[0].forget(merged[0]), "a merge's output");
+    // Values runs, restored onto a lane that reads them whole once it
+    // writes a run.
+    let values = OperatorId(2);
+    let quiet = RunConfig {
+        merge: None,
+        ..config
+    };
+    let s = stores(&Bucket::new(), quiet);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    for e in 1..=2u32 {
+        ls[0].put(values, KeyRef::new(3, format!("k{e}").as_bytes()), b("v"));
+        all = barrier(&mut ls, e.into()).await;
+    }
+    let restored: Vec<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    let mut ls = open(&s, 2, 3, 1, &all).await;
+    ls[0].put(values, KeyRef::new(3, b"k3"), b("v"));
+    barrier(&mut ls, 3).await;
+    assert!(s.counts().restore.count > 0, "read whole: {:?}", s.counts());
+    for run in &restored {
+        assert!(!ls[0].forget(run), "a values run read whole: {run}");
+    }
+    let mut fresh = open(&s, 3, 3, 1, &all).await;
+    assert!(fresh[0].forget(&restored[0]), "a run only named");
+}
