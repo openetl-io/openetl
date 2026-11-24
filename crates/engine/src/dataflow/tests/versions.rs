@@ -445,6 +445,138 @@ async fn a_row_of_a_key_group_its_writer_lane_doesnt_keep_keeps_its_id() {
     assert_eq!(record(&second, other), record(&first, other));
 }
 
+/// Each row each of users' writer lanes wrote, as its name and record ID,
+/// sorted: a batch may have no key column.
+fn names_and_records(outs: &[Vec<frame::Frame>]) -> Vec<Vec<(String, Vec<u8>)>> {
+    outs.iter()
+        .map(|frames| {
+            let mut got = Vec::new();
+            for f in frames.iter().filter(|f| f.kind == FrameKind::Batch) {
+                let b = ipc::decode_batch(f.payload.clone()).unwrap();
+                let ids = b
+                    .column_by_name("_openetl_id")
+                    .unwrap()
+                    .as_fixed_size_binary();
+                for (name, id) in column_strings(&b, "name").into_iter().zip(ids.iter()) {
+                    got.push((name.unwrap_or_default(), id.unwrap().to_vec()));
+                }
+            }
+            got.sort();
+            got
+        })
+        .collect()
+}
+
+fn all_lanes(lanes: &[Vec<(String, Vec<u8>)>]) -> Vec<(String, Vec<u8>)> {
+    let mut all: Vec<_> = lanes.iter().flatten().cloned().collect();
+    all.sort();
+    all
+}
+
+/// One sync of users on `lanes` lanes, whose lane 0 sends `frames`: what
+/// each writer lane wrote, as without versions where `versions` is false.
+/// With versions on more than one writer lane, the stream is exchanged by
+/// key group, as the runner plans it.
+async fn sync_frames(
+    lanes: u32,
+    versions: bool,
+    frames: &[(FrameKind, Vec<u8>)],
+) -> Vec<Vec<(String, Vec<u8>)>> {
+    let dir = tempfile::tempdir().unwrap();
+    let mut req = users(dir.path(), 1, 1000, &Restored::default(), lanes);
+    if !versions {
+        req.streams[0].versions_operator = String::new();
+    } else if lanes > 1 {
+        req.streams[0].exchange = crate::plan::tests::exchange_by(&["id"]);
+    }
+    let mut h = start_lanes(req);
+    for (kind, payload) in frames {
+        put(&mut h.ins[0], *kind, 0, payload.clone()).await;
+    }
+    for w in &mut h.ins {
+        put(w, FrameKind::Barrier, 0, epoch_barrier(1, 1)).await;
+    }
+    h.end_all(1).await;
+    let (outs, _) = h.finish().await;
+    names_and_records(&outs)
+}
+
+/// The IDs of `got`'s rows named `names`, in order.
+fn ids_of(got: &[(String, Vec<u8>)], names: &[&str]) -> Vec<Vec<u8>> {
+    names
+        .iter()
+        .map(|n| {
+            let mut of = got.iter().filter(|(name, _)| name == n);
+            let (_, id) = of.next().unwrap_or_else(|| panic!("no row {n} in {got:?}"));
+            assert!(of.next().is_none(), "two rows {n} in {got:?}");
+            id.clone()
+        })
+        .collect()
+}
+
+/// Syncs `frames`, whose rows `null` have a null key, with versions on one
+/// writer lane and on two, which exchange the stream by key group: both
+/// give each row the same ID, and on two, `null` reach one writer lane. The
+/// null key is a record's, as in the rows' IDs, which `null` share without
+/// versions: the first of them keeps that ID, and the second, another
+/// version of the record in the same batch, gets one of its own.
+async fn null_keys_are_one_record(frames: &[(FrameKind, Vec<u8>)], null: &[&str]) {
+    let without = ids_of(&all_lanes(&sync_frames(1, false, frames).await), null);
+    assert!(without.iter().all(|id| *id == without[0]), "{without:?}");
+    let one = all_lanes(&sync_frames(1, true, frames).await);
+    let two = sync_frames(2, true, frames).await;
+    assert_eq!(all_lanes(&two), one, "on two writer lanes");
+    assert!(
+        two.iter()
+            .any(|w| null.iter().all(|n| w.iter().any(|(name, _)| name == n))),
+        "the null key's rows reached two writer lanes: {two:?}"
+    );
+    let ids = ids_of(&one, &null[..2]);
+    assert_eq!(ids[0], without[0], "the null key's first row");
+    assert_ne!(ids[1], without[0], "the null key's second version");
+}
+
+/// A page whose rows have no key values, as a new stream's first can: the
+/// typer leaves out a column without values, so the page's batch has no key
+/// column. Its rows' key is null, as is that of the row of the page after
+/// it whose key is null, where another row has a key.
+#[tokio::test]
+async fn a_page_without_key_values_syncs() {
+    let pages = [
+        rows(&[
+            r#"{"id": null, "name": "a", "at": "2024-05-01"}"#,
+            r#"{"name": "b", "at": "2024-05-01"}"#,
+        ]),
+        rows(&[
+            r#"{"id": 1, "name": "c", "at": "2024-05-01"}"#,
+            r#"{"id": null, "name": "d", "at": "2024-05-01"}"#,
+        ]),
+    ];
+    let frames: Vec<_> = pages.into_iter().map(|p| (FrameKind::Rows, p)).collect();
+    null_keys_are_one_record(&frames, &["a", "b", "d"]).await;
+    let keyed = async |lanes, versions| {
+        ids_of(
+            &all_lanes(&sync_frames(lanes, versions, &frames).await),
+            &["c"],
+        )
+    };
+    assert_eq!(keyed(2, true).await, keyed(1, false).await);
+}
+
+/// A typed batch's key column of type null is null in every row.
+#[tokio::test]
+async fn a_key_column_of_type_null_syncs() {
+    use arrow_array::{ArrayRef, NullArray, StringArray};
+    let batch = |names: &[&str]| {
+        let id: ArrayRef = Arc::new(NullArray::new(names.len()));
+        let at: ArrayRef = Arc::new(StringArray::from(vec!["2024-05-01"; names.len()]));
+        let names: ArrayRef = Arc::new(StringArray::from(names.to_vec()));
+        let b = RecordBatch::try_from_iter(vec![("id", id), ("name", names), ("at", at)]).unwrap();
+        (FrameKind::Batch, ipc::encode_batch(&b).unwrap())
+    };
+    null_keys_are_one_record(&[batch(&["a", "b"]), batch(&["c"])], &["a", "b", "c"]).await;
+}
+
 /// A redo writes no state, reads its key groups' whichever writer lane
 /// its rows reach, and from the epoch's own record gives a row read again
 /// unchanged the ID the epoch gave it, and one changed since an ID of its
