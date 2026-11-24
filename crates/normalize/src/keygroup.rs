@@ -78,7 +78,7 @@ pub fn key_groups(
         buf.extend_from_slice(KEY_GROUP_HASH.as_bytes());
         for c in &cols {
             match c {
-                Some((f, a)) => value(&mut buf, &mut text, f, *a, row),
+                Some((f, a)) => value(&mut buf, &mut text, json(f), *a, row),
                 None => buf.extend_from_slice(&u32::MAX.to_le_bytes()),
             }
         }
@@ -165,8 +165,9 @@ pub(crate) fn part(buf: &mut Vec<u8>, b: &[u8]) {
     buf.extend_from_slice(b);
 }
 
-/// Encodes row `i` of `a`, of field `f`, whose type is hashable.
-pub(crate) fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Array, i: usize) {
+/// Encodes row `i` of `a`, whose type is hashable; `json` where its field is
+/// JSON.
+pub(crate) fn value(buf: &mut Vec<u8>, text: &mut String, json: bool, a: &dyn Array, i: usize) {
     use DataType as D;
     use std::fmt::Write;
     if a.is_null(i) {
@@ -198,8 +199,8 @@ pub(crate) fn value(buf: &mut Vec<u8>, text: &mut String, f: &Field, a: &dyn Arr
             &a.as_primitive::<Decimal256Type>().values()[i].to_string(),
             *s,
         ),
-        D::Utf8 if json(f) => return json_part(buf, bytes(a.as_string::<i32>(), i)),
-        D::LargeUtf8 if json(f) => return json_part(buf, bytes(a.as_string::<i64>(), i)),
+        D::Utf8 if json => return json_part(buf, bytes(a.as_string::<i32>(), i)),
+        D::LargeUtf8 if json => return json_part(buf, bytes(a.as_string::<i64>(), i)),
         D::Utf8 => return part(buf, bytes(a.as_string::<i32>(), i)),
         D::LargeUtf8 => return part(buf, bytes(a.as_string::<i64>(), i)),
         D::Binary => return part(buf, bytes(a.as_binary::<i32>(), i)),
@@ -322,7 +323,7 @@ fn sorted(v: &serde_json::Value, out: &mut String) {
     }
 }
 
-fn json_part(buf: &mut Vec<u8>, s: &[u8]) {
+pub(crate) fn json_part(buf: &mut Vec<u8>, s: &[u8]) {
     match canonical_json(s) {
         Some(t) => part(buf, t.as_bytes()),
         None => part(buf, s),
@@ -346,7 +347,7 @@ fn float(text: &mut String, v: f64) -> std::fmt::Result {
 }
 
 /// `digits` is the unscaled value as an integer's text.
-fn decimal(text: &mut String, digits: &str, scale: i8) -> std::fmt::Result {
+pub(crate) fn decimal(text: &mut String, digits: &str, scale: i8) -> std::fmt::Result {
     let (neg, digits) = match digits.strip_prefix('-') {
         Some(d) => (true, d),
         None => (false, digits),
