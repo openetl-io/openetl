@@ -1462,3 +1462,92 @@ async fn a_stream_that_ends_holds_no_merge_room() {
         assert!(merges >= 2 && named <= 20, "{what}");
     }
 }
+
+/// Of the runs a lookup finds gone, those that can be forgotten are, and
+/// the attempt fails naming only one that can't: a run a lookup took a
+/// block of before it went.
+#[tokio::test]
+async fn a_gone_run_that_cant_be_forgotten_is_named_alone() {
+    use super::super::versions::Versions;
+    use openetl_normalize::versions::{HASH_COLUMN, SCHEMA_KEY, schema_version};
+
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    // Two runs of read 1, of epochs 1 and 2.
+    let mut h = start_lanes(users(d, 1, 1000, &Restored::default(), 1));
+    let mut ins = std::mem::take(&mut h.ins);
+    let feed = tokio::spawn(async move {
+        let w = &mut ins[0];
+        for e in 1..=2u64 {
+            let at = (e as usize - 1) * 1000;
+            put(w, FrameKind::Rows, 0, page(at..at + 1000)).await;
+            put(w, FrameKind::Barrier, 0, epoch_barrier(1, e)).await;
+        }
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+    });
+    let (outs, mut ready) = h.finish().await;
+    feed.await.unwrap();
+    let first = written(&outs);
+    let r1 = ready.pop().unwrap();
+    let runs: Vec<String> = r1
+        .snapshots
+        .iter()
+        .filter(|s| s.operator == OP)
+        .flat_map(|s| s.runs.clone())
+        .collect();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let mut req = users(d, 2, 2000, &Restored::of(&r1), 1);
+    req.first_epoch = 3;
+    let plan = Arc::new(Plan::from_request(req).unwrap());
+    let lanes = plan.lanes.clone();
+    let mut h = start_plan(plan);
+    let flow = loop {
+        match lanes.0.get().and_then(std::sync::Weak::upgrade) {
+            Some(f) => break f,
+            None => tokio::task::yield_now().await,
+        }
+    };
+    let schema = ipc::decode_schema(&r1.schemas["users"]).unwrap();
+    let version = schema_version(&schema, &[]).to_string();
+    let batch = |ids: &[i64]| {
+        use arrow_schema::{Field, Schema};
+        let hash = Field::new(HASH_COLUMN, DataType::UInt64, false)
+            .with_metadata([(SCHEMA_KEY.to_owned(), version.clone())].into());
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("_openetl_id", DataType::FixedSizeBinary(16), false),
+            hash,
+        ]);
+        let records = ids.iter().map(|&id| record(&first, id));
+        RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(ids.to_vec())),
+                Arc::new(arrow_array::FixedSizeBinaryArray::try_from_iter(records).unwrap()),
+                Arc::new(arrow_array::UInt64Array::from(vec![7; ids.len()])),
+            ],
+        )
+        .unwrap()
+    };
+    let mut v = Versions::open(&flow, 0).await.unwrap();
+    // A lookup takes a block of epoch 1's run, and asks epoch 2's filters.
+    v.apply(&flow, Out::Batch(0, batch(&[5]))).await.unwrap();
+    for run in &runs {
+        std::fs::remove_file(d.join("state").join(run)).unwrap();
+    }
+    let ids: Vec<i64> = (100..150).chain(1100..1150).collect();
+    let err = match v.apply(&flow, Out::Batch(0, batch(&ids))).await {
+        Err(e) => e,
+        Ok(_) => panic!("a run read from was forgotten"),
+    };
+    assert_eq!(err.code, ErrorCode::CheckpointCorrupt, "{}", err.message);
+    let (read, unread) = (&runs[1], &runs[0]);
+    assert!(read.contains("/e1/") && unread.contains("/e2/"), "{runs:?}");
+    let name = |r: &String| r.split_once('/').map_or(r.clone(), |p| p.1.to_owned());
+    assert!(err.message.contains(&name(read)), "{}", err.message);
+    assert!(!err.message.contains(&name(unread)), "{}", err.message);
+    drop(flow);
+    h.end_all(1).await;
+    let _ = h.job.await;
+}

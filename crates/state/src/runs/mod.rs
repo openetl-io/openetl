@@ -1325,19 +1325,27 @@ async fn read_blocks(
     Ok(got.into_iter().flatten().collect())
 }
 
-/// The results of reads that each ran to its end: the first error other
-/// than [`Error::Gone`], else one that names every run they found gone, so
-/// that a reader finds them all in one pass, at the cost of one wait to
-/// confirm them.
+/// The results of reads that each ran to its end: of their errors other
+/// than [`Error::Gone`], the one that most needs saying, whichever came
+/// first; else one that names every run they found gone, so that a reader
+/// finds them all in one pass, at the cost of one wait to confirm them.
 fn gather<T>(done: Vec<Result<T>>) -> Result<Vec<T>> {
     let mut out = Vec::with_capacity(done.len());
     let mut gone = Vec::new();
+    let mut worst: Option<Error> = None;
     for r in done {
         match r {
             Ok(v) => out.push(v),
             Err(Error::Gone(names)) => gone.extend(names),
-            Err(e) => return Err(e),
+            Err(e) => {
+                if worst.as_ref().is_none_or(|w| rank(&e) < rank(w)) {
+                    worst = Some(e);
+                }
+            }
         }
+    }
+    if let Some(e) = worst {
+        return Err(e);
     }
     if gone.is_empty() {
         return Ok(out);
@@ -1345,6 +1353,19 @@ fn gather<T>(done: Vec<Result<T>>) -> Result<Vec<T>> {
     gone.sort();
     gone.dedup();
     Err(Error::Gone(gone))
+}
+
+/// Which of two errors of reads is said, the lower first: the engine's
+/// mistake; then state that can't be read, which a person deletes, and a
+/// retry would meet again; then storage that failed, which a retry may get
+/// past; then runs that are gone, which a reader may forget.
+fn rank(e: &Error) -> u8 {
+    match e {
+        Error::Invalid(_) => 0,
+        Error::Unreadable { .. } | Error::Corrupt(_) | Error::Snapshot(_) => 1,
+        Error::Store(_) => 2,
+        Error::Gone(_) => 3,
+    }
 }
 
 /// Writes a run placed in a lane, if any.
@@ -2608,6 +2629,28 @@ impl Store for RunStore {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Of reads that failed in other ways, the error said is the one that
+    /// most needs a person, whichever came first: unreadable state over
+    /// storage that failed, over runs that are gone.
+    #[test]
+    fn reads_that_failed_say_the_error_that_needs_a_person() {
+        let unreadable = || Error::Unreadable {
+            run: "r".into(),
+            why: "damaged".into(),
+        };
+        let store = || Error::Store("down".into());
+        let gone = || Error::Gone(vec!["g".into()]);
+        for done in [
+            vec![Err(store()), Err(unreadable()), Ok(())],
+            vec![Ok(()), Err(unreadable()), Err(gone()), Err(store())],
+        ] {
+            let got = gather(done);
+            assert!(matches!(got, Err(Error::Unreadable { .. })), "{got:?}");
+        }
+        let got = gather::<()>(vec![Err(gone()), Err(store())]);
+        assert!(matches!(got, Err(Error::Store(_))), "{got:?}");
+    }
 
     /// A merge task that panicked, a bug and not storage's failure, fails
     /// the barrier that adopts it as the engine's mistake.

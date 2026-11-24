@@ -290,7 +290,18 @@ impl Stream {
         let found = loop {
             match self.layer.row(ENTRIES, &slots).await {
                 Ok(found) => break found,
-                Err(StateError::Gone(runs)) if runs.iter().all(|r| self.layer.forget(r)) => {
+                // Each gone run is forgotten that can be; those that can't
+                // fail the attempt, named alone. A Gone of none would only
+                // look again: it fails the attempt as any other error.
+                Err(StateError::Gone(runs)) if !runs.is_empty() => {
+                    let kept: Vec<String> = runs
+                        .iter()
+                        .filter(|r| !self.layer.forget(r))
+                        .cloned()
+                        .collect();
+                    if !kept.is_empty() {
+                        return Err(self.failed(&StateError::Gone(kept)));
+                    }
                     for run in &runs {
                         let run = self.location(flow, run);
                         tracing::warn!(operator = %self.id, run = %run, "{GONE}");
