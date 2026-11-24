@@ -43,8 +43,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6
 	github.com/aws/smithy-go v1.28.7
 	github.com/dbos-inc/dbos-transact-golang v1.8.0
+	github.com/google/go-containerregistry v0.22.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/opencontainers/go-digest v1.0.0
+	github.com/opencontainers/image-spec v1.1.1
 	github.com/openetl-io/openetl/sdk/go v0.0.0-00010101000000-000000000000
 	github.com/pressly/goose/v3 v3.29.0
 	github.com/robfig/cron/v3 v3.0.1
@@ -78,6 +81,7 @@ require (
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
 	k8s.io/client-go v0.37.2
+	oras.land/oras-go/v2 v2.7.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -95,6 +99,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.13.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azkeys v1.5.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
+	github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.10.1 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.37.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/metric v0.61.0 // indirect
@@ -125,7 +130,6 @@ require (
 	github.com/cockroachdb/apd/v3 v3.2.1 // indirect
 	github.com/creasty/defaults v1.8.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/docker/cli v29.7.2+incompatible // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.39.0 // indirect
@@ -134,7 +138,7 @@ require (
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/geoarrow/geoarrow-go v0.0.0-20260403143023-f54751c3e3a1 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.1 // indirect
@@ -156,7 +160,6 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
-	github.com/google/go-containerregistry v0.22.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/wire v0.7.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.21 // indirect
@@ -180,8 +183,6 @@ require (
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/nexus-rpc/nexus-proto-annotations v0.1.0 // indirect
 	github.com/nexus-rpc/sdk-go v0.7.0 // indirect
-	github.com/opencontainers/go-digest v1.0.0 // indirect
-	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
@@ -193,6 +194,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/robfig/cron v1.2.0 // indirect
 	github.com/sethvargo/go-retry v0.5.0 // indirect
+	github.com/sirupsen/logrus v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
@@ -238,7 +240,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 	modernc.org/sqlite v1.60.1 // indirect
-	oras.land/oras-go/v2 v2.7.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect

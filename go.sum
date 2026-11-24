@@ -60,8 +60,8 @@ github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 h1:nCYfg
 github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0/go.mod h1:ucUjca2JtSZboY8IoUqyQyuuXvwbMBVwFOm0vdQPNhA=
 github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.0 h1:irsmOWwkp0KCTTNS5e2hdFeIvSQClQo2No3IaNmL3Vw=
 github.com/Azure/azure-sdk-for-go/sdk/storage/azblob v1.8.0/go.mod h1:GWcBkQj3MqN7ozHKLaCCAuNLiXoIGv2RtanfAwSjY/Y=
-github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
-github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
+github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4 h1:m2xcjRABtG288vnlV3U/PKh/HnPURxZp50RKNUwBxM8=
+github.com/Azure/go-ansiterm v0.0.0-20261006220739-8c912ac31dd4/go.mod h1:MTUE7ZuZO89FAtAwozGg6AWD83pcdefnEq5gF82MB8s=
 github.com/AzureAD/microsoft-authentication-extensions-for-go/cache v0.1.1 h1:WJTmL004Abzc5wDB5VtZG2PJk5ndYDgVacGqfirKxjM=
 github.com/AzureAD/microsoft-authentication-extensions-for-go/cache v0.1.1/go.mod h1:tCcJZ0uHAmvjsVYzEFivsRTN00oz5BEsRgQHu5JZ9WE=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.10.1 h1:0O6j18nQDoIff6/mtosT5LNU2WehEwp+LqfX6699oqY=
@@ -244,8 +244,8 @@ github.com/fxamacker/cbor/v2 v2.9.1 h1:2rWm8B193Ll4VdjsJY28jxs70IdDsHRWgQYAI80+r
 github.com/fxamacker/cbor/v2 v2.9.1/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/geoarrow/geoarrow-go v0.0.0-20260403143023-f54751c3e3a1 h1:8VcjuP5pKZ717K4zOLS9Lm4Zsn8JwD9X+CQGFCiRT2E=
 github.com/geoarrow/geoarrow-go v0.0.0-20260403143023-f54751c3e3a1/go.mod h1:XMOIOA5J96jEzAOpBROPyz0n14sHsooeF+y2FtGdrCY=
-github.com/go-jose/go-jose/v4 v4.1.5 h1:RjgjO2LOtWOJKUC5wpwY9LR3B3vwVAz6JS2YHfYU6eA=
-github.com/go-jose/go-jose/v4 v4.1.5/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
+github.com/go-jose/go-jose/v4 v4.1.6 h1:sNRkftxFJxwsILiQukqp5z83QBSmntVwmgRY7AqBDO4=
+github.com/go-jose/go-jose/v4 v4.1.6/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=
 github.com/go-logr/logr v1.4.4 h1:tG4xh9yMsRCAiodLVTxyrkzSZ9+o0L1Kg/+cPVcbP/8=
 github.com/go-logr/logr v1.4.4/go.mod h1:9T104GzyrTigFIr8wt5mBrctHMim0Nb2HLGrmQ40KvY=
@@ -511,8 +511,8 @@ github.com/sigstore/sigstore v1.10.8 h1:1Mgkxvkw4AXMfIP1DOjc6kw0GkUgA8pGVpveN/Ef
 github.com/sigstore/sigstore v1.10.8/go.mod h1:f9+B/4iaYimvUkySyb2mvc73n3RLqNn24grHZM/ET8M=
 github.com/sigstore/sigstore-go v1.2.1 h1:YWP/rDbBaEBvtbkj6xtwsSj38ZCFEhTVVadNOXjVe3A=
 github.com/sigstore/sigstore-go v1.2.1/go.mod h1:I8BqVwAb/SaQJ5pBu5IDFY+ksq8O/1/kCag8XUgrsko=
-github.com/sirupsen/logrus v1.9.4 h1:TsZE7l11zFCLZnZ+teH4Umoq5BhEIfIzfRDZ1Uzql2w=
-github.com/sirupsen/logrus v1.9.4/go.mod h1:ftWc9WdOfJ0a92nsE2jF5u5ZwH8Bv2zdeOC42RjbV2g=
+github.com/sirupsen/logrus v1.10.2 h1:G2SED73/qrAu6YwbdxOD6peLkCBI3z7L+ykJFTXJBBo=
+github.com/sirupsen/logrus v1.10.2/go.mod h1:SLEg8TqYulVKKfIGHldVp2K2aYz2DKSVBq4g/H5bR7Q=
 github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966 h1:JIAuq3EEf9cgbU6AtGPK4CTG3Zf6CKMNqf0MHTggAUA=
 github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966/go.mod h1:sUM3LWHvSMaG192sy56D9F7CNvL7jUJVXoqM1QKLnog=
 github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=
