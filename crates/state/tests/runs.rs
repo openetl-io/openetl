@@ -17,7 +17,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use openetl_state::runs::{Counts, RunName, named_runs, runs};
 use openetl_state::{
     BoxFuture, Error, KeyGroupRange, KeyRef, LAYOUT, Layer, MergeConfig, NEVER, ObjectStorage,
-    Objects, OperatorId, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
+    Objects, OperatorId, Pool, Result, RunConfig, RunStores, SectionKind, Snapshot, StateBackend,
 };
 
 const OP: OperatorId = OperatorId(1);
@@ -1280,4 +1280,45 @@ async fn a_run_cut_short_is_unreadable() {
         let named = matches!(&got, Err(Error::Unreadable { run, .. }) if *run == name);
         assert!(named, "cut to {keep} of {}: {got:?}", whole.len());
     }
+}
+
+/// Stores of one pool whose merges want more than the pool's bound take
+/// turns: none keeps winning because its barrier comes first, so the runs
+/// of each grow alike, rather than some stores' never merging.
+#[tokio::test]
+async fn stores_of_a_pool_take_turns_to_merge() {
+    // Two merges of four of a lane's runs fit the bound at once.
+    let run = 200 * 70;
+    let config = RunConfig {
+        merge: Some(MergeConfig {
+            wait: true,
+            max_bytes: 8 * run,
+            ..MergeConfig::default()
+        }),
+        ..RunConfig::default()
+    };
+    let pool = Pool::new(1 << 20, 0);
+    let stores: Vec<RunStores> = (0..16)
+        .map(|_| RunStores::pooled(Bucket::new(), config.clone(), None, &pool))
+        .collect();
+    let mut lanes = Vec::new();
+    for s in &stores {
+        lanes.push(open(s, 1, 1, 1, &[]).await.remove(0));
+    }
+    let mut named = vec![0; lanes.len()];
+    for e in 1..=200u32 {
+        for (i, l) in lanes.iter_mut().enumerate() {
+            for n in 0..200u32 {
+                let id = format!("id-{e}-{n}");
+                l.put_row(OP, KeyRef::new(n % GROUPS, id.as_bytes()), 10, b("e"));
+            }
+            named[i] = runs(&l.barrier(e.into()).await.unwrap()[0]).unwrap().len();
+        }
+    }
+    let merges: Vec<u64> = stores.iter().map(|s| s.counts().merges).collect();
+    println!("runs named by store: {named:?}; merges: {merges:?}");
+    let (most, least) = (named.iter().max().unwrap(), named.iter().min().unwrap());
+    assert!(most - least <= least / 2, "runs named by store {named:?}");
+    let (most, least) = (merges.iter().max().unwrap(), merges.iter().min().unwrap());
+    assert!(least * 2 >= *most, "merges by store {merges:?}");
 }

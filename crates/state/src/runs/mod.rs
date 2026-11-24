@@ -472,7 +472,7 @@ struct Shared {
     learn_peak: AtomicU64,
     /// The bytes its lanes' merges in flight take, of the merge config's
     /// `max_bytes`: its own, or its [`Pool`]'s.
-    merging: Arc<AtomicU64>,
+    merging: Arc<Budget>,
     /// What its [`Pool`]'s records carry of pending sets, if it has one.
     carried: Option<Arc<Carried>>,
     /// Each lane's last early flush, by its generation and key groups: the
@@ -529,7 +529,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone)]
 pub struct Pool {
     cache: Arc<Mutex<BlockCache>>,
-    merging: Arc<AtomicU64>,
+    merging: Arc<Budget>,
     carried: Arc<Carried>,
 }
 
@@ -540,7 +540,7 @@ impl Pool {
     pub fn new(cache_bytes: usize, pending_bytes: usize) -> Self {
         Self {
             cache: Arc::new(Mutex::new(BlockCache::new(cache_bytes))),
-            merging: Arc::new(AtomicU64::new(0)),
+            merging: Arc::default(),
             carried: Arc::new(Carried {
                 bytes: pending_bytes,
                 epochs: Mutex::default(),
@@ -794,6 +794,7 @@ impl RunStores {
             merging: None,
             kept: HashSet::new(),
             stuck: HashSet::new(),
+            lane: NEXT_LANE.fetch_add(1, Ordering::Relaxed),
         };
         for (_, b) in runs {
             if b.sections.is_empty() {
@@ -974,6 +975,66 @@ struct Merging {
     _reserved: Reserved,
 }
 
+/// What lanes' merges in flight take of a bound of bytes, which lanes take
+/// in turns: a lane refused for want of room waits in line, and the first
+/// in line takes room once it fits, which others leave it: another takes
+/// only room the first's need leaves. So a lane whose barrier comes late
+/// in each epoch gets its turn, rather than lanes before it taking whatever
+/// their merges release.
+#[derive(Default)]
+struct Budget(Mutex<Taken>);
+
+#[derive(Default)]
+struct Taken {
+    bytes: u64,
+    /// Lanes refused, by token, in the order they were, with what each
+    /// asked for last.
+    waiting: VecDeque<(u64, u64)>,
+}
+
+impl Budget {
+    /// Takes `bytes` of `of` for lane `lane`, where they fit and leave the
+    /// first in line its room, or the lane is first; else puts it in line,
+    /// if it isn't, with what it asks for.
+    fn take(&self, lane: u64, bytes: u64, of: u64) -> bool {
+        let mut t = lock(&self.0);
+        let kept = match t.waiting.front() {
+            Some(&(first, _)) if first == lane => 0,
+            Some(&(_, need)) => need,
+            None => 0,
+        };
+        let fits = t
+            .bytes
+            .checked_add(bytes)
+            .and_then(|n| n.checked_add(kept))
+            .is_some_and(|n| n <= of);
+        if fits {
+            t.bytes += bytes;
+            t.waiting.retain(|w| w.0 != lane);
+            return true;
+        }
+        match t.waiting.iter_mut().find(|w| w.0 == lane) {
+            Some(w) => w.1 = bytes,
+            None => t.waiting.push_back((lane, bytes)),
+        }
+        false
+    }
+
+    /// Lane `lane` wants no merge now, or is gone: it leaves the line.
+    fn leave(&self, lane: u64) {
+        let mut t = lock(&self.0);
+        t.waiting.retain(|w| w.0 != lane);
+    }
+
+    fn give(&self, bytes: u64) {
+        let mut t = lock(&self.0);
+        t.bytes = t.bytes.saturating_sub(bytes);
+    }
+}
+
+/// The next lane, of any store: its place in a [`Budget`]'s line.
+static NEXT_LANE: AtomicU64 = AtomicU64::new(0);
+
 /// Bytes a merge takes of what its [`RunStores`]' merges may take at once,
 /// until it's dropped.
 struct Reserved {
@@ -982,14 +1043,8 @@ struct Reserved {
 }
 
 impl Reserved {
-    fn take(shared: &Arc<Shared>, bytes: u64, of: u64) -> Option<Reserved> {
-        shared
-            .merging
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                n.checked_add(bytes).filter(|t| *t <= of)
-            })
-            .ok()?;
-        Some(Reserved {
+    fn take(shared: &Arc<Shared>, lane: u64, bytes: u64, of: u64) -> Option<Reserved> {
+        shared.merging.take(lane, bytes, of).then(|| Reserved {
             shared: shared.clone(),
             bytes,
         })
@@ -998,7 +1053,7 @@ impl Reserved {
 
 impl Drop for Reserved {
     fn drop(&mut self) {
-        self.shared.merging.fetch_sub(self.bytes, Ordering::Relaxed);
+        self.shared.merging.give(self.bytes);
     }
 }
 
@@ -1287,6 +1342,14 @@ struct RunStore {
     /// Runs a merge couldn't read, gone or unreadable: they merge no more,
     /// and the reads that need them meet them as they would have.
     stuck: HashSet<u64>,
+    /// Its place in its merges' [`Budget`]'s line.
+    lane: u64,
+}
+
+impl Drop for RunStore {
+    fn drop(&mut self) {
+        self.shared.merging.leave(self.lane);
+    }
 }
 
 /// A key a lookup asks for, and how far down its sections it got.
@@ -2023,7 +2086,9 @@ impl RunStore {
         Ok(placed)
     }
 
-    /// Starts the merge the policy picks, if none is in flight.
+    /// Starts the merge the policy picks, if none is in flight, and it's
+    /// the lane's turn to take room for it; a lane without one leaves the
+    /// line.
     fn start_merge(&mut self) {
         let Some(config) = &self.shared.config.merge else {
             return;
@@ -2034,6 +2099,7 @@ impl RunStore {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
+        let lane = self.lane;
         let candidates: [Vec<merge::Candidate>; 4] = std::array::from_fn(|i| {
             self.sections[i]
                 .iter()
@@ -2047,11 +2113,12 @@ impl RunStore {
                 .collect()
         });
         let Some(plan) = merge::plan(&candidates, config) else {
+            self.shared.merging.leave(lane);
             return;
         };
         let secs = &self.sections[plan.kind.index()][plan.at.clone()];
         let need: u64 = secs.iter().map(|s| s.handle.raw_bytes).sum();
-        let Some(reserved) = Reserved::take(&self.shared, need, config.max_bytes) else {
+        let Some(reserved) = Reserved::take(&self.shared, lane, need, config.max_bytes) else {
             return;
         };
         let inputs: Vec<merge::Input> = secs
