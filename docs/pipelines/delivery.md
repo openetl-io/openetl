@@ -195,7 +195,11 @@ The table keeps the first version, and the second is skipped as a repeat, in the
 - **The first read after an upgrade** to a version of OpenETL that keeps these hashes, or after the stream becomes deduped at apply. A second version that was waiting to be read is skipped. Later versions land.
 - **A row that neither of the last two reads gave.** Its hash is gone.
 - **A schema change.** A column that the stream gains or loses, or a column that changes to another kind of value, such as from a number to text, starts the hashes again. A widening, such as from `int32` to `int64`, does not.
-- **A stream that a SQL transform reads, and the outputs of a transform.** OpenETL keeps no hashes for them.
+- **A stream that passes through a SQL transform.** OpenETL keeps no hashes for it.
+
+A version skipped in these cases gets the `_openetl_id` of the version that the table has. `openetl reset --stream` does not bring it back: the new read gives the version the same `_openetl_id`, and the destination skips it again. The table keeps the version before until the row next changes and moves the cursor to a new value.
+
+The outputs of a transform are not deduped at apply, so OpenETL keeps no hashes for them. The destination writes every row that the transform gives, a second version at one cursor value included. It also writes again each row that a read gives again. A stream that a SQL transform reads and does not pass through is not written.
 
 In these cases, the table ends with another row than the source has:
 
@@ -216,7 +220,7 @@ The plan warns about a stream that has these properties:
 - It is deduped at apply.
 - The source's catalog gives its cursor one of these types: `date32`, `date64`, `timestamp[s]` with or without a time zone, or `time32[s]`.
 
-The warning starts with `its cursor "updated_at" is timestamp[s, tz=UTC], so two changes of a row can have one cursor value`. For a stream whose versions OpenETL tells apart, it goes on with the change back: a row that changes back within one cursor value to a version that a read already gave ends as the version before. For a stream that a SQL transform reads, where OpenETL keeps no hashes, it says that the apply skips the second version. The plan cannot see the precision of these cursors, so check them yourself:
+The warning starts with `its cursor "updated_at" is timestamp[s, tz=UTC], so two changes of a row can have one cursor value`. For a stream whose versions OpenETL tells apart, it goes on with the change back: a row that changes back within one cursor value to a version that a read already gave ends as the version before. For a stream that passes through a SQL transform, where OpenETL keeps no hashes, it says that the apply skips the second version. The plan cannot see the precision of these cursors, so check them yourself:
 
 - an integer that holds seconds since 1970, such as a declarative source's `unix` cursor;
 - a timestamp with microseconds whose values are whole seconds, a type that a source can give to a database column that stores whole seconds;
