@@ -13,7 +13,7 @@ use arrow_array::builder::{BinaryViewBuilder, StringViewBuilder};
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int16Type, Int32Type, Int64Type, RunEndIndexType};
 use arrow_array::{
-    Array, ArrayRef, OffsetSizeTrait, PrimitiveArray, RunArray, UInt64Array, UnionArray, make_array,
+    Array, ArrayRef, OffsetSizeTrait, PrimitiveArray, UInt64Array, UnionArray, make_array,
 };
 use arrow_buffer::{
     ArrowNativeType, BooleanBuffer, Buffer, MutableBuffer, NullBuffer, OffsetBuffer, ScalarBuffer,
@@ -345,5 +345,12 @@ fn runs<R: RunEndIndexType>(
         .map(|e| R::Native::from_usize(e).ok_or(ArrowError::OffsetOverflowError(e)))
         .collect::<Result<Vec<_>, _>>()?;
     let ends = PrimitiveArray::<R>::new(ends.into(), None);
-    Ok(Arc::new(RunArray::<R>::try_new(&ends, values.as_ref())?))
+    // Under `a`'s own type: RunArray::try_new would give its fields Arrow's
+    // default names and nullability.
+    let data = ArrayDataBuilder::new(a.data_type().clone())
+        .len(n)
+        .add_child_data(ends.into_data())
+        .add_child_data(values.to_data())
+        .build()?;
+    Ok(make_array(data))
 }

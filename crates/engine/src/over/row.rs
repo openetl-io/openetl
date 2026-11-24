@@ -281,7 +281,7 @@ mod tests {
         TimestampMicrosecondArray, UnionArray,
     };
     use arrow_buffer::{NullBuffer, OffsetBuffer};
-    use arrow_schema::UnionFields;
+    use arrow_schema::{Fields, UnionFields};
 
     fn id(i: usize) -> [u8; 16] {
         [u8::try_from(i).unwrap(); 16]
@@ -881,6 +881,135 @@ mod tests {
         );
         assert!(a[0] == b[1] && a[1] == b[2] && a[3] == b[0], "runs");
         assert!(a[0] != a[3], "runs");
+    }
+
+    /// A value is kept under its type exactly, whatever its nested fields'
+    /// names, nullability and metadata, a map's sorted flag, a union's type
+    /// ids or a timestamp's zone: its one-row batch has the column's type,
+    /// and it reads back as that type.
+    #[test]
+    fn a_value_keeps_its_type_exactly() {
+        use arrow_array::types::Int16Type;
+        use arrow_array::{MapArray, make_array};
+        use arrow_data::ArrayDataBuilder;
+        let md = std::collections::HashMap::from([("k".to_owned(), "v".to_owned())]);
+        let runs_of = |ends: &[i16], values: &[&str]| -> ArrayRef {
+            let t = DataType::RunEndEncoded(
+                Arc::new(Field::new("ends", DataType::Int16, false)),
+                Arc::new(Field::new("v", DataType::Utf8, false).with_metadata(md.clone())),
+            );
+            let d = ArrayDataBuilder::new(t)
+                .len(usize::try_from(*ends.last().unwrap()).unwrap())
+                .add_child_data(arrow_array::Int16Array::from(ends.to_vec()).to_data())
+                .add_child_data(StringArray::from(values.to_vec()).to_data())
+                .build()
+                .unwrap();
+            make_array(d)
+        };
+        let element =
+            Arc::new(Field::new("element", DataType::Int64, false).with_metadata(md.clone()));
+        let entries = Fields::from(vec![
+            Field::new("k", DataType::Utf8, false),
+            Field::new("v", DataType::Int64, false),
+        ]);
+        let map = MapArray::try_new(
+            Arc::new(Field::new("kv", DataType::Struct(entries.clone()), false)),
+            OffsetBuffer::new(vec![0, 2, 2].into()),
+            StructArray::try_new(
+                entries,
+                vec![
+                    Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+                    Arc::new(Int64Array::from(vec![1, 2])),
+                ],
+                None,
+            )
+            .unwrap(),
+            nulls(&[true, false]),
+            true,
+        )
+        .unwrap();
+        let zoned =
+            arrow_array::TimestampMillisecondArray::from(vec![1, 2]).with_timezone("+05:30");
+        let union_fields = UnionFields::try_new(
+            [5, 2],
+            [
+                Field::new("n", DataType::Int64, false),
+                Field::new("t", DataType::Utf8, true).with_metadata(md.clone()),
+            ],
+        )
+        .unwrap();
+        let runs_in_list = {
+            let r = runs_of(&[2, 3], &["a", "b"]);
+            let f = Arc::new(Field::new("x", r.data_type().clone(), false));
+            Arc::new(ListArray::try_new(f, OffsetBuffer::new(vec![0, 3].into()), r, None).unwrap())
+                as ArrayRef
+        };
+        let arrays: Vec<ArrayRef> = vec![
+            runs_of(&[2, 3], &["a", "b"]),
+            runs_in_list,
+            Arc::new(
+                ListArray::try_new(
+                    element.clone(),
+                    OffsetBuffer::new(vec![0, 2, 3].into()),
+                    Arc::new(Int64Array::from(vec![1, 2, 3])),
+                    nulls(&[true, false]),
+                )
+                .unwrap(),
+            ),
+            Arc::new(FixedSizeListArray::new(
+                element,
+                2,
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+                nulls(&[false, true]),
+            )),
+            Arc::new(map),
+            Arc::new(
+                StructArray::try_new(
+                    Fields::from(vec![
+                        Field::new("a", DataType::Int64, false).with_metadata(md.clone()),
+                    ]),
+                    vec![Arc::new(Int64Array::from(vec![1, 2]))],
+                    nulls(&[true, false]),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                DictionaryArray::<Int16Type>::try_new(
+                    arrow_array::Int16Array::from(vec![1, 0]),
+                    Arc::new(LargeStringArray::from(vec!["a", "b"])),
+                )
+                .unwrap(),
+            ),
+            Arc::new(
+                UnionArray::try_new(
+                    union_fields,
+                    vec![5i8, 2].into(),
+                    None,
+                    vec![
+                        Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+                        Arc::new(StringArray::from(vec![Some("a"), None])),
+                    ],
+                )
+                .unwrap(),
+            ),
+            list(Arc::new(zoned), &[0, 1, 2], &[true, true]),
+        ];
+        for a in &arrays {
+            let t = a.data_type();
+            for r in 0..a.len() {
+                let one = a.slice(r, 1);
+                let copy = canonical(one.as_ref(), None).unwrap_or_else(|e| panic!("{t}: {e}"));
+                assert_eq!(copy.data_type(), t);
+                let want = kept(a, r);
+                let schema = Arc::new(Schema::new(vec![Field::new("v", t.clone(), true)]));
+                let batch = RecordBatch::try_new(schema.clone(), vec![one]).unwrap();
+                let mut row = Vec::new();
+                encode(&batch, Some(&id(0)), 0, 0, &mut row).unwrap();
+                let (back, _) = decode(&[&row], &schema).unwrap();
+                assert_eq!(back.column(0).data_type(), t);
+                assert!(kept(back.column(0), 0) == want, "{t}: row {r} read back");
+            }
+        }
     }
 
     /// A value that doesn't fit a narrower type fails the cast, rather than
