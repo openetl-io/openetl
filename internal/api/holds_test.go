@@ -85,10 +85,10 @@ func TestADiscardedColumnHoldsWayOutIsARelease(t *testing.T) {
 	}
 }
 
-// A discard replaces a release of a hold not discarded, whether it waits
-// for the next run or is being patched in, and a release replaces the
-// discard a discarded hold took. Neither replaces one of its own kind, nor
-// a discard the release that ends a discarded hold.
+// A discard replaces a release of a hold not discarded that waits for the
+// next run, and a release replaces the discard a discarded hold took.
+// Neither replaces one of its own kind, nor a discard the release that ends
+// a discarded hold, or one being patched in, which it ends instead.
 func TestWhatAReleaseReplaces(t *testing.T) {
 	id, yes, no := uuid.New(), true, false
 	for _, tc := range []struct {
@@ -98,7 +98,7 @@ func TestWhatAReleaseReplaces(t *testing.T) {
 		want    bool
 	}{
 		{"a discard, a release pending", db.ListHoldsRow{ReleaseID: &id, ReleaseDiscards: &no}, true, true},
-		{"a discard, a release being patched in", db.ListHoldsRow{Releasing: true, ReleaseID: &id, ReleaseDiscards: &no}, true, true},
+		{"a discard, a release being patched in", db.ListHoldsRow{Releasing: true, ReleaseID: &id, ReleaseDiscards: &no}, true, false},
 		{"a discard, the release that ends a discarded hold", db.ListHoldsRow{Discarded: true, ReleaseID: &id, ReleaseDiscards: &no}, true, false},
 		{"a discard, a discard pending", db.ListHoldsRow{ReleaseID: &id, ReleaseDiscards: &yes}, true, false},
 		{"a discard, nothing", db.ListHoldsRow{}, true, false},
@@ -109,5 +109,26 @@ func TestWhatAReleaseReplaces(t *testing.T) {
 		if got := replacedBy(tc.row, tc.discard); got != tc.want {
 			t.Errorf("%s: replaced %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A release a person discarded while it was being patched in, which ended
+// with values left held, says that the discard dropped nothing, and the
+// hold isn't pending: the discard lapsed with the release.
+func TestARefusedReleaseSaysItsDiscardLapsed(t *testing.T) {
+	id, no, yes := uuid.New(), false, true
+	row := db.ListHoldsRow{Stream: "s", ColumnName: "x", Cells: 2, Reason: "nan", ReleaseID: &id, ReleaseDiscards: &no, ReleaseEnds: &yes,
+		RefusedRelease: &id, Refusal: "2 released values still don't fit"}
+	h, err := hold(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.GetPending() || !strings.HasPrefix(h.GetRefused().GetReason(), "2 released values still don't fit; ") ||
+		!strings.Contains(h.GetRefused().GetReason(), "so the discard dropped nothing") || len(h.GetWaysOut()) == 0 {
+		t.Errorf("hold %v", h)
+	}
+	row.ReleaseEnds = &no
+	if h, err = hold(row); err != nil || h.GetRefused().GetReason() != "2 released values still don't fit" {
+		t.Errorf("refused %v, %v", h.GetRefused(), err)
 	}
 }

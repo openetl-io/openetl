@@ -417,7 +417,12 @@ type HoldRelease struct {
 	Discard bool `protobuf:"varint,4,opt,name=discard,proto3" json:"discard,omitempty"`
 	// A column hold's values go to a new version of the column, col__v2, as
 	// allow_all's do, and the column keeps the type the destination has.
-	NewVersion    bool `protobuf:"varint,5,opt,name=new_version,json=newVersion,proto3" json:"new_version,omitempty"`
+	NewVersion bool `protobuf:"varint,5,opt,name=new_version,json=newVersion,proto3" json:"new_version,omitempty"`
+	// A release being patched in that a person discarded: a run in which its
+	// stream holds goes on with it, and one in which the stream doesn't hold
+	// drops the values it hasn't patched in. It ends with the release, so the
+	// values a finished release leaves held stay held.
+	Ends          bool `protobuf:"varint,7,opt,name=ends,proto3" json:"ends,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -490,6 +495,13 @@ func (x *HoldRelease) GetDiscard() bool {
 func (x *HoldRelease) GetNewVersion() bool {
 	if x != nil {
 		return x.NewVersion
+	}
+	return false
+}
+
+func (x *HoldRelease) GetEnds() bool {
+	if x != nil {
+		return x.Ends
 	}
 	return false
 }
@@ -3797,7 +3809,7 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2(.openetl.dataplane.v1.PinnedFlinkClusterR\x05value:\x028\x01\"1\n" +
 	"\x05Reset\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
-	"\astreams\x18\x02 \x03(\tR\astreams\"\xc3\x01\n" +
+	"\astreams\x18\x02 \x03(\tR\astreams\"\xd7\x01\n" +
 	"\vHoldRelease\x12\x0e\n" +
 	"\x02id\x18\x06 \x01(\tR\x02id\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
@@ -3805,7 +3817,8 @@ const file_openetl_dataplane_v1_dataplane_proto_rawDesc = "" +
 	"\x05since\x18\x03 \x01(\v2#.openetl.dataplane.v1.CheckpointRefR\x05since\x12\x18\n" +
 	"\adiscard\x18\x04 \x01(\bR\adiscard\x12\x1f\n" +
 	"\vnew_version\x18\x05 \x01(\bR\n" +
-	"newVersion\"\xf1\x01\n" +
+	"newVersion\x12\x12\n" +
+	"\x04ends\x18\a \x01(\bR\x04ends\"\xf1\x01\n" +
 	"\x12PinnedFlinkCluster\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x124\n" +
 	"\x04spec\x18\x02 \x01(\v2 .openetl.api.v1.FlinkClusterSpecR\x04spec\x12>\n" +

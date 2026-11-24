@@ -151,6 +151,11 @@ message HoldRelease {
   // A column hold's values go to a new version of the column, col__v2, as
   // allow_all's do, and the column keeps the type the destination has.
   bool new_version = 5;
+  // A release being patched in that a person discarded: a run in which its
+  // stream holds goes on with it, and one in which the stream doesn't hold
+  // drops the values it hasn't patched in. It ends with the release, so the
+  // values a finished release leaves held stay held.
+  bool ends = 7;
 }
 
 // PinnedFlinkCluster's secret references that this server holds are

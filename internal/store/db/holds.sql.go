@@ -67,6 +67,39 @@ func (q *Queries) DeleteHolds(ctx context.Context, arg DeleteHoldsParams) error 
 	return err
 }
 
+const endHoldReleases = `-- name: EndHoldReleases :execrows
+UPDATE hold_releases r SET ends = true
+WHERE r.org_id = $1 AND r.pipeline_id = $2 AND r.stream = $3 AND r.column_name = $4
+    AND NOT r.discard AND NOT EXISTS (
+        SELECT 1 FROM holds h
+        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+            AND h.column_name = r.column_name AND h.whole = r.whole
+            AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch AND h.discarded)
+`
+
+type EndHoldReleasesParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Stream     string
+	ColumnName string
+}
+
+// Marks a person's discard on the releases of the stream's column, but
+// those that end a discarded hold. A run matches them to the releases its
+// replay took by ID, so one of an older hold, marked too, does nothing.
+func (q *Queries) EndHoldReleases(ctx context.Context, arg EndHoldReleasesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, endHoldReleases,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.Stream,
+		arg.ColumnName,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertHold = `-- name: InsertHold :exec
 INSERT INTO holds (org_id, pipeline_id, stream, column_name, whole, reason, since_generation, since_epoch, start_time, cells, discarded, releasing,
     cause, refused_release, refusal)
@@ -160,9 +193,37 @@ func (q *Queries) InsertHoldRelease(ctx context.Context, arg InsertHoldReleasePa
 	return i, err
 }
 
+const lapseHoldReleases = `-- name: LapseHoldReleases :exec
+UPDATE hold_releases r SET ends = false
+WHERE r.org_id = $1 AND r.pipeline_id = $2 AND r.ends
+    AND NOT EXISTS (
+        SELECT 1 FROM holds h
+        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+            AND h.column_name = r.column_name AND h.whole = r.whole
+            AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch)
+    AND NOT EXISTS (
+        SELECT 1 FROM holds h
+        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+            AND h.column_name = r.column_name AND h.releasing)
+`
+
+type LapseHoldReleasesParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+}
+
+// Unmarks the releases a person discarded that are over: no hold of theirs
+// is left, and their column isn't being patched in. One its hold refused
+// keeps the mark, which its refusal tells of.
+func (q *Queries) LapseHoldReleases(ctx context.Context, arg LapseHoldReleasesParams) error {
+	_, err := q.db.Exec(ctx, lapseHoldReleases, arg.OrgID, arg.PipelineID)
+	return err
+}
+
 const listHolds = `-- name: ListHolds :many
 SELECT h.stream, h.column_name, h.whole, h.reason, h.since_generation, h.since_epoch, h.start_time, h.cells,
-    h.discarded, h.releasing, h.cause, h.refused_release, h.refusal, r.id AS release_id, r.discard AS release_discards
+    h.discarded, h.releasing, h.cause, h.refused_release, h.refusal, r.id AS release_id, r.discard AS release_discards,
+    r.ends AS release_ends
 FROM holds h
 LEFT JOIN hold_releases r ON r.org_id = h.org_id AND r.pipeline_id = h.pipeline_id AND r.stream = h.stream
     AND r.column_name = h.column_name AND r.whole = h.whole
@@ -192,10 +253,11 @@ type ListHoldsRow struct {
 	Refusal         string
 	ReleaseID       *uuid.UUID
 	ReleaseDiscards *bool
+	ReleaseEnds     *bool
 }
 
-// With the hold's release, if any: one that waits for the next run, or the
-// one the hold refused.
+// With the hold's release, if any: one that waits for the next run, one
+// being patched in, or the one the hold refused.
 func (q *Queries) ListHolds(ctx context.Context, arg ListHoldsParams) ([]ListHoldsRow, error) {
 	rows, err := q.db.Query(ctx, listHolds, arg.OrgID, arg.PipelineID)
 	if err != nil {
@@ -221,6 +283,7 @@ func (q *Queries) ListHolds(ctx context.Context, arg ListHoldsParams) ([]ListHol
 			&i.Refusal,
 			&i.ReleaseID,
 			&i.ReleaseDiscards,
+			&i.ReleaseEnds,
 		); err != nil {
 			return nil, err
 		}
@@ -269,13 +332,19 @@ func (q *Queries) NewestHoldReleaseAt(ctx context.Context, arg NewestHoldRelease
 }
 
 const pendingHoldReleases = `-- name: PendingHoldReleases :many
-SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version
+SELECT r.id, r.stream, r.column_name, r.since_generation, r.since_epoch, r.discard, r.new_version, r.ends
 FROM hold_releases r
-JOIN holds h ON h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
-    AND h.column_name = r.column_name AND h.whole = r.whole
-    AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch
-WHERE r.org_id = $1 AND r.pipeline_id = $2 AND (NOT h.discarded OR NOT r.discard) AND (NOT h.releasing OR r.discard)
-    AND r.id IS DISTINCT FROM h.refused_release
+WHERE r.org_id = $1 AND r.pipeline_id = $2 AND (
+    EXISTS (
+        SELECT 1 FROM holds h
+        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+            AND h.column_name = r.column_name AND h.whole = r.whole
+            AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch
+            AND (NOT h.discarded OR NOT r.discard) AND NOT h.releasing AND r.id IS DISTINCT FROM h.refused_release)
+    OR r.ends AND EXISTS (
+        SELECT 1 FROM holds h
+        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+            AND h.column_name = r.column_name AND h.releasing))
 ORDER BY r.create_time, r.id
 `
 
@@ -292,11 +361,14 @@ type PendingHoldReleasesRow struct {
 	SinceEpoch      int64
 	Discard         bool
 	NewVersion      bool
+	Ends            bool
 }
 
-// The releases of holds still open and not refused, for a run to take: of a
-// hold not discarded, or a release that ends a discarded one; of a hold
-// being patched in, only a discard.
+// The releases of holds still open, not being patched in, and not refused,
+// for a run to take: of a hold not discarded, or a release that ends a
+// discarded one. And while its column is being patched in, a release a
+// person discarded, which a run in which the stream doesn't hold takes as
+// a discard.
 func (q *Queries) PendingHoldReleases(ctx context.Context, arg PendingHoldReleasesParams) ([]PendingHoldReleasesRow, error) {
 	rows, err := q.db.Query(ctx, pendingHoldReleases, arg.OrgID, arg.PipelineID)
 	if err != nil {
@@ -314,6 +386,7 @@ func (q *Queries) PendingHoldReleases(ctx context.Context, arg PendingHoldReleas
 			&i.SinceEpoch,
 			&i.Discard,
 			&i.NewVersion,
+			&i.Ends,
 		); err != nil {
 			return nil, err
 		}

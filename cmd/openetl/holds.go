@@ -69,7 +69,7 @@ func runHolds(ctx context.Context, args []string, out io.Writer) error {
 	}
 	h = res.Msg.GetHold()
 	if h.GetReleasing() {
-		fmt.Fprintf(out, "discarded the release of %s.%s of %s in progress; if the stream doesn't hold in the pipeline's next run, that run drops the values the release hasn't patched in, and otherwise the release goes on\n", h.GetStream(), h.GetColumn(), parent)
+		fmt.Fprintf(out, "discarded the release of %s.%s of %s in progress; a run in which the stream doesn't hold drops the values the release hasn't patched in, and while the stream holds, the release goes on, and the values it leaves held stay held\n", h.GetStream(), h.GetColumn(), parent)
 		return nil
 	}
 	later := ""
