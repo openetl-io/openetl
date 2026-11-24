@@ -160,7 +160,7 @@ After that checkpoint, such a column takes only these changes of type, which kee
 - A `json` column to a `string`, with the same text.
 - For the cursor, an integer to a float, such as `int64` to `float64`. Each integer keeps its exact value: a column that has held an integer beyond ±2^53 becomes a `string` instead, which fails.
 
-A timestamp that the source sends in another unit, such as milliseconds, does not change the column's type. OpenETL converts it to the stream's unit.
+A timestamp that the source sends in another unit, such as milliseconds, does not change the column's type. OpenETL converts it to the stream's unit. In the same way, a string or binary value in another Arrow representation, such as `large_utf8` for `utf8`, keeps the column's type, for any column.
 
 When the cursor changes from an integer to a float, `_openetl_seq` changes to the float too. The destination changes the type of the cursor's column and of `_openetl_seq` only if `destination.typeChanges` allows it. Otherwise it refuses, and the sync fails with `SCHEMA_DRIFT`, because the cursor cannot be held. The error gives the statement that changes the column on the destination. Run it, then start a sync. Do the same for each such error that follows, such as one for `_openetl_seq`. If the destination cannot make the change, the error gives no statement. Then use a new destination table, as described below.
 

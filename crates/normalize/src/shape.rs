@@ -2493,6 +2493,65 @@ mod tests {
         assert_eq!(got, want);
     }
 
+    // A key or cursor of strings or binary that comes in another of its
+    // family's representations, as large_utf8 for utf8, keeps its type,
+    // sealed or not: its values, record IDs and key groups are the same
+    // bytes.
+    #[test]
+    fn a_key_or_cursor_takes_its_bytes_in_another_representation() {
+        use arrow_array::{BinaryArray, LargeBinaryArray, LargeStringArray};
+        let text = |large: bool| -> ArrayRef {
+            match large {
+                true => Arc::new(LargeStringArray::from(vec!["a", "b"])),
+                false => Arc::new(StringArray::from(vec!["a", "b"])),
+            }
+        };
+        let bytes = |large: bool| -> ArrayRef {
+            let v: Vec<&[u8]> = vec![b"a", b"b"];
+            match large {
+                true => Arc::new(LargeBinaryArray::from_vec(v)),
+                false => Arc::new(BinaryArray::from_vec(v)),
+            }
+        };
+        let mut checked = 0;
+        for (column, other) in [("k", "c"), ("c", "k")] {
+            for (first, then) in [
+                (text(true), text(false)),
+                (text(false), text(true)),
+                (bytes(true), bytes(false)),
+                (bytes(false), bytes(true)),
+            ] {
+                for sealed in [false, true] {
+                    let steady: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+                    let b = |a: &ArrayRef| {
+                        RecordBatch::try_from_iter(vec![
+                            (column, a.clone()),
+                            (other, steady.clone()),
+                        ])
+                        .unwrap()
+                    };
+                    let mut s = keyed_by("k", "c");
+                    let before = s.batch(&b(&first)).unwrap();
+                    if sealed {
+                        s.seal();
+                    }
+                    let case = format!(
+                        "{column}: {} then {}, sealed: {sealed}",
+                        first.data_type(),
+                        then.data_type()
+                    );
+                    let n = s.batch(&b(&then)).unwrap_or_else(|e| panic!("{case}: {e}"));
+                    assert!(!n.schema_changed, "{case}");
+                    let f = n.batch.schema().field_with_name(column).unwrap().clone();
+                    assert_eq!(f.data_type(), first.data_type(), "{case}");
+                    assert_eq!(ids(&n.batch), ids(&before.batch), "{case}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 16);
+    }
+
     #[test]
     fn a_restored_stream_remembers_columns_past_2_53() {
         let typed = |a: ArrayRef| RecordBatch::try_from_iter(vec![("X", a)]).unwrap();

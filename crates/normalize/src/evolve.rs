@@ -425,6 +425,14 @@ impl Evolver {
             } else {
                 (f, col)
             };
+            let (bytes_field, bytes_col);
+            let (f, col) = if same_family(cur.data_type(), f.data_type()) {
+                bytes_field = Arc::new(f.as_ref().clone().with_data_type(cur.data_type().clone()));
+                bytes_col = arrow_cast::cast(col, cur.data_type())?;
+                (&bytes_field, &bytes_col)
+            } else {
+                (f, col)
+            };
             if cur.data_type() == f.data_type() && widens(f, &cur) {
                 columns.insert(name, col.clone());
                 continue;
@@ -598,6 +606,16 @@ impl Evolver {
             big_ints_grew: self.big_ints.len() > big_ints,
         })
     }
+}
+
+/// Whether `a` and `b` are two representations of strings, or of binary,
+/// as `large_utf8` and `utf8` are: a value casts between them as the same
+/// bytes, so a column of one takes the other as its own type.
+fn same_family(a: &DataType, b: &DataType) -> bool {
+    use DataType as D;
+    let strings = |t: &D| matches!(t, D::Utf8 | D::LargeUtf8 | D::Utf8View);
+    let binary = |t: &D| matches!(t, D::Binary | D::LargeBinary | D::BinaryView);
+    a != b && ((strings(a) && strings(b)) || (binary(a) && binary(b)))
 }
 
 /// `cur` widened to `to`'s type, keeping its name.
@@ -970,5 +988,42 @@ mod tests {
         let mut e = Evolver::new(Policy::Block, None, BTreeMap::new());
         e.conform(&new_col).unwrap();
         assert!(e.conform(&wider).unwrap().changed);
+    }
+
+    // A string or binary in another of its family's representations is the
+    // column's type: no policy sees a change, and it's never versioned.
+    #[test]
+    fn another_representation_of_strings_or_bytes_is_no_change() {
+        use arrow_array::{
+            BinaryArray, BinaryViewArray, LargeBinaryArray, LargeStringArray, StringViewArray,
+        };
+        let v: Vec<&[u8]> = vec![b"a", b"b"];
+        let families: [Vec<ArrayRef>; 2] = [
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(LargeStringArray::from(vec!["a", "b"])),
+                Arc::new(StringViewArray::from(vec!["a", "b"])),
+            ],
+            vec![
+                Arc::new(BinaryArray::from_vec(v.clone())),
+                Arc::new(LargeBinaryArray::from_vec(v.clone())),
+                Arc::new(BinaryViewArray::from(v)),
+            ],
+        ];
+        for family in &families {
+            for first in family {
+                for then in family {
+                    let case = format!("{} then {}", first.data_type(), then.data_type());
+                    let mut e = Evolver::new(Policy::Block, None, BTreeMap::new());
+                    e.conform(&batch(vec![("x", first.clone())])).unwrap();
+                    e.establish();
+                    let c = e
+                        .conform(&batch(vec![("x", then.clone())]))
+                        .unwrap_or_else(|err| panic!("{case}: {err}"));
+                    assert!(!c.changed && c.versioned.is_empty(), "{case}");
+                    assert_eq!(c.batch.column(0).to_data(), first.to_data(), "{case}");
+                }
+            }
+        }
     }
 }
