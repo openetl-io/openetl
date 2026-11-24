@@ -195,6 +195,22 @@ func TestMirroredHolds(t *testing.T) {
 	if mirroredHolds(nil) != nil {
 		t.Error("holds for a stream that holds nothing")
 	}
+	// A released column held whole again is listed once, by its hold: the
+	// table keeps one row of each.
+	h := rec(5, true).Streams["s"].Holds
+	h.Columns = append(h.Columns, checkpoint.ColumnHold{Column: "z", Reason: "policy", Since: checkpoint.RecordRef{Generation: 1, Epoch: 1}})
+	n := 0
+	for _, m := range mirroredHolds(h) {
+		if m.GetColumn() == "z" && m.GetWhole() {
+			n++
+		}
+		if m.GetColumn() == "z" && m.GetReleasing() {
+			t.Errorf("z, held whole again, is listed as releasing: %v", m)
+		}
+	}
+	if n != 1 {
+		t.Errorf("z, held whole again, is listed %d times", n)
+	}
 }
 
 // A SQL transform's outputs hold, and the source's streams don't: the

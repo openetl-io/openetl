@@ -323,7 +323,9 @@ func mirroredHolds(h *checkpoint.Holds) []*dataplanev1.CheckpointHold {
 		out = append(out, ch)
 	}
 	for _, col := range replay {
-		if _, ok := h.Cells[col]; !ok {
+		// A column held whole has its row; the table keeps one of each.
+		_, cells := h.Cells[col]
+		if !cells && !slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == col }) {
 			out = append(out, &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "released", Since: ref(h.Replay.Since[col]), Releasing: true})
 		}
 	}

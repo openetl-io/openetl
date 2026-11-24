@@ -2092,7 +2092,15 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	at := checkpoint.RecordRef{Epoch: n, Generation: c.sess.Generation()}
 	holds := make(map[string]*checkpoint.Holds, len(c.holds))
 	for name, h := range c.holds {
-		holds[name] = mergeHolds(h, st.flow.Holds[name], at, rec.CreatedAt)
+		delivered := st.flow.Delivered[name]
+		switch {
+		case delivered != nil:
+		case c.job.transformed():
+			delivered = st.flow.OutputSchemas[name]
+		default:
+			delivered = st.flow.Schemas[name]
+		}
+		holds[name] = mergeHolds(h, st.flow.Holds[name], at, rec.CreatedAt, delivered)
 	}
 	// The destination's streams' holds: a transform's outputs', or else the
 	// streams'.

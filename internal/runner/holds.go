@@ -479,43 +479,22 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			is := func(col string) bool { return col == r.Column }
 			released = slices.DeleteFunc(released, is)
 			versioned = slices.DeleteFunc(versioned, func(c checkpoint.ColumnHold) bool { return is(c.Column) })
-			// A column refused again while the restored replay patches it in
-			// is held again from where that release's holds started, refused
-			// by it: a later release reads its values from there, and those
-			// the replay patched in it patches in again, by their IDs.
-			var replayed *checkpoint.Replay
-			if h.Replay != nil && slices.Contains(h.Replay.Columns, r.Column) {
-				replayed = h.Replay
-			}
-			if h.Replay != nil {
-				if h.Replay.Columns = slices.DeleteFunc(h.Replay.Columns, is); len(h.Replay.Columns) == 0 {
-					h.Replay = nil
-				}
-			}
-			id, ok := cells[r.Column]
-			if replayed != nil {
-				id, ok = replayed.CellReleases[r.Column], replayed.CellReleases[r.Column] != ""
-			}
-			if c, held := h.Cells[r.Column]; ok && held {
-				c.Refused = &checkpoint.Refused{Release: id, Reason: "the destination refused the column: " + r.Reason}
+			why := "the destination refused the column: " + r.Reason
+			if id, ok := cells[r.Column]; ok {
+				c := h.Cells[r.Column]
+				c.Refused = &checkpoint.Refused{Release: id, Reason: why}
 				h.Cells[r.Column] = c
-			}
-			delete(cells, r.Column)
-			if slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
-				continue
+				delete(cells, r.Column)
 			}
 			c := checkpoint.ColumnHold{Column: r.Column, Delivered: r.Delivered}
 			if i := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }); i >= 0 {
 				c = taken[i]
 				c.Refused = &checkpoint.Refused{Release: wholes[r.Column], Reason: "the destination refused it again"}
-			} else if replayed != nil {
-				if at, ok := replayed.Since[r.Column]; ok {
-					// The replay doesn't keep when the hold started.
-					c.Since, c.Started = at, time.Now()
-					if id := replayed.WholeReleases[r.Column]; id != "" {
-						c.Refused = &checkpoint.Refused{Release: id, Reason: "the destination refused it again"}
-					}
-				}
+			} else {
+				c, _ = heldAgain(h, c, why, time.Now())
+			}
+			if slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
+				continue
 			}
 			c.Reason, c.Cause = "the destination refused it: "+r.Reason, r.cause()
 			h.Columns = append(h.Columns, c)
@@ -531,11 +510,15 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			// Where each column's hold held whole starts, and its cell hold;
 			// absent for one the replay doesn't end.
 			whole, cellHolds := map[string]checkpoint.RecordRef{}, map[string]checkpoint.RecordRef{}
+			started := map[string]time.Time{}
 			for i, col := range released {
 				var starts []checkpoint.RecordRef
 				if k := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == col }); k >= 0 {
 					whole[col] = taken[k].Since
 					starts = append(starts, taken[k].Since)
+					if !taken[k].Started.IsZero() {
+						started[col] = taken[k].Started
+					}
 				}
 				if c, ok := h.Cells[col]; ok {
 					cellHolds[col] = c.Since
@@ -554,6 +537,9 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
 			if len(whole) > 0 {
 				h.Replay.Since = whole
+			}
+			if len(started) > 0 {
+				h.Replay.Started = started
 			}
 			for col := range whole {
 				if id := wholes[col]; id != "" {
@@ -600,6 +586,37 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 	return holds, plans, nil
 }
 
+// heldAgain takes c's column out of h's replay, as the column is held
+// whole again while the replay patches it in, and returns c as the hold
+// whole it gets: from where the hold the replay released started, if it
+// released one, refused by that release, so a later release reads every
+// value held since then, and the refused one isn't taken again. The
+// column's released cells, which the replay doesn't patch in now, are
+// refused by their release. why says why. Not ok if the replay doesn't
+// patch the column in.
+func heldAgain(h *checkpoint.Holds, c checkpoint.ColumnHold, why string, now time.Time) (checkpoint.ColumnHold, bool) {
+	r := h.Replay
+	if r == nil || !slices.Contains(r.Columns, c.Column) {
+		return c, false
+	}
+	if r.Columns = slices.DeleteFunc(r.Columns, func(col string) bool { return col == c.Column }); len(r.Columns) == 0 {
+		h.Replay = nil
+	}
+	if id := r.CellReleases[c.Column]; id != "" {
+		if cells, ok := h.Cells[c.Column]; ok {
+			cells.Refused = &checkpoint.Refused{Release: id, Reason: why}
+			h.Cells[c.Column] = cells
+		}
+	}
+	if at, ok := r.Since[c.Column]; ok {
+		c.Since, c.Started = at, startedOf(r, c.Column, now)
+		if id := r.WholeReleases[c.Column]; id != "" {
+			c.Refused = &checkpoint.Refused{Release: id, Reason: why}
+		}
+	}
+	return c, true
+}
+
 // heldFrom are the epochs of es from at on.
 func heldFrom(es []checkpoint.HeldEpochs, at checkpoint.RecordRef) []checkpoint.HeldEpochs {
 	var out []checkpoint.HeldEpochs
@@ -620,9 +637,10 @@ func before(a, b checkpoint.RecordRef) bool {
 }
 
 // mergeHolds is a stream's holds once epoch at is recorded: base's, with
-// what the dataflow reported at the stream's barrier. Nil once nothing is
-// held.
-func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, now time.Time) *checkpoint.Holds {
+// what the dataflow reported at the stream's barrier. delivered is the
+// stream's schema as the destination has it there, which gives a column
+// held again the field the destination has. Nil once nothing is held.
+func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, now time.Time, delivered []byte) *checkpoint.Holds {
 	h := &checkpoint.Holds{}
 	if base != nil {
 		h = cloneHolds(base)
@@ -638,8 +656,20 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 				}
 				c.Discarded, c.Refused = p.Discarded, p.Refused
 				c.Cause = keepRefusal(p.Cause, c.Cause)
+			} else {
+				// The engine held a column whole again while its release is
+				// patched in, as its schema changed again: the replay skips
+				// its values from then on.
+				c, _ = heldAgain(h, c, "the column was held whole again while the release patched it in", now)
 			}
 			cols = append(cols, c)
+		}
+		// One the engine doesn't hold yet, as one held again when a replay
+		// ended, stays held; the engine holds it from the next attempt.
+		for _, p := range h.Columns {
+			if !slices.ContainsFunc(cols, func(c checkpoint.ColumnHold) bool { return c.Column == p.Column }) {
+				cols = append(cols, p)
+			}
 		}
 		h.Columns = cols
 		add := func(cells map[string]checkpoint.CellHold, col string, c checkpoint.CellHold) map[string]checkpoint.CellHold {
@@ -683,6 +713,7 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 						h.Cells[col] = c
 					}
 				}
+				h.Columns = append(h.Columns, leftHeld(h, p.StillHeld, now, delivered)...)
 				h.Replay = nil
 			}
 		}
@@ -695,6 +726,66 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 		return nil
 	}
 	return h
+}
+
+// leftHeld are the columns that h's replay released whole, held again as
+// it ends with n of its values that still don't fit: from where their holds
+// started, refused by their releases, as values of theirs are left in the
+// held files, which nothing else would keep. The engine counts the values
+// left of all the replay's columns in one, so any held again, though only
+// some may have values left; the next release patches in again, by their
+// IDs, those that fit. A count by column would hold only those.
+func leftHeld(h *checkpoint.Holds, n uint64, now time.Time, delivered []byte) []checkpoint.ColumnHold {
+	if n == 0 {
+		return nil
+	}
+	var out []checkpoint.ColumnHold
+	for _, col := range h.Replay.Columns {
+		at, ok := h.Replay.Since[col]
+		if !ok || slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == col }) {
+			continue
+		}
+		c := checkpoint.ColumnHold{Column: col, Delivered: fieldOf(delivered, col)}
+		if i := slices.IndexFunc(h.Replay.Versioned, func(v checkpoint.ColumnHold) bool { return v.Column == col }); i >= 0 {
+			c = h.Replay.Versioned[i]
+		}
+		c.Since, c.Started, c.Reason = at, startedOf(h.Replay, col, now), "its released values don't all fit its type"
+		if id := h.Replay.WholeReleases[col]; id != "" {
+			c.Refused = &checkpoint.Refused{Release: id, Reason: stillHeld(n)}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// startedOf is when the hold of col that r released held it whole started,
+// or now where r doesn't say, as records from before it don't.
+func startedOf(r *checkpoint.Replay, col string, now time.Time) time.Time {
+	if at, ok := r.Started[col]; ok {
+		return at
+	}
+	return now
+}
+
+// fieldOf is col's field in schema, an Arrow IPC stream, as a schema with
+// only it; nil if schema has none.
+func fieldOf(schema []byte, col string) []byte {
+	if schema == nil {
+		return nil
+	}
+	s, err := decodeSchema(schema)
+	if err != nil {
+		return nil
+	}
+	fs, ok := s.FieldsByName(col)
+	if !ok || len(fs) != 1 {
+		return nil
+	}
+	b, err := encodeSchema(arrow.NewSchema(fs, nil))
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 func stillHeld(n uint64) string {
@@ -733,7 +824,7 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
 		r.Versioned, r.CellReleases, r.WholeReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases), maps.Clone(r.WholeReleases)
-		r.First, r.FirstCells, r.Since = maps.Clone(r.First), maps.Clone(r.FirstCells), maps.Clone(r.Since)
+		r.First, r.FirstCells, r.Since, r.Started = maps.Clone(r.First), maps.Clone(r.FirstCells), maps.Clone(r.Since), maps.Clone(r.Started)
 		out.Replay = &r
 	}
 	return out
