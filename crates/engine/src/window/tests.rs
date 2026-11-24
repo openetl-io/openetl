@@ -225,7 +225,10 @@ impl Run {
         {
             let Some(mine) = mine else { continue };
             let part = arrow_select::take::take_record_batch(&all, &mine).unwrap();
-            let out = self.ops[i].rows(&mut self.layers[i], &part).await.unwrap();
+            let out = self.ops[i]
+                .rows(&mut self.layers[i], &part, None)
+                .await
+                .unwrap();
             self.rejected += out.rejected.len();
             self.give(&out);
         }
@@ -817,7 +820,10 @@ async fn windows_closing_together_keep_their_own_state() {
     assert_eq!(out.failed.len(), 1, "{:?}", out.failed);
     assert_eq!(out.failed[0].2.code, openetl_normalize::Code::Aggregate);
     let late = batch(&run.ops[0], &[("us", 1, MIN + 2)]);
-    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    let out = run.ops[0]
+        .rows(&mut run.layers[0], &late, None)
+        .await
+        .unwrap();
     let t = out.rows.unwrap();
     let ops: Vec<Option<&str>> = t
         .control
@@ -1014,7 +1020,10 @@ async fn a_delete_without_aggregates_gives_the_end_the_output_has() {
     // The second session grows to 115 seconds; then a row bridges the two.
     run.rows(&[("eu", 1, 85 * SEC)]).await;
     let late = batch(&run.ops[0], &[("eu", 1, 30 * SEC)]);
-    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    let out = run.ops[0]
+        .rows(&mut run.layers[0], &late, None)
+        .await
+        .unwrap();
     assert_eq!(
         ops_and_ends(out),
         [("delete".to_owned(), "1970-01-01T00:01:30Z".to_owned())]
@@ -1074,7 +1083,10 @@ async fn a_delete_doesnt_evaluate_the_clock_again() {
     }
     // A late row: the window no longer passes HAVING.
     let late = batch(&run.ops[0], &[("eu", 1, 2)]);
-    let out = run.ops[0].rows(&mut run.layers[0], &late).await.unwrap();
+    let out = run.ops[0]
+        .rows(&mut run.layers[0], &late, None)
+        .await
+        .unwrap();
     assert!(out.failed.is_empty(), "{:?}", out.failed);
     let t = out.rows.unwrap();
     let ops: Vec<Option<&str>> = t
@@ -1468,4 +1480,69 @@ async fn groups_restored_with_different_horizons_each_keep_theirs() {
     assert!(back.writes.values().all(|n| *n == 1), "{:?}", back.writes);
     let second = &back.table.0[&format!("1970-01-01T00:01:00Z|{lag}")];
     assert!(second.ends_with("total=2 n=2 hi=1"), "{second}");
+}
+
+/// Rows of `orders`, each with what it is as repeats go: its record ID's
+/// and its hash's number, the same each time a read gives it.
+type Read = Vec<(Row, u64)>;
+
+/// Takes `rows` on `op`, with their IDs and hashes.
+async fn take_read(op: &mut Operator, layer: &mut Layer, rows: &[(Row, u64)], table: &mut Table) {
+    let plain: Vec<Row> = rows.iter().map(|r| r.0).collect();
+    let input = batch(op, &plain);
+    let ids = arrow_array::FixedSizeBinaryArray::try_from_iter(
+        rows.iter()
+            .map(|(_, i)| [i.to_be_bytes(), i.to_be_bytes()].concat()),
+    )
+    .unwrap();
+    let hashes = arrow_array::UInt64Array::from_iter_values(rows.iter().map(|r| r.1));
+    let out = op.rows(layer, &input, Some((&ids, &hashes))).await.unwrap();
+    assert!(out.rejected.is_empty(), "{:?}", out.rejected);
+    table.apply(&out, &["window_start", "region"]);
+}
+
+/// A session's rows read again count once, however many rows it has, in
+/// whatever batches they come, and after it merges with another: each
+/// keeps what its rows are, and the merge both.
+#[tokio::test]
+async fn a_long_sessions_rows_read_again_count_once() {
+    let sql = "INSERT INTO o SELECT window_start, region, count(*) AS n, sum(amount) AS total \
+               FROM orders GROUP BY session(at, INTERVAL '30 seconds'), region";
+    let mut op = operator(sql, 0);
+    op.drops_repeats = true;
+    let bucket = MemoryBucket::new();
+    let mut layer = Layer::open(&bucket, 1, 1, ranges(1)[0], &[]).await.unwrap();
+    op.open(&mut layer);
+    // Two sessions of 2,000 rows a second apart, 40 seconds between them,
+    // and a row between that merges them.
+    let n: i64 = 2_000;
+    let mut read: Read = Vec::new();
+    for i in 0..n {
+        read.push((("eu", 1, i * SEC), read.len() as u64));
+    }
+    for i in 0..n {
+        read.push((("eu", 1, (n + 39 + i) * SEC), read.len() as u64));
+    }
+    read.push((("eu", 1, (n + 19) * SEC), read.len() as u64));
+    let mut table = Table::default();
+    for part in read.chunks(300) {
+        take_read(&mut op, &mut layer, part, &mut table).await;
+    }
+    assert_eq!(op.repeats, 0);
+    // Again, last first, in other batches.
+    read.reverse();
+    for part in read.chunks(700) {
+        take_read(&mut op, &mut layer, part, &mut table).await;
+    }
+    assert_eq!(op.repeats, read.len() as u64);
+    let out = op.advance(&mut layer, i64::MAX).await.unwrap();
+    assert!(out.failed.is_empty(), "{:?}", out.failed);
+    table.apply(&out, &["window_start", "region"]);
+    let rows = 2 * n + 1;
+    assert_eq!(
+        table.0.values().cloned().collect::<Vec<_>>(),
+        [format!(
+            "window_start=1970-01-01T00:00:00Z region=eu n={rows} total={rows}"
+        )]
+    );
 }

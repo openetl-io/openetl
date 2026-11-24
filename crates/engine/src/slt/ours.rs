@@ -451,9 +451,14 @@ async fn run_keyed(
     let mut layer = openetl_state::Layer::open(&bucket, 1, 1, range, &[])
         .await
         .map_err(|e| Failure(e.to_string()))?;
-    let mut op = crate::dataflow::keyed::Op::new(st, plan, id, stream, groups).map_err(fail)?;
-    let ids = plan.ids().then_some(ids);
-    let mut out = op.rows(&mut layer, input, ids).await.map_err(fail)?;
+    // One read, which gives no row again.
+    let mut op =
+        crate::dataflow::keyed::Op::new(st, plan, id, stream, groups, false).map_err(fail)?;
+    let hashes = arrow_array::UInt64Array::from(vec![0; input.num_rows()]);
+    let mut out = op
+        .rows(&mut layer, input, ids, &hashes)
+        .await
+        .map_err(fail)?;
     let mut closed = crate::window::Out::default();
     loop {
         let (got, more) = op.advance(&mut layer, i64::MAX).await.map_err(fail)?;
@@ -465,7 +470,7 @@ async fn run_keyed(
     out.add(closed).map_err(fail)?;
     // A row OVER or a dedupe can't give, once it leaves, has no place among
     // the table's rows here to quarantine: the record fails, with why.
-    if plan.ids() && !out.failed.is_empty() {
+    if !matches!(plan, crate::transform::Keyed::Window(_)) && !out.failed.is_empty() {
         let why: Vec<&str> = out.failed.iter().map(|(_, why, _)| why.as_str()).collect();
         return Err(Failure(format!(
             "{} couldn't give rows: {}",

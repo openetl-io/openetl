@@ -69,10 +69,14 @@ func Full[C any](name string, read func(c *Ctx[C], out *Out) error, opts ...Stre
 }
 
 // Incremental declares a stream read from a cursor floor onwards. read gets
-// the floor, which is zero on the first sync, and must return every record
-// whose cursor field is at or after it: records at the floor are read again.
-// The floor advances when the stream completes, or after every page with
-// Ordered. A resumed read gets the floor its page token belongs to.
+// the floor, which is zero on the first sync and on each new read the
+// platform starts with no state, such as a full refresh. It must return
+// every record whose cursor field is at or after it: records at the floor
+// are read again. When the stream completes, the floor advances to the
+// highest cursor of the reads before this one, so a record updated while
+// this read was under way is read again by the next. With Ordered, the
+// floor advances to the highest cursor after every page. A resumed read
+// gets the floor its page token belongs to.
 func Incremental[C any](name, cursor string, read func(c *Ctx[C], since Cursor, out *Out) error, opts ...StreamOption) Stream[C] {
 	o := options(opts)
 	return Stream[C]{name: name, kind: incremental, primaryKey: o.primaryKey, cursor: cursor, ordered: o.ordered, run: func(c *Ctx[C], _ []byte, out *Out) error {
@@ -81,8 +85,9 @@ func Incremental[C any](name, cursor string, read func(c *Ctx[C], since Cursor, 
 }
 
 // Resumable declares a stream that keeps its own state. read gets the state
-// of the last committed resume point, nil at first, and marks resume points
-// with Out.Checkpoint.
+// of the last committed resume point, nil at first and on each new read the
+// platform starts with no state, such as a full refresh, and marks resume
+// points with Out.Checkpoint.
 func Resumable[C any](name string, read func(c *Ctx[C], state json.RawMessage, out *Out) error, opts ...StreamOption) Stream[C] {
 	o := options(opts)
 	return Stream[C]{name: name, kind: resumable, primaryKey: o.primaryKey, run: func(c *Ctx[C], state []byte, out *Out) error {
@@ -100,6 +105,9 @@ type streamState struct {
 	// The highest cursor emitted by the read Page belongs to.
 	Max  json.RawMessage `json:"max,omitempty"`
 	Page string          `json:"page,omitempty"`
+	// Unordered: the highest cursor of the completed reads, which becomes
+	// the floor once the next read completes. Absent: Cursor.
+	High json.RawMessage `json:"high,omitempty"`
 }
 
 const (
@@ -256,7 +264,7 @@ func (o *Out) page(next string) error {
 			}
 			s.Cursor = floor
 		} else {
-			s.Max = o.max
+			s.Max, s.High = o.max, o.state.High
 		}
 	}
 	b, err := json.Marshal(s)
@@ -269,20 +277,49 @@ func (o *Out) page(next string) error {
 // highest is the larger of the restored floor and the highest cursor
 // emitted.
 func (o *Out) highest() (json.RawMessage, error) {
-	if o.max == nil {
-		return o.state.Cursor, nil
+	return o.higher(o.max, o.state.Cursor)
+}
+
+// higher is the larger of two cursors, either of which can be nil.
+func (o *Out) higher(a, b json.RawMessage) (json.RawMessage, error) {
+	if a == nil {
+		return b, nil
 	}
-	if o.state.Cursor == nil {
-		return o.max, nil
+	if b == nil {
+		return a, nil
 	}
-	c, err := compareCursors(o.max, o.state.Cursor)
+	c, err := compareCursors(a, b)
 	if err != nil {
 		return nil, fmt.Errorf("cursor %q: %w", o.cursor, err)
 	}
 	if c > 0 {
-		return o.max, nil
+		return a, nil
 	}
-	return o.state.Cursor, nil
+	return b, nil
+}
+
+// next is where the next sync starts. An ordered stream's floor is the
+// highest cursor emitted. An unordered stream's is the highest cursor of the
+// reads completed before this one: those values existed before this read
+// began, so a record updated during it has a cursor at or above them.
+func (o *Out) next() (streamState, error) {
+	if o.ordered {
+		floor, err := o.highest()
+		return streamState{Cursor: floor}, err
+	}
+	floor, err := o.higher(o.state.High, o.state.Cursor)
+	if err != nil {
+		return streamState{}, err
+	}
+	high, err := o.higher(o.max, floor)
+	if err != nil {
+		return streamState{}, err
+	}
+	s := streamState{Cursor: floor}
+	if !bytes.Equal(high, floor) {
+		s.High = high
+	}
+	return s, nil
 }
 
 // complete ends the stream. The next sync reads a Full stream whole again,
@@ -295,11 +332,11 @@ func (o *Out) complete() error {
 	var next []byte
 	switch o.kind {
 	case incremental:
-		floor, err := o.highest()
+		s, err := o.next()
 		if err != nil {
 			return err
 		}
-		if next, err = json.Marshal(streamState{Cursor: floor}); err != nil {
+		if next, err = json.Marshal(s); err != nil {
 			return err
 		}
 	case resumable:

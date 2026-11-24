@@ -141,6 +141,14 @@ func (s Stream) settled(require Level) Stream {
 	return s
 }
 
+// Rereads reports whether a read of the stream may give a record again, as
+// superset replay does, and identical rows of it are one record: it has a
+// primary key, or collapses, by default under require.
+func (s Stream) Rereads(require Level) bool {
+	s = s.settled(require)
+	return s.Replay != source.Exact && (s.Keyed || *s.Collapse)
+}
+
 // Forced is the stream after a restore from a forced barrier: counted as
 // superset, but with the collapse its declared replay gave it.
 func (s Stream) Forced(require Level) Stream {

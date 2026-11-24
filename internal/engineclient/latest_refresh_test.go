@@ -155,13 +155,14 @@ func (d opDest) merged(t *testing.T, stream string, from int) (map[string]string
 // latestJob runs a latest-row dedupe with a filter after it over stream s,
 // merged by region, read with read: amounts under 50 pass.
 type latestJob struct {
-	t     *testing.T
-	read  source.SyncMode
-	sql   string
-	a     sqlplan.Answer
-	log   *checkpoint.Log
-	state string
-	dest  opDest
+	t      *testing.T
+	read   source.SyncMode
+	cursor string
+	sql    string
+	a      sqlplan.Answer
+	log    *checkpoint.Log
+	state  string
+	dest   opDest
 
 	mu      sync.Mutex
 	deletes uint64
@@ -169,7 +170,8 @@ type latestJob struct {
 
 func newLatestJob(ctx context.Context, t *testing.T, read source.SyncMode, sql string) *latestJob {
 	t.Helper()
-	declared, err := arrowipc.EncodeSchema(profileStream(read).Schema)
+	s := profileStream(read)
+	declared, err := arrowipc.EncodeSchema(s.Schema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +179,7 @@ func newLatestJob(ctx context.Context, t *testing.T, read source.SyncMode, sql s
 	if err != nil || len(a.Errors) != 0 {
 		t.Fatal(a.Errors, err)
 	}
-	return &latestJob{t: t, read: read, sql: sql, a: a, log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "latest"),
+	return &latestJob{t: t, read: read, cursor: s.CursorField, sql: sql, a: a, log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "latest"),
 		state: "file://" + t.TempDir(), dest: opDest{newKeyDest(1)}}
 }
 
@@ -189,6 +191,13 @@ func profileStream(read source.SyncMode) runner.Stream {
 	if read == source.Incremental {
 		cursor = "at"
 	}
+	return profileStreamBy(read, cursor)
+}
+
+// profileStreamBy is s read with read by cursor, held where that isn't in
+// the order of its time.
+func profileStreamBy(read source.SyncMode, cursor string) runner.Stream {
+	held := read == source.FullRefresh || read == source.Incremental && cursor != "at"
 	return runner.Stream{
 		Name: "s", Replay: source.Exact, Mode: destination.Append, Read: read, CursorField: cursor,
 		Schema: arrow.NewSchema([]arrow.Field{
@@ -197,7 +206,7 @@ func profileStream(read source.SyncMode) runner.Stream {
 			{Name: "amount", Type: arrow.PrimitiveTypes.Int64, Nullable: true},
 			{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
 		}, nil),
-		EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Held: read == source.FullRefresh, FullRead: read == source.FullRefresh},
+		EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Held: held, FullRead: read == source.FullRefresh},
 	}
 }
 
@@ -207,7 +216,7 @@ func (l *latestJob) job(owner, sync string, src source.Reader, onRecord func(*ch
 	exp[0].Operator = l.a.Statements[0].Operator
 	return runner.Job{
 		Pipeline: "latest", Owner: owner, Sync: sync, Continuous: l.read == source.Stream, Log: l.log, Source: src,
-		Streams: []runner.Stream{profileStream(l.read)},
+		Streams: []runner.Stream{profileStreamBy(l.read, l.cursor)},
 		Outputs: []runner.Stream{{Name: "latest", Replay: source.Exact, Read: l.read, Mode: destination.Merge, PrimaryKey: []string{"region"},
 			Transformed: true, From: "s", Deduped: true}},
 		SQL:         &runner.SQLTransform{SQL: l.sql, Expected: exp, Operators: []string{l.a.Statements[0].Operator}},
@@ -312,15 +321,23 @@ func TestALatestRowDedupeAcrossFullReads(t *testing.T) {
 // key it has seen, and a key it hasn't seen has no row of its writing: a
 // filtered row of a new key writes no delete. A continuous pipeline's
 // first start and restart, and an incremental pipeline's next sync,
-// delete only a key whose row they wrote. After a reset, which drops the
-// dedupe's state, a key's row from before stays when its latest row now
-// fails the filter: the documented gap.
+// delete only a key whose row they wrote: also by a cursor other than its
+// time, whose read is held to its end each sync, where the state goes on
+// past that end. After a reset, which drops the dedupe's state, a key's
+// row from before stays when its latest row now fails the filter: the
+// documented gap.
 func TestALatestRowDedupeOverOtherReadsDeletesOnlyWhatItWrote(t *testing.T) {
-	for _, read := range []source.SyncMode{source.Stream, source.Incremental} {
-		t.Run(map[source.SyncMode]string{source.Stream: "continuous", source.Incremental: "incremental"}[read], func(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		read   source.SyncMode
+		cursor string
+	}{{"continuous", source.Stream, ""}, {"incremental", source.Incremental, "at"}, {"incremental by another cursor", source.Incremental, "id"}} {
+		read := c.read
+		t.Run(c.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 			defer cancel()
 			l := newLatestJob(ctx, t, read, latestSmall)
+			l.cursor = c.cursor
 			// run reads rows to their end: a continuous pipeline drains once a
 			// record holds them all, and a scheduled one's read completes.
 			run := func(n int, resets []runner.Reset, rows ...profile) {

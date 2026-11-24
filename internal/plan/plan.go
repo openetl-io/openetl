@@ -446,6 +446,9 @@ func PipelineSQL(spec *apiv1.PipelineSpec, cat *apiv1.Catalog, caps destination.
 		d := deliveryStream(s.cs, s.ps, read, mode)
 		ds = append(ds, d)
 		p := delivery.PlanStream(caps, d, settings.Require)
+		if w := cursorWarning(read, d.Keyed, p.Dedupe, cmp.Or(s.ps.GetCursor(), s.cs.GetCursorField()), s.cs.GetColumns()); w != "" {
+			warnings = append(warnings, &apiv1.PlanWarning{Stream: name, Message: w})
+		}
 		sp := &apiv1.StreamPlan{Name: name, Level: levels[p.Level], Dedupe: p.Dedupe != destination.DedupeNone, Collapse: p.Collapse, Reason: p.Why,
 			Write: apiWriteMode(mode), TypeChanges: TypeChanges(spec, s.ps), Table: spec.GetDestination().GetTables()[name]}
 		sp.Partitioning, sp.Operators = Place(sourceOf(spec, s.cs, s.ps), WriterOperator(s.cs.GetPrimaryKey(), oneLane)).API()
@@ -590,6 +593,30 @@ func CursorProblem(stream string, read apiv1.SyncMode, keyed bool, cursor string
 		return fmt.Errorf("stream %q has a primary key and is read with stream, which needs a cursor to tell one event of a key from the next: the source names none, so set source.streams[].cursor", stream)
 	}
 	return nil
+}
+
+// cursorWarning warns of a keyed stream read with incremental and deduped at
+// apply whose cursor's type holds whole days or seconds. Two changes of a row
+// inside one such unit give it one cursor value, and so one _openetl_id: once
+// a read has written the first, the apply skips the second as a repeat. Empty
+// means no warning, as for a cursor the catalog gives no type.
+func cursorWarning(read apiv1.SyncMode, keyed bool, dedupe destination.Dedupe, cursor string, columns []*apiv1.CatalogColumn) string {
+	if read != apiv1.SyncMode_SYNC_MODE_INCREMENTAL || !keyed || dedupe != destination.DedupeTarget {
+		return ""
+	}
+	i := slices.IndexFunc(columns, func(c *apiv1.CatalogColumn) bool { return c.GetName() == cursor })
+	if i < 0 || !coarse(columns[i].GetType()) {
+		return ""
+	}
+	return fmt.Sprintf("its cursor %q is %s, so two changes of a row can have one cursor value, and then one _openetl_id: "+
+		"once a read has written the first, the apply skips the second as a repeat, and the table keeps the first until a change moves the cursor; "+
+		"use a cursor that every update changes, at a finer precision, such as a microsecond timestamp, a row version or a sequence", cursor, columns[i].GetType())
+}
+
+// coarse reports whether an Arrow type, as the catalog names it, holds only
+// whole days or seconds.
+func coarse(t string) bool {
+	return t == "date32" || t == "date64" || t == "time32[s]" || t == "timestamp[s]" || strings.HasPrefix(t, "timestamp[s, ")
 }
 
 func replay(r apiv1.Replay) source.Replay {

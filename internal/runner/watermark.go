@@ -37,6 +37,10 @@ type EventTime struct {
 	// It's read whole each sync, with full_refresh, each read with no state
 	// for the statements that read it.
 	FullRead bool
+	// A read of it may give a record again, and identical rows are one
+	// record (delivery.Stream.Rereads): a group window and OVER over it
+	// drop the rows a read gives again.
+	Rereads bool
 }
 
 func (e *EventTime) idle() time.Duration {

@@ -377,7 +377,7 @@ func startRequest(plan runner.Plan) (req *enginev1.StartJobRequest, names, sinkN
 		sp.Overwrite = !sql && !s.Transformed && s.Mode == destination.Overwrite
 		if e := s.EventTime; e != nil {
 			sp.EventTime = &enginev1.EventTime{Column: e.Column, DelayMicros: e.Delay.Microseconds(), Held: e.Held, LatenessMicros: e.Lateness.Microseconds(),
-				DedupeRetentionMicros: e.Dedupe, FullRead: e.FullRead}
+				DedupeRetentionMicros: e.Dedupe, FullRead: e.FullRead, Rereads: e.Rereads}
 			if f, ok := plan.Floors[s.Name]; ok {
 				sp.EventTime.Floor = &f
 			}

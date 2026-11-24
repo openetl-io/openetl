@@ -638,8 +638,10 @@ func (s *Server) GetSyncSpec(ctx context.Context, req *connect.Request[dataplane
 	if res.FlinkClusters, err = s.pinnedFlinkClusters(ctx, row.WorkspaceID, id, row.Version); err != nil {
 		return nil, err
 	}
-	if res.Releases, err = s.pendingReleases(ctx, id); err != nil {
-		return nil, err
+	if req.Msg.GetApplyReleases() {
+		if res.Releases, err = s.pendingReleases(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.runtimeForSync(ctx, id, res); err != nil {
 		return nil, err

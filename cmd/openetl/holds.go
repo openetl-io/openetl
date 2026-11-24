@@ -52,6 +52,10 @@ func runHolds(ctx context.Context, args []string, out io.Writer) error {
 			return err
 		}
 		h = res.Msg.GetHold()
+		if h.GetDiscarded() {
+			fmt.Fprintf(out, "released %s.%s of %s; the pipeline's next run delivers the column again, and the values its discard dropped stay dropped\n", h.GetStream(), h.GetColumn(), parent)
+			return nil
+		}
 		into := ""
 		if *newVersion {
 			into = " into a new version of the column"
@@ -64,7 +68,18 @@ func runHolds(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	h = res.Msg.GetHold()
-	fmt.Fprintf(out, "discarded %s.%s of %s; the pipeline's next run drops its held values\n", h.GetStream(), h.GetColumn(), parent)
+	later := ""
+	if h.GetWhole() {
+		later = ", and the column's later values until you release it"
+	}
+	switch {
+	case res.Msg.GetEndsRelease() && h.GetReleasing():
+		fmt.Fprintf(out, "discarded the release of %s.%s of %s, which is being patched in; it goes on while the stream holds, and the values it leaves held stay held, and a run in which the stream doesn't hold drops the values it hasn't patched in\n", h.GetStream(), h.GetColumn(), parent)
+	case res.Msg.GetEndsRelease():
+		fmt.Fprintf(out, "discarded %s.%s of %s; the pipeline's next run drops its held values%s, unless a run has already started patching in their release, which then goes on while the stream holds\n", h.GetStream(), h.GetColumn(), parent, later)
+	default:
+		fmt.Fprintf(out, "discarded %s.%s of %s; the pipeline's next run drops its held values%s\n", h.GetStream(), h.GetColumn(), parent, later)
+	}
 	return nil
 }
 
@@ -97,12 +112,12 @@ func listHolds(ctx context.Context, conn *api, workspace, pipeline string, out i
 		}
 		state := "held"
 		switch {
-		case h.GetDiscarded():
-			state = "discarded"
 		case h.GetReleasing():
 			state = "releasing"
 		case h.GetPending():
 			state = "pending"
+		case h.GetDiscarded():
+			state = "discarded"
 		case h.GetRefused() != nil:
 			state = "refused"
 		}

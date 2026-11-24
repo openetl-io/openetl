@@ -175,7 +175,7 @@ func TestMirroredHolds(t *testing.T) {
 			Cells:   map[string]checkpoint.CellHold{"x": {Cells: cells, Reason: "nan", Since: since}},
 		}
 		if replay {
-			h.Replay = &checkpoint.Replay{Columns: []string{"x", "z"}}
+			h.Replay = &checkpoint.Replay{Columns: []string{"x", "z"}, Since: map[string]checkpoint.RecordRef{"x": {Generation: 1, Epoch: 1}, "z": {Generation: 1, Epoch: 1}}}
 		}
 		return &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: h}, "t": {}}}
 	}
@@ -187,13 +187,29 @@ func TestMirroredHolds(t *testing.T) {
 	switch {
 	case y.GetColumn() != "y" || !y.GetWhole() || !y.GetDiscarded() || y.GetSince().GetEpoch() != 2:
 		t.Errorf("y %v", y)
-	case x.GetColumn() != "x" || x.GetWhole() || x.GetCells() != 5 || !x.GetReleasing():
+	case x.GetColumn() != "x" || x.GetWhole() || x.GetCells() != 5 || !x.GetReleasing() || x.GetSince().GetEpoch() != 2:
 		t.Errorf("x %v", x)
-	case z.GetColumn() != "z" || !z.GetWhole() || !z.GetReleasing():
-		t.Errorf("z %v: a released column held whole", z)
+	case z.GetColumn() != "z" || !z.GetWhole() || !z.GetReleasing() || z.GetSince().GetEpoch() != 1:
+		t.Errorf("z %v: a released column held whole, since its hold started", z)
 	}
 	if mirroredHolds(nil) != nil {
 		t.Error("holds for a stream that holds nothing")
+	}
+	// A released column held whole again is listed once, by its hold: the
+	// table keeps one row of each.
+	h := rec(5, true).Streams["s"].Holds
+	h.Columns = append(h.Columns, checkpoint.ColumnHold{Column: "z", Reason: "policy", Since: checkpoint.RecordRef{Generation: 1, Epoch: 1}})
+	n := 0
+	for _, m := range mirroredHolds(h) {
+		if m.GetColumn() == "z" && m.GetWhole() {
+			n++
+		}
+		if m.GetColumn() == "z" && m.GetReleasing() {
+			t.Errorf("z, held whole again, is listed as releasing: %v", m)
+		}
+	}
+	if n != 1 {
+		t.Errorf("z, held whole again, is listed %d times", n)
 	}
 }
 

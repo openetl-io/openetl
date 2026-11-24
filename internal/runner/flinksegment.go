@@ -280,16 +280,7 @@ func (s *flinkSegment) begin(ctx context.Context) error {
 
 	restored := s.restored
 	schemas := map[string][]byte{}
-	now := time.Now().UnixMicro()
-	c.readStarts = make(map[string]int64, len(job.Streams))
-	for _, st := range job.Streams {
-		c.readStarts[st.Name] = now
-		if restored != nil {
-			if rs := restored.Streams[st.Name]; rs.ReadStart != 0 && !rs.Complete {
-				c.readStarts[st.Name] = rs.ReadStart
-			}
-		}
-	}
+	c.readStarts = job.readStarts(restored, time.Now().UnixMicro())
 	if restored != nil {
 		c.committed = restored.Epoch
 		c.ackStates = map[string][]checkpoint.SplitState{}

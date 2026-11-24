@@ -20,7 +20,7 @@ A row inserted and then updated twice has three **versions**. Each version has a
 | `exactly_once_within` | Only the output of a [dedupe](./dedupe.md) with a retention gets it. A row of a key whose event time is less than the retention after the key's first row is not written. A row at or after the first row's time plus the retention can be written as the key's next first row. | A key can have a second row after the retention. To keep one row per key, keep the earliest row of each key of the dedupe's `PARTITION BY`. |
 | `at_least_once` | Duplicate rows can contain the same version and `_openetl_id`. | Keep one row per `_openetl_id`. See [reading a stream delivered at least once](#reading-a-stream-delivered-at-least-once). |
 
-Append writes store each version as a separate row under every guarantee. Different versions of the same source row are separate changes. To select only the latest version, [group by primary key](#reading-a-stream-delivered-at-least-once).
+Append writes store each version as a separate row under every guarantee. Different versions of the same source row are separate changes. For a stream read with `incremental`, this needs a cursor that has a different value for each version. See [Choose a cursor that changes on every update](#choose-a-cursor-that-changes-on-every-update). To select only the latest version, [group by primary key](#reading-a-stream-delivered-at-least-once).
 
 ### How the guarantees rank
 
@@ -182,6 +182,31 @@ The three `full_refresh` reasons apply to every dedupe, whatever its retention a
 
 A stream that its source replays exactly returns, after a restore, exactly the records after the saved position, and the dedupe's state is restored at that position. So a dedupe's output over streams that all replay exactly, and that are not read with `full_refresh`, gets `a transform's output over exact inputs`, whatever its retention, into a destination that stages and applies or writes each commit in a transaction. Into a destination that delivers and acknowledges, a dedupe's output gets `at_least_once`, as every stream does.
 
+## Choose a cursor that changes on every update
+
+An incremental read tells the versions of a row apart by its cursor value. For a stream with a primary key, the `_openetl_id` is a hash of the stream, the key and the cursor value. The `_openetl_seq` is the cursor value. So the cursor must have a different value for any two changes of a row.
+
+A date, or a timestamp stored in whole seconds, does not meet this. Two changes of a row in one day, or in one second, give the row one cursor value. If a sync reads the row between the two changes, OpenETL writes the first version. The next sync reads the second version with the same `_openetl_id` and `_openetl_seq`. If the stream is deduped at apply, which `openetl plan` shows as `superset replay, deduped at apply`, the destination skips the second version as a repeat.
+
+A skipped version is lost. The table keeps the first version until a later change moves the cursor. `openetl reset --stream` does not help, because a new read gives the version the same ID. A stream that `openetl plan` shows as `superset replay, written with merge` is not deduped at apply: the destination merges each version onto its key's row by `_openetl_seq`.
+
+Use a cursor that every update changes, at a finer precision: a timestamp with microseconds, a row version or a sequence. If you cannot change the cursor of an appended stream, set `require: at_least_once` on the stream. The destination then writes the second version too. It also writes again every row that a sync reads again, such as the rows at the previous highest cursor value. With a date cursor, these are all the rows changed on that day. Both versions have the same `_openetl_id` and `_openetl_seq`, so read such a stream in this way:
+
+- To read the latest version of each row, order the row's versions by `_openetl_seq` descending, then by `_openetl_synced_at` descending. The second version was written later.
+- Do not keep one row per `_openetl_id`. That drops the second version.
+
+The plan warns about a stream that has these properties:
+
+- It has a primary key and is read with `incremental`.
+- It is deduped at apply.
+- The source's catalog gives its cursor one of these types: `date32`, `date64`, `timestamp[s]` with or without a time zone, or `time32[s]`.
+
+The warning starts with `its cursor "updated_at" is timestamp[s, tz=UTC], so two changes of a row can have one cursor value`. The plan cannot see the precision of these cursors, so check them yourself:
+
+- an integer that holds seconds since 1970, such as a declarative source's `unix` cursor;
+- a timestamp with microseconds whose values are whole seconds, a type that a source can give to a database column that stores whole seconds;
+- text, such as an RFC 3339 time.
+
 ## Commits, as a reader sees them
 
 A sync reads and commits data in epochs. A commit is requested when any of these conditions occurs:
@@ -255,7 +280,7 @@ With `collapse: true`, OpenETL can commit before the read ends. After a failure,
 
 Under `at_least_once`, nothing removes repeats. They come from three places:
 
-- **The previous incremental cursor value.** Each read includes rows at the previous highest cursor value. Those rows are written again on each sync.
+- **The previous incremental cursor value.** Each read includes rows at the previous highest cursor value. Those rows are written again on each sync. Some sources read from further back. For example, a declarative source's stream that is not `ordered` reads from the highest cursor of the sync before the previous one. All rows changed since then are written again. Its second sync, and the second after a state reset, writes every row again.
 - **A retried delivery** to a destination that delivers and acknowledges.
 - **A repeated read after a failure.** OpenETL normally commits at source resume points. After `delivery.resumePointTimeout` (`1m`) without one, it can commit using a **forced barrier**. This is permitted only if replay preserves the required guarantee. Recovery resumes from the last source resume point and reads some records again. Higher guarantees require deduplication, collapse or merge; `at_least_once` permits duplicate rows.
 
@@ -282,7 +307,7 @@ from shop.orders
 order by _openetl_id;
 ```
 
-To keep the latest version of each order, keep the row with the highest `_openetl_seq` for each primary key. This gives 100 rows, with order 5 as it was last updated. Do not use `_openetl_id` for this: each version has an ID of its own.
+To keep the latest version of each order, keep the row with the highest `_openetl_seq` for each primary key. This gives 100 rows, with order 5 as it was last updated. Do not use `_openetl_id` for this: each version has an ID of its own, if the cursor [changes on every update](#choose-a-cursor-that-changes-on-every-update). If it does not, order by `_openetl_synced_at` after `_openetl_seq`.
 
 ```sql
 select distinct on (id) *

@@ -1050,7 +1050,7 @@ func flush(ctx context.Context, staging Staging, e destination.Epoch, log *slog.
 // restored splits, and a read that starts gets the source's, from where the
 // last one's ended.
 func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done map[string]bool) (map[string][]checkpoint.SplitState, error) {
-	return j.startSplits(restored, done, func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error) {
+	return j.startSplits(restored, done, j.readKinds(), j.readTargets(), func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error) {
 		splits, err := j.newSplits(ctx, s, ended)
 		if err != nil {
 			return nil, err
@@ -1064,27 +1064,22 @@ func (j *Job) readSplits(ctx context.Context, restored *checkpoint.Record, done 
 }
 
 // startSplits are each stream's splits as an attempt that restores
-// restored starts: a read it continues, or one that completed earlier in
-// the sync (done), keeps its restored splits, and a read that starts gets
-// those fresh gives it, from where the last read's ended (nil for none),
-// with the last read's watermarks carried. The floors of an attempt's
-// lanes are these splits'.
-func (j *Job) startSplits(restored *checkpoint.Record, done map[string]bool, fresh func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error)) (map[string][]checkpoint.SplitState, error) {
+// restored, and starts reads as kinds and targets have them, starts: a read
+// it continues, or one that completed earlier in the sync (done), keeps its
+// restored splits, and a read that starts gets those fresh gives it, from
+// the last read's endedSplits, with the last read's watermarks carried. The
+// floors of an attempt's lanes are these splits'.
+func (j *Job) startSplits(restored *checkpoint.Record, done map[string]bool, kinds map[string]checkpoint.ReadKind, targets map[string]*checkpoint.ReadTarget,
+	fresh func(s Stream, ended []source.Split) ([]checkpoint.SplitState, error),
+) (map[string][]checkpoint.SplitState, error) {
 	out := make(map[string][]checkpoint.SplitState, len(j.Streams))
 	for _, s := range j.Streams {
-		prev, starts := j.startsRead(restored, done, s)
+		prev, starts := j.startsRead(restored, done, s, kinds[s.Name], targets[s.Name])
 		if !starts {
 			out[s.Name] = prev
 			continue
 		}
-		ended := make([]source.Split, 0, len(prev))
-		for _, sp := range prev {
-			ended = append(ended, source.Split{ID: sp.ID, State: sp.State})
-		}
-		if prev == nil {
-			ended = nil
-		}
-		splits, err := fresh(s, ended)
+		splits, err := fresh(s, endedSplits(kinds[s.Name], restored, s.Name))
 		if err != nil {
 			return nil, err
 		}
@@ -1093,18 +1088,125 @@ func (j *Job) startSplits(restored *checkpoint.Record, done map[string]bool, fre
 	return out, nil
 }
 
+// endedSplits are where the last read of stream ended, its splits in
+// restored, as a read of kind that starts goes on from them. They're nil if
+// it never was; for a full refresh or an overwrite, whose read must hold
+// the whole stream, even from a source that goes on from where it last
+// stopped; and where the last read didn't complete and started as another
+// kind, so it ended nowhere a read can go on from.
+func endedSplits(kind checkpoint.ReadKind, restored *checkpoint.Record, stream string) []source.Split {
+	if restored == nil || kind != checkpoint.ReadOn {
+		return nil
+	}
+	prev := restored.Splits(stream)
+	if st := restored.Streams[stream]; prev == nil || !st.Complete && st.ReadKind != kind {
+		return nil
+	}
+	ended := make([]source.Split, 0, len(prev))
+	for _, sp := range prev {
+		ended = append(ended, source.Split{ID: sp.ID, State: sp.State})
+	}
+	return ended
+}
+
 // startsRead returns a stream's splits in restored, and whether its read
-// starts in the attempt: it doesn't continue one, nor did it complete
-// earlier in the sync (done).
-func (j *Job) startsRead(restored *checkpoint.Record, done map[string]bool, s Stream) ([]checkpoint.SplitState, bool) {
+// starts in the attempt, which starts it as kind, an overwrite of target:
+// it doesn't continue one, nor did it complete earlier in the sync (done).
+// An unfinished read that started as another kind is not continued: one
+// that went on from the last read holds less than a full refresh or an
+// overwrite needs, and the rows of one written as it read are not in an
+// overwrite, nor those of an overwrite in the table. Nor is an overwrite of
+// other tables: a destination keeps what an overwrite wrote with the table
+// it replaces, so the new table would get only the rows read since.
+func (j *Job) startsRead(restored *checkpoint.Record, done map[string]bool, s Stream, kind checkpoint.ReadKind, target *checkpoint.ReadTarget) ([]checkpoint.SplitState, bool) {
 	var prev []checkpoint.SplitState
 	if restored != nil {
 		prev = restored.Splits(s.Name)
 	}
 	// A continuous read follows every split, so one that a bounded read
 	// completed means a new read.
-	ongoing := prev != nil && !restored.Streams[s.Name].Complete && !(j.Continuous && slices.ContainsFunc(prev, func(sp checkpoint.SplitState) bool { return sp.Complete }))
+	ongoing := prev != nil && goesOn(restored.Streams[s.Name], kind, target) && !(j.Continuous && slices.ContainsFunc(prev, func(sp checkpoint.SplitState) bool { return sp.Complete }))
 	return prev, !done[s.Name] && !ongoing
+}
+
+// goesOn says an attempt that starts a stream's read as kind, an overwrite
+// of target, goes on with the read st records: it hasn't completed, and
+// started the same.
+func goesOn(st checkpoint.StreamState, kind checkpoint.ReadKind, target *checkpoint.ReadTarget) bool {
+	return !st.Complete && st.ReadKind == kind && st.ReadTarget.Equal(target)
+}
+
+// readKind is how the job starts a read of s: with no state for a full
+// refresh or an overwrite, and otherwise from where the last read ended.
+// With a transform, s's read is an overwrite if an output it reaches is
+// overwritten.
+func (j *Job) readKind(s Stream) checkpoint.ReadKind {
+	overwrite := s.Mode == destination.Overwrite
+	for _, o := range j.Outputs {
+		overwrite = overwrite || o.Mode == destination.Overwrite && (j.SQL == nil || o.From == s.Name)
+	}
+	switch {
+	case overwrite:
+		return checkpoint.ReadOverwrite
+	case s.Read == source.FullRefresh:
+		return checkpoint.ReadWhole
+	}
+	return checkpoint.ReadOn
+}
+
+// readKinds are readKind's of the job's streams, by name.
+func (j *Job) readKinds() map[string]checkpoint.ReadKind {
+	out := make(map[string]checkpoint.ReadKind, len(j.Streams))
+	for _, s := range j.Streams {
+		out[s.Name] = j.readKind(s)
+	}
+	return out
+}
+
+// readTarget is what the job's read of s replaces, where it's an
+// overwrite: the destination's namespace, and the tables of s, or of the
+// outputs that make it an overwrite, as the job names them. Nil for another
+// read.
+func (j *Job) readTarget(s Stream) *checkpoint.ReadTarget {
+	if j.readKind(s) != checkpoint.ReadOverwrite {
+		return nil
+	}
+	t := &checkpoint.ReadTarget{Namespace: j.Namespace, Tables: map[string]string{}, SourceNames: j.KeepSourceNames}
+	if s.Mode == destination.Overwrite && !j.transformed() {
+		t.Tables[s.Name] = s.Table
+	}
+	for _, o := range j.Outputs {
+		if o.Mode == destination.Overwrite && (j.SQL == nil || o.From == s.Name) {
+			t.Tables[o.Name] = o.Table
+		}
+	}
+	return t
+}
+
+// readTargets are readTarget's of the job's streams, by name.
+func (j *Job) readTargets() map[string]*checkpoint.ReadTarget {
+	out := make(map[string]*checkpoint.ReadTarget, len(j.Streams))
+	for _, s := range j.Streams {
+		out[s.Name] = j.readTarget(s)
+	}
+	return out
+}
+
+// readStarts are when the reads of the job's streams started, in
+// microseconds since the Unix epoch: a read that goes on from restored's
+// keeps its start, and one that starts has now.
+func (j *Job) readStarts(restored *checkpoint.Record, now int64) map[string]int64 {
+	out := make(map[string]int64, len(j.Streams))
+	for _, s := range j.Streams {
+		out[s.Name] = now
+		if restored == nil {
+			continue
+		}
+		if st := restored.Streams[s.Name]; st.ReadStart != 0 && goesOn(st, j.readKind(s), j.readTarget(s)) {
+			out[s.Name] = st.ReadStart
+		}
+	}
+	return out
 }
 
 // newSplits are the splits of a read of s that starts from where the last
@@ -1489,7 +1591,11 @@ func (c *coordinator) run(ctx context.Context, restored *checkpoint.Record, canF
 		defer close(c.commits)
 		return c.loop(gctx)
 	})
-	return g.Wait()
+	err := g.Wait()
+	for _, ch := range append([]chan Frame{toFlow, fromFlow}, lanes...) {
+		drainFrames(ch)
+	}
+	return err
 }
 
 // plan is the dataflow's plan of an attempt of generation gen whose first
@@ -1652,17 +1758,7 @@ func (j *Job) sinkStarts(readStarts map[string]int64, done map[string]bool, ends
 // schemas the dataflow starts with.
 func (c *coordinator) begin(restored *checkpoint.Record) map[string][]byte {
 	schemas := map[string][]byte{}
-	now := time.Now().UnixMicro()
-	c.readStarts = make(map[string]int64, len(c.job.Streams))
-	for _, s := range c.job.Streams {
-		c.readStarts[s.Name] = now
-		if restored == nil {
-			continue
-		}
-		if st := restored.Streams[s.Name]; st.ReadStart != 0 && !st.Complete {
-			c.readStarts[s.Name] = st.ReadStart
-		}
-	}
+	c.readStarts = c.job.readStarts(restored, time.Now().UnixMicro())
 	if restored != nil {
 		c.committed = restored.Epoch
 		c.ackStates = map[string][]checkpoint.SplitState{}
@@ -1975,17 +2071,28 @@ func (c *coordinator) record(ctx context.Context, n uint64, st *epochState) (*ch
 	at := checkpoint.RecordRef{Epoch: n, Generation: c.sess.Generation()}
 	holds := make(map[string]*checkpoint.Holds, len(c.holds))
 	for name, h := range c.holds {
-		holds[name] = mergeHolds(h, st.flow.Holds[name], at, rec.CreatedAt)
+		delivered := st.flow.Delivered[name]
+		switch {
+		case delivered != nil:
+		case c.job.transformed():
+			delivered = st.flow.OutputSchemas[name]
+		default:
+			delivered = st.flow.Schemas[name]
+		}
+		holds[name] = mergeHolds(h, st.flow.Holds[name], at, rec.CreatedAt, delivered)
 	}
 	// The destination's streams' holds: a transform's outputs', or else the
 	// streams'.
 	sinks := !c.job.transformed()
 	markSplits(st.splits, st.flow.Watermarks)
+	kinds, targets := c.job.readKinds(), c.job.readTargets()
 	for _, name := range slices.Sorted(maps.Keys(st.splits)) {
 		s := checkpoint.StreamState{
-			Schema:    st.flow.Schemas[name],
-			ReadStart: c.readStarts[name],
-			Rows:      st.rows[name],
+			Schema:     st.flow.Schemas[name],
+			ReadStart:  c.readStarts[name],
+			ReadKind:   kinds[name],
+			ReadTarget: targets[name],
+			Rows:       st.rows[name],
 		}
 		if closed, ok := st.flow.WindowMarks[name]; ok {
 			floor, ok := c.windowFloors[name]

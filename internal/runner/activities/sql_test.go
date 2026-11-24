@@ -183,19 +183,30 @@ func TestBuildJobPlansSQL(t *testing.T) {
 
 // A stream a SQL transform reads by its event time is read whole each
 // sync where it's read with full_refresh, as faker's are, and its job says
-// so, for a dedupe over it.
+// so, for a dedupe over it. Its reads give a record again only with an
+// overlap, which makes its replay superset.
 func TestBuildJobMarksAFullRead(t *testing.T) {
-	spec := sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_NONE, nil)
-	spec.Pipeline.Source = &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "users", EventTime: "created_at"}}}
-	job, err := buildJob(t.Context(), spec, connectorhost.Env{}, plannedEmails(t).plan())
-	defer connectorhost.Close(job.Source)
-	defer connectorhost.Close(job.Destination)
-	if err != nil {
-		t.Fatal(err)
-	}
-	i := slices.IndexFunc(job.Streams, func(s runner.Stream) bool { return s.Name == "users" })
-	if i < 0 || job.Streams[i].EventTime == nil || !job.Streams[i].EventTime.FullRead || !job.Streams[i].EventTime.Held {
-		t.Fatalf("streams %+v: users should be read whole, by its event time", job.Streams)
+	for _, overlap := range []int{0, 2} {
+		spec := sqlSpec(t, emails, apiv1.Passthrough_PASSTHROUGH_NONE, nil)
+		cfg, err := structpb.NewStruct(map[string]any{"count": 1, "overlap": overlap})
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec.Source.Config = cfg
+		spec.Pipeline.Source = &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "users", EventTime: "created_at"}}}
+		job, err := buildJob(t.Context(), spec, connectorhost.Env{}, plannedEmails(t).plan())
+		connectorhost.Close(job.Source)
+		connectorhost.Close(job.Destination)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(job.Streams, func(s runner.Stream) bool { return s.Name == "users" })
+		if i < 0 || job.Streams[i].EventTime == nil || !job.Streams[i].EventTime.FullRead || !job.Streams[i].EventTime.Held {
+			t.Fatalf("streams %+v: users should be read whole, by its event time", job.Streams)
+		}
+		if got := job.Streams[i].EventTime.Rereads; got != (overlap > 0) {
+			t.Errorf("overlap %d: rereads %v", overlap, got)
+		}
 	}
 }
 

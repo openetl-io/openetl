@@ -64,6 +64,17 @@ type Release struct {
 	// A column hold's values go to a new version of the column, col__v2,
 	// and the column keeps the type the destination has.
 	NewVersion bool
+	// A release that a person discarded: a discard of its hold, unless the
+	// replay in the record took it, as a run had started patching it in.
+	// Records are where an attempt commits, so one that never recorded the
+	// replay patched nothing in. Where the stream holds, that replay goes
+	// on; a job in which it doesn't hold takes the release as a discard of
+	// the replay.
+	Ends bool
+	// With Ends, the held cells of the column that the person saw when they
+	// discarded it. Cells held after the discard aren't the person's to
+	// drop: with more, the replay's cells stay held.
+	EndsCells uint64
 }
 
 // RefusedError: the destination refused columns of an epoch's schemas
@@ -226,12 +237,153 @@ func (j *Job) checkHolds() error {
 	return nil
 }
 
+var writeModes = map[destination.WriteMode]string{destination.Append: "append", destination.Overwrite: "overwrite", destination.Merge: "merge"}
+
+// notHolding says why s, one of the destination's streams, doesn't hold in
+// this job, as a clause.
+func (j *Job) notHolding(s Stream) string {
+	switch {
+	case j.ownCode():
+		return "a Spark or Flink transform writes it"
+	case j.HeldURL == "":
+		return "the runner has no storage for held values"
+	case len(s.PrimaryKey) == 0:
+		return "it has no primary key"
+	case !j.Destination.Capabilities().Holds.Takes(s.Mode):
+		return "the destination doesn't patch a stream it writes with " + writeModes[s.Mode]
+	}
+	return "it doesn't hold"
+}
+
+// keptHolds fails the attempt if restored has held values of a stream that
+// doesn't hold in this job, as after a version that changes its write
+// mode, key, destination or transform, or that doesn't read it, or a
+// catalog without it: the next record would drop its holds, and their held
+// files with them. The job's discards apply first, also those of a release
+// being patched in, which only a job in which the stream holds can finish.
+// A paused stream keeps its holds, and an overwritten one reads its values
+// again.
+func (j *Job) keptHolds(restored *checkpoint.Record) error {
+	if restored == nil {
+		return nil
+	}
+	keeps := map[string]bool{}
+	for _, s := range j.Paused {
+		keeps[s.Name] = true
+	}
+	why := map[string]string{}
+	for _, s := range j.sinkStreams() {
+		if j.holdsOn(s) || s.Mode == destination.Overwrite {
+			keeps[s.Name] = true
+		} else {
+			why[s.Name] = j.notHolding(s)
+		}
+	}
+	gone := "the pipeline doesn't read it now"
+	switch {
+	case j.ownCode():
+		gone = "a Spark or Flink transform writes what the destination gets now"
+	case j.transformed():
+		gone = "no output of the SQL transform has its name"
+	}
+	names := slices.Concat(slices.Collect(maps.Keys(restored.Streams)), slices.Collect(maps.Keys(restored.Outputs)))
+	slices.Sort(names)
+	var problems []string
+	for _, name := range slices.Compact(names) {
+		if keeps[name] {
+			continue
+		}
+		held, cols := heldValues(restored.HoldsOf(name), j.Releases, name)
+		if len(held) == 0 {
+			continue
+		}
+		reason, ok := why[name]
+		if !ok {
+			reason = gone
+		}
+		col := "COLUMN"
+		if len(cols) == 1 {
+			col = cols[0]
+		}
+		problems = append(problems, fmt.Sprintf("stream %s holds %s, and %s, so this run can't keep them; undo the change, which keeps them, "+
+			"or discard them with `openetl holds discard PIPELINE %s %s`", name, strings.Join(held, " and "), reason, name, col))
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return errs.New(errs.SchemaDrift, "runner: %s", strings.Join(problems, "; "))
+}
+
+// heldValues are what h holds of stream's values once releases' discards
+// apply, as phrases, and the columns a discard takes; none if it holds
+// nothing. A discard, or a release a person discarded, names a hold by
+// where it started, and doesn't apply to one that refused it. A release
+// being patched in ends by a release it took that a person discarded,
+// whatever holds its column has since. Its column's cells, which the API
+// lists as being released, go with it, unless the column holds more than
+// the person saw: some were held since.
+func heldValues(h *checkpoint.Holds, releases []Release, stream string) (held, cols []string) {
+	if h == nil {
+		return nil, nil
+	}
+	discarded := func(col string, since checkpoint.RecordRef, refused *checkpoint.Refused) bool {
+		return slices.ContainsFunc(releases, func(r Release) bool {
+			return (r.Discard || r.Ends) && r.Stream == stream && r.Column == col && r.Since == since && (refused == nil || refused.Release != r.ID)
+		})
+	}
+	replayed := func(col string) bool { return h.Replay != nil && slices.Contains(h.Replay.Columns, col) }
+	// ended reports whether the replay of col ends, and the cells of col
+	// held that the person saw.
+	ended := func(col string) (bool, uint64) {
+		var ends bool
+		var seen uint64
+		if !replayed(col) {
+			return false, 0
+		}
+		for _, r := range releases {
+			if r.Ends && r.Stream == stream && r.Column == col && h.Replay.Took(col, r.ID) {
+				ends, seen = true, max(seen, r.EndsCells)
+			}
+		}
+		return ends, seen
+	}
+	for _, c := range h.Columns {
+		if !c.Discarded && !discarded(c.Column, c.Since, c.Refused) {
+			held, cols = append(held, "column "+c.Column+" held whole"), append(cols, c.Column)
+		}
+	}
+	for _, col := range slices.Sorted(maps.Keys(h.Cells)) {
+		c := h.Cells[col]
+		ends, seen := ended(col)
+		if replayed(col) && (!ends || c.Cells > seen) || !replayed(col) && !discarded(col, c.Since, c.Refused) {
+			held, cols = append(held, fmt.Sprintf("%d held cells of %s", c.Cells, col)), append(cols, col)
+		}
+	}
+	if h.Replay != nil {
+		var releasing []string
+		for _, col := range h.Replay.Columns {
+			if ends, _ := ended(col); !ends {
+				releasing = append(releasing, col)
+			}
+		}
+		if len(releasing) > 0 {
+			held, cols = append(held, "the values of "+strings.Join(releasing, ", ")+" that a release is patching in"), append(cols, releasing...)
+		}
+	}
+	slices.Sort(cols)
+	return held, slices.Compact(cols)
+}
+
 // startHolds are the holds each holding stream starts the attempt with:
 // restored's, with the job's releases applied and the refused columns
 // held; and the dataflow's plans. A released column the destination
 // refuses again keeps its hold, isn't patched in, and records the refused
-// release, as do its released cells.
+// release, as do its released cells. It fails, as keptHolds does, if a
+// stream that doesn't hold would drop restored's held values.
 func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limits map[string]destination.TableLimits) (map[string]*checkpoint.Holds, map[string]*HoldPlan, error) {
+	if err := j.keptHolds(restored); err != nil {
+		return nil, nil, err
+	}
 	holds := map[string]*checkpoint.Holds{}
 	plans := map[string]*HoldPlan{}
 	for _, s := range j.sinkStreams() {
@@ -247,16 +399,26 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		// The releases' IDs, by column.
 		wholes, cells := map[string]string{}, map[string]string{}
 		for _, r := range j.Releases {
+			// Releases wait for a replay to end. One of the replay's that a
+			// person discarded ends it only where the stream doesn't hold
+			// (keptHolds); one that no replay took is a discard.
 			if r.Stream != s.Name || h.Replay != nil {
 				continue
 			}
+			// A release refused isn't taken again, nor its discard.
 			again := func(f *checkpoint.Refused) bool { return f != nil && r.ID != "" && f.Release == r.ID && !r.Discard }
+			discard := r.Discard || r.Ends
 			if i := slices.IndexFunc(h.Columns, func(c checkpoint.ColumnHold) bool {
-				return c.Column == r.Column && c.Since == r.Since && !c.Discarded && !again(c.Refused)
+				return c.Column == r.Column && c.Since == r.Since && (!c.Discarded || !discard) && !again(c.Refused)
 			}); i >= 0 {
-				if r.Discard {
+				switch {
+				case h.Columns[i].Discarded:
+					// Released, a discarded hold ends without a replay, as its
+					// values are gone; refused again, the column is held anew.
+					h.Columns = slices.Delete(h.Columns, i, i+1)
+				case discard:
 					h.Columns[i].Discarded, h.Columns[i].Refused = true, nil
-				} else {
+				default:
 					taken = append(taken, h.Columns[i])
 					if r.NewVersion && h.Columns[i].Delivered != nil {
 						versioned = append(versioned, h.Columns[i])
@@ -267,7 +429,7 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				}
 			}
 			if c, ok := h.Cells[r.Column]; ok && c.Since == r.Since && !again(c.Refused) {
-				if r.Discard {
+				if discard {
 					delete(h.Cells, r.Column)
 				} else {
 					released = append(released, r.Column)
@@ -317,30 +479,25 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			is := func(col string) bool { return col == r.Column }
 			released = slices.DeleteFunc(released, is)
 			versioned = slices.DeleteFunc(versioned, func(c checkpoint.ColumnHold) bool { return is(c.Column) })
-			if h.Replay != nil {
-				if h.Replay.Columns = slices.DeleteFunc(h.Replay.Columns, is); len(h.Replay.Columns) == 0 {
-					h.Replay = nil
-				}
-			}
+			why := "the destination refused the column: " + r.Reason
 			if id, ok := cells[r.Column]; ok {
 				c := h.Cells[r.Column]
-				c.Refused = &checkpoint.Refused{Release: id, Reason: "the destination refused the column: " + r.Reason}
+				c.Refused = &checkpoint.Refused{Release: id, Reason: why}
 				h.Cells[r.Column] = c
 				delete(cells, r.Column)
+			}
+			c := checkpoint.ColumnHold{Column: r.Column, Delivered: r.Delivered}
+			if i := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }); i >= 0 {
+				c = taken[i]
+				c.Refused = &checkpoint.Refused{Release: wholes[r.Column], Reason: "the destination refused it again"}
+			} else {
+				c, _ = heldAgain(h, c, why, time.Now())
 			}
 			if slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }) {
 				continue
 			}
-			if i := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == r.Column }); i >= 0 {
-				c := taken[i]
-				c.Reason, c.Cause = "the destination refused it: "+r.Reason, r.cause()
-				c.Refused = &checkpoint.Refused{Release: wholes[r.Column], Reason: "the destination refused it again"}
-				h.Columns = append(h.Columns, c)
-			} else {
-				h.Columns = append(h.Columns, checkpoint.ColumnHold{
-					Column: r.Column, Delivered: r.Delivered, Reason: "the destination refused it: " + r.Reason, Cause: r.cause(),
-				})
-			}
+			c.Reason, c.Cause = "the destination refused it: "+r.Reason, r.cause()
+			h.Columns = append(h.Columns, c)
 		}
 		if len(released) > 0 {
 			slices.Sort(released)
@@ -353,11 +510,15 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			// Where each column's hold held whole starts, and its cell hold;
 			// absent for one the replay doesn't end.
 			whole, cellHolds := map[string]checkpoint.RecordRef{}, map[string]checkpoint.RecordRef{}
+			started := map[string]time.Time{}
 			for i, col := range released {
 				var starts []checkpoint.RecordRef
 				if k := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == col }); k >= 0 {
 					whole[col] = taken[k].Since
 					starts = append(starts, taken[k].Since)
+					if !taken[k].Started.IsZero() {
+						started[col] = taken[k].Started
+					}
 				}
 				if c, ok := h.Cells[col]; ok {
 					cellHolds[col] = c.Since
@@ -374,6 +535,20 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				return nil, nil, err
 			}
 			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
+			if len(whole) > 0 {
+				h.Replay.Since = whole
+			}
+			if len(started) > 0 {
+				h.Replay.Started = started
+			}
+			for col := range whole {
+				if id := wholes[col]; id != "" {
+					if h.Replay.WholeReleases == nil {
+						h.Replay.WholeReleases = map[string]string{}
+					}
+					h.Replay.WholeReleases[col] = id
+				}
+			}
 			// A column isn't read from the files before its hold of a kind
 			// started, or from any for a kind it holds nothing of: those
 			// may hold values of an earlier hold of it, patched in since, or
@@ -411,6 +586,37 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 	return holds, plans, nil
 }
 
+// heldAgain takes c's column out of h's replay, as the column is held
+// whole again while the replay patches it in, and returns c as the hold
+// whole it gets: from where the hold the replay released started, if it
+// released one, refused by that release, so a later release reads every
+// value held since then, and the refused one isn't taken again. The
+// column's released cells, which the replay doesn't patch in now, are
+// refused by their release. why says why. Not ok if the replay doesn't
+// patch the column in.
+func heldAgain(h *checkpoint.Holds, c checkpoint.ColumnHold, why string, now time.Time) (checkpoint.ColumnHold, bool) {
+	r := h.Replay
+	if r == nil || !slices.Contains(r.Columns, c.Column) {
+		return c, false
+	}
+	if r.Columns = slices.DeleteFunc(r.Columns, func(col string) bool { return col == c.Column }); len(r.Columns) == 0 {
+		h.Replay = nil
+	}
+	if id := r.CellReleases[c.Column]; id != "" {
+		if cells, ok := h.Cells[c.Column]; ok {
+			cells.Refused = &checkpoint.Refused{Release: id, Reason: why}
+			h.Cells[c.Column] = cells
+		}
+	}
+	if at, ok := r.Since[c.Column]; ok {
+		c.Since, c.Started = at, startedOf(r, c.Column, now)
+		if id := r.WholeReleases[c.Column]; id != "" {
+			c.Refused = &checkpoint.Refused{Release: id, Reason: why}
+		}
+	}
+	return c, true
+}
+
 // heldFrom are the epochs of es from at on.
 func heldFrom(es []checkpoint.HeldEpochs, at checkpoint.RecordRef) []checkpoint.HeldEpochs {
 	var out []checkpoint.HeldEpochs
@@ -431,9 +637,10 @@ func before(a, b checkpoint.RecordRef) bool {
 }
 
 // mergeHolds is a stream's holds once epoch at is recorded: base's, with
-// what the dataflow reported at the stream's barrier. Nil once nothing is
-// held.
-func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, now time.Time) *checkpoint.Holds {
+// what the dataflow reported at the stream's barrier. delivered is the
+// stream's schema as the destination has it there, which gives a column
+// held again the field the destination has. Nil once nothing is held.
+func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, now time.Time, delivered []byte) *checkpoint.Holds {
 	h := &checkpoint.Holds{}
 	if base != nil {
 		h = cloneHolds(base)
@@ -449,8 +656,20 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 				}
 				c.Discarded, c.Refused = p.Discarded, p.Refused
 				c.Cause = keepRefusal(p.Cause, c.Cause)
+			} else {
+				// The engine held a column whole again while its release is
+				// patched in, as its schema changed again: the replay skips
+				// its values from then on.
+				c, _ = heldAgain(h, c, "the column was held whole again while the release patched it in", now)
 			}
 			cols = append(cols, c)
+		}
+		// One the engine doesn't hold yet, as one held again when a replay
+		// ended, stays held; the engine holds it from the next attempt.
+		for _, p := range h.Columns {
+			if !slices.ContainsFunc(cols, func(c checkpoint.ColumnHold) bool { return c.Column == p.Column }) {
+				cols = append(cols, p)
+			}
 		}
 		h.Columns = cols
 		add := func(cells map[string]checkpoint.CellHold, col string, c checkpoint.CellHold) map[string]checkpoint.CellHold {
@@ -494,6 +713,7 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 						h.Cells[col] = c
 					}
 				}
+				h.Columns = append(h.Columns, leftHeld(h, p.StillHeld, now, delivered)...)
 				h.Replay = nil
 			}
 		}
@@ -506,6 +726,66 @@ func mergeHolds(base *checkpoint.Holds, r *ReadyHolds, at checkpoint.RecordRef, 
 		return nil
 	}
 	return h
+}
+
+// leftHeld are the columns that h's replay released whole, held again as
+// it ends with n of its values that still don't fit: from where their holds
+// started, refused by their releases, as values of theirs are left in the
+// held files, which nothing else would keep. The engine counts the values
+// left of all the replay's columns in one, so any held again, though only
+// some may have values left; the next release patches in again, by their
+// IDs, those that fit. A count by column would hold only those.
+func leftHeld(h *checkpoint.Holds, n uint64, now time.Time, delivered []byte) []checkpoint.ColumnHold {
+	if n == 0 {
+		return nil
+	}
+	var out []checkpoint.ColumnHold
+	for _, col := range h.Replay.Columns {
+		at, ok := h.Replay.Since[col]
+		if !ok || slices.ContainsFunc(h.Columns, func(c checkpoint.ColumnHold) bool { return c.Column == col }) {
+			continue
+		}
+		c := checkpoint.ColumnHold{Column: col, Delivered: fieldOf(delivered, col)}
+		if i := slices.IndexFunc(h.Replay.Versioned, func(v checkpoint.ColumnHold) bool { return v.Column == col }); i >= 0 {
+			c = h.Replay.Versioned[i]
+		}
+		c.Since, c.Started, c.Reason = at, startedOf(h.Replay, col, now), "its released values don't all fit its type"
+		if id := h.Replay.WholeReleases[col]; id != "" {
+			c.Refused = &checkpoint.Refused{Release: id, Reason: stillHeld(n)}
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// startedOf is when the hold of col that r released held it whole started,
+// or now where r doesn't say, as records from before it don't.
+func startedOf(r *checkpoint.Replay, col string, now time.Time) time.Time {
+	if at, ok := r.Started[col]; ok {
+		return at
+	}
+	return now
+}
+
+// fieldOf is col's field in schema, an Arrow IPC stream, as a schema with
+// only it; nil if schema has none.
+func fieldOf(schema []byte, col string) []byte {
+	if schema == nil {
+		return nil
+	}
+	s, err := decodeSchema(schema)
+	if err != nil {
+		return nil
+	}
+	fs, ok := s.FieldsByName(col)
+	if !ok || len(fs) != 1 {
+		return nil
+	}
+	b, err := encodeSchema(arrow.NewSchema(fs, nil))
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 func stillHeld(n uint64) string {
@@ -543,8 +823,8 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 	if h.Replay != nil {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
-		r.Versioned, r.CellReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases)
-		r.First, r.FirstCells = maps.Clone(r.First), maps.Clone(r.FirstCells)
+		r.Versioned, r.CellReleases, r.WholeReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases), maps.Clone(r.WholeReleases)
+		r.First, r.FirstCells, r.Since, r.Started = maps.Clone(r.First), maps.Clone(r.FirstCells), maps.Clone(r.Since), maps.Clone(r.Started)
 		out.Replay = &r
 	}
 	return out

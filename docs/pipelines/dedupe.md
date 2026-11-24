@@ -167,6 +167,7 @@ A scheduled pipeline keeps the dedupe's state in its checkpoint between syncs:
 
 - **`full_refresh`.** Each sync reads the whole stream, and starts with no state. A first-row dedupe writes every key's first row at the end of the read, so an appended output gets every key's rows again in each sync. A latest-row dedupe writes, in each sync, an upsert of every key's latest row that passes its filter, and a delete of every key whose latest row the filter drops, so the merged output loses a key whose latest row left the filter since the last sync. A key that the source no longer has keeps its row, as with any stream read with `full_refresh` and merged.
 - **`incremental` by the event time, or `stream`.** The kept keys go on in the next sync, so a key written in one sync is a repeat in the next.
+- **`incremental` by another cursor.** Only a latest-row dedupe takes this read. The watermark moves to the end of input when each sync's read ends. The dedupe still keeps each key's latest time, record ID and hash, as it does over any read but `full_refresh`. So a row no later than its key's latest from an earlier sync is a repeat in the next sync.
 
 The plan refuses a first-row dedupe over a stream read with `incremental` by another cursor: each sync would start its keys again, and write each key's first row again. A latest-row dedupe takes any read, as it compares each row with its key's latest. A stream read with `cdc` is refused, as it is for `OVER`.
 

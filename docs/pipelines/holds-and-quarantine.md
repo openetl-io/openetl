@@ -96,6 +96,10 @@ A stream without a primary key cannot set `hold`. The streams of a pipeline with
 
 The schema policy applies to a stream's rows after the first checkpoint that records a schema with the stream's columns. That schema is the stream's first schema. If a sync restores a checkpoint that has the stream's columns, the policy applies from the start of the sync. The schema policy holds none of the changes in the first schema. Holds that the destination causes still apply to them: a type change that the destination refuses, or a new column that the destination has no room for.
 
+A column can be held whole again while its release is being patched in, for example when the stream changes it again. OpenETL then holds it from where its first hold started, and marks the release as refused. The release does not patch in the rest of its values. Release the hold again, and that release reads every held value from the first hold's start.
+
+Some values that a release patches in can still not fit the column's type, for example after a narrower type override. When such a release ends, OpenETL holds each column that it released whole again, from where its hold started, and marks the release as refused. From the next sync, the column's later values are held too, until a release clears the hold.
+
 On [workers](./workers.md#schema-changes-and-holds), the policy applies on every worker after that checkpoint, also on a worker that has not read any of the stream's rows yet. The first schema can have a change from rows after that checkpoint. [Schema changes and holds](./workers.md#schema-changes-and-holds) says when, and what a worker does until it receives the first schema.
 
 A column hold needs what a cell hold needs: a primary key and a destination that patches the stream's write mode. If OpenETL cannot hold the column, the sync fails with `SCHEMA_DRIFT`. A change to a column does not quarantine rows. [Handle schema changes and holds](./schema-changes.md) walks through a column hold and its release.
@@ -116,6 +120,25 @@ A hold can be in force on such a column, such as a hold that a sync recorded bef
 3. Start a sync.
 
 If the destination still refuses the column, the sync fails with `SCHEMA_DRIFT` and the repair statement.
+
+## A change that stops a stream holding
+
+A stream holds values only while it meets every requirement for holds. These changes can stop a stream holding:
+
+- a version that changes the stream's write mode to one that the destination does not patch, or removes its primary key;
+- a version that removes the stream from `source.streams`, or a source catalog that leaves the stream out;
+- a version that renames or removes a SQL transform's output, or adds a Spark or Flink transform;
+- a version that points to a destination without holds;
+- a runner without storage for held values.
+
+If the stream has held values, the sync fails with `SCHEMA_DRIFT`. OpenETL keeps the holds and their held values. The error names the stream, what it holds and why it does not hold now. Choose one of these ways on:
+
+- Undo the change, release the holds, and make the change again after the release.
+- Discard the holds with `openetl holds discard PIPELINE STREAM COLUMN`. The next sync then makes the change, and the held values are dropped. A discard also applies to a hold that was released, unless a sync has already started to patch its values in.
+
+A release that a sync has started to patch in (**Releasing**) can finish only while the stream holds. If you cannot undo the change, discard the release with `openetl holds discard PIPELINE STREAM COLUMN`. If the stream does not hold in the next sync, that sync drops the values that the release has not patched in. If the column held more cells after your discard, the sync keeps them and fails with `SCHEMA_DRIFT` until you discard again. While the stream holds, the release goes on, and the discard applies only if the stream stops holding before the release ends. If the release ends first, the discard drops nothing, and values that the release leaves held stay held.
+
+A paused stream keeps its holds. No destination patches `overwrite`, so a change to `overwrite` stops the stream holding. Unless the stream sets how it holds, which is then a problem in the plan, the change does not fail the sync. Each sync reads the whole stream again and replaces the table, so the stream's holds end, and their held values are not patched in.
 
 ## An example
 

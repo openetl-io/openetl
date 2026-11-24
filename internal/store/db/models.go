@@ -316,6 +316,8 @@ type HoldRelease struct {
 	Principal       string
 	CreateTime      time.Time
 	NewVersion      bool
+	Ends            bool
+	EndsCells       int64
 }
 
 type Incident struct {

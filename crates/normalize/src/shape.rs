@@ -147,7 +147,7 @@ impl Shaper {
             Some(d) if types.nanoseconds => Some(coerce::nanoseconds(&d)),
             d => d,
         };
-        Ok(Self {
+        let mut shaper = Self {
             namer,
             table,
             typer: Typer::new(identity.clone(), declared.clone(), types),
@@ -162,7 +162,26 @@ impl Shaper {
             changelog: false,
             holds: None,
             changed: false,
-        })
+        };
+        shaper.pin();
+        Ok(shaper)
+    }
+
+    /// The columns whose type can change only by widening: the key's, and
+    /// a keyed stream's cursor where it gives `_openetl_seq`, which a
+    /// changelog's seq control column gives instead.
+    fn pin(&mut self) {
+        let mut pinned = BTreeMap::new();
+        for k in &self.identity.key {
+            pinned.insert(k.clone(), NotHeld::Key);
+        }
+        if let Some(c) = &self.identity.cursor
+            && !self.identity.key.is_empty()
+            && !self.changelog
+        {
+            pinned.entry(c.clone()).or_insert(NotHeld::Cursor);
+        }
+        self.evolver.pinned = pinned;
     }
 
     /// A copy for another lane: everything lanes share, which is
@@ -385,6 +404,7 @@ impl Shaper {
     pub fn with_changelog(mut self, on: bool) -> Self {
         self.changelog = on;
         self.typer.changelog = on;
+        self.pin();
         self
     }
 
@@ -1898,6 +1918,638 @@ mod tests {
         assert_eq!(n.batch.schema().fields(), schema.fields());
         assert_eq!(n.batch.column(0).null_count(), 1);
         assert!(n.versioned.is_empty());
+    }
+
+    fn keyed_by(key: &str, cursor: &str) -> Shaper {
+        Shaper::new(
+            Naming::default(),
+            "t".into(),
+            Identity {
+                stream: "t".into(),
+                key: vec![key.into()],
+                cursor: Some(cursor.into()),
+                ..Default::default()
+            },
+            Policy::AllowAll,
+            None,
+            None,
+            TypeOptions::default(),
+        )
+        .unwrap()
+    }
+
+    fn uuid_field() -> Field {
+        Field::new("id", DataType::FixedSizeBinary(16), true).with_metadata(HashMap::from([(
+            EXTENSION_NAME_KEY.to_owned(),
+            UUID_EXTENSION.to_owned(),
+        )]))
+    }
+
+    fn uuids(n: u8) -> (Field, ArrayRef) {
+        let a = FixedSizeBinaryArray::try_from_iter((1..=n).map(|i| [i; 16])).unwrap();
+        (uuid_field(), Arc::new(a))
+    }
+
+    fn stamps(tz: Option<&str>) -> (Field, ArrayRef) {
+        let a = TimestampMicrosecondArray::from(vec![1_000, 2_000]);
+        let a = match tz {
+            Some(tz) => a.with_timezone(tz),
+            None => a,
+        };
+        (
+            Field::new("at", a.data_type().clone(), true),
+            Arc::new(a) as ArrayRef,
+        )
+    }
+
+    fn batch_of(cols: Vec<(Field, ArrayRef)>) -> RecordBatch {
+        let (fields, arrays): (Vec<Field>, Vec<ArrayRef>) = cols.into_iter().unzip();
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).unwrap()
+    }
+
+    // A key column, or a cursor that gives `_openetl_seq`, whose type
+    // changes otherwise than by widening stops the stream, allow_all too:
+    // a version would leave the key, or the sequence, null in every row
+    // from then on.
+    #[test]
+    fn a_key_or_cursor_that_changes_type_stops() {
+        let ints = || {
+            (
+                Field::new("id", DataType::Int64, true),
+                Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+            )
+        };
+        let cases = [
+            (
+                "the key, int to uuid",
+                batch_of(vec![uuids(2), stamps(Some("UTC"))]),
+                "\"id\" changed from int64 to uuid",
+                "it's part of the stream's key",
+            ),
+            (
+                "the cursor, timestamptz to timestamp",
+                batch_of(vec![ints(), stamps(None)]),
+                "\"at\" changed from timestamp_tz to timestamp",
+                "it's the stream's cursor",
+            ),
+        ];
+        let mut lost = Vec::new();
+        for (what, next, change, why) in cases {
+            for restored in [false, true] {
+                let mut s = keyed_by("id", "at");
+                let first = s
+                    .batch(&batch_of(vec![ints(), stamps(Some("UTC"))]))
+                    .unwrap();
+                s.seal();
+                if restored {
+                    s = Shaper::new(
+                        Naming::default(),
+                        "t".into(),
+                        s.identity.clone(),
+                        Policy::AllowAll,
+                        Some(first.batch.schema()),
+                        None,
+                        TypeOptions::default(),
+                    )
+                    .unwrap();
+                }
+                let n = match s.batch(&next) {
+                    Err(Error::Drift(msg)) => {
+                        assert!(msg.contains(change), "{what}: {msg}");
+                        assert!(msg.contains(why), "{what}: {msg}");
+                        assert!(
+                            msg.contains("change the column back at the source"),
+                            "{msg}"
+                        );
+                        continue;
+                    }
+                    Err(e) => panic!("{what}: {e}"),
+                    Ok(n) => n,
+                };
+                let b = &n.batch;
+                let nulls = |c: &str| b.column(b.schema().index_of(c).unwrap()).null_count();
+                lost.push(format!(
+                    "{what} (restored: {restored}) was versioned: {:?}; key {:?} has {} nulls of {}, _openetl_seq {} nulls",
+                    n.versioned,
+                    s.key_columns(),
+                    nulls(&s.key_columns()[0]),
+                    b.num_rows(),
+                    nulls("_openetl_seq"),
+                ));
+            }
+        }
+        assert!(lost.is_empty(), "{}", lost.join("\n"));
+
+        // allow_columns and block give the same way out; ignore_new casts
+        // the values to the column's type, and a value that doesn't fit
+        // rejects its row.
+        for policy in [Policy::AllowColumns, Policy::Block, Policy::IgnoreNew] {
+            let mut s = keyed_by("id", "at");
+            let first = s
+                .batch(&batch_of(vec![ints(), stamps(Some("UTC"))]))
+                .unwrap();
+            let mut r = Shaper::new(
+                Naming::default(),
+                "t".into(),
+                s.identity.clone(),
+                policy,
+                Some(first.batch.schema()),
+                None,
+                TypeOptions::default(),
+            )
+            .unwrap();
+            let out = r.batch(&batch_of(vec![uuids(2), stamps(Some("UTC"))]));
+            match policy {
+                Policy::IgnoreNew => assert_eq!(out.unwrap().rejected.len(), 2),
+                _ => assert!(
+                    matches!(&out, Err(Error::Drift(m)) if m.contains("change the column back at the source")),
+                    "{policy:?}: {out:?}"
+                ),
+            }
+        }
+
+        // A declared type that changes the key's stops as a batch would.
+        let mut s = keyed_by("id", "at");
+        let first = s
+            .batch(&batch_of(vec![ints(), stamps(Some("UTC"))]))
+            .unwrap();
+        let declared = Arc::new(Schema::new(vec![uuid_field()]));
+        let mut d = Shaper::new(
+            Naming::default(),
+            "t".into(),
+            s.identity.clone(),
+            Policy::AllowAll,
+            Some(first.batch.schema()),
+            Some(declared),
+            TypeOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            matches!(d.declare(), Err(Error::Drift(m)) if m.contains("it's part of the stream's key")),
+        );
+    }
+
+    // A checkpoint from before the key was pinned, whose key went to a new
+    // version, stops the stream: its rows since have a null key.
+    #[test]
+    fn a_restored_version_of_the_key_stops() {
+        let ints = || {
+            (
+                Field::new("id", DataType::Int64, true),
+                Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+            )
+        };
+        let mut unkeyed = shaper(None);
+        unkeyed.batch(&batch_of(vec![ints()])).unwrap();
+        unkeyed.seal();
+        let n = unkeyed.batch(&batch_of(vec![uuids(2)])).unwrap();
+        assert_eq!(n.versioned.len(), 1);
+        let mut s = Shaper::new(
+            Naming::default(),
+            "t".into(),
+            keyed_by("id", "at").identity,
+            Policy::AllowAll,
+            Some(n.batch.schema()),
+            None,
+            TypeOptions::default(),
+        )
+        .unwrap();
+        let err = s.batch(&batch_of(vec![uuids(2)])).unwrap_err();
+        let Error::Drift(msg) = &err else {
+            panic!("{err}");
+        };
+        assert!(
+            msg.contains(r#"column "id" went to a new version, "id__v2", in an earlier sync"#),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("delete the pipeline and apply it again"),
+            "{msg}"
+        );
+    }
+
+    // A cursor that orders no key's versions goes to a new version as any
+    // column does: a changelog's seq control column gives `_openetl_seq`,
+    // and an unkeyed stream's `_openetl_seq` is null from then on.
+    #[test]
+    fn a_changelog_or_unkeyed_cursor_is_versioned() {
+        let mut cdc = Shaper::new(
+            Naming::default(),
+            "t".into(),
+            Identity {
+                stream: "t".into(),
+                key: vec!["id".into()],
+                cursor: Some("Doc".into()),
+                ..Default::default()
+            },
+            Policy::AllowAll,
+            None,
+            None,
+            TypeOptions::default(),
+        )
+        .unwrap()
+        .with_changelog(true);
+        // Doc, the cursor, changes from boolean to int64.
+        let doc = |seq: i64, v: ArrayRef| {
+            let b = change_batch(&[Some("update")], &[seq], vec![Some("a")]);
+            let mut fields: Vec<Field> = b
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect();
+            let mut columns = b.columns().to_vec();
+            fields[1] = Field::new("Doc", v.data_type().clone(), true);
+            columns[1] = v;
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+        };
+        cdc.batch(&doc(10, Arc::new(BooleanArray::from(vec![true]))))
+            .unwrap();
+        cdc.seal();
+        let n = cdc
+            .batch(&doc(20, Arc::new(Int64Array::from(vec![1]))))
+            .unwrap();
+        assert_eq!(n.versioned.len(), 1, "{:?}", n.versioned);
+        let seq = n.batch.column_by_name("_openetl_seq").unwrap();
+        assert_eq!(seq.null_count(), 0);
+
+        let mut s = Shaper::new(
+            Naming::default(),
+            "t".into(),
+            Identity {
+                stream: "t".into(),
+                cursor: Some("at".into()),
+                ..Default::default()
+            },
+            Policy::AllowAll,
+            None,
+            None,
+            TypeOptions::default(),
+        )
+        .unwrap();
+        s.batch(&batch_of(vec![stamps(Some("UTC"))])).unwrap();
+        s.seal();
+        let n = s.batch(&batch_of(vec![stamps(None)])).unwrap();
+        assert_eq!(n.versioned.len(), 1, "{:?}", n.versioned);
+    }
+
+    // Once its stream's schema is established, a key column, or a cursor
+    // that gives `_openetl_seq`, takes a widening only where each value
+    // keeps its order and the record ID it gives: to a wider integer, or to
+    // a decimal of more digits at the same scale, and for the cursor, from
+    // an integer to a float. Another widening, as to a string, which sorts
+    // "10" before "9", stops the stream as other changes do. So does an
+    // integer to a float where the column held one past ±2^53, as it goes
+    // to a string. A column that is neither widens as before.
+    #[test]
+    fn a_key_or_cursor_widens_only_where_its_order_and_ids_hold() {
+        use arrow_array::{
+            Decimal128Array, Float32Array, Float64Array, Int32Array, TimestampMillisecondArray,
+        };
+        let decimals = |v: Vec<i128>, p: u8, s: i8| -> ArrayRef {
+            Arc::new(
+                Decimal128Array::from(v)
+                    .with_precision_and_scale(p, s)
+                    .unwrap(),
+            )
+        };
+        let ints = || -> ArrayRef { Arc::new(Int64Array::from(vec![9, 10])) };
+        let floats = || -> ArrayRef { Arc::new(Float64Array::from(vec![9.0, 10.0])) };
+        let micros = TimestampMicrosecondArray::from(vec![1_000, 2_000]).with_timezone("UTC");
+        let millis = TimestampMillisecondArray::from(vec![1, 2]).with_timezone("UTC");
+        // The column before and after, and the type it then has as the key
+        // and as the cursor, or None where the sync fails.
+        type Case<'a> = (
+            &'a str,
+            ArrayRef,
+            ArrayRef,
+            Option<&'a str>,
+            Option<&'a str>,
+        );
+        let cases: Vec<Case> = vec![
+            (
+                "int32 to int64",
+                Arc::new(Int32Array::from(vec![9, 10])),
+                ints(),
+                Some("int64"),
+                Some("int64"),
+            ),
+            (
+                "decimal(10, 2) to decimal(12, 2)",
+                decimals(vec![150, 250], 10, 2),
+                decimals(vec![150, 250], 12, 2),
+                Some("decimal(12, 2)"),
+                Some("decimal(12, 2)"),
+            ),
+            (
+                "timestamp_tz in milliseconds",
+                Arc::new(micros),
+                Arc::new(millis),
+                Some("timestamp_tz"),
+                Some("timestamp_tz"),
+            ),
+            (
+                "int64 to string",
+                ints(),
+                Arc::new(StringArray::from(vec!["9", "10"])),
+                None,
+                None,
+            ),
+            ("int64 to float64", ints(), floats(), None, Some("float64")),
+            (
+                "int32 to float64",
+                Arc::new(Int32Array::from(vec![9, 10])),
+                floats(),
+                None,
+                Some("float64"),
+            ),
+            (
+                "int64 past 2^53 to float64",
+                Arc::new(Int64Array::from(vec![(1 << 53) + 1, 10])),
+                floats(),
+                None,
+                None,
+            ),
+            (
+                "float32 to float64",
+                Arc::new(Float32Array::from(vec![1.1, 2.5])),
+                Arc::new(Float64Array::from(vec![1.1, 2.5])),
+                None,
+                None,
+            ),
+            (
+                "int64 to decimal(20, 0)",
+                ints(),
+                decimals(vec![9, 10], 20, 0),
+                None,
+                None,
+            ),
+            (
+                "decimal(10, 2) to decimal(12, 4)",
+                decimals(vec![150, 250], 10, 2),
+                decimals(vec![15_000, 25_000], 12, 4),
+                None,
+                None,
+            ),
+            (
+                "uuid to string",
+                uuids(2).1,
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                None,
+                None,
+            ),
+        ];
+        let col = |name: &str, a: &ArrayRef| {
+            let f = match a.data_type() {
+                DataType::FixedSizeBinary(_) => uuid_field().with_name(name),
+                t => Field::new(name, t.clone(), true),
+            };
+            (f, a.clone())
+        };
+        let (mut got, mut want) = (Vec::new(), Vec::new());
+        for (role, column, other) in [("key", "k", "c"), ("cursor", "c", "k")] {
+            for (what, first, then, as_key, as_cursor) in &cases {
+                let takes = if role == "key" { as_key } else { as_cursor };
+                for restored in [false, true] {
+                    let steady: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+                    let b = |a: &ArrayRef| batch_of(vec![col(column, a), col(other, &steady)]);
+                    let mut s = keyed_by("k", "c");
+                    let before = s.batch(&b(first)).unwrap();
+                    s.seal();
+                    if restored {
+                        s = Shaper::new(
+                            Naming::default(),
+                            "t".into(),
+                            s.identity.clone(),
+                            Policy::AllowAll,
+                            Some(before.batch.schema()),
+                            None,
+                            TypeOptions::default(),
+                        )
+                        .unwrap();
+                    }
+                    let outcome = match s.batch(&b(then)) {
+                        Err(Error::Drift(msg)) => {
+                            assert!(
+                                msg.contains("a widening that changes how its values sort")
+                                    && msg.contains(if role == "key" {
+                                        "it's part of the stream's key"
+                                    } else {
+                                        "it's the stream's cursor"
+                                    })
+                                    && msg.contains("change the column back at the source"),
+                                "{msg}"
+                            );
+                            "fails".to_owned()
+                        }
+                        Err(e) => format!("fails with {e}"),
+                        Ok(n) => {
+                            let schema = n.batch.schema();
+                            let t = crate::logical_type(schema.field_with_name(column).unwrap());
+                            let seq = crate::logical_type(
+                                schema.field_with_name("_openetl_seq").unwrap(),
+                            );
+                            let ids = |x: &Shaped| {
+                                x.batch.column_by_name("_openetl_id").unwrap().to_data()
+                            };
+                            let same = ids(&n) == ids(&before);
+                            format!("takes {t}, _openetl_seq {seq}, same record IDs: {same}")
+                        }
+                    };
+                    let case = format!("{role}, {what}, restored: {restored}");
+                    got.push(format!("{case}: {outcome}"));
+                    want.push(format!(
+                        "{case}: {}",
+                        match takes {
+                            None => "fails".to_owned(),
+                            Some(t) => {
+                                let seq = if role == "cursor" { t } else { "int64" };
+                                format!("takes {t}, _openetl_seq {seq}, same record IDs: true")
+                            }
+                        }
+                    ));
+                }
+            }
+        }
+        assert_eq!(got, want);
+
+        // JSON to a string keeps the text.
+        for (column, other) in [("k", "c"), ("c", "k")] {
+            let text: ArrayRef = Arc::new(StringArray::from(vec![r#"{"a":1}"#, "[2]"]));
+            let json = Field::new(column, DataType::Utf8, true).with_metadata(HashMap::from([(
+                EXTENSION_NAME_KEY.to_owned(),
+                crate::JSON_EXTENSION.to_owned(),
+            )]));
+            let steady: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+            let mut s = keyed_by("k", "c");
+            let before = s
+                .batch(&batch_of(vec![(json, text.clone()), col(other, &steady)]))
+                .unwrap();
+            s.seal();
+            let n = s
+                .batch(&batch_of(vec![col(column, &text), col(other, &steady)]))
+                .unwrap();
+            let f = n.batch.schema().field_with_name(column).unwrap().clone();
+            assert_eq!(crate::logical_type(&f), "string");
+            assert_eq!(
+                n.batch.column_by_name("_openetl_id").unwrap().to_data(),
+                before
+                    .batch
+                    .column_by_name("_openetl_id")
+                    .unwrap()
+                    .to_data()
+            );
+        }
+
+        // A column that is neither still widens to a string.
+        let mut s = keyed_by("k", "c");
+        let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+        let b = |v: ArrayRef| batch_of(vec![col("k", &ids), col("c", &ids), col("v", &v)]);
+        s.batch(&b(ints())).unwrap();
+        s.seal();
+        let n = s
+            .batch(&b(Arc::new(StringArray::from(vec!["9", "x"]))))
+            .unwrap();
+        let v = n.batch.schema().field_with_name("v").unwrap().clone();
+        assert_eq!(v.data_type(), &DataType::Utf8);
+    }
+
+    // Until a barrier establishes the stream's schema, raw rows' types are
+    // still inferred, and a key or cursor takes any widening: its type is
+    // what the first schema's rows give, on every retry of the read. Once
+    // established, by a barrier or a restore, the change stops the stream,
+    // but a cursor's integer to a float.
+    #[test]
+    fn a_key_or_cursor_widens_as_its_first_schema_is_inferred() {
+        let cases = [
+            (
+                "key int then text",
+                r#"{"id": "A12", "at": 6}"#,
+                "id",
+                "string",
+            ),
+            (
+                "cursor int then float",
+                r#"{"id": 2, "at": 6.5}"#,
+                "at",
+                "float64",
+            ),
+            (
+                "cursor int then text",
+                r#"{"id": 2, "at": "x"}"#,
+                "at",
+                "string",
+            ),
+        ];
+        let first = r#"{"id": 1, "at": 5}"#;
+        let (mut got, mut want) = (Vec::new(), Vec::new());
+        for (what, then, column, t) in cases {
+            for (when, sealed, restored) in [
+                ("unsealed", false, false),
+                ("sealed", true, false),
+                ("restored", true, true),
+            ] {
+                let mut s = keyed_by("id", "at");
+                let before = rows(&mut s, &[first]);
+                if sealed {
+                    s.seal();
+                }
+                if restored {
+                    s = Shaper::new(
+                        Naming::default(),
+                        "t".into(),
+                        s.identity.clone(),
+                        Policy::AllowAll,
+                        Some(before.batch.schema()),
+                        None,
+                        TypeOptions::default(),
+                    )
+                    .unwrap();
+                }
+                got.push(match s.rows([then.as_bytes()]) {
+                    Ok(n) => {
+                        let schema = n.batch.schema();
+                        let seq = schema.field_with_name("_openetl_seq").unwrap();
+                        format!(
+                            "{what}, {when}: takes {}, _openetl_seq {}",
+                            crate::logical_type(schema.field_with_name(column).unwrap()),
+                            crate::logical_type(seq),
+                        )
+                    }
+                    Err(Error::Drift(m)) if m.contains("changes how its values sort") => {
+                        format!("{what}, {when}: fails")
+                    }
+                    Err(e) => format!("{what}, {when}: fails with {e}"),
+                });
+                let seq = if column == "at" { t } else { "int64" };
+                want.push(match (when, what) {
+                    ("unsealed", _) | (_, "cursor int then float") => {
+                        format!("{what}, {when}: takes {t}, _openetl_seq {seq}")
+                    }
+                    _ => format!("{what}, {when}: fails"),
+                });
+            }
+        }
+        assert_eq!(got, want);
+    }
+
+    // A key or cursor of strings or binary that comes in another of its
+    // family's representations, as large_utf8 for utf8, keeps its type,
+    // sealed or not: its values, record IDs and key groups are the same
+    // bytes.
+    #[test]
+    fn a_key_or_cursor_takes_its_bytes_in_another_representation() {
+        use arrow_array::{BinaryArray, LargeBinaryArray, LargeStringArray};
+        let text = |large: bool| -> ArrayRef {
+            match large {
+                true => Arc::new(LargeStringArray::from(vec!["a", "b"])),
+                false => Arc::new(StringArray::from(vec!["a", "b"])),
+            }
+        };
+        let bytes = |large: bool| -> ArrayRef {
+            let v: Vec<&[u8]> = vec![b"a", b"b"];
+            match large {
+                true => Arc::new(LargeBinaryArray::from_vec(v)),
+                false => Arc::new(BinaryArray::from_vec(v)),
+            }
+        };
+        let mut checked = 0;
+        for (column, other) in [("k", "c"), ("c", "k")] {
+            for (first, then) in [
+                (text(true), text(false)),
+                (text(false), text(true)),
+                (bytes(true), bytes(false)),
+                (bytes(false), bytes(true)),
+            ] {
+                for sealed in [false, true] {
+                    let steady: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
+                    let b = |a: &ArrayRef| {
+                        RecordBatch::try_from_iter(vec![
+                            (column, a.clone()),
+                            (other, steady.clone()),
+                        ])
+                        .unwrap()
+                    };
+                    let mut s = keyed_by("k", "c");
+                    let before = s.batch(&b(&first)).unwrap();
+                    if sealed {
+                        s.seal();
+                    }
+                    let case = format!(
+                        "{column}: {} then {}, sealed: {sealed}",
+                        first.data_type(),
+                        then.data_type()
+                    );
+                    let n = s.batch(&b(&then)).unwrap_or_else(|e| panic!("{case}: {e}"));
+                    assert!(!n.schema_changed, "{case}");
+                    let f = n.batch.schema().field_with_name(column).unwrap().clone();
+                    assert_eq!(f.data_type(), first.data_type(), "{case}");
+                    assert_eq!(ids(&n.batch), ids(&before.batch), "{case}");
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 16);
     }
 
     #[test]

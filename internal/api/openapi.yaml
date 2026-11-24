@@ -3926,6 +3926,13 @@ components:
             properties:
                 hold:
                     $ref: '#/components/schemas/Hold'
+                endsRelease:
+                    type: boolean
+                    description: |-
+                        The column had a release, which the discard ends instead. The next run
+                         drops its values, unless a run has already started patching them in:
+                         that release goes on while the stream holds, and a run in which the
+                         stream doesn't hold drops the values it hasn't patched in.
         DiscoverSourceRequest:
             type: object
             properties:
@@ -5102,7 +5109,9 @@ components:
                     type: string
                     description: |-
                         A dedupe's rows it didn't write: repeats of a key it keeps, and for one
-                         that keeps each key's latest row, rows no later than the key's.
+                         that keeps each key's latest row, rows no later than the key's. A group
+                         window's and OVER's rows it took once already, as a read gave them
+                         again: of one record ID and one hash of their stream's row.
             description: |-
                 OperatorStats is what a stateful operator of a SQL transform did in an
                  epoch, on every lane of every worker, and held at the epoch's barrier.

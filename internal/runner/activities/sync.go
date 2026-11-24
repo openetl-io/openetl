@@ -212,7 +212,7 @@ type attemptParams struct {
 // run runs an attempt on ctx, which carries the work.
 func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (contract.AttemptResult, error) {
 	var out contract.AttemptResult
-	spec, err := syncSpec(ctx, a.API, p.org, p.pipeline, p.version)
+	spec, err := syncSpec(ctx, a.API, p.org, p.pipeline, p.version, true)
 	if err != nil {
 		return out, err
 	}
@@ -338,9 +338,10 @@ func (a *Sync) run(ctx context.Context, p attemptParams, log *slog.Logger) (cont
 	return out, err
 }
 
-// syncSpec fetches a pipeline version, with its source and destination.
-func syncSpec(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient, org, pipeline, version string) (*dataplanev1.GetSyncSpecResponse, error) {
-	resp, err := api.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: pipeline, Version: version}))
+// syncSpec fetches a pipeline version, with its source and destination,
+// and with releases, the hold releases an attempt applies.
+func syncSpec(ctx context.Context, api dataplanev1connect.DataPlaneServiceClient, org, pipeline, version string, releases bool) (*dataplanev1.GetSyncSpecResponse, error) {
+	resp, err := api.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: pipeline, Version: version, ApplyReleases: releases}))
 	if err != nil {
 		code := errs.Transient
 		if c := connect.CodeOf(err); c == connect.CodeNotFound || c == connect.CodeInvalidArgument {

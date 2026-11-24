@@ -14,6 +14,8 @@ describe("holdState", () => {
     expect(holdState(hold({ refused: { reason: "x" }, pending: true }))).toBe("pending");
     expect(holdState(hold({ releasing: true, pending: true }))).toBe("releasing");
     expect(holdState(hold({ discarded: true, refused: { reason: "x" } }))).toBe("discarded");
+    // Released after its discard: the release ends it at the next run.
+    expect(holdState(hold({ discarded: true, pending: true }))).toBe("pending");
   });
 });
 

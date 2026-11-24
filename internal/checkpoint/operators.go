@@ -27,7 +27,9 @@ type OperatorPart struct {
 	// keeping; a dedupe's keys.
 	Opened, Dropped uint64
 	// A dedupe's rows it didn't write: repeats of a key it keeps, and for
-	// one that keeps each key's latest row, rows no later than the key's.
+	// one that keeps each key's latest row, rows no later than the key's. A
+	// group window's and OVER's rows it took once already, as a read gave
+	// them again.
 	Repeats uint64
 	// The least of its lanes' watermarks, in microseconds since the Unix
 	// epoch; nil while a lane has none.
@@ -57,7 +59,7 @@ type Operator struct {
 	Deletes uint64 `json:"deletes,omitempty"`
 	// Rows it quarantined as late.
 	Late uint64 `json:"late,omitempty"`
-	// A dedupe's rows it didn't write, as OperatorPart's.
+	// The rows it dropped as repeats, as OperatorPart's.
 	Repeats uint64 `json:"repeats,omitempty"`
 	// The windows, or sessions, whose state it keeps: open, or closed and
 	// kept for their lateness; a dedupe's keys. It counts from the record

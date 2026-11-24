@@ -1,10 +1,12 @@
 package engineclient
 
 import (
+	"maps"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -207,5 +209,70 @@ func TestEngineRunsAGroupWindow(t *testing.T) {
 	}
 	if s := ready[1].Ready.Snapshots; len(s) != 0 {
 		t.Fatalf("epoch %d's snapshots: %+v", ready[1].Epoch, s)
+	}
+}
+
+// A group window over a stream that the runner marks as one whose reads can
+// give a record again counts a row read twice once; over one replayed
+// exactly, twice.
+func TestAGroupWindowTakesARowReadAgainOnce(t *testing.T) {
+	for name, rereads := range map[string]bool{"exact": false, "rereads": true} {
+		t.Run(name, func(t *testing.T) {
+			ctx := testContext(t)
+			in := runner.Stream{
+				Name: "orders", PrimaryKey: []string{"id"}, CursorField: "at",
+				Schema: arrow.NewSchema([]arrow.Field{
+					{Name: "id", Type: arrow.PrimitiveTypes.Int64},
+					{Name: "region", Type: arrow.BinaryTypes.String, Nullable: true},
+					{Name: "at", Type: &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"}, Nullable: true},
+				}, nil),
+				EventTime: &runner.EventTime{Column: "at", Delay: time.Second, Idle: time.Hour, Rereads: rereads},
+			}
+			declared, err := arrowipc.EncodeSchema(in.Schema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const sql = "INSERT INTO minutes SELECT window_start, region, count(*) AS n FROM orders GROUP BY tumble(at, INTERVAL '1 minute'), region"
+			a, err := Plan(ctx, planEngine(t), sqlplan.Request{SQL: sql, Streams: []sqlplan.Stream{{Name: "orders", DeclaredSchema: declared, EventTime: "at"}}})
+			if err != nil || len(a.Errors) != 0 {
+				t.Fatal(a.Errors, err)
+			}
+			p := plan()
+			p.Pipeline = "rereads"
+			p.StateURL = "file://" + t.TempDir()
+			p.Streams = []runner.Stream{in}
+			p.Outputs = []runner.Stream{{Name: "minutes", PrimaryKey: []string{"window_start", "region"}, Transformed: true}}
+			p.SQL = &runner.SQLTransform{SQL: sql, Expected: expected(t, a), Operators: []string{a.Statements[0].Operator}}
+			const x = `{"id": 1, "region": "eu", "at": "2026-01-01T00:00:10Z"}`
+			got, err := run(ctx, &Dataflow{Options: options(t, nil)}, p,
+				runner.Frame{Kind: runner.FrameSplit, Stream: "orders", Split: "whole"},
+				runner.Frame{Kind: runner.FrameRows, Stream: "orders", Split: "whole", Rows: rows(x)},
+				runner.Frame{Kind: runner.FrameBarrier, Stream: "orders", Epoch: 5},
+				runner.Frame{Kind: runner.FrameRows, Stream: "orders", Split: "whole", Rows: rows(x, `{"id": 2, "region": "us", "at": "2026-01-01T00:01:10Z"}`)},
+				runner.Frame{Kind: runner.FrameSplit, Stream: "orders", Split: "whole", Watermark: mark(runner.EndOfInput)},
+				runner.Frame{Kind: runner.FrameBarrier, Stream: "orders", Epoch: 6},
+			)
+			defer release(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := map[string]int64{}
+			for _, f := range got["minutes"] {
+				if f.Kind != runner.FrameBatch {
+					continue
+				}
+				r, c := f.Batch.Schema().FieldIndices("region"), f.Batch.Schema().FieldIndices("n")
+				for i := range int(f.Batch.NumRows()) {
+					n[f.Batch.Column(r[0]).(*array.String).Value(i)] += f.Batch.Column(c[0]).(*array.Int64).Value(i)
+				}
+			}
+			want := map[string]int64{"eu": 2, "us": 1}
+			if rereads {
+				want["eu"] = 1
+			}
+			if !maps.Equal(n, want) {
+				t.Errorf("counts %v, want %v", n, want)
+			}
+		})
 	}
 }

@@ -3075,6 +3075,7 @@ pub(crate) mod tests {
 
     mod empty_overwrite;
     mod event_time;
+    mod rereads;
 
     struct Harness {
         to_engine: DuplexStream,
@@ -6030,6 +6031,61 @@ pub(crate) mod tests {
             err.message.ends_with(
                 "; transform.sql 1:1 writes it: to keep the type the output has, write CAST(… AS BIGINT) AS n there"
             ),
+            "{}",
+            err.message
+        );
+    }
+
+    /// A key whose type changes otherwise than by widening stops the job
+    /// with SCHEMA_DRIFT under allow_all: a new version would leave the key
+    /// null.
+    #[tokio::test]
+    async fn a_key_that_changes_type_is_schema_drift() {
+        use arrow_schema::{DataType, Field, Schema};
+        let mut req = request(&["a"]);
+        req.streams[0].primary_key = vec!["id".into()];
+        let mut h = start_with(req);
+        let w = &mut h.to_engine;
+        let ints = RecordBatch::try_from_iter([(
+            "id",
+            Arc::new(arrow_array::Int64Array::from(vec![1])) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        let uuid = Field::new("id", DataType::FixedSizeBinary(16), true).with_metadata(
+            HashMap::from([("ARROW:extension:name".to_owned(), "arrow.uuid".to_owned())]),
+        );
+        let uuids = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![uuid])),
+            vec![Arc::new(
+                arrow_array::FixedSizeBinaryArray::try_from_iter([[7u8; 16]].into_iter()).unwrap(),
+            )],
+        )
+        .unwrap();
+        put(w, FrameKind::Batch, 0, ipc::encode_batch(&ints).unwrap()).await;
+        put(w, FrameKind::Barrier, 0, barrier(1)).await;
+        put(w, FrameKind::Batch, 0, ipc::encode_batch(&uuids).unwrap()).await;
+        put(w, FrameKind::EndOfStream, 0, vec![]).await;
+        w.shutdown().await.unwrap();
+        let frames = drain(&mut h.from_engine).await;
+        let err = match h.job.await.unwrap() {
+            Err(err) => err,
+            Ok(()) => {
+                let nulls: Vec<usize> = batches(&frames, 0)
+                    .iter()
+                    .map(|b| b.column_by_name("id").unwrap().null_count())
+                    .collect();
+                panic!("the key was versioned: id's nulls by batch {nulls:?}");
+            }
+        };
+        assert_eq!(err.code, ErrorCode::SchemaDrift, "{}", err.message);
+        assert!(
+            err.message
+                .contains(r#"column "id" changed from int64 to uuid"#),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("it's part of the stream's key"),
             "{}",
             err.message
         );

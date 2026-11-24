@@ -16,6 +16,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
@@ -171,17 +172,27 @@ func (e *holdsEnv) holds(t *testing.T) map[string]*apiv1.Hold {
 	return out
 }
 
-func (e *holdsEnv) releases(t *testing.T) []string {
+// taken are the releases an attempt of the pipeline gets.
+func (e *holdsEnv) taken(t *testing.T) []*dataplanev1.HoldRelease {
 	t.Helper()
-	spec, err := e.runner.GetSyncSpec(t.Context(), connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
+	spec, err := e.runner.GetSyncSpec(t.Context(), connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1", ApplyReleases: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return spec.Msg.GetReleases()
+}
+
+// releases are taken's, as STREAM.COLUMN, then discard or ends if marked so.
+func (e *holdsEnv) releases(t *testing.T) []string {
+	t.Helper()
 	var out []string
-	for _, r := range spec.Msg.GetReleases() {
+	for _, r := range e.taken(t) {
 		s := r.GetStream() + "." + r.GetColumn()
 		if r.GetDiscard() {
 			s += " discard"
+		}
+		if r.GetEnds() {
+			s += " ends"
 		}
 		out = append(out, s)
 	}
@@ -241,10 +252,6 @@ func TestHoldsReleasesAndTheirIncident(t *testing.T) {
 	if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"})); err != nil {
 		t.Errorf("releasing again: %v", err)
 	}
-	_, err = e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"}))
-	if code(err) != connect.CodeFailedPrecondition {
-		t.Errorf("discarding a hold with a release pending: %v", err)
-	}
 	_, err = e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "missing"}))
 	if code(err) != connect.CodeNotFound {
 		t.Errorf("releasing a column that isn't held: %v", err)
@@ -291,6 +298,343 @@ func TestHoldsReleasesAndTheirIncident(t *testing.T) {
 	}
 	if st, _ := e.incident(t); st != "resolved" {
 		t.Errorf("incident %s", st)
+	}
+}
+
+// A discard of a hold with a release marks the release, and says so: the
+// next run drops its values, unless a run has started patching them in. The
+// hold lists as pending, and a run gets the release marked, which a release
+// made again clears. One taken as a discard leaves its hold discarded, not
+// pending, and a release replaces it. A hold with no release takes a
+// discard. Of a release being patched in, a discard says that it goes on,
+// and a run gets it while the column is being patched in; the mark lapses
+// once the release is over, so a later hold of the column, released,
+// doesn't take it. A release can't end a release in progress. A fetch of
+// the spec that doesn't apply releases gets none.
+func TestADiscardEndsARelease(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	since := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}
+	held := func(col string, at *dataplanev1.CheckpointRef) *dataplanev1.CheckpointHold {
+		return &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "a view depends on it", Since: at, StartTime: timestamppb.Now()}
+	}
+	releasing := func(col string, at *dataplanev1.CheckpointRef) *dataplanev1.CheckpointHold {
+		return &dataplanev1.CheckpointHold{Column: col, Whole: true, Reason: "released", Since: at, Releasing: true}
+	}
+	release := func(col string) error {
+		_, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: col}))
+		return err
+	}
+	discard := func(col string) *apiv1.DiscardHoldResponse {
+		t.Helper()
+		res, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: col}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Msg
+	}
+	note := &dataplanev1.CheckpointHold{Column: "note", Cells: 2, Reason: "nan", Since: since, StartTime: timestamppb.Now()}
+	e.report(t, 1, 3, held("amount", since), held("price", since), note)
+	if err := errors.Join(release("amount"), release("price")); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := e.runner.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(spec.Msg.GetReleases()); n != 0 {
+		t.Errorf("a fetch that doesn't apply releases got %d", n)
+	}
+	if res := discard("price"); !res.GetEndsRelease() || !res.GetHold().GetPending() || res.GetHold().GetReleasing() {
+		t.Errorf("discarded %v", res)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount orders.price ends]" {
+		t.Errorf("releases %v, once price's release is discarded", got)
+	}
+	if h := e.holds(t)["price"]; !h.GetPending() {
+		t.Errorf("price %v", h)
+	}
+	if err := release("price"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount orders.price]" {
+		t.Errorf("releases %v, once price is released again", got)
+	}
+	discard("price")
+	if res := discard("note"); res.GetEndsRelease() || !res.GetHold().GetPending() {
+		t.Errorf("discarded %v, a hold with no release", res)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount orders.price ends orders.note discard]" {
+		t.Errorf("releases %v", got)
+	}
+
+	// The run takes them: price's release as a discard; amount is being
+	// patched in.
+	discarded := held("price", since)
+	discarded.Discarded = true
+	e.report(t, 1, 4, releasing("amount", since), discarded)
+	if got := e.releases(t); len(got) != 0 {
+		t.Errorf("releases %v, once taken", got)
+	}
+	if h := e.holds(t)["price"]; !h.GetDiscarded() || h.GetPending() {
+		t.Errorf("price %v, once its discarded release is taken", h)
+	}
+	if err := release("amount"); code(err) != connect.CodeFailedPrecondition || !strings.Contains(err.Error(), "discard it") {
+		t.Errorf("releasing a hold being patched in: %v", err)
+	}
+	if res := discard("amount"); !res.GetEndsRelease() || !res.GetHold().GetReleasing() || res.GetHold().GetPending() {
+		t.Errorf("discarded %v", res)
+	}
+	discard("amount")
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount ends]" {
+		t.Errorf("releases %v, once a release being patched in is discarded", got)
+	}
+	if err := release("price"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.amount ends orders.price]" {
+		t.Errorf("releases %v, once the discarded price is released", got)
+	}
+
+	// The release of amount ended. A later hold of the column, released, is
+	// patched in without the discard.
+	e.report(t, 1, 5, discarded)
+	if got := e.releases(t); fmt.Sprint(got) != "[orders.price]" {
+		t.Errorf("releases %v, once the release of amount ended", got)
+	}
+	later := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 6}
+	e.report(t, 1, 6, held("amount", later))
+	if err := release("amount"); err != nil {
+		t.Fatal(err)
+	}
+	e.report(t, 1, 7, releasing("amount", later))
+	if got := e.releases(t); len(got) != 0 {
+		t.Errorf("releases %v, of a later hold being patched in", got)
+	}
+}
+
+// A discard of a release in progress is valid only for that release. Once
+// the release ends and leaves values held, refused, no run gets it, and the
+// hold shows the refusal, which says that the discard dropped nothing,
+// rather than a discard pending.
+func TestADiscardOfAReleaseInProgressLapsesWithIt(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	since := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}
+	note := func() *dataplanev1.CheckpointHold {
+		return &dataplanev1.CheckpointHold{Column: "note", Cells: 3, Reason: "nan", Since: since, StartTime: timestamppb.Now()}
+	}
+	e.report(t, 1, 2, note())
+	if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "note"})); err != nil {
+		t.Fatal(err)
+	}
+	rs := e.taken(t)
+	if len(rs) != 1 {
+		t.Fatalf("releases %v", rs)
+	}
+	releasing := note()
+	releasing.Releasing = true
+	e.report(t, 1, 3, releasing)
+	res, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "note"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Msg.GetEndsRelease() || !res.Msg.GetHold().GetReleasing() {
+		t.Errorf("discarded %v", res.Msg)
+	}
+	if got := e.taken(t); len(got) != 1 || got[0].GetId() != rs[0].GetId() || !got[0].GetEnds() || got[0].GetDiscard() {
+		t.Errorf("releases %v, once the release in progress is discarded", got)
+	}
+
+	// The release ends with 2 values that still don't fit.
+	refused := note()
+	refused.RefusedRelease, refused.Refused = rs[0].GetId(), &apiv1.HoldRefusal{Reason: "2 released values still don't fit"}
+	e.report(t, 1, 4, refused)
+	if got := e.releases(t); len(got) != 0 {
+		t.Errorf("releases %v: the discard outlived its release", got)
+	}
+	h := e.holds(t)["note"]
+	if h.GetPending() || !strings.Contains(h.GetRefused().GetReason(), "so the discard dropped nothing") {
+		t.Errorf("note %v", h)
+	}
+}
+
+// A release in progress is the release a run took for its whole life: a
+// column released whole that holds cells while it's patched in, which the
+// API then lists by its cells, keeps the discard of it, and a discard then
+// marks the same release, with the cells the person saw.
+func TestADiscardOfAReleaseInProgressFollowsTheRelease(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	since := &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}
+	e.report(t, 1, 2, &dataplanev1.CheckpointHold{Column: "amount", Whole: true, Reason: "a view depends on it", Since: since, StartTime: timestamppb.Now()})
+	if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"})); err != nil {
+		t.Fatal(err)
+	}
+	rs := e.taken(t)
+	if len(rs) != 1 {
+		t.Fatalf("releases %v", rs)
+	}
+	discard := func() {
+		t.Helper()
+		res, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Msg.GetHold().GetReleasing() {
+			t.Errorf("discarded %v", res.Msg.GetHold())
+		}
+	}
+	ends := func(cells uint64, when string) {
+		t.Helper()
+		if got := e.taken(t); len(got) != 1 || got[0].GetId() != rs[0].GetId() || !got[0].GetEnds() || got[0].GetEndsCells() != cells {
+			t.Errorf("releases %v, %s", got, when)
+		}
+	}
+	e.report(t, 1, 3, &dataplanev1.CheckpointHold{Column: "amount", Whole: true, Reason: "released", Since: since, Releasing: true})
+	discard()
+	ends(0, "once the release is discarded")
+
+	// A value of amount doesn't fit while the release goes on.
+	cells := &dataplanev1.CheckpointHold{Column: "amount", Cells: 1, Reason: "nan", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 4}, Releasing: true}
+	e.report(t, 1, 4, cells)
+	ends(0, "once the column holds cells")
+	discard()
+	ends(1, "once discarded again")
+}
+
+// A transaction that locks more than one of a pipeline's releases locks
+// them by ID first, so two never wait on each other: a checkpoint's report,
+// those it unmarks, and a discard, the releases of its column. Here another
+// transaction holds the release with the greater ID, which comes first by
+// key and in the table; each, waiting on it, already holds the other.
+func TestReleasesAreLockedByID(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	small, big := uuid.MustParse("00000000-0000-7000-8000-000000000001"), uuid.MustParse("ffffffff-ffff-7fff-bfff-ffffffffffff")
+	// Marked releases of holds of x that are gone, which a report unmarks.
+	for i, id := range []uuid.UUID{big, small} {
+		_, err := e.conn.Exec(ctx, `INSERT INTO hold_releases (org_id, id, pipeline_id, stream, column_name, whole, since_generation, since_epoch, discard, principal, ends)
+			SELECT org_id, $1, id, 'orders', 'x', true, 1, $2, false, 'test', true FROM pipelines WHERE id = $3`, id, i+1, e.pipeline)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// locksSmallFirst runs op while another transaction holds big, and
+	// reports whether op, waiting on it, holds small.
+	locksSmallFirst := func(op func() error) bool {
+		t.Helper()
+		tx, err := e.conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM hold_releases WHERE id = $1 FOR UPDATE`, big); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- op() }()
+		// Until op waits on a lock, or ends without one.
+		for deadline := time.Now().Add(10 * time.Second); len(done) == 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			var waiting int
+			err := tx.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if waiting > 0 {
+				break
+			}
+		}
+		_, err = tx.Exec(ctx, `SELECT 1 FROM hold_releases WHERE id = $1 FOR UPDATE NOWAIT`, small)
+		var pgErr *pgconn.PgError
+		held := errors.As(err, &pgErr) && pgErr.Code == "55P03"
+		_ = tx.Rollback(ctx)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		return held
+	}
+	report := func() error {
+		_, err := e.runner.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
+			PipelineId: e.pipeline.String(), RunId: "run1", Generation: 1, Epoch: 3, CreateTime: timestamppb.Now(),
+			Streams: []*dataplanev1.CheckpointStream{{Name: "orders", Rows: 10, Holds: []*dataplanev1.CheckpointHold{
+				{Column: "x", Cells: 1, Reason: "nan", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 3}, StartTime: timestamppb.Now()},
+			}}},
+		}))
+		return err
+	}
+	if !locksSmallFirst(report) {
+		t.Error("a checkpoint's report locked the releases it unmarks out of their IDs' order")
+	}
+	discard := func() error {
+		_, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "x"}))
+		return err
+	}
+	if !locksSmallFirst(discard) {
+		t.Error("a discard locked its column's releases out of their IDs' order")
+	}
+}
+
+// A discarded column hold drops the column's values until it's released: a
+// release replaces the discard the run took, and a run takes it.
+func TestADiscardedColumnHoldIsReleasedToEndIt(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	amount := &dataplanev1.CheckpointHold{Column: "amount", Whole: true, Reason: "a view depends on it", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 2}, StartTime: timestamppb.Now()}
+	e.report(t, 1, 3, amount)
+	if _, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"})); err != nil {
+		t.Fatal(err)
+	}
+	amount.Discarded = true
+	e.report(t, 1, 4, amount)
+	h := e.holds(t)["amount"]
+	if !h.GetDiscarded() || h.GetPending() || len(h.GetWaysOut()) != 1 || h.GetWaysOut()[0].GetAction() != apiv1.HoldWayOut_ACTION_RELEASE {
+		t.Fatalf("discarded %v", h)
+	}
+	if got := e.releases(t); len(got) != 0 {
+		t.Errorf("releases %v, once the discard is taken", got)
+	}
+	_, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount", NewVersion: true}))
+	if code(err) != connect.CodeFailedPrecondition {
+		t.Errorf("a discarded hold released to a new version: %v", err)
+	}
+	_, err = e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"}))
+	if code(err) != connect.CodeFailedPrecondition {
+		t.Errorf("a discarded hold discarded again: %v", err)
+	}
+	res, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Msg.GetHold().GetPending() || !e.holds(t)["amount"].GetPending() {
+		t.Errorf("released %v", res.Msg.GetHold())
+	}
+	if got := e.releases(t); len(got) != 1 || got[0] != "orders.amount" {
+		t.Errorf("releases %v", got)
+	}
+	e.report(t, 2, 5)
+	if len(e.holds(t)) != 0 || len(e.releases(t)) != 0 {
+		t.Errorf("holds %v, releases %v, once the run takes the release", e.holds(t), e.releases(t))
+	}
+}
+
+// A held incident resolves once its stream is in no checkpoint, as when
+// the pipeline doesn't read it after its holds were discarded.
+func TestAHeldIncidentResolvesOnceItsStreamGoes(t *testing.T) {
+	e := newHoldsEnv(t)
+	e.report(t, 1, 3, &dataplanev1.CheckpointHold{Column: "note", Cells: 7, Reason: "nan", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 3}, StartTime: timestamppb.Now()})
+	if st, _ := e.incident(t); st != "open" {
+		t.Fatalf("incident %s", st)
+	}
+	_, err := e.runner.ReportCheckpoint(t.Context(), connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
+		PipelineId: e.pipeline.String(), RunId: "run1", Generation: 2, Epoch: 4, CreateTime: timestamppb.Now(),
+		Streams: []*dataplanev1.CheckpointStream{{Name: "users", Rows: 1}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := e.incident(t); st != "resolved" {
+		t.Errorf("incident %s, once orders is in no checkpoint", st)
 	}
 }
 
@@ -396,11 +740,7 @@ func TestARefusedReleaseIsntSentAgain(t *testing.T) {
 
 	released := func() []*dataplanev1.HoldRelease {
 		t.Helper()
-		spec, err := e.runner.GetSyncSpec(ctx, connect.NewRequest(&dataplanev1.GetSyncSpecRequest{PipelineId: e.pipeline.String(), Version: "v1"}))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return spec.Msg.GetReleases()
+		return e.taken(t)
 	}
 	if _, err := e.owner.ReleaseHold(ctx, connect.NewRequest(&apiv1.ReleaseHoldRequest{Parent: e.parent, Stream: "orders", Column: "amount"})); err != nil {
 		t.Fatal(err)

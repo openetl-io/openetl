@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -87,6 +88,13 @@ type StreamState struct {
 	// When the stream's current read started, in microseconds since the Unix
 	// epoch. Rows read without a cursor carry it as their sequence.
 	ReadStart int64 `json:"read_start,omitempty"`
+	// How the stream's current read started. An attempt goes on with an
+	// unfinished read only if it would start the stream's read the same way.
+	ReadKind ReadKind `json:"read_kind,omitempty"`
+	// What the stream's current read replaces, for an overwrite. An attempt
+	// goes on with an unfinished overwrite only if it would replace the
+	// same tables.
+	ReadTarget *ReadTarget `json:"read_target,omitempty"`
 	// The stream completed: every split did, and their states are where its
 	// next sync starts.
 	Complete bool `json:"complete,omitempty"`
@@ -114,6 +122,41 @@ type StreamState struct {
 	// against Splits and Floor, which a redo of the epoch replays. Missing:
 	// none past Floor, or none recorded.
 	Steps map[string][]byte `json:"steps,omitempty"`
+}
+
+// ReadKind is how a stream's read starts, and what the destination makes of
+// it.
+type ReadKind string
+
+const (
+	// ReadOn goes on from where the stream's last read ended, and writes its
+	// rows as it reads them. Records from before ReadKind have it.
+	ReadOn ReadKind = ""
+	// ReadWhole starts with no state, to read the whole stream: a full
+	// refresh, written as it reads.
+	ReadWhole ReadKind = "whole"
+	// ReadOverwrite starts with no state, and replaces the destination's
+	// table with what it wrote when it ends.
+	ReadOverwrite ReadKind = "overwrite"
+)
+
+// ReadTarget is what an overwrite read replaces, as the job names it.
+type ReadTarget struct {
+	// The destination's namespace; empty: its default.
+	Namespace string `json:"namespace,omitempty"`
+	// By the stream each table is of, its name in destination.tables;
+	// empty: from the stream's name, by the naming.
+	Tables map[string]string `json:"tables,omitempty"`
+	// The naming keeps the source's names.
+	SourceNames bool `json:"source_names,omitempty"`
+}
+
+// Equal reports whether t and u name the same tables; nil names none.
+func (t *ReadTarget) Equal(u *ReadTarget) bool {
+	if t == nil || u == nil {
+		return t == u
+	}
+	return t.Namespace == u.Namespace && t.SourceNames == u.SourceNames && maps.Equal(t.Tables, u.Tables)
 }
 
 // WholeStream is the ID of the split that is the whole stream. A stream
@@ -247,6 +290,20 @@ type Replay struct {
 	Versioned []ColumnHold `json:"versioned,omitempty"`
 	// The IDs of the releases of cell holds, by column.
 	CellReleases map[string]string `json:"cell_releases,omitempty"`
+	// The IDs of the releases of columns held whole, by column.
+	WholeReleases map[string]string `json:"whole_releases,omitempty"`
+	// By column, where the hold it ends that held the column whole started;
+	// missing for a column whose cells alone it releases, and in records
+	// from before it.
+	Since map[string]RecordRef `json:"since,omitempty"`
+	// As Since, when that hold started; missing where it isn't known.
+	Started map[string]time.Time `json:"started,omitempty"`
+}
+
+// Took reports whether the replay took release id, of col: a discard of a
+// release names the replay by it, whatever holds col has since.
+func (r *Replay) Took(col, id string) bool {
+	return id != "" && (r.CellReleases[col] == id || r.WholeReleases[col] == id)
 }
 
 // HeldDir holds a pipeline's held values, next to its checkpoints:

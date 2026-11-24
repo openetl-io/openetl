@@ -591,6 +591,10 @@ func epochOf(r *checkpoint.Record) uint64 {
 
 // start starts a segment from restored, under the current generation.
 func (a *flinkAttempt) start(ctx context.Context, restored *checkpoint.Record, learn bool) (*flinkSegment, error) {
+	// Its records hold nothing, so restored's held values would go.
+	if err := a.job.keptHolds(restored); err != nil {
+		return nil, err
+	}
 	if restored != nil {
 		a.res.Restored = restored.Epoch
 	}

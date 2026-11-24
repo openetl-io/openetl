@@ -116,9 +116,18 @@ type workersAPI struct {
 	joined  map[uint32]bool
 	opened  int
 	commits int
+	// The spec's fetches for the hold releases, and the others.
+	applies, others int
 }
 
-func (a *workersAPI) GetSyncSpec(context.Context, *connect.Request[dataplanev1.GetSyncSpecRequest]) (*connect.Response[dataplanev1.GetSyncSpecResponse], error) {
+func (a *workersAPI) GetSyncSpec(_ context.Context, req *connect.Request[dataplanev1.GetSyncSpecRequest]) (*connect.Response[dataplanev1.GetSyncSpecResponse], error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if req.Msg.GetApplyReleases() {
+		a.applies++
+	} else {
+		a.others++
+	}
 	return connect.NewResponse(a.spec), nil
 }
 
@@ -267,10 +276,14 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 		t.Errorf("committed %d epochs, want several", res.Committed)
 	}
 	api.mu.Lock()
-	joined, opened := len(api.joined), api.opened
+	joined, opened, applies, others := len(api.joined), api.opened, api.applies, api.others
 	api.mu.Unlock()
 	if joined != 2 || opened != 1 {
 		t.Errorf("%d workers joined, told once in %d, want 2 and 1", joined, opened)
+	}
+	// The attempt fetches the hold releases it applies; its workers don't.
+	if applies != 1 || others < 2 {
+		t.Errorf("the spec was fetched %d times for the releases and %d not, want once by the attempt and once by each worker", applies, others)
 	}
 	for _, stream := range []string{"users", "purchases"} {
 		rows := readRows(t, filepath.Join(out, stream+".jsonl"))

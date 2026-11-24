@@ -59,7 +59,7 @@ Replay behavior and destination capabilities determine the stream's [delivery gu
 
 For `stream` mode with a primary key, declare a cursor that distinguishes events for the same key, such as an offset. The pipeline can also select this cursor. Without it, those events would share an `_openetl_id`, so OpenETL rejects the plan.
 
-`Read` emits JSON objects or Arrow batches. It marks **resume points**, each with state that lets a later read resume at that position. A bounded stream ends with `Complete`; its state becomes the next sync's starting state. Commits normally align to resume points. A [forced barrier](../pipelines/delivery.md#reading-a-stream-delivered-at-least-once) is permitted only when replay preserves the required delivery guarantee.
+`Read` emits JSON objects or Arrow batches. It marks **resume points**, each with state that lets a later read resume at that position. A bounded stream ends with `Complete`; its state becomes the next sync's starting state. A stream read with `full_refresh` or written with `overwrite` is the exception. Each new read of it starts with no state, and `Splits` gets no ended splits for it. A retry of a read that has not completed still resumes from its last committed resume point, unless the stream's read changed to or from `full_refresh`, or its write to or from `overwrite`, since the read started. An `overwrite` also does not resume once the pipeline changes the namespace, the name or the naming of the table that it replaces. A new read then starts, with no state. Commits normally align to resume points. A [forced barrier](../pipelines/delivery.md#reading-a-stream-delivered-at-least-once) is permitted only when replay preserves the required delivery guarantee.
 
 Each read request lists the declared `columns`. If the source sends text values for OpenETL to parse, those columns need declared types. Declare timestamps in microseconds, inside lists too: OpenETL refuses a stream that declares another unit. If a new column appears, fail the read with a transient error. The next attempt's discovery can declare its type before reading again.
 
@@ -120,6 +120,8 @@ Failed teardown operations retry for up to 7 days. After that, OpenETL records `
 A destination must not change an existing column's type unless the pipeline permits it. This applies to target columns, staging columns and other columns that become user data. Refuse an unpermitted type change with `RefusedColumn`. Include the column, reason, types and a `Fix` statement or repair step, such as `ALTER TABLE`.
 
 OpenETL holds the affected column where supported, or stops the stream. It shows the repair to the user. New columns can still be added.
+
+A destination that takes holds keeps, for each held cell, the version that it holds the cell for: the `_openetl_id` of the row that listed the column in `_openetl_held`. A patch fills a cell only where the target still holds the cell for the patch's `_openetl_id`. A merge update that lists a column in `_openetl_unchanged` did not send that column. Keep the target's value of the column and the version that the target holds it for, as a soft delete does, so the held version's patch still fills it. The conformance kit's `holds/unchanged` check tests this.
 
 A destination that takes holds also answers with each stream's `TableLimits`. The limits name columns by their destination names:
 

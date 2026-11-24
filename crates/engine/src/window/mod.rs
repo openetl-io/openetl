@@ -43,6 +43,14 @@
 //! Output rows are keyed by `window_start` and the group keys: an insert
 //! the first time, then updates; each has an ID and a seq from its key and
 //! how many times it has been given, so a replay gives the same rows.
+//!
+//! Where it drops repeats, a row it has taken comes again, as a read gives
+//! rows again, and isn't taken twice: a row is a repeat while a window it
+//! went to is kept, of one record ID and one hash of its stream's row, so
+//! another version of a row with its ID is a row of its own. A tumbling or hopping window keeps each row's in a set
+//! under the floor's operator, to expire once its last window is gone,
+//! which the floor says, as its windows do. A session keeps its rows' in
+//! the key's sessions, and they go with the session.
 
 pub(crate) mod accumulate;
 pub(crate) mod codec;
@@ -55,7 +63,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use arrow_array::{
-    ArrayRef, BooleanArray, FixedSizeBinaryArray, Int64Array, RecordBatch, StringArray,
+    ArrayRef, BooleanArray, FixedSizeBinaryArray, Int64Array, RecordBatch, StringArray, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use bytes::Bytes;
@@ -93,6 +101,13 @@ struct State {
 /// The layout of a window's state, and of a key's sessions, which the
 /// operator's ID covers: a change of it is a new operator, with no state.
 const LAYOUT: u8 = openetl_sql::WINDOW_STATE;
+/// A key's sessions as LAYOUT has them, each followed by its rows' record
+/// IDs and values' hashes: where the operator drops repeats.
+const SESSIONS_SEEN: u8 = 0x80 | LAYOUT;
+
+/// A row as repeats go: its record ID, then the hash of its stream's row,
+/// big-endian.
+pub(crate) type Seen = [u8; 24];
 
 impl State {
     fn new(specs: &[Spec]) -> Self {
@@ -164,13 +179,31 @@ impl State {
     }
 }
 
+/// What a row of record ID `id` and hash `hash` is as repeats go.
+pub(crate) fn seen(id: &[u8], hash: u64) -> Seen {
+    let mut s = [0u8; 24];
+    s[..id.len().min(16)].copy_from_slice(&id[..id.len().min(16)]);
+    s[16..].copy_from_slice(&hash.to_be_bytes());
+    s
+}
+
 /// A session: its first row's time and its last's plus the gap, and its
-/// state.
+/// state. Where the operator drops repeats, what its rows are as repeats
+/// go.
 #[derive(Clone, Debug, PartialEq)]
 struct Session {
     start: i64,
     end: i64,
     state: State,
+    seen: BTreeSet<Seen>,
+}
+
+/// Adds `from` to `into`, the smaller set to the larger.
+fn merge_seen(into: &mut BTreeSet<Seen>, mut from: BTreeSet<Seen>) {
+    if from.len() > into.len() {
+        std::mem::swap(into, &mut from);
+    }
+    into.extend(from);
 }
 
 /// What a call gave.
@@ -223,9 +256,15 @@ pub struct Operator {
     /// In microseconds; `i64::MIN` until it advances.
     watermark: i64,
     /// Windows, or sessions, whose state it began keeping, and stopped
-    /// keeping, since its caller last took them.
+    /// keeping, since its caller last took them, and the rows it dropped as
+    /// repeats.
     pub opened: u64,
     pub dropped: u64,
+    pub repeats: u64,
+    /// It drops repeats: its rows come with record IDs that tell a repeat
+    /// from a new row, and its stream's read isn't held to its end, which
+    /// would keep every row's until then.
+    pub drops_repeats: bool,
 }
 
 impl Operator {
@@ -281,6 +320,8 @@ impl Operator {
             watermark: i64::MIN,
             opened: 0,
             dropped: 0,
+            repeats: 0,
+            drops_repeats: false,
             plan,
         })
     }
@@ -363,11 +404,14 @@ impl Operator {
         end.saturating_add(self.lateness) <= watermark || (floor > i64::MIN && end <= floor)
     }
 
-    /// Takes a batch of the statement's input: the columns it reads.
+    /// Takes a batch of the statement's input: the columns it reads, and
+    /// its rows' record IDs and hashes, which it needs where it drops
+    /// repeats.
     pub async fn rows<S: StateBackend>(
         &mut self,
         state: &mut S,
         input: &RecordBatch,
+        ids: Option<(&FixedSizeBinaryArray, &UInt64Array)>,
     ) -> Result<Out, JobError> {
         let plan = self.plan.clone();
         let (ran, mut out) = steps::before(&plan.input.steps, input, |why| self.reason(why))?;
@@ -376,6 +420,16 @@ impl Operator {
             return Ok(out);
         }
         let n = rows.num_rows();
+        let seen = match (self.drops_repeats, ids) {
+            (false, _) => None,
+            (true, Some((ids, hashes))) => Some(self.seen(ids, hashes, &ran.rows)?),
+            (true, None) => {
+                return Err(JobError::internal(
+                    self.reason("rows without their record IDs"),
+                ));
+            }
+        };
+        let seen = seen.as_deref();
         // Equal JSON is one key, whatever its spaces or its objects' order,
         // and in one key group, as the exchange before the window has it.
         let key_columns: Vec<ArrayRef> = plan
@@ -440,7 +494,8 @@ impl Operator {
             Window::Session { gap } => {
                 let (emits, mut lists) = self
                     .sessions(
-                        state, gap, &take, &groups, &keys, &args, &filters, &rows_of, &mut out,
+                        state, gap, &take, &groups, &keys, &args, &filters, &rows_of, seen,
+                        &mut out,
                     )
                     .await?;
                 let (emitted, states) = self.emit_states(emits)?;
@@ -464,7 +519,7 @@ impl Operator {
             _ => {
                 let emits = self
                     .windows(
-                        state, &take, &groups, &keys, &args, &filters, &rows_of, &mut out,
+                        state, &take, &groups, &keys, &args, &filters, &rows_of, seen, &mut out,
                     )
                     .await?;
                 let (emitted, states) = self.emit_states(emits)?;
@@ -481,6 +536,54 @@ impl Operator {
         out.add(emitted)?;
         out.rejected.sort_by_key(|(r, ..)| *r);
         Ok(out)
+    }
+
+    /// What each of the rows the steps before the window gave, rows `at` of
+    /// the input, is as repeats go, from the input's `ids` and `hashes`.
+    fn seen(
+        &self,
+        ids: &FixedSizeBinaryArray,
+        hashes: &UInt64Array,
+        at: &[usize],
+    ) -> Result<Vec<Seen>, JobError> {
+        let unnest = crate::over::unnests(&self.plan.input.steps);
+        let mine = crate::over::ids_of(ids, at, unnest)
+            .map_err(|e| JobError::internal(self.reason(&e)))?;
+        let hashes = hashes.values();
+        mine.iter()
+            .zip(at)
+            .enumerate()
+            .map(|(r, (id, &i))| match (id, hashes.get(i)) {
+                (Some(id), Some(h)) => Ok(seen(id, *h)),
+                _ => Err(JobError::internal(
+                    self.reason(&format!("row {r} has no record ID")),
+                )),
+            })
+            .collect()
+    }
+
+    /// Whether each of `rows`, a key group and what the row is as repeats
+    /// go, is new, keeping it as taken until `last`, the end of its last
+    /// window, a time of the event time's unit, is gone.
+    async fn fresh<S: StateBackend>(
+        &mut self,
+        state: &mut S,
+        rows: &[(u32, &Seen, i64)],
+    ) -> Result<Vec<bool>, JobError> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let refs: Vec<KeyRef<'_>> = rows
+            .iter()
+            .map(|(g, s, _)| KeyRef::new(*g, s.as_slice()))
+            .collect();
+        let expires: Vec<i64> = rows.iter().map(|(_, _, e)| self.timer_at(*e)).collect();
+        let fresh = state
+            .insert_new(self.floor, &refs, &vec![i64::MIN; rows.len()], &expires)
+            .await
+            .map_err(|e| state_error(&e))?;
+        self.repeats += fresh.iter().filter(|new| !**new).count() as u64;
+        Ok(fresh)
     }
 
     /// Each aggregate's filter on `rows`, then its argument on the rows
@@ -525,9 +628,9 @@ impl Operator {
         }
     }
 
-    /// Tumbling and hopping windows take their rows. Gives the windows
-    /// already closed that rows reached, to give again and then write
-    /// back.
+    /// Tumbling and hopping windows take their rows, but repeats, where
+    /// `seen` has what each row is as they go. Gives the windows already
+    /// closed that rows reached, to give again and then write back.
     #[allow(clippy::too_many_arguments)]
     async fn windows<S: StateBackend>(
         &mut self,
@@ -538,31 +641,50 @@ impl Operator {
         args: &[Option<ArrayRef>],
         filters: &[Option<BooleanArray>],
         rows_of: &(dyn Fn(usize) -> usize + Sync),
+        seen: Option<&[Seen]>,
         out: &mut Out,
     ) -> Result<Vec<Emit>, JobError> {
         let size = self.size();
-        // Each window's rows, by its group, keys and start.
-        let mut slots: BTreeMap<(u32, Vec<u8>, i64), Vec<usize>> = BTreeMap::new();
+        // Each row's windows that aren't gone, the latest last.
+        let mut placed: Vec<(usize, Vec<i64>)> = Vec::with_capacity(take.len());
         for &(r, t) in take {
-            let mut placed = false;
             let at = self.standing(state, groups[r]);
-            for s in self.starts(t) {
-                let end = s.saturating_add(size);
-                if self.gone(end, at) {
-                    continue;
-                }
-                placed = true;
-                slots
-                    .entry((groups[r], keys[r].clone(), s))
-                    .or_default()
-                    .push(r);
-            }
-            if !placed {
+            let mut starts: Vec<i64> = self
+                .starts(t)
+                .into_iter()
+                .filter(|s| !self.gone(s.saturating_add(size), at))
+                .collect();
+            if starts.is_empty() {
                 out.rejected.push((
                     rows_of(r),
                     self.reason("late: its windows closed past their allowed lateness"),
                     Cause::new(Code::Late),
                 ));
+                continue;
+            }
+            starts.sort_unstable();
+            placed.push((r, starts));
+        }
+        if let Some(seen) = seen {
+            let asked: Vec<(u32, &Seen, i64)> = placed
+                .iter()
+                .map(|(r, starts)| {
+                    let last = starts.last().copied().unwrap_or_default();
+                    (groups[*r], &seen[*r], last.saturating_add(size))
+                })
+                .collect();
+            let fresh = self.fresh(state, &asked).await?;
+            let mut new = fresh.into_iter();
+            placed.retain(|_| new.next().unwrap_or(true));
+        }
+        // Each window's rows, by its group, keys and start.
+        let mut slots: BTreeMap<(u32, Vec<u8>, i64), Vec<usize>> = BTreeMap::new();
+        for (r, starts) in placed {
+            for s in starts {
+                slots
+                    .entry((groups[r], keys[r].clone(), s))
+                    .or_default()
+                    .push(r);
             }
         }
         if slots.is_empty() {
@@ -627,10 +749,11 @@ impl Operator {
         Ok(again)
     }
 
-    /// Sessions take their rows, merging as they meet. Gives the sessions
-    /// already closed that rows reached, to give again, deletes of the
-    /// sessions they merged away, and each key's sessions, to write back
-    /// once they're given.
+    /// Sessions take their rows, merging as they meet, but repeats, where
+    /// `seen` has what each row is as they go: a row a session that holds
+    /// its time took. Gives the sessions already closed that rows reached,
+    /// to give again, deletes of the sessions they merged away, and each
+    /// key's sessions, to write back once they're given.
     #[allow(clippy::too_many_arguments)]
     async fn sessions<S: StateBackend>(
         &mut self,
@@ -642,6 +765,7 @@ impl Operator {
         args: &[Option<ArrayRef>],
         filters: &[Option<BooleanArray>],
         rows_of: &(dyn Fn(usize) -> usize + Sync),
+        seen: Option<&[Seen]>,
         out: &mut Out,
     ) -> Result<(Vec<Emit>, Lists), JobError> {
         let mut by_key: BTreeMap<Keys, Vec<(usize, i64)>> = BTreeMap::new();
@@ -673,9 +797,27 @@ impl Operator {
             let kept = list.len();
             list.retain(|s| !self.gone(s.end.saturating_add(1), at));
             self.dropped += (kept - list.len()) as u64;
-            let before: BTreeMap<i64, Session> =
-                list.iter().map(|s| (s.start, s.clone())).collect();
+            let before: BTreeMap<i64, Session> = list
+                .iter()
+                .map(|s| {
+                    let s = Session {
+                        start: s.start,
+                        end: s.end,
+                        state: s.state.clone(),
+                        seen: BTreeSet::new(),
+                    };
+                    (s.start, s)
+                })
+                .collect();
             for (r, t) in rs {
+                if let Some(seen) = seen
+                    && list
+                        .iter()
+                        .any(|s| s.start <= t && t <= s.end && s.seen.contains(&seen[r]))
+                {
+                    self.repeats += 1;
+                    continue;
+                }
                 let end = t.saturating_add(gap);
                 let meets = |s: &Session| s.start <= end && t <= s.end;
                 let (start, last) = list
@@ -697,6 +839,7 @@ impl Operator {
                     continue;
                 }
                 let mut merged = State::new(&self.specs);
+                let mut taken = BTreeSet::new();
                 let mut rest = Vec::with_capacity(list.len());
                 for s in list {
                     match meets(&s) {
@@ -706,8 +849,12 @@ impl Operator {
                             merged.shown = s.state.shown.clone();
                             merged.shown_end = s.state.shown_end;
                             merged.merge(s.state);
+                            merge_seen(&mut taken, s.seen);
                         }
-                        true => merged.merge(s.state),
+                        true => {
+                            merged.merge(s.state);
+                            merge_seen(&mut taken, s.seen);
+                        }
                         false => rest.push(s),
                     }
                 }
@@ -716,10 +863,14 @@ impl Operator {
                         acc.update(args[i].as_deref(), r);
                     }
                 }
+                if let Some(seen) = seen {
+                    taken.insert(seen[r]);
+                }
                 rest.push(Session {
                     start,
                     end: last,
                     state: merged,
+                    seen: taken,
                 });
                 rest.sort_by_key(|s| s.start);
                 list = rest;
@@ -1236,7 +1387,7 @@ impl Operator {
         let mut at = v;
         let parsed = (|| {
             let [layout] = take::<1>(&mut at)?;
-            if layout != LAYOUT {
+            if layout != LAYOUT && layout != SESSIONS_SEEN {
                 return Err(format!("a key's sessions of layout {layout}"));
             }
             let n = u32::from_be_bytes(take(&mut at)?);
@@ -1244,10 +1395,20 @@ impl Operator {
             for _ in 0..n {
                 let start = i64::from_be_bytes(take(&mut at)?);
                 let end = i64::from_be_bytes(take(&mut at)?);
+                let state = State::decode(&self.specs, &mut at)?;
+                let mut seen = Vec::new();
+                if layout == SESSIONS_SEEN {
+                    let n = u32::from_be_bytes(take(&mut at)?);
+                    for _ in 0..n {
+                        seen.push(take::<24>(&mut at)?);
+                    }
+                }
                 out.push(Session {
                     start,
                     end,
-                    state: State::decode(&self.specs, &mut at)?,
+                    state,
+                    // In order, as they're written: built whole.
+                    seen: BTreeSet::from_iter(seen),
                 });
             }
             Ok(out)
@@ -1260,12 +1421,22 @@ impl Operator {
             state.delete(self.id, KeyRef::new(g, k));
             return;
         }
-        let mut b = vec![LAYOUT];
+        let layout = match self.drops_repeats {
+            true => SESSIONS_SEEN,
+            false => LAYOUT,
+        };
+        let mut b = vec![layout];
         b.extend_from_slice(&codec::len32(list.len()).to_be_bytes());
         for s in list {
             b.extend_from_slice(&s.start.to_be_bytes());
             b.extend_from_slice(&s.end.to_be_bytes());
             s.state.encode(&mut b);
+            if self.drops_repeats {
+                b.extend_from_slice(&codec::len32(s.seen.len()).to_be_bytes());
+                for seen in &s.seen {
+                    b.extend_from_slice(seen);
+                }
+            }
         }
         state.put(self.id, KeyRef::new(g, k), Bytes::from(b));
     }

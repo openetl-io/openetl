@@ -50,7 +50,11 @@ func (f *fakeHolds) ReleaseHold(_ context.Context, req *connect.Request[apiv1.Re
 
 func (f *fakeHolds) DiscardHold(_ context.Context, req *connect.Request[apiv1.DiscardHoldRequest]) (*connect.Response[apiv1.DiscardHoldResponse], error) {
 	f.discarded = append(f.discarded, req.Msg.GetParent()+" "+req.Msg.GetStream()+"."+req.Msg.GetColumn())
-	return connect.NewResponse(&apiv1.DiscardHoldResponse{Hold: &apiv1.Hold{Stream: req.Msg.GetStream(), Column: req.Msg.GetColumn()}}), nil
+	col := req.Msg.GetColumn()
+	return connect.NewResponse(&apiv1.DiscardHoldResponse{
+		Hold:        &apiv1.Hold{Stream: req.Msg.GetStream(), Column: col, Releasing: col == "price", Pending: col != "price"},
+		EndsRelease: col == "price" || col == "amount",
+	}), nil
 }
 
 func TestHolds(t *testing.T) {
@@ -106,6 +110,22 @@ orders.note (cells)
 		f.released[1] != "workspaces/default/pipelines/p orders.amount (new version)" ||
 		len(f.discarded) != 1 || f.discarded[0] != "workspaces/default/pipelines/p orders.note" {
 		t.Errorf("released %v, discarded %v", f.released, f.discarded)
+	}
+	// A release being patched in, discarded, goes on unless the stream stops
+	// holding, and what it leaves held stays held; one pending is dropped,
+	// unless a run has started patching it in.
+	for col, want := range map[string]string{
+		"price":  "discarded the release of orders.price of workspaces/default/pipelines/p, which is being patched in; it goes on while the stream holds, and the values it leaves held stay held",
+		"amount": "discarded orders.amount of workspaces/default/pipelines/p; the pipeline's next run drops its held values, unless a run has already started patching in their release",
+		"note":   "discarded orders.note of workspaces/default/pipelines/p; the pipeline's next run drops its held values\n",
+	} {
+		out.Reset()
+		if err := run(t.Context(), []string{"holds", "discard", "--api-url", srv.URL, "p", "orders", col}, &out); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("discarding %s printed %q, want %q", col, out.String(), want)
+		}
 	}
 	if err := run(t.Context(), []string{"holds", "release", "--api-url", srv.URL, "p", "orders"}, &out); err == nil {
 		t.Error("release without a column worked")

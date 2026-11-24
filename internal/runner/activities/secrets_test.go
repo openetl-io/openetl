@@ -51,7 +51,7 @@ func TestReadSecrets(t *testing.T) {
 	ctx := t.Context()
 
 	read := func(r *secretstore.Reader) (*dataplanev1.GetSyncSpecResponse, error) {
-		spec, err := syncSpec(ctx, client, "org", "p", "v")
+		spec, err := syncSpec(ctx, client, "org", "p", "v", false)
 		if err != nil {
 			return nil, err
 		}

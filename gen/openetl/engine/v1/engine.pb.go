@@ -1521,7 +1521,14 @@ type EventTime struct {
 	// starts with no state for the statements that read it. A dedupe that
 	// keeps each key's latest row then deletes a key its filters drop where
 	// its state doesn't know whether the output has the key's row.
-	FullRead      bool `protobuf:"varint,8,opt,name=full_read,json=fullRead,proto3" json:"full_read,omitempty"`
+	FullRead bool `protobuf:"varint,8,opt,name=full_read,json=fullRead,proto3" json:"full_read,omitempty"`
+	// A read of the stream may give a record again, as superset replay does,
+	// and rows of one record ID and values are one record: it has a primary
+	// key, or collapses. A group window and OVER over it keep each row's ID
+	// and a hash of its values while they keep the row, and drop the rows a
+	// read gives again. Unset: they keep no rows' IDs, as over a stream
+	// replayed exactly.
+	Rereads       bool `protobuf:"varint,9,opt,name=rereads,proto3" json:"rereads,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1608,6 +1615,13 @@ func (x *EventTime) GetDedupeRetentionMicros() int64 {
 func (x *EventTime) GetFullRead() bool {
 	if x != nil {
 		return x.FullRead
+	}
+	return false
+}
+
+func (x *EventTime) GetRereads() bool {
+	if x != nil {
+		return x.Rereads
 	}
 	return false
 }
@@ -3064,7 +3078,9 @@ type OperatorEpoch struct {
 	// answered, counted as lookups are.
 	Disk *DiskReads `protobuf:"bytes,18,opt,name=disk,proto3" json:"disk,omitempty"`
 	// A dedupe's rows it didn't write: repeats of a key it keeps, and for one
-	// that keeps each key's latest row, rows no later than the key's.
+	// that keeps each key's latest row, rows no later than the key's. A group
+	// window's and OVER's rows it took once already, as a read gave them
+	// again: of one record ID and one hash of their stream's row.
 	Repeats       uint64 `protobuf:"varint,19,opt,name=repeats,proto3" json:"repeats,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4581,7 +4597,7 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"key_groups\x18\x0e \x01(\v2 .openetl.engine.v1.KeyGroupRangeR\tkeyGroups\x12;\n" +
 	"\n" +
 	"event_time\x18\x0f \x01(\v2\x1c.openetl.engine.v1.EventTimeR\teventTime\x12\x1c\n" +
-	"\toverwrite\x18\x10 \x01(\bR\toverwrite\"\xce\x02\n" +
+	"\toverwrite\x18\x10 \x01(\bR\toverwrite\"\xe8\x02\n" +
 	"\tEventTime\x12\x16\n" +
 	"\x06column\x18\x01 \x01(\tR\x06column\x12!\n" +
 	"\fdelay_micros\x18\x02 \x01(\x03R\vdelayMicros\x12\x12\n" +
@@ -4590,7 +4606,8 @@ const file_openetl_engine_v1_engine_proto_rawDesc = "" +
 	"\x0flateness_micros\x18\x05 \x01(\x03R\x0elatenessMicros\x12 \n" +
 	"\tcloses_at\x18\x06 \x01(\x03H\x01R\bclosesAt\x88\x01\x01\x12;\n" +
 	"\x17dedupe_retention_micros\x18\a \x01(\x03H\x02R\x15dedupeRetentionMicros\x88\x01\x01\x12\x1b\n" +
-	"\tfull_read\x18\b \x01(\bR\bfullReadB\b\n" +
+	"\tfull_read\x18\b \x01(\bR\bfullRead\x12\x18\n" +
+	"\arereads\x18\t \x01(\bR\arereadsB\b\n" +
 	"\x06_floorB\f\n" +
 	"\n" +
 	"_closes_atB\x1a\n" +

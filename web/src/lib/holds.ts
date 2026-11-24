@@ -15,14 +15,14 @@ export const holdStateHint: Record<HoldState, string> = {
   pending: "Released or discarded, waiting for the pipeline's next run",
   releasing: "Its held values are being patched in",
   refused: "Its last release didn't clear it, and isn't tried again",
-  discarded: "Its values are dropped; the column stays as the destination has it",
+  discarded: "Its values are dropped, and its later values until it's released; the column stays as the destination has it",
 };
 
 /** A hold's state, as `openetl holds` shows it. */
 export function holdState(h: Hold): HoldState {
-  if (h.discarded) return "discarded";
   if (h.releasing) return "releasing";
   if (h.pending) return "pending";
+  if (h.discarded) return "discarded";
   if (h.refused) return "refused";
   return "held";
 }

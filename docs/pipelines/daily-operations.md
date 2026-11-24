@@ -34,6 +34,8 @@ from faker.users
 order by id, _openetl_seq desc;
 ```
 
+If two changes of a row can have the same cursor value, both versions have the same `_openetl_id` and `_openetl_seq`. Then also order by `_openetl_synced_at` descending, and do not keep one row per `_openetl_id`. See [Choose a cursor that changes on every update](./delivery.md#choose-a-cursor-that-changes-on-every-update).
+
 [Delivery guarantees](./delivery.md) explains guarantee selection, plan reasons and streams without primary keys. It also shows how to read data delivered at least once.
 
 ## Day to day

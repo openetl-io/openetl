@@ -20,7 +20,14 @@
 //! operator run, and the row leaves once, with its record ID and its event
 //! time as its sequence. State keeps each key's frame, as [`frame`] says,
 //! and the rows waiting, as [`row`] writes them.
+//!
+//! Where it drops repeats, a row that comes again while it waits, as a
+//! read gives rows again, of one record ID and one hash of its stream's
+//! row, doesn't wait twice: each waiting row's are in a set under a second
+//! operator ID, to expire as the row leaves. One that comes after it left
+//! is late.
 
+mod canonical;
 mod frame;
 pub(crate) mod partitioned;
 pub(crate) mod row;
@@ -33,7 +40,7 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{
-    BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions, UInt32Array,
+    BooleanArray, FixedSizeBinaryArray, RecordBatch, RecordBatchOptions, UInt32Array, UInt64Array,
 };
 use bytes::Bytes;
 use openetl_normalize::{Cause, Code, render_row};
@@ -56,11 +63,18 @@ const FRAME: u8 = 1;
 /// `OVER` of a statement, on one lane's key groups.
 pub struct Operator {
     pub id: OperatorId,
+    /// What its waiting rows are as repeats go, where it drops them, each
+    /// to expire at the row's time: its horizon is the operator's.
+    waiting: OperatorId,
     plan: Arc<openetl_sql::Over>,
     base: Partitioned,
     funcs: Vec<Func>,
     /// Rows are due that it hasn't given yet.
     due: bool,
+    /// It drops repeats: its rows' record IDs tell a repeat from a new row.
+    pub drops_repeats: bool,
+    /// The rows it dropped as repeats since its caller last took them.
+    pub repeats: u64,
 }
 
 impl Operator {
@@ -78,9 +92,12 @@ impl Operator {
         )?;
         Ok(Self {
             id: base.id,
+            waiting: OperatorId(base.id.0 ^ 1),
             funcs: plan.functions.iter().map(Func::of).collect(),
             base,
             due: false,
+            drops_repeats: false,
+            repeats: 0,
             plan,
         })
     }
@@ -101,20 +118,47 @@ impl Operator {
     }
 
     /// Takes a batch of the statement's input, the columns it reads, with
-    /// each row's record ID: each row waits for the watermark, or is
-    /// rejected.
+    /// each row's record ID, and where it drops repeats, each row's hash:
+    /// each row waits for the watermark, or is rejected.
     pub async fn rows<S: StateBackend>(
         &mut self,
         state: &mut S,
         input: &RecordBatch,
         ids: &FixedSizeBinaryArray,
+        hashes: Option<&UInt64Array>,
     ) -> Result<Out, JobError> {
         let plan = self.plan.clone();
         let (taken, mut out) = self.base.take(&plan.input.steps, input, ids)?;
-        for r in 0..taken.rows.num_rows() {
-            let Some(t) = self.base.placed(state, self.id, &taken, r, &mut out) else {
-                continue;
+        let mut placed: Vec<(usize, i64)> = (0..taken.rows.num_rows())
+            .filter_map(|r| Some((r, self.base.placed(state, self.id, &taken, r, &mut out)?)))
+            .collect();
+        if self.drops_repeats {
+            let Some(hashes) = hashes else {
+                return Err(JobError::internal(self.reason("rows without their hashes")));
             };
+            let hashes = hashes.values();
+            let seen: Vec<crate::window::Seen> = placed
+                .iter()
+                .map(|&(r, _)| {
+                    let h = hashes.get(taken.at[r]).copied().unwrap_or_default();
+                    crate::window::seen(&taken.ids[r], h)
+                })
+                .collect();
+            let refs: Vec<KeyRef<'_>> = placed
+                .iter()
+                .zip(&seen)
+                .map(|(&(r, _), s)| KeyRef::new(taken.groups[r], s.as_slice()))
+                .collect();
+            let expires: Vec<i64> = placed.iter().map(|&(_, t)| t).collect();
+            let fresh = state
+                .insert_new(self.waiting, &refs, &vec![i64::MIN; refs.len()], &expires)
+                .await
+                .map_err(|e| state_error(&e))?;
+            self.repeats += fresh.iter().filter(|new| !**new).count() as u64;
+            let mut new = fresh.into_iter();
+            placed.retain(|_| new.next().unwrap_or(true));
+        }
+        for (r, t) in placed {
             let row = self.base.encode(state, &taken, r)?;
             state.append(
                 self.id,
@@ -156,6 +200,7 @@ impl Operator {
             }
         }
         state.expire(self.id, upto);
+        state.expire(self.waiting, upto);
         self.due = false;
         Ok((out, false))
     }

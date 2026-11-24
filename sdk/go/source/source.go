@@ -645,7 +645,9 @@ type RetentionReporter interface {
 // Splitter is implemented by sources that divide streams into splits.
 // Splits returns a stream's splits for a read that starts, given where its
 // last read's splits ended, their next states; ended is nil for a stream
-// never read. The whole stream alone means it isn't split.
+// never read, and for a read that starts with no state: one with
+// FullRefresh, or one whose stream the destination overwrites. The whole
+// stream alone means it isn't split.
 type Splitter interface {
 	Splits(ctx context.Context, stream ConfiguredStream, ended []Split) ([]Split, error)
 }

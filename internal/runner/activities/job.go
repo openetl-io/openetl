@@ -13,6 +13,7 @@ import (
 	dataplanev1 "github.com/openetl-io/openetl/gen/openetl/dataplane/v1"
 	"github.com/openetl-io/openetl/internal/checkpoint"
 	"github.com/openetl-io/openetl/internal/connectorhost"
+	"github.com/openetl-io/openetl/internal/delivery"
 	"github.com/openetl-io/openetl/internal/plan"
 	"github.com/openetl-io/openetl/internal/platform/errs"
 	"github.com/openetl-io/openetl/internal/platform/ints"
@@ -87,6 +88,7 @@ func settleJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, src s
 	}
 
 	deletes, caps := plan.Deletes(p), dst.Capabilities()
+	require := plan.Settings(p, caps).Require
 	transformed := p.GetTransform() != nil
 	// A transform reads every stream; an Apply that adds one resumes them.
 	paused := map[string]bool{}
@@ -154,7 +156,8 @@ func settleJob(ctx context.Context, spec *dataplanev1.GetSyncSpecResponse, src s
 		}
 		if col := ps.GetEventTime(); col != "" && p.GetTransform().GetSql() != nil {
 			s.EventTime = &runner.EventTime{Column: col, Delay: ps.GetWatermark().GetDelay().AsDuration(), Held: !plan.OrderedRead(read, cursor, col),
-				Lateness: ps.GetWatermark().GetLateness().AsDuration(), Dedupe: plan.DedupeRetention(ps), FullRead: read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH}
+				Lateness: ps.GetWatermark().GetLateness().AsDuration(), Dedupe: plan.DedupeRetention(ps), FullRead: read == apiv1.SyncMode_SYNC_MODE_FULL_REFRESH,
+				Rereads: delivery.Stream{Replay: replay, Keyed: keyed, Require: s.Require, Collapse: s.Collapse}.Rereads(require)}
 		}
 		if !transformed && plan.Holds(caps, mode, keyed) {
 			s.Holds = streamHolds(ps)
@@ -293,7 +296,7 @@ func releases(rs []*dataplanev1.HoldRelease) []runner.Release {
 	out := make([]runner.Release, len(rs))
 	for i, r := range rs {
 		since := checkpoint.RecordRef{Generation: r.GetSince().GetGeneration(), Epoch: r.GetSince().GetEpoch()}
-		out[i] = runner.Release{ID: r.GetId(), Stream: r.GetStream(), Column: r.GetColumn(), Since: since, Discard: r.GetDiscard(), NewVersion: r.GetNewVersion()}
+		out[i] = runner.Release{ID: r.GetId(), Stream: r.GetStream(), Column: r.GetColumn(), Since: since, Discard: r.GetDiscard(), NewVersion: r.GetNewVersion(), Ends: r.GetEnds(), EndsCells: r.GetEndsCells()}
 	}
 	return out
 }

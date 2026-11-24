@@ -41,6 +41,10 @@ pub struct EventTime {
     /// A redo's: where the group windows over it close at the barrier of
     /// the epoch it redoes, whatever their senders' watermarks.
     pub closes_at: Option<i64>,
+    /// A read of it may give a record again, and identical rows are one
+    /// record: a group window and OVER over it drop the rows a read gives
+    /// again.
+    pub rereads: bool,
 }
 
 impl EventTime {
@@ -57,6 +61,7 @@ impl EventTime {
             held: p.held,
             floor: p.floor.unwrap_or(NONE),
             closes_at: p.closes_at,
+            rereads: p.rereads,
         })
     }
 }

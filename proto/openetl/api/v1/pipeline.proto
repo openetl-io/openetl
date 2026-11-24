@@ -1390,7 +1390,9 @@ message OperatorStats {
   // count in the epoch next to it, as reads can.
   DiskReads disk_reads = 18;
   // A dedupe's rows it didn't write: repeats of a key it keeps, and for one
-  // that keeps each key's latest row, rows no later than the key's.
+  // that keeps each key's latest row, rows no later than the key's. A group
+  // window's and OVER's rows it took once already, as a read gave them
+  // again: of one record ID and one hash of their stream's row.
   uint64 repeats = 19;
 }
 
@@ -1574,6 +1576,11 @@ message DiscardHoldRequest {
 
 message DiscardHoldResponse {
   Hold hold = 1;
+  // The column had a release, which the discard ends instead. The next run
+  // drops its values, unless a run has already started patching them in:
+  // that release goes on while the stream holds, and a run in which the
+  // stream doesn't hold drops the values it hasn't patched in.
+  bool ends_release = 2;
 }
 
 // QuarantineFile is one stream's quarantined rows from one committed
