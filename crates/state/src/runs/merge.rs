@@ -422,7 +422,7 @@ pub async fn merge(
             }
         }
         let Some(v) = newest else {
-            return Err(Error::Store("a merge lost its least key".into()));
+            return Err(Error::Invalid("a merge lost its least key".into()));
         };
         if gone(kind, &least, v.as_deref(), oldest, &horizons) {
             continue;

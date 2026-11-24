@@ -162,6 +162,11 @@ pub struct Counts {
     /// Merges whose outputs took their inputs' place, written or, where
     /// nothing was left, not.
     pub merges: u64,
+    /// Merges dropped because storage failed a read of theirs, and of
+    /// those, the merges after which a lane gave up on their inputs, which
+    /// merge no more in its life, as an unreadable input's run.
+    pub merges_failed: u64,
+    pub merges_abandoned: u64,
     /// Keys' and values' bytes that barriers wrote: the changes, before the
     /// format's overhead and compression.
     pub changed_bytes: u64,
@@ -205,6 +210,8 @@ impl Add for Counts {
             merge_read: self.merge_read + o.merge_read,
             disk: self.disk + o.disk,
             merges: self.merges + o.merges,
+            merges_failed: self.merges_failed + o.merges_failed,
+            merges_abandoned: self.merges_abandoned + o.merges_abandoned,
             changed_bytes: self.changed_bytes + o.changed_bytes,
             changed: by_kind(self.changed, o.changed, u64::wrapping_add),
             flushed: by_kind(self.flushed, o.flushed, u64::wrapping_add),
@@ -239,6 +246,8 @@ impl Sub for Counts {
             merge_read: self.merge_read - o.merge_read,
             disk: self.disk - o.disk,
             merges: self.merges.saturating_sub(o.merges),
+            merges_failed: self.merges_failed.saturating_sub(o.merges_failed),
+            merges_abandoned: self.merges_abandoned.saturating_sub(o.merges_abandoned),
             changed_bytes: self.changed_bytes.saturating_sub(o.changed_bytes),
             changed: by_kind(self.changed, o.changed, u64::saturating_sub),
             flushed: by_kind(self.flushed, o.flushed, u64::saturating_sub),
@@ -278,6 +287,8 @@ struct Counters {
     merge_read: (AtomicU64, AtomicU64),
     disk: (AtomicU64, AtomicU64),
     merges: AtomicU64,
+    merges_failed: AtomicU64,
+    merges_abandoned: AtomicU64,
     changed_bytes: AtomicU64,
     changed: [AtomicU64; 4],
     flushed: [AtomicU64; 4],
@@ -314,6 +325,8 @@ impl Counters {
             merge_read: r(&self.merge_read),
             disk: r(&self.disk),
             merges: l(&self.merges),
+            merges_failed: l(&self.merges_failed),
+            merges_abandoned: l(&self.merges_abandoned),
             changed_bytes: l(&self.changed_bytes),
             changed: k(&self.changed),
             flushed: k(&self.flushed),
@@ -795,6 +808,8 @@ impl RunStores {
             kept: HashSet::new(),
             stuck: HashSet::new(),
             lane: NEXT_LANE.fetch_add(1, Ordering::Relaxed),
+            failed: 0,
+            retry_at: 0,
         };
         for (_, b) in runs {
             if b.sections.is_empty() {
@@ -908,7 +923,7 @@ impl Run {
         self.open
             .get()
             .and_then(|o| o.sections[kind.index()].as_ref())
-            .ok_or_else(|| Error::Store(format!("run {} read before it was opened", self.name)))
+            .ok_or_else(|| Error::Invalid(format!("run {} read before it was opened", self.name)))
     }
 }
 
@@ -986,7 +1001,9 @@ struct Merging {
 /// in line takes room once it fits, which others leave it: another takes
 /// only room the first's need leaves. So a lane whose barrier comes late
 /// in each epoch gets its turn, rather than lanes before it taking whatever
-/// their merges release.
+/// their merges release. A lane asks at each of its barriers, so a place
+/// whose lane hasn't asked for a whole epoch lapses: a lane that stops
+/// coming to barriers, as one whose stream ended, holds no one up.
 #[derive(Default)]
 struct Budget(Mutex<Taken>);
 
@@ -994,19 +1011,26 @@ struct Budget(Mutex<Taken>);
 struct Taken {
     bytes: u64,
     /// Lanes refused, by token, in the order they were, with what each
-    /// asked for last.
-    waiting: VecDeque<(u64, u64)>,
+    /// asked for last, and the epoch it asked at.
+    waiting: VecDeque<(u64, u64, u64)>,
 }
 
 impl Budget {
-    /// Takes `bytes` of `of` for lane `lane`, where they fit and leave the
-    /// first in line its room, or the lane is first; else puts it in line,
-    /// if it isn't, with what it asks for.
-    fn take(&self, lane: u64, bytes: u64, of: u64) -> bool {
+    /// Takes `bytes` of `of` for lane `lane`, at its barrier of `epoch`,
+    /// where they fit and leave the first in line its room, or the lane is
+    /// first; else puts it in line, if it isn't, with what it asks for.
+    fn take(&self, lane: u64, bytes: u64, of: u64, epoch: u64) -> bool {
         let mut t = lock(&self.0);
+        while t
+            .waiting
+            .front()
+            .is_some_and(|w| w.0 != lane && w.2.saturating_add(1) < epoch)
+        {
+            t.waiting.pop_front();
+        }
         let kept = match t.waiting.front() {
-            Some(&(first, _)) if first == lane => 0,
-            Some(&(_, need)) => need,
+            Some(&(first, _, _)) if first == lane => 0,
+            Some(&(_, need, _)) => need,
             None => 0,
         };
         let fits = t
@@ -1020,8 +1044,8 @@ impl Budget {
             return true;
         }
         match t.waiting.iter_mut().find(|w| w.0 == lane) {
-            Some(w) => w.1 = bytes,
-            None => t.waiting.push_back((lane, bytes)),
+            Some(w) => (w.1, w.2) = (bytes, epoch),
+            None => t.waiting.push_back((lane, bytes, epoch)),
         }
         false
     }
@@ -1049,11 +1073,14 @@ struct Reserved {
 }
 
 impl Reserved {
-    fn take(shared: &Arc<Shared>, lane: u64, bytes: u64, of: u64) -> Option<Reserved> {
-        shared.merging.take(lane, bytes, of).then(|| Reserved {
-            shared: shared.clone(),
-            bytes,
-        })
+    fn take(shared: &Arc<Shared>, lane: u64, bytes: u64, of: u64, epoch: u64) -> Option<Reserved> {
+        shared
+            .merging
+            .take(lane, bytes, of, epoch)
+            .then(|| Reserved {
+                shared: shared.clone(),
+                bytes,
+            })
     }
 }
 
@@ -1298,19 +1325,27 @@ async fn read_blocks(
     Ok(got.into_iter().flatten().collect())
 }
 
-/// The results of reads that each ran to its end: the first error other
-/// than [`Error::Gone`], else one that names every run they found gone, so
-/// that a reader finds them all in one pass, at the cost of one wait to
-/// confirm them.
+/// The results of reads that each ran to its end: of their errors other
+/// than [`Error::Gone`], the one that most needs saying, whichever came
+/// first; else one that names every run they found gone, so that a reader
+/// finds them all in one pass, at the cost of one wait to confirm them.
 fn gather<T>(done: Vec<Result<T>>) -> Result<Vec<T>> {
     let mut out = Vec::with_capacity(done.len());
     let mut gone = Vec::new();
+    let mut worst: Option<Error> = None;
     for r in done {
         match r {
             Ok(v) => out.push(v),
             Err(Error::Gone(names)) => gone.extend(names),
-            Err(e) => return Err(e),
+            Err(e) => {
+                if worst.as_ref().is_none_or(|w| rank(&e) < rank(w)) {
+                    worst = Some(e);
+                }
+            }
         }
+    }
+    if let Some(e) = worst {
+        return Err(e);
     }
     if gone.is_empty() {
         return Ok(out);
@@ -1318,6 +1353,19 @@ fn gather<T>(done: Vec<Result<T>>) -> Result<Vec<T>> {
     gone.sort();
     gone.dedup();
     Err(Error::Gone(gone))
+}
+
+/// Which of two errors of reads is said, the lower first: the engine's
+/// mistake; then state that can't be read, which a person deletes, and a
+/// retry would meet again; then storage that failed, which a retry may get
+/// past; then runs that are gone, which a reader may forget.
+fn rank(e: &Error) -> u8 {
+    match e {
+        Error::Invalid(_) => 0,
+        Error::Unreadable { .. } | Error::Corrupt(_) | Error::Snapshot(_) => 1,
+        Error::Store(_) => 2,
+        Error::Gone(_) => 3,
+    }
 }
 
 /// Writes a run placed in a lane, if any.
@@ -1350,7 +1398,17 @@ struct RunStore {
     stuck: HashSet<u64>,
     /// Its place in its merges' [`Budget`]'s line.
     lane: u64,
+    /// Merges dropped in a row because storage failed a read of theirs,
+    /// and the epoch before which the lane starts none, waiting longer
+    /// after each.
+    failed: u32,
+    retry_at: u64,
 }
+
+/// Merges dropped in a row for storage that failed, after which a lane
+/// gives up on their inputs; and the most epochs it waits between them.
+const MERGE_TRIES: u32 = 5;
+const MERGE_WAIT: u64 = 64;
 
 impl Drop for RunStore {
     fn drop(&mut self) {
@@ -1571,7 +1629,7 @@ impl RunStore {
             for (a, run, b) in probes {
                 let (block, read) = got
                     .get(&(run.id, b.offset))
-                    .ok_or_else(|| Error::Store("a block asked for and not read".into()))?;
+                    .ok_or_else(|| Error::Invalid("a block asked for and not read".into()))?;
                 let found = format::find(block, &keys[a.at])?;
                 match (found.is_some(), read) {
                     (_, false) => cached += 1,
@@ -1686,7 +1744,7 @@ impl RunStore {
                 for b in &c.open.blocks[r.clone()] {
                     let (block, _) = got
                         .get(&(c.sec.run.id, b.offset))
-                        .ok_or_else(|| Error::Store("a block asked for and not read".into()))?;
+                        .ok_or_else(|| Error::Invalid("a block asked for and not read".into()))?;
                     let mut at = 0;
                     while at < block.len() {
                         let (k, v) = format::entry(block, &mut at)?;
@@ -1836,7 +1894,7 @@ impl RunStore {
             self.shared.disk_put_run(p);
         }
         let snapshot = self.snapshot();
-        self.start_merge();
+        self.start_merge(epoch);
         Ok(vec![snapshot])
     }
 
@@ -2052,13 +2110,31 @@ impl RunStore {
         };
         // A merge only saves later reads, so one whose reads fail goes, of
         // any kind of section, and the lane reads its inputs as before.
-        // Storage that failed may not again: a later barrier tries again.
-        // An input that's gone or can't be read merges no more: a read that
-        // needs it meets it, and a lane that keeps versions forgets a run
-        // that's gone. A merge's own mistake fails the barrier.
+        // Storage that failed may not again: a later barrier tries again,
+        // after 2, 4, … epochs, up to MERGE_WAIT, and after MERGE_TRIES the
+        // lane gives up on those inputs, as on unreadable ones. An input
+        // that's gone or can't be read merges no more: a read that needs it
+        // meets it, and a lane that keeps versions forgets a run that's
+        // gone. A merge's own mistake fails the barrier.
         let merged = match (&mut m.task.0).await {
-            Ok(Ok(merged)) => merged,
-            Ok(Err(Error::Store(_))) => return Ok(None),
+            Ok(Ok(merged)) => {
+                self.failed = 0;
+                merged
+            }
+            Ok(Err(Error::Store(_))) => {
+                self.failed += 1;
+                add(&self.shared.counters.merges_failed, 1);
+                if self.failed >= MERGE_TRIES {
+                    let inputs: HashSet<u64> = m.inputs.iter().map(|i| i.0).collect();
+                    self.stuck.extend(inputs);
+                    self.failed = 0;
+                    add(&self.shared.counters.merges_abandoned, 1);
+                } else {
+                    let wait = (1u64 << self.failed).min(MERGE_WAIT);
+                    self.retry_at = epoch.saturating_add(wait);
+                }
+                return Ok(None);
+            }
             Ok(Err(
                 e @ (Error::Gone(_)
                 | Error::Unreadable { .. }
@@ -2080,7 +2156,7 @@ impl RunStore {
                 return Ok(None);
             }
             Ok(Err(e)) => return Err(e),
-            Err(e) => return Err(Error::Store(format!("a merge: {e}"))),
+            Err(e) => return Err(Error::Invalid(format!("a merge that panicked: {e}"))),
         };
         let kind = m.kind;
         let secs = &self.sections[kind.index()];
@@ -2111,20 +2187,24 @@ impl RunStore {
         Ok(placed)
     }
 
-    /// Starts the merge the policy picks, if none is in flight, and it's
-    /// the lane's turn to take room for it; a lane without one leaves the
-    /// line.
-    fn start_merge(&mut self) {
+    /// Starts the merge the policy picks, at epoch `epoch`'s barrier, if
+    /// none is in flight, and it's the lane's turn to take room for it; a
+    /// lane without one leaves the line.
+    fn start_merge(&mut self, epoch: u64) {
         let Some(config) = &self.shared.config.merge else {
             return;
         };
         if self.merging.is_some() {
             return;
         }
+        let lane = self.lane;
+        if epoch < self.retry_at {
+            self.shared.merging.leave(lane);
+            return;
+        }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let lane = self.lane;
         let candidates: [Vec<merge::Candidate>; 4] = std::array::from_fn(|i| {
             self.sections[i]
                 .iter()
@@ -2143,7 +2223,8 @@ impl RunStore {
         };
         let secs = &self.sections[plan.kind.index()][plan.at.clone()];
         let need: u64 = secs.iter().map(|s| s.handle.raw_bytes).sum();
-        let Some(reserved) = Reserved::take(&self.shared, lane, need, config.max_bytes) else {
+        let Some(reserved) = Reserved::take(&self.shared, lane, need, config.max_bytes, epoch)
+        else {
             return;
         };
         let inputs: Vec<merge::Input> = secs
@@ -2541,5 +2622,74 @@ impl Store for RunStore {
             .as_ref()
             .map_or(0, |m| m.memory.load(Ordering::Relaxed));
         runs + known + merging
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Of reads that failed in other ways, the error said is the one that
+    /// most needs a person, whichever came first: unreadable state over
+    /// storage that failed, over runs that are gone.
+    #[test]
+    fn reads_that_failed_say_the_error_that_needs_a_person() {
+        let unreadable = || Error::Unreadable {
+            run: "r".into(),
+            why: "damaged".into(),
+        };
+        let store = || Error::Store("down".into());
+        let gone = || Error::Gone(vec!["g".into()]);
+        for done in [
+            vec![Err(store()), Err(unreadable()), Ok(())],
+            vec![Ok(()), Err(unreadable()), Err(gone()), Err(store())],
+        ] {
+            let got = gather(done);
+            assert!(matches!(got, Err(Error::Unreadable { .. })), "{got:?}");
+        }
+        let got = gather::<()>(vec![Err(gone()), Err(store())]);
+        assert!(matches!(got, Err(Error::Store(_))), "{got:?}");
+    }
+
+    /// A merge task that panicked, a bug and not storage's failure, fails
+    /// the barrier that adopts it as the engine's mistake.
+    #[tokio::test]
+    async fn a_merge_that_panicked_fails_the_barrier_as_a_bug() {
+        let objects: Arc<dyn Objects> = Arc::new(ObjectStorage::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            Path::from("state"),
+        ));
+        let config = RunConfig {
+            merge: Some(MergeConfig {
+                wait: true,
+                ..MergeConfig::default()
+            }),
+            ..RunConfig::default()
+        };
+        let stores = RunStores::new(objects, config);
+        let range = KeyGroupRange::new(0, 15);
+        let mut store = stores.open_store(1, range, &[]).unwrap();
+        let horizons = Horizons::new();
+        let op = crate::OperatorId(1);
+        let change = |e: u64| {
+            let key = layout::row(3, op, 10, format!("id{e}").as_bytes(), 0);
+            (key, Some(Bytes::from_static(b"e")))
+        };
+        store.write(1, vec![change(1)], &horizons).await.unwrap();
+        let task = tokio::spawn(async { panic!("a bug") });
+        store.merging = Some(Merging {
+            kind: SectionKind::Rows,
+            inputs: store.sections[SectionKind::Rows.index()]
+                .iter()
+                .map(Sec::id)
+                .collect(),
+            epoch: 1,
+            task: Task(task),
+            memory: Arc::default(),
+            _reserved: Reserved::take(&store.shared, store.lane, 0, 1, 1).unwrap(),
+        });
+        let got = store.write(2, vec![change(2)], &horizons).await;
+        assert!(matches!(got, Err(Error::Invalid(_))), "{:?}", got.err());
     }
 }

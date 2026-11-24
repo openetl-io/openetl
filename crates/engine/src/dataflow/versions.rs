@@ -199,6 +199,17 @@ impl Versions {
                 }
                 Ok(Out::Barrier(s, e))
             }
+            // A stream's end is the last the writer lane gets of it: a lane
+            // takes no frame of a stream after its end, and sends its rows
+            // and held values before it, and the writer lane passes the end
+            // on once each lane it takes the stream from has ended, dropping
+            // what waited at a barrier. So its versions go: the layer's
+            // place in its pool's line, and a merge in flight with the room
+            // it took, which no record will name.
+            Out::End(s) => {
+                self.streams[s] = None;
+                Ok(Out::End(s))
+            }
             out => Ok(out),
         }
     }
@@ -279,7 +290,18 @@ impl Stream {
         let found = loop {
             match self.layer.row(ENTRIES, &slots).await {
                 Ok(found) => break found,
-                Err(StateError::Gone(runs)) if runs.iter().all(|r| self.layer.forget(r)) => {
+                // Each gone run is forgotten that can be; those that can't
+                // fail the attempt, named alone. A Gone of none would only
+                // look again: it fails the attempt as any other error.
+                Err(StateError::Gone(runs)) if !runs.is_empty() => {
+                    let kept: Vec<String> = runs
+                        .iter()
+                        .filter(|r| !self.layer.forget(r))
+                        .cloned()
+                        .collect();
+                    if !kept.is_empty() {
+                        return Err(self.failed(&StateError::Gone(kept)));
+                    }
                     for run in &runs {
                         let run = self.location(flow, run);
                         tracing::warn!(operator = %self.id, run = %run, "{GONE}");
@@ -395,6 +417,15 @@ impl Stream {
                 &e,
             )
         })?;
+        if let Some(n) = plan
+            .state
+            .job
+            .as_ref()
+            .and_then(|j| j.abandoned_merges(&self.id))
+        {
+            let abandoned = crate::state::ABANDONED;
+            tracing::warn!(operator = %self.id, merges = n, "{abandoned}");
+        }
         let named = snapshots
             .into_iter()
             .map(|sn| {
