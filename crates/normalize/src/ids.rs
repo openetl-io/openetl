@@ -139,7 +139,7 @@ impl Identity {
             self.start(&mut buf);
             for (name, a) in &parts {
                 if self.key.is_empty() {
-                    if a.is_null(row) {
+                    if null_at(a.as_ref(), row) {
                         continue;
                     }
                     part(&mut buf, Some(name.as_bytes()));
@@ -257,11 +257,17 @@ pub(crate) fn supported(dt: &DataType) -> bool {
     )
 }
 
+/// Whether row `i` of `a`, whose type is supported, is null: every row of a
+/// column of type null is, which has no validity bitmap to say so.
+fn null_at(a: &dyn Array, i: usize) -> bool {
+    a.is_null(i) || a.data_type() == &DataType::Null
+}
+
 /// Encodes row `i` of `a`, whose type is supported.
 fn typed_part(buf: &mut Vec<u8>, text: &mut String, a: &dyn Array, i: usize) {
     use DataType as D;
     use std::fmt::Write;
-    if a.is_null(i) {
+    if null_at(a, i) {
         part(buf, None);
         return;
     }
@@ -368,7 +374,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use arrow_array::{Int64Array, StringArray};
+    use arrow_array::{Int64Array, NullArray, StringArray};
     use arrow_schema::{Field, Schema};
 
     fn obj(json: &str) -> Map<String, Value> {
@@ -435,6 +441,39 @@ mod tests {
             id(&i, r#"{"id": 1}"#),
             id(&i, r#"{"id": 1, "at": ""}"#),
             "a null cursor isn't an empty one"
+        );
+    }
+
+    /// A column of type null is null in every row, as a raw row's null is:
+    /// a key or cursor of it has the ID it has null at another type, not
+    /// the ID of an empty value, and an unkeyed row leaves it out.
+    #[test]
+    fn a_null_typed_column_is_null() {
+        let keyed = Identity {
+            stream: "s".into(),
+            key: vec!["id".into()],
+            cursor: Some("at".into()),
+            read_start: 0,
+        };
+        let typed = |i: &Identity, cols: Vec<(&str, ArrayRef)>| {
+            let b = RecordBatch::try_from_iter(cols).unwrap();
+            i.typed(&b, None).unwrap().value_data()[..16].to_vec()
+        };
+        let null = || Arc::new(NullArray::new(1)) as ArrayRef;
+        let int_null = || Arc::new(Int64Array::from(vec![None])) as ArrayRef;
+        let empty = || Arc::new(StringArray::from(vec![""])) as ArrayRef;
+        let five = || Arc::new(Int64Array::from(vec![5])) as ArrayRef;
+        let key = |k: ArrayRef| typed(&keyed, vec![("id", k), ("at", five())]);
+        assert_eq!(key(null()), key(int_null()));
+        assert_eq!(key(null()), id(&keyed, r#"{"id": null, "at": 5}"#).to_vec());
+        assert_ne!(key(null()), key(empty()));
+        let cursor = |c: ArrayRef| typed(&keyed, vec![("id", five()), ("at", c)]);
+        assert_eq!(cursor(null()), cursor(int_null()));
+        assert_ne!(cursor(null()), cursor(empty()));
+        let unkeyed = unkeyed();
+        assert_eq!(
+            typed(&unkeyed, vec![("a", five()), ("b", null())]),
+            typed(&unkeyed, vec![("a", five())])
         );
     }
 
