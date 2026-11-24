@@ -161,9 +161,7 @@ impl Versions {
             };
             let layer = match opened {
                 Ok(l) => l,
-                Err(
-                    e @ (StateError::Snapshot(_) | StateError::Corrupt(_) | StateError::Gone(_)),
-                ) => {
+                Err(e @ (StateError::Snapshot(_) | StateError::Corrupt(_))) => {
                     tracing::warn!(stream = %plan.streams[s], error = %e, "{UNREAD}");
                     Layer::open(&stores, plan.generation, plan.first_epoch, open, &[])
                         .await
