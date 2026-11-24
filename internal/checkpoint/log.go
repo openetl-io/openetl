@@ -87,6 +87,9 @@ type StreamState struct {
 	// When the stream's current read started, in microseconds since the Unix
 	// epoch. Rows read without a cursor carry it as their sequence.
 	ReadStart int64 `json:"read_start,omitempty"`
+	// How the stream's current read started. An attempt goes on with an
+	// unfinished read only if it would start the stream's read the same way.
+	ReadKind ReadKind `json:"read_kind,omitempty"`
 	// The stream completed: every split did, and their states are where its
 	// next sync starts.
 	Complete bool `json:"complete,omitempty"`
@@ -115,6 +118,22 @@ type StreamState struct {
 	// none past Floor, or none recorded.
 	Steps map[string][]byte `json:"steps,omitempty"`
 }
+
+// ReadKind is how a stream's read starts, and what the destination makes of
+// it.
+type ReadKind string
+
+const (
+	// ReadOn goes on from where the stream's last read ended, and writes its
+	// rows as it reads them. Records from before ReadKind have it.
+	ReadOn ReadKind = ""
+	// ReadWhole starts with no state, to read the whole stream: a full
+	// refresh, written as it reads.
+	ReadWhole ReadKind = "whole"
+	// ReadOverwrite starts with no state, and replaces the destination's
+	// table with what it wrote when it ends.
+	ReadOverwrite ReadKind = "overwrite"
+)
 
 // WholeStream is the ID of the split that is the whole stream. A stream
 // with only it keeps its state in StreamState.State, as records from before

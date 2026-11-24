@@ -143,13 +143,18 @@ func (j *Job) redoStart(rec, before *checkpoint.Record) *checkpoint.Record {
 // redoFloors are the floors rec's epoch started at, as start is where it
 // started from (redoStart's): the attempt's, where the epoch was its first,
 // and otherwise those its splits had at the barrier before. A read that
-// started in the epoch's attempt had the splits rec has of it, with the
-// watermarks of the read before carried, as an attempt's start gives them.
+// started in the epoch's attempt, as rec has its kind, had the splits rec
+// has of it, with the watermarks of the read before carried, as an
+// attempt's start gives them.
 func (j *Job) redoFloors(rec, start *checkpoint.Record) map[string]int64 {
 	if start == nil {
 		return nil
 	}
-	splits, _ := j.startSplits(start, doneIn(start, rec.Sync), func(s Stream, _ []source.Split) ([]checkpoint.SplitState, error) {
+	kinds := make(map[string]checkpoint.ReadKind, len(rec.Streams))
+	for name, st := range rec.Streams {
+		kinds[name] = st.ReadKind
+	}
+	splits, _ := j.startSplits(start, doneIn(start, rec.Sync), kinds, func(s Stream, _ []source.Split) ([]checkpoint.SplitState, error) {
 		var out []checkpoint.SplitState
 		for _, sp := range rec.Splits(s.Name) {
 			out = append(out, checkpoint.SplitState{ID: sp.ID})
