@@ -149,7 +149,7 @@ func TestAWindowsOutputIsNeverExchangedAgain(t *testing.T) {
 	if got := j.exchanges(4); got != nil {
 		t.Errorf("exchanges %v; want none for a window's output", got)
 	}
-	if j.keyGrouped(j.Outputs[0]) {
+	if j.keyGrouped(j.Outputs[0], j.versions()) {
 		t.Error("a window's output meets its writer through an exchange")
 	}
 	if got := sqlLanesJob().exchanges(4); !reflect.DeepEqual(got, map[string][]string{"by_id": {"id"}}) {
