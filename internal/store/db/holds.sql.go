@@ -88,7 +88,8 @@ type EndHoldReleasesParams struct {
 // Marks a person's discard on the releases of the stream's column, but
 // those that end a discarded hold, with the held cells of the column they
 // saw. A run matches them to the releases its replay took by ID, so one of
-// an older hold, marked too, does nothing.
+// an older hold, marked too, does nothing. The transaction has locked them
+// (LockHoldReleases).
 func (q *Queries) EndHoldReleases(ctx context.Context, arg EndHoldReleasesParams) (int64, error) {
 	result, err := q.db.Exec(ctx, endHoldReleases,
 		arg.Cells,
@@ -198,17 +199,23 @@ func (q *Queries) InsertHoldRelease(ctx context.Context, arg InsertHoldReleasePa
 }
 
 const lapseHoldReleases = `-- name: LapseHoldReleases :exec
-UPDATE hold_releases r SET ends = false
-WHERE r.org_id = $1 AND r.pipeline_id = $2 AND r.ends
-    AND NOT EXISTS (
-        SELECT 1 FROM holds h
-        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
-            AND h.column_name = r.column_name AND h.whole = r.whole
-            AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch)
-    AND NOT EXISTS (
-        SELECT 1 FROM holds h
-        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
-            AND h.column_name = r.column_name AND h.releasing)
+WITH lapsed AS MATERIALIZED (
+    SELECT r.id FROM hold_releases r
+    WHERE r.org_id = $1 AND r.pipeline_id = $2 AND r.ends
+        AND NOT EXISTS (
+            SELECT 1 FROM holds h
+            WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+                AND h.column_name = r.column_name AND h.whole = r.whole
+                AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch)
+        AND NOT EXISTS (
+            SELECT 1 FROM holds h
+            WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+                AND h.column_name = r.column_name AND h.releasing)
+    ORDER BY r.id
+    FOR UPDATE OF r
+)
+UPDATE hold_releases SET ends = false
+FROM lapsed WHERE hold_releases.org_id = $1 AND hold_releases.id = lapsed.id
 `
 
 type LapseHoldReleasesParams struct {
@@ -218,7 +225,7 @@ type LapseHoldReleasesParams struct {
 
 // Unmarks the releases a person discarded that are over: no hold of theirs
 // is left, and their column isn't being patched in. One its hold refused
-// keeps the mark, which its refusal tells of.
+// keeps the mark, which its refusal tells of. They're locked by ID first.
 func (q *Queries) LapseHoldReleases(ctx context.Context, arg LapseHoldReleasesParams) error {
 	_, err := q.db.Exec(ctx, lapseHoldReleases, arg.OrgID, arg.PipelineID)
 	return err
@@ -297,6 +304,33 @@ func (q *Queries) ListHolds(ctx context.Context, arg ListHoldsParams) ([]ListHol
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockHoldReleases = `-- name: LockHoldReleases :exec
+SELECT id FROM hold_releases
+WHERE org_id = $1 AND pipeline_id = $2 AND stream = $3 AND column_name = $4
+ORDER BY id
+FOR UPDATE
+`
+
+type LockHoldReleasesParams struct {
+	OrgID      uuid.UUID
+	PipelineID uuid.UUID
+	Stream     string
+	ColumnName string
+}
+
+// Locks the releases of the stream's column, by ID. A statement that locks
+// more than one of a pipeline's releases locks them in that order first,
+// so two transactions never wait on each other.
+func (q *Queries) LockHoldReleases(ctx context.Context, arg LockHoldReleasesParams) error {
+	_, err := q.db.Exec(ctx, lockHoldReleases,
+		arg.OrgID,
+		arg.PipelineID,
+		arg.Stream,
+		arg.ColumnName,
+	)
+	return err
 }
 
 const newestHoldRelease = `-- name: NewestHoldRelease :one

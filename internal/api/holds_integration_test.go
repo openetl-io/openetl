@@ -16,6 +16,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
@@ -500,6 +501,78 @@ func TestADiscardOfAReleaseInProgressFollowsTheRelease(t *testing.T) {
 	ends(0, "once the column holds cells")
 	discard()
 	ends(1, "once discarded again")
+}
+
+// A transaction that locks more than one of a pipeline's releases locks
+// them by ID first, so two never wait on each other: a checkpoint's report,
+// those it unmarks, and a discard, the releases of its column. Here another
+// transaction holds the release with the greater ID, which comes first by
+// key and in the table; each, waiting on it, already holds the other.
+func TestReleasesAreLockedByID(t *testing.T) {
+	ctx := t.Context()
+	e := newHoldsEnv(t)
+	small, big := uuid.MustParse("00000000-0000-7000-8000-000000000001"), uuid.MustParse("ffffffff-ffff-7fff-bfff-ffffffffffff")
+	// Marked releases of holds of x that are gone, which a report unmarks.
+	for i, id := range []uuid.UUID{big, small} {
+		_, err := e.conn.Exec(ctx, `INSERT INTO hold_releases (org_id, id, pipeline_id, stream, column_name, whole, since_generation, since_epoch, discard, principal, ends)
+			SELECT org_id, $1, id, 'orders', 'x', true, 1, $2, false, 'test', true FROM pipelines WHERE id = $3`, id, i+1, e.pipeline)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// locksSmallFirst runs op while another transaction holds big, and
+	// reports whether op, waiting on it, holds small.
+	locksSmallFirst := func(op func() error) bool {
+		t.Helper()
+		tx, err := e.conn.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM hold_releases WHERE id = $1 FOR UPDATE`, big); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- op() }()
+		// Until op waits on a lock, or ends without one.
+		for deadline := time.Now().Add(10 * time.Second); len(done) == 0 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+			var waiting int
+			err := tx.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if waiting > 0 {
+				break
+			}
+		}
+		_, err = tx.Exec(ctx, `SELECT 1 FROM hold_releases WHERE id = $1 FOR UPDATE NOWAIT`, small)
+		var pgErr *pgconn.PgError
+		held := errors.As(err, &pgErr) && pgErr.Code == "55P03"
+		_ = tx.Rollback(ctx)
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		return held
+	}
+	report := func() error {
+		_, err := e.runner.ReportCheckpoint(ctx, connect.NewRequest(&dataplanev1.ReportCheckpointRequest{
+			PipelineId: e.pipeline.String(), RunId: "run1", Generation: 1, Epoch: 3, CreateTime: timestamppb.Now(),
+			Streams: []*dataplanev1.CheckpointStream{{Name: "orders", Rows: 10, Holds: []*dataplanev1.CheckpointHold{
+				{Column: "x", Cells: 1, Reason: "nan", Since: &dataplanev1.CheckpointRef{Generation: 1, Epoch: 3}, StartTime: timestamppb.Now()},
+			}}},
+		}))
+		return err
+	}
+	if !locksSmallFirst(report) {
+		t.Error("a checkpoint's report locked the releases it unmarks out of their IDs' order")
+	}
+	discard := func() error {
+		_, err := e.owner.DiscardHold(ctx, connect.NewRequest(&apiv1.DiscardHoldRequest{Parent: e.parent, Stream: "orders", Column: "x"}))
+		return err
+	}
+	if !locksSmallFirst(discard) {
+		t.Error("a discard locked its column's releases out of their IDs' order")
+	}
 }
 
 // A discarded column hold drops the column's values until it's released: a

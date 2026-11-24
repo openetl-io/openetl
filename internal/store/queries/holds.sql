@@ -59,7 +59,8 @@ ORDER BY r.create_time, r.id;
 -- Marks a person's discard on the releases of the stream's column, but
 -- those that end a discarded hold, with the held cells of the column they
 -- saw. A run matches them to the releases its replay took by ID, so one of
--- an older hold, marked too, does nothing.
+-- an older hold, marked too, does nothing. The transaction has locked them
+-- (LockHoldReleases).
 UPDATE hold_releases r SET ends = true, ends_cells = @cells
 WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND r.stream = @stream AND r.column_name = @column_name
     AND NOT r.discard AND NOT EXISTS (
@@ -68,21 +69,36 @@ WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND r.stream = @stream
             AND h.column_name = r.column_name AND h.whole = r.whole
             AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch AND h.discarded);
 
+-- name: LockHoldReleases :exec
+-- Locks the releases of the stream's column, by ID. A statement that locks
+-- more than one of a pipeline's releases locks them in that order first,
+-- so two transactions never wait on each other.
+SELECT id FROM hold_releases
+WHERE org_id = @org_id AND pipeline_id = @pipeline_id AND stream = @stream AND column_name = @column_name
+ORDER BY id
+FOR UPDATE;
+
 -- name: LapseHoldReleases :exec
 -- Unmarks the releases a person discarded that are over: no hold of theirs
 -- is left, and their column isn't being patched in. One its hold refused
--- keeps the mark, which its refusal tells of.
-UPDATE hold_releases r SET ends = false
-WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND r.ends
-    AND NOT EXISTS (
-        SELECT 1 FROM holds h
-        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
-            AND h.column_name = r.column_name AND h.whole = r.whole
-            AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch)
-    AND NOT EXISTS (
-        SELECT 1 FROM holds h
-        WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
-            AND h.column_name = r.column_name AND h.releasing);
+-- keeps the mark, which its refusal tells of. They're locked by ID first.
+WITH lapsed AS MATERIALIZED (
+    SELECT r.id FROM hold_releases r
+    WHERE r.org_id = @org_id AND r.pipeline_id = @pipeline_id AND r.ends
+        AND NOT EXISTS (
+            SELECT 1 FROM holds h
+            WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+                AND h.column_name = r.column_name AND h.whole = r.whole
+                AND h.since_generation = r.since_generation AND h.since_epoch = r.since_epoch)
+        AND NOT EXISTS (
+            SELECT 1 FROM holds h
+            WHERE h.org_id = r.org_id AND h.pipeline_id = r.pipeline_id AND h.stream = r.stream
+                AND h.column_name = r.column_name AND h.releasing)
+    ORDER BY r.id
+    FOR UPDATE OF r
+)
+UPDATE hold_releases SET ends = false
+FROM lapsed WHERE hold_releases.org_id = @org_id AND hold_releases.id = lapsed.id;
 
 -- name: DeleteHoldRelease :exec
 DELETE FROM hold_releases WHERE org_id = @org_id AND id = @id;

@@ -141,6 +141,11 @@ func (s *Server) release(ctx context.Context, parent, stream, column string, dis
 	var out *apiv1.Hold
 	ends := false
 	err = s.Store.Tx(ctx, func(q *db.Queries) error {
+		// Before any of them, so the transaction locks them by ID, as a
+		// checkpoint's report does.
+		if err := q.LockHoldReleases(ctx, db.LockHoldReleasesParams{OrgID: s.Tenant.Org, PipelineID: p.ID, Stream: stream, ColumnName: column}); err != nil {
+			return err
+		}
 		rows, err := q.ListHolds(ctx, db.ListHoldsParams{OrgID: s.Tenant.Org, PipelineID: p.ID})
 		if err != nil {
 			return err
