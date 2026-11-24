@@ -149,7 +149,15 @@ The next run writes the column as the stream has it. The values that the discard
 
 ## When a key or cursor changes type
 
-A column of the primary key cannot go to a new column, such as `id__v2`. Neither can the cursor of a stream with a primary key, unless the stream is read with `cdc`. A change to such a column's type that is not a widening, such as `bigint` to `uuid` or `timestamptz` to `timestamp`, fails the sync with `SCHEMA_DRIFT`. The error names the column, its old and new types, and the way out. This happens under `allow_all` too. Under `ignore_new`, once the policy applies, the values are cast to the column's type instead.
+A column of the primary key cannot go to a new column, such as `id__v2`. Neither can the cursor of a stream with a primary key, unless the stream is read with `cdc`. Such a column takes only these changes of type, which keep the order of its values and the record IDs (`_openetl_id`) that they give:
+
+- An integer to a wider integer: `int16` to `int32` or `int64`, or `int32` to `int64`.
+- A decimal to more digits at the same scale, such as `decimal(10, 2)` to `decimal(12, 2)`.
+- A `json` column to a `string`, with the same text.
+
+A timestamp that the source sends in another unit, such as milliseconds, does not change the column's type. OpenETL converts it to the stream's unit.
+
+Any other change to such a column's type fails the sync with `SCHEMA_DRIFT`. This includes the other widenings: to a string, which sorts `10` before `9`, and to a float, which can round values. It also includes an integer to a decimal, and a decimal to another scale, because they change the record IDs. Changes that are not widenings fail too, such as `bigint` to `uuid` or `timestamptz` to `timestamp`. The error names the column, its old and new types, and the way out. This happens under `allow_all` too. Under `ignore_new`, once the policy applies, the values are cast to the column's type instead.
 
 A reset does not clear the error, because the stream keeps its schema. Choose one of these ways out:
 
