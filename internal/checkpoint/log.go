@@ -296,6 +296,8 @@ type Replay struct {
 	// missing for a column whose cells alone it releases, and in records
 	// from before it.
 	Since map[string]RecordRef `json:"since,omitempty"`
+	// As Since, when that hold started; missing where it isn't known.
+	Started map[string]time.Time `json:"started,omitempty"`
 }
 
 // Took reports whether the replay took release id, of col: a discard of a

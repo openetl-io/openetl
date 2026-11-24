@@ -510,11 +510,15 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			// Where each column's hold held whole starts, and its cell hold;
 			// absent for one the replay doesn't end.
 			whole, cellHolds := map[string]checkpoint.RecordRef{}, map[string]checkpoint.RecordRef{}
+			started := map[string]time.Time{}
 			for i, col := range released {
 				var starts []checkpoint.RecordRef
 				if k := slices.IndexFunc(taken, func(c checkpoint.ColumnHold) bool { return c.Column == col }); k >= 0 {
 					whole[col] = taken[k].Since
 					starts = append(starts, taken[k].Since)
+					if !taken[k].Started.IsZero() {
+						started[col] = taken[k].Started
+					}
 				}
 				if c, ok := h.Cells[col]; ok {
 					cellHolds[col] = c.Since
@@ -533,6 +537,9 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
 			if len(whole) > 0 {
 				h.Replay.Since = whole
+			}
+			if len(started) > 0 {
+				h.Replay.Started = started
 			}
 			for col := range whole {
 				if id := wholes[col]; id != "" {
@@ -602,8 +609,7 @@ func heldAgain(h *checkpoint.Holds, c checkpoint.ColumnHold, why string, now tim
 		}
 	}
 	if at, ok := r.Since[c.Column]; ok {
-		// The replay doesn't keep when the hold started.
-		c.Since, c.Started = at, now
+		c.Since, c.Started = at, startedOf(r, c.Column, now)
 		if id := r.WholeReleases[c.Column]; id != "" {
 			c.Refused = &checkpoint.Refused{Release: id, Reason: why}
 		}
@@ -743,13 +749,22 @@ func leftHeld(h *checkpoint.Holds, n uint64, now time.Time, delivered []byte) []
 		if i := slices.IndexFunc(h.Replay.Versioned, func(v checkpoint.ColumnHold) bool { return v.Column == col }); i >= 0 {
 			c = h.Replay.Versioned[i]
 		}
-		c.Since, c.Started, c.Reason = at, now, "its released values don't all fit its type"
+		c.Since, c.Started, c.Reason = at, startedOf(h.Replay, col, now), "its released values don't all fit its type"
 		if id := h.Replay.WholeReleases[col]; id != "" {
 			c.Refused = &checkpoint.Refused{Release: id, Reason: stillHeld(n)}
 		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// startedOf is when the hold of col that r released held it whole started,
+// or now where r doesn't say, as records from before it don't.
+func startedOf(r *checkpoint.Replay, col string, now time.Time) time.Time {
+	if at, ok := r.Started[col]; ok {
+		return at
+	}
+	return now
 }
 
 // fieldOf is col's field in schema, an Arrow IPC stream, as a schema with
@@ -809,7 +824,7 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
 		r.Versioned, r.CellReleases, r.WholeReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases), maps.Clone(r.WholeReleases)
-		r.First, r.FirstCells, r.Since = maps.Clone(r.First), maps.Clone(r.FirstCells), maps.Clone(r.Since)
+		r.First, r.FirstCells, r.Since, r.Started = maps.Clone(r.First), maps.Clone(r.FirstCells), maps.Clone(r.Since), maps.Clone(r.Started)
 		out.Replay = &r
 	}
 	return out

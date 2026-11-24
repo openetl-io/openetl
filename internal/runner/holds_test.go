@@ -766,8 +766,9 @@ func TestAReleaseReadsFromTheCellHoldsItClears(t *testing.T) {
 func TestAColumnRefusedWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
 	files, start := heldEpochs(t)
 	// c is held whole since epoch 2, and has cells held since epoch 3.
+	held := time.Unix(100, 0)
 	h := &checkpoint.Holds{
-		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Reason: "refused"}},
+		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Started: held, Reason: "refused"}},
 		Cells:   map[string]checkpoint.CellHold{"c": {Cells: 4, Since: epoch(3)}},
 		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
 	}
@@ -793,7 +794,7 @@ func TestAColumnRefusedWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
 	if h.Replay != nil || len(h.Columns) != 1 {
 		t.Fatalf("c, refused again, is held %+v, replay %+v", h.Columns, h.Replay)
 	}
-	if c := h.Columns[0]; c.Since != epoch(2) || c.Started.IsZero() || c.Refused == nil || c.Refused.Release != "rw" {
+	if c := h.Columns[0]; c.Since != epoch(2) || !c.Started.Equal(held) || c.Refused == nil || c.Refused.Release != "rw" {
 		t.Errorf("c, refused again, is held %+v", c)
 	}
 	if c := h.Cells["c"]; c.Since != epoch(3) || c.Refused == nil || c.Refused.Release != "rc" {
@@ -821,8 +822,9 @@ func TestAColumnRefusedWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
 // released is held whole from then.
 func TestAColumnHeldWholeAgainWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
 	files, start := heldEpochs(t)
+	held := time.Unix(100, 0)
 	h := &checkpoint.Holds{
-		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Reason: "refused"}},
+		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Started: held, Reason: "refused"}},
 		Cells:   map[string]checkpoint.CellHold{"c": {Cells: 1, Since: epoch(3)}, "d": {Cells: 2, Since: epoch(3)}},
 		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
 	}
@@ -844,7 +846,7 @@ func TestAColumnHeldWholeAgainWhileItsReleaseIsPatchedInKeepsItsValues(t *testin
 	if h.Replay != nil || len(h.Columns) != 2 {
 		t.Fatalf("held again: columns %+v, replay %+v", h.Columns, h.Replay)
 	}
-	if c := h.Columns[0]; c.Column != "c" || c.Since != epoch(2) || c.Reason != "policy" || c.Refused == nil || c.Refused.Release != "rw" {
+	if c := h.Columns[0]; c.Column != "c" || c.Since != epoch(2) || !c.Started.Equal(held) || c.Reason != "policy" || c.Refused == nil || c.Refused.Release != "rw" {
 		t.Errorf("c, held whole again, is held %+v", c)
 	}
 	if d := h.Columns[1]; d.Column != "d" || d.Since != epoch(8) || d.Refused != nil || d.Cause.Kind != checkpoint.HoldGroup {
@@ -887,8 +889,9 @@ func TestAColumnHeldWholeAgainWhileItsReleaseIsPatchedInKeepsItsValues(t *testin
 // none left holds nothing again.
 func TestAReplayThatLeavesValuesHoldsItsColumnsAgain(t *testing.T) {
 	files, start := heldEpochs(t)
+	held := time.Unix(100, 0)
 	h := &checkpoint.Holds{
-		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Reason: "refused"}},
+		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Started: held, Reason: "refused"}},
 		Cells:   map[string]checkpoint.CellHold{"x": {Cells: 3, Since: epoch(3)}},
 		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
 	}
@@ -913,7 +916,7 @@ func TestAReplayThatLeavesValuesHoldsItsColumnsAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := h.Columns[0]; c.Column != "c" || c.Since != epoch(2) || c.Refused == nil || c.Refused.Release != "rw" ||
+	if c := h.Columns[0]; c.Column != "c" || c.Since != epoch(2) || !c.Started.Equal(held) || c.Refused == nil || c.Refused.Release != "rw" ||
 		c.Refused.Reason != "2 released values still don't fit" || !slices.Equal(c.Delivered, want) {
 		t.Errorf("c is held %+v", c)
 	}
