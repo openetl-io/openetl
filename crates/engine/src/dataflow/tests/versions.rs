@@ -522,19 +522,23 @@ async fn versions_whose_runs_are_gone_forget_them() {
 
 /// A run of the versions that's there but can't be read fails the sync, as
 /// other state's does, rather than drop the versions for good: only a run
-/// that's gone is forgotten.
+/// that's gone is forgotten. The error names the stream and where the run
+/// is; once a person deletes it, the next sync forgets it, and the row
+/// whose entry it held keeps its ID once.
 #[tokio::test]
 async fn versions_whose_run_cant_be_read_fail_the_sync() {
     let dir = tempfile::tempdir().unwrap();
     let d = dir.path();
     let v1 = r#"{"id": 1, "name": "v1", "at": "2024-05-01"}"#;
-    let (_, r1) = sync(d, 1, &Restored::default(), &[v1]).await;
+    let (first, r1) = sync(d, 1, &Restored::default(), &[v1]).await;
+    let mut damaged = Vec::new();
     for s in r1.snapshots.iter().filter(|s| s.operator == OP) {
         for run in &s.runs {
             let p = d.join("state").join(run);
             let mut b = std::fs::read(&p).unwrap();
             b.fill(0);
             std::fs::write(&p, b).unwrap();
+            damaged.push(p);
         }
     }
     let v2 = r#"{"id": 1, "name": "v2", "at": "2024-05-01"}"#;
@@ -544,6 +548,21 @@ async fn versions_whose_run_cant_be_read_fail_the_sync() {
     h.end_all(1).await;
     let err = h.job.await.unwrap().unwrap_err();
     assert_eq!(err.code, ErrorCode::CheckpointCorrupt, "{}", err.message);
+    assert_eq!(damaged.len(), 1);
+    let at = format!("file://{}", damaged[0].display());
+    assert!(err.message.contains(&at), "{} names no {at}", err.message);
+    assert!(err.message.starts_with("stream users: "), "{}", err.message);
+    assert!(
+        err.message.contains("Delete it to go on"),
+        "{}",
+        err.message
+    );
+    std::fs::remove_file(&damaged[0]).unwrap();
+    let (second, r2) = sync(d, 2, &r1, &[v2]).await;
+    assert_eq!(record(&second, 1), record(&first, 1), "skipped once");
+    let v3 = r#"{"id": 1, "name": "v3", "at": "2024-05-01"}"#;
+    let (third, _) = sync(d, 3, &r2, &[v3]).await;
+    assert_ne!(record(&third, 1), record(&second, 1), "not kept again");
 }
 
 /// Rows of a lane's key groups and the other's, the two syncs on two lanes

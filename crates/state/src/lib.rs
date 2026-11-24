@@ -129,6 +129,11 @@ pub enum Error {
     /// retention does, rather than unreadable.
     #[error("corrupt state: run {0}, which a snapshot names, is missing")]
     Gone(String),
+    /// A run a snapshot names is in the store, by its name, and can't be
+    /// read as the snapshot says: its bytes are damaged, or it isn't the
+    /// run named.
+    #[error("corrupt state: run {run}: {why}")]
+    Unreadable { run: String, why: String },
     #[error("store: {0}")]
     Store(String),
 }

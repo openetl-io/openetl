@@ -503,7 +503,8 @@ async fn a_run_is_never_written_twice() {
 }
 
 /// Changed bytes anywhere in a run, a run cut short, or a snapshot that
-/// doesn't match its run: a read fails as corrupt, never with wrong state.
+/// doesn't match its run: a read fails as the run's, unreadable, never
+/// with wrong state.
 #[tokio::test]
 async fn corruption_is_caught() {
     let bucket = Bucket::new();
@@ -540,7 +541,8 @@ async fn corruption_is_caught() {
         bad[at] ^= 0x10;
         bucket.write(name, bad).await;
         let got = read_all(record.clone()).await;
-        assert!(matches!(got, Err(Error::Corrupt(_))), "byte {at}: {got:?}");
+        let named = matches!(&got, Err(Error::Unreadable { run, .. }) if run == name);
+        assert!(named, "byte {at}: {got:?}");
     }
     bucket.write(name, good[..good.len() - 8].to_vec()).await;
     assert!(read_all(record.clone()).await.is_err());
@@ -552,7 +554,8 @@ async fn corruption_is_caught() {
         data: openetl_state::runs::encode(&runs),
         ..record[0].clone()
     }];
-    assert!(matches!(read_all(lying).await, Err(Error::Corrupt(_))));
+    let got = read_all(lying).await;
+    assert!(matches!(got, Err(Error::Unreadable { .. })), "{got:?}");
 }
 
 /// What a restore refuses: snapshots that overlap or leave a group out,

@@ -274,12 +274,18 @@ impl Stream {
         }
         // A run that's gone, as a runner from before the versions deletes
         // after a rollback, is forgotten, before a row of its key groups is
-        // read: all reads see the same entries, the rest of the record's.
+        // read: all reads see the same entries, the rest of the record's. A
+        // run that's there and can't be read fails the attempt, saying where
+        // it is, so a person can delete it.
         let found = loop {
             match self.layer.row(ENTRIES, &slots).await {
                 Ok(found) => break found,
                 Err(StateError::Gone(run)) if self.layer.forget(&run) => {
+                    let run = self.location(flow, &run);
                     tracing::warn!(operator = %self.id, run = %run, "{GONE}");
+                }
+                Err(StateError::Unreadable { run, why }) => {
+                    return Err(self.unreadable(flow, &run, &why));
                 }
                 Err(e) => return Err(self.failed(&e)),
             }
@@ -405,6 +411,36 @@ impl Stream {
             .snapshots
             .extend(named);
         Ok(())
+    }
+
+    /// Where run `run` of the versions is: a URL of the job's state.
+    fn location(&self, flow: &Flow, run: &str) -> String {
+        match &flow.plan.state.job {
+            Some(j) => j.url(&self.id, run),
+            None => run.to_owned(),
+        }
+    }
+
+    /// The attempt's error where run `run` is there and can't be read: it
+    /// names the stream and where the run is, and how to go on. A reset
+    /// keeps the versions, and a rewind names the run again, so a person
+    /// deletes it; the next attempt then finds it gone and forgets it.
+    fn unreadable(&self, flow: &Flow, run: &str, why: &str) -> JobError {
+        let plan = &flow.plan;
+        let stream = plan
+            .versions
+            .iter()
+            .position(|v| v.as_deref() == Some(self.id.as_str()))
+            .map_or(self.id.as_str(), |s| plan.streams[s].as_str());
+        JobError::new(
+            ErrorCode::CheckpointCorrupt,
+            format!(
+                "stream {stream}: {} keeps the versions of the stream's records and can't be read: {why}. \
+                 Delete it to go on: the next sync finds it gone and forgets it, and a row whose entry it held keeps its ID, \
+                 so a second version of that row within one cursor value is skipped once",
+                self.location(flow, run)
+            ),
+        )
     }
 }
 

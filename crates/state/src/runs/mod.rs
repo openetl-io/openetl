@@ -423,10 +423,10 @@ impl Objects for ObjectStorage {
             };
             match b.len() as u64 == want {
                 true => Ok(b),
-                false => Err(Error::Corrupt(format!(
-                    "run {name}: {} bytes where {want} were asked for",
-                    b.len()
-                ))),
+                false => Err(Error::Unreadable {
+                    run: name.to_owned(),
+                    why: format!("{} bytes where {want} were asked for", b.len()),
+                }),
             }
         })
     }
@@ -972,48 +972,63 @@ fn passed(s: &SectionRef, horizons: &Horizons) -> bool {
         })
 }
 
+/// What a read of `run` that it can't take as named fails with: damage,
+/// and a run other than the one named, as [`Error::Unreadable`]; a run
+/// that's gone and storage that failed as they are.
+fn unreadable(run: &str) -> impl Fn(Error) -> Error + '_ {
+    move |e| match e {
+        Error::Corrupt(why) | Error::Snapshot(why) => Error::Unreadable {
+            run: run.to_owned(),
+            why,
+        },
+        e => e,
+    }
+}
+
 /// Opens `run`, its named sections' indexes and filters, in one read
 /// that counts as one of `kind`. Whether this call opened it.
 async fn open_run(shared: &Shared, run: &Run, kind: &(AtomicU64, AtomicU64)) -> Result<bool> {
+    let damaged = unreadable(&run.name);
     let start = run.named.iter().map(|s| s.meta.0).min().unwrap_or(run.size);
     if start >= run.size {
-        return Err(Error::Snapshot(format!(
-            "run {} named past its end",
-            run.name
-        )));
+        return Err(damaged(Error::Snapshot("named past its end".into())));
     }
     let tail = match shared.disk_get(&run.name, start, run.size - start) {
         Some(t) => t,
         None => {
-            let t = shared.objects.get_range(&run.name, start..run.size).await?;
+            let t = shared
+                .objects
+                .get_range(&run.name, start..run.size)
+                .await
+                .map_err(&damaged)?;
             request(kind, t.len());
             shared.disk_put(&run.name, start, &t);
             t
         }
     };
-    let listed = format::footer(&tail)?;
+    let listed = format::footer(&tail).map_err(&damaged)?;
     let mut sections: [Option<OpenSection>; 4] = Default::default();
     let mut bytes = 0;
     for named in &run.named {
         let (offset, len) = named.meta;
         if !listed.contains(&(named.kind, offset, len)) {
-            return Err(Error::Corrupt(format!(
-                "run {} has no {:?} section where its snapshot says",
-                run.name, named.kind
-            )));
+            return Err(damaged(Error::Corrupt(format!(
+                "no {:?} section where its snapshot says",
+                named.kind
+            ))));
         }
         let at = usize::try_from(offset - start).unwrap_or(usize::MAX);
         let chunk = usize::try_from(len)
             .ok()
             .and_then(|len| tail.get(at..at.checked_add(len)?))
-            .ok_or_else(|| Error::Corrupt(format!("run {}: a section's meta", run.name)))?;
+            .ok_or_else(|| damaged(Error::Corrupt("a section's meta".into())))?;
         let keep = &run.keep[named.kind.index()];
-        let (info, open) = format::open_section(chunk, offset, keep)?;
+        let (info, open) = format::open_section(chunk, offset, keep).map_err(&damaged)?;
         if info.kind != named.kind || info.entries != named.entries {
-            return Err(Error::Corrupt(format!(
-                "run {}'s {:?} section isn't what its snapshot says",
-                run.name, named.kind
-            )));
+            return Err(damaged(Error::Corrupt(format!(
+                "its {:?} section isn't what its snapshot says",
+                named.kind
+            ))));
         }
         bytes += open.memory_bytes();
         sections[named.kind.index()] = Some(open);
@@ -1031,10 +1046,7 @@ async fn read_blocks(
     bs: Vec<&BlockMeta>,
     kind: &(AtomicU64, AtomicU64),
 ) -> Result<Vec<(BlockId, Bytes, bool)>> {
-    let named = |e: Error| match e {
-        Error::Corrupt(m) => Error::Corrupt(format!("run {}: {m}", run.name)),
-        e => e,
-    };
+    let damaged = unreadable(&run.name);
     let mut got: Vec<Option<(BlockId, Bytes, bool)>> = Vec::with_capacity(bs.len());
     let mut rest = Vec::new();
     for (i, b) in bs.iter().enumerate() {
@@ -1061,15 +1073,19 @@ async fn read_blocks(
                         .unwrap_or(bs[last].end())
             }
         };
-        let data = shared.objects.get_range(&run.name, span.clone()).await?;
+        let data = shared
+            .objects
+            .get_range(&run.name, span.clone())
+            .await
+            .map_err(&damaged)?;
         request(kind, data.len());
         for i in rest {
             let b = bs[i];
             let at = usize::try_from(b.offset - span.start).unwrap_or(usize::MAX);
             let stored = data
                 .get(at..at.saturating_add(b.stored as usize))
-                .ok_or_else(|| Error::Corrupt(format!("run {}: a block", run.name)))?;
-            let block = format::decode_block(stored, b.raw).map_err(named)?;
+                .ok_or_else(|| damaged(Error::Corrupt("a block".into())))?;
+            let block = format::decode_block(stored, b.raw).map_err(&damaged)?;
             shared.disk_put(&run.name, b.offset, stored);
             got[i] = Some(((run.id, b.offset), block, true));
         }

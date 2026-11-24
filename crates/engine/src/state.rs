@@ -263,6 +263,13 @@ impl JobState {
         self.read_only
     }
 
+    /// Where run `run` of `operator` is, as a URL of the state's store: a
+    /// path a person can find it at.
+    pub fn url(&self, operator: &str, run: &str) -> String {
+        let base = self.location.base.trim_end_matches('/');
+        format!("{base}/{}/{run}", dir(operator))
+    }
+
     /// Where `operator`'s lanes keep their runs.
     pub fn stores(&self, operator: &str) -> RunStores {
         let mut stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
@@ -413,9 +420,10 @@ pub fn snapshot(s: &StateSnapshot) -> Result<(String, Snapshot), JobError> {
 pub fn state_error(what: &str, e: &StateError) -> JobError {
     let code = match e {
         StateError::Store(_) => ErrorCode::Transient,
-        StateError::Snapshot(_) | StateError::Corrupt(_) | StateError::Gone(_) => {
-            ErrorCode::CheckpointCorrupt
-        }
+        StateError::Snapshot(_)
+        | StateError::Corrupt(_)
+        | StateError::Gone(_)
+        | StateError::Unreadable { .. } => ErrorCode::CheckpointCorrupt,
         StateError::Invalid(_) => ErrorCode::Internal,
     };
     JobError::new(code, format!("{what}: {e}"))
