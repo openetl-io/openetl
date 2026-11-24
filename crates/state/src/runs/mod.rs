@@ -908,7 +908,7 @@ impl Run {
         self.open
             .get()
             .and_then(|o| o.sections[kind.index()].as_ref())
-            .ok_or_else(|| Error::Store(format!("run {} read before it was opened", self.name)))
+            .ok_or_else(|| Error::Invalid(format!("run {} read before it was opened", self.name)))
     }
 }
 
@@ -1583,7 +1583,7 @@ impl RunStore {
             for (a, run, b) in probes {
                 let (block, read) = got
                     .get(&(run.id, b.offset))
-                    .ok_or_else(|| Error::Store("a block asked for and not read".into()))?;
+                    .ok_or_else(|| Error::Invalid("a block asked for and not read".into()))?;
                 let found = format::find(block, &keys[a.at])?;
                 match (found.is_some(), read) {
                     (_, false) => cached += 1,
@@ -1698,7 +1698,7 @@ impl RunStore {
                 for b in &c.open.blocks[r.clone()] {
                     let (block, _) = got
                         .get(&(c.sec.run.id, b.offset))
-                        .ok_or_else(|| Error::Store("a block asked for and not read".into()))?;
+                        .ok_or_else(|| Error::Invalid("a block asked for and not read".into()))?;
                     let mut at = 0;
                     while at < block.len() {
                         let (k, v) = format::entry(block, &mut at)?;
@@ -2092,7 +2092,7 @@ impl RunStore {
                 return Ok(None);
             }
             Ok(Err(e)) => return Err(e),
-            Err(e) => return Err(Error::Store(format!("a merge: {e}"))),
+            Err(e) => return Err(Error::Invalid(format!("a merge that panicked: {e}"))),
         };
         let kind = m.kind;
         let secs = &self.sections[kind.index()];
@@ -2554,5 +2554,52 @@ impl Store for RunStore {
             .as_ref()
             .map_or(0, |m| m.memory.load(Ordering::Relaxed));
         runs + known + merging
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// A merge task that panicked, a bug and not storage's failure, fails
+    /// the barrier that adopts it as the engine's mistake.
+    #[tokio::test]
+    async fn a_merge_that_panicked_fails_the_barrier_as_a_bug() {
+        let objects: Arc<dyn Objects> = Arc::new(ObjectStorage::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            Path::from("state"),
+        ));
+        let config = RunConfig {
+            merge: Some(MergeConfig {
+                wait: true,
+                ..MergeConfig::default()
+            }),
+            ..RunConfig::default()
+        };
+        let stores = RunStores::new(objects, config);
+        let range = KeyGroupRange::new(0, 15);
+        let mut store = stores.open_store(1, range, &[]).unwrap();
+        let horizons = Horizons::new();
+        let op = crate::OperatorId(1);
+        let change = |e: u64| {
+            let key = layout::row(3, op, 10, format!("id{e}").as_bytes(), 0);
+            (key, Some(Bytes::from_static(b"e")))
+        };
+        store.write(1, vec![change(1)], &horizons).await.unwrap();
+        let task = tokio::spawn(async { panic!("a bug") });
+        store.merging = Some(Merging {
+            kind: SectionKind::Rows,
+            inputs: store.sections[SectionKind::Rows.index()]
+                .iter()
+                .map(Sec::id)
+                .collect(),
+            epoch: 1,
+            task: Task(task),
+            memory: Arc::default(),
+            _reserved: Reserved::take(&store.shared, store.lane, 0, 1, 1).unwrap(),
+        });
+        let got = store.write(2, vec![change(2)], &horizons).await;
+        assert!(matches!(got, Err(Error::Invalid(_))), "{:?}", got.err());
     }
 }
