@@ -223,7 +223,7 @@ impl Layer {
         Ok(())
     }
 
-    /// Stops reading run `name`, which [`Error::Gone`] named, as if it held
+    /// Stops reading run `name`, one [`Error::Gone`] named, as if it held
     /// nothing, for state the caller can do without: the snapshots no
     /// longer name it. Whether it did: not where a read may have found
     /// something in it already, so every read sees the same state.

@@ -54,8 +54,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use bytes::Bytes;
+use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use futures_util::{StreamExt, TryStreamExt};
 use object_store::path::Path;
 use object_store::{GetOptions, ObjectStore, PutMode, PutOptions};
 use twox_hash::XxHash3_128;
@@ -373,7 +373,7 @@ impl ObjectStorage {
                 }
             }
         }
-        Err(Error::Gone(name.to_owned()))
+        Err(Error::Gone(vec![name.to_owned()]))
     }
 }
 
@@ -1209,6 +1209,28 @@ async fn read_blocks(
     Ok(got.into_iter().flatten().collect())
 }
 
+/// The results of reads that each ran to its end: the first error other
+/// than [`Error::Gone`], else one that names every run they found gone, so
+/// that a reader finds them all in one pass, at the cost of one wait to
+/// confirm them.
+fn gather<T>(done: Vec<Result<T>>) -> Result<Vec<T>> {
+    let mut out = Vec::with_capacity(done.len());
+    let mut gone = Vec::new();
+    for r in done {
+        match r {
+            Ok(v) => out.push(v),
+            Err(Error::Gone(names)) => gone.extend(names),
+            Err(e) => return Err(e),
+        }
+    }
+    if gone.is_empty() {
+        return Ok(out);
+    }
+    gone.sort();
+    gone.dedup();
+    Err(Error::Gone(gone))
+}
+
 /// Writes a run placed in a lane, if any.
 async fn put(objects: &dyn Objects, p: &Option<Placed>) -> Result<()> {
     match p {
@@ -1285,10 +1307,11 @@ impl RunStore {
             return Ok(());
         }
         let opens: Vec<_> = runs.into_iter().map(|r| self.open_run(r)).collect();
-        futures_util::stream::iter(opens)
+        let done = futures_util::stream::iter(opens)
             .buffer_unordered(self.shared.config.concurrency.max(1))
-            .try_collect::<Vec<()>>()
-            .await?;
+            .collect::<Vec<Result<()>>>()
+            .await;
+        gather(done)?;
         Ok(())
     }
 
@@ -1335,10 +1358,11 @@ impl RunStore {
             .into_iter()
             .map(|(run, span, bs)| self.read_blocks(run, span, bs, lookup))
             .collect();
-        let read = futures_util::stream::iter(reads)
+        let done = futures_util::stream::iter(reads)
             .buffer_unordered(config.concurrency.max(1))
-            .try_collect::<Vec<_>>()
-            .await?;
+            .collect::<Vec<Result<_>>>()
+            .await;
+        let read = gather(done)?;
         let mut cache = lock(&self.shared.cache);
         for (id, block, fetched) in read.into_iter().flatten() {
             cache.put(id, block.clone());
@@ -1928,8 +1952,13 @@ impl RunStore {
             // A merge that can't read an input goes, and the input's run
             // merges no more: a read that needs it meets it, and a lane
             // that keeps versions forgets a run that's gone.
-            Ok(Err(Error::Gone(run) | Error::Unreadable { run, .. })) => {
-                if let Some(r) = self.runs.iter().find(|r| r.name == run) {
+            Ok(Err(e @ (Error::Gone(_) | Error::Unreadable { .. }))) => {
+                let names = match e {
+                    Error::Gone(names) => names,
+                    Error::Unreadable { run, .. } => vec![run],
+                    _ => Vec::new(),
+                };
+                for r in self.runs.iter().filter(|r| names.contains(&r.name)) {
                     self.stuck.insert(r.id);
                 }
                 return Ok(None);

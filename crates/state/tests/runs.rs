@@ -841,7 +841,7 @@ async fn a_run_is_gone_only_once_it_stays_missing() {
     let mut ls = open(&s, 3, 2, 1, &all).await;
     let started = std::time::Instant::now();
     match ls[0].row(OP, &[(k, 10)]).await {
-        Err(Error::Gone(run)) => assert_eq!(run, name),
+        Err(Error::Gone(runs)) => assert_eq!(runs, std::slice::from_ref(&name)),
         got => panic!("{got:?}"),
     }
     assert!(started.elapsed() >= std::time::Duration::from_millis(1200));
@@ -1211,4 +1211,50 @@ async fn recorded_runs_restore() {
     let s = stores(&bucket, RunConfig::default());
     check_recorded(&s, &record).await;
     assert_eq!(s.counts().barrier.count, 0);
+}
+
+/// The runs a lookup needs that are gone are found in one pass, each
+/// confirmed at once, rather than one a pass: a lane whose runs were all
+/// deleted, as after a rollback, waits for one confirmation, not one a run.
+#[tokio::test]
+async fn gone_runs_are_found_together() {
+    let bucket = Bucket::new();
+    let config = RunConfig {
+        merge: None,
+        ..RunConfig::default()
+    };
+    let s = stores(&bucket, config);
+    let mut ls = open(&s, 1, 1, 1, &[]).await;
+    let n = 5u64;
+    let mut all = Vec::new();
+    for e in 1..=n {
+        let id = format!("id{e}");
+        ls[0].put_row(OP, KeyRef::new(7, id.as_bytes()), 10, b("a"));
+        all = barrier(&mut ls, e).await;
+    }
+    let named: BTreeSet<String> = runs(&all[0]).unwrap().into_iter().map(|r| r.name).collect();
+    assert_eq!(named.len(), n as usize);
+    for name in bucket.names().await {
+        bucket.memory.delete(&Bucket::path(&name)).await.unwrap();
+    }
+    let mut ls = open(&s, 2, n + 1, 1, &all).await;
+    let ids: Vec<String> = (1..=n).map(|e| format!("id{e}")).collect();
+    let slots: Vec<(KeyRef, i64)> = ids
+        .iter()
+        .map(|i| (KeyRef::new(7, i.as_bytes()), 10))
+        .collect();
+    let started = std::time::Instant::now();
+    let gone = match ls[0].row(OP, &slots).await {
+        Err(Error::Gone(runs)) => runs,
+        got => panic!("{got:?}"),
+    };
+    assert_eq!(gone.into_iter().collect::<BTreeSet<_>>(), named);
+    for run in &named {
+        assert!(ls[0].forget(run));
+    }
+    let got = ls[0].row(OP, &slots).await.unwrap();
+    assert!(got.iter().all(Option::is_none));
+    let took = started.elapsed();
+    println!("{n} gone runs found and forgotten in {took:?}");
+    assert!(took < std::time::Duration::from_millis(2400), "{took:?}");
 }

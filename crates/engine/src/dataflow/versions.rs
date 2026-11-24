@@ -270,17 +270,20 @@ impl Stream {
                 slots.push((KeyRef::new(g, id_of(r)), b));
             }
         }
-        // A run that's gone, as a runner from before the versions deletes
-        // after a rollback, is forgotten, before a row of its key groups is
-        // read: all reads see the same entries, the rest of the record's. A
+        // Runs that are gone, as a runner from before the versions deletes
+        // after a rollback, are forgotten, all those the lookup found at
+        // once, before a row of their key groups is read: all reads see the
+        // same entries, the rest of the record's. A
         // run that's there and can't be read fails the attempt, saying where
         // it is, so a person can delete it.
         let found = loop {
             match self.layer.row(ENTRIES, &slots).await {
                 Ok(found) => break found,
-                Err(StateError::Gone(run)) if self.layer.forget(&run) => {
-                    let run = self.location(flow, &run);
-                    tracing::warn!(operator = %self.id, run = %run, "{GONE}");
+                Err(StateError::Gone(runs)) if runs.iter().all(|r| self.layer.forget(r)) => {
+                    for run in &runs {
+                        let run = self.location(flow, run);
+                        tracing::warn!(operator = %self.id, run = %run, "{GONE}");
+                    }
                 }
                 Err(StateError::Unreadable { run, why }) => {
                     return Err(self.unreadable(flow, &run, &why));
