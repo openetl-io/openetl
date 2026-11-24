@@ -27,6 +27,7 @@
 //! operator ID, to expire as the row leaves. One that comes after it left
 //! is late.
 
+mod canonical;
 mod frame;
 pub(crate) mod partitioned;
 pub(crate) mod row;

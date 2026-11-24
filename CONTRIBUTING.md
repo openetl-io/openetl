@@ -163,7 +163,7 @@ gh workflow run nightly.yml --ref BRANCH
 gh workflow run nightly.yml --ref BRANCH -f suites="e2e-temporal kind"
 ```
 
-With no `suites`, it runs every suite but chaos. `suites` names them, separated by spaces: `integration`, `e2e-dbos`, `e2e-temporal`, `kind`, `chaos` and `deny`, or `all`. `chaos.yml` runs the chaos suite at any size, on demand: `gh workflow run chaos.yml --ref BRANCH -f runs=100 -f shards="[1, 2, 3, 4]"`.
+With no `suites`, it runs every suite but chaos and deny. `suites` names them, separated by spaces: `integration`, `e2e-dbos`, `e2e-temporal`, `kind`, `chaos` and `deny`, or `all`. A blank `suites`, such as the form's field cleared, fails the run. A run's title is `nightly (SUITES)`, and only `suites=all` and the scheduled runs are titled `nightly (all)`, which a release looks for. `chaos.yml` runs the chaos suite at any size, on demand: `gh workflow run chaos.yml --ref BRANCH -f runs=100 -f shards="[1, 2, 3, 4]"`.
 
 **Edge.** Once `ci` passes on `main`, for a change to what goes in the image, CI pushes `ghcr.io/openetl-io/openetl:edge`: the image built from `main`, for `linux/amd64` and `linux/arm64`, unsigned, laid out as a release's image is, with the CLI at `/opt/openetl/openetl`. The run keeps the CLI for Linux and macOS as its artifact `openetl-cli` for 7 days. A newer commit's publish cancels an older one's. `deploy/compose/compose.yml` and `deploy/kubernetes` run edge, and so do the connectors' CI and nightly tests. Each Sunday, `cleanup` deletes the image's untagged versions that are older than 14 days and that no tagged image holds.
 

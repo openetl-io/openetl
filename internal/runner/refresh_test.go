@@ -278,6 +278,115 @@ func TestASwitchOfReadModeStartsTheReadItNeeds(t *testing.T) {
 	})
 }
 
+// A switch of read or write mode while a read is unfinished starts a new
+// read, with no state and a new start, where the unfinished one doesn't
+// hold what the stream needs now: an overwrite that went on with an
+// incremental read would replace the table with what changed since the
+// last read. A read that keeps its mode goes on.
+func TestASwitchOfModeDuringAReadStartsANewOne(t *testing.T) {
+	incremental := runner.Stream{Name: "s", Replay: source.Superset, Read: source.Incremental, Mode: destination.Append}
+	full := runner.Stream{Name: "s", Replay: source.Superset, Read: source.FullRefresh, Mode: destination.Append}
+	overwrite := runner.Stream{Name: "s", Replay: source.Superset, Read: source.FullRefresh, Mode: destination.Overwrite}
+	for _, tc := range []struct {
+		name          string
+		before, after runner.Stream
+		// The state the read after the switch starts from, and the rows the
+		// table has after it; -1 for an appended table, which isn't checked.
+		from string
+		rows int64
+	}{
+		{"incremental to overwrite", incremental, overwrite, "", 9},
+		{"full_refresh to overwrite", full, overwrite, "", 9},
+		{"overwrite to full_refresh", overwrite, full, "", -1},
+		{"overwrite to incremental", overwrite, incremental, "", -1},
+		{"full_refresh to incremental", full, incremental, "", -1},
+		{"incremental kept", incremental, incremental, `{"cursor":6,"since":5,"page":"7"}`, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+				defer cancel()
+				log := checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p")
+				dest := &overwriteDest{}
+				var starts []string
+				upstream := 5
+				// Reads pages of two records from the floor, and with fail,
+				// fails on its second page, once an epoch is committed.
+				attempt := func(sync string, fail bool, s runner.Stream) error {
+					committed := make(chan uint64, 64)
+					stream := sdk.Incremental("s", "updated_at", func(_ *sdk.Ctx[struct{}], since sdk.Cursor, out *sdk.Out) error {
+						from := 1
+						if !since.IsZero() {
+							from, _ = strconv.Atoi(since.String())
+						}
+						// The token is the first id of the next page.
+						pages := 0
+						for page, err := range sdk.Paginate(out, func(_ context.Context, token string) ([]int, string, error) {
+							start := from
+							if token != "" {
+								start, _ = strconv.Atoi(token)
+							}
+							var ids []int
+							for i := start; i <= upstream && len(ids) < 2; i++ {
+								ids = append(ids, i)
+							}
+							next := ""
+							if start+2 <= upstream {
+								next = strconv.Itoa(start + 2)
+							}
+							return ids, next, nil
+						}) {
+							if err != nil {
+								return err
+							}
+							for _, i := range page {
+								if err := out.Emit(map[string]int{"id": i, "updated_at": i}); err != nil {
+									return err
+								}
+							}
+							if pages++; fail && pages == 2 {
+								select {
+								case <-committed:
+								case <-ctx.Done():
+									return ctx.Err()
+								}
+								return errors.New("the source broke")
+							}
+						}
+						return nil
+					}, sdk.Ordered())
+					bound, err := (&sdk.Source[struct{}]{Name: "src", Streams: []sdk.Stream[struct{}]{stream}}).New(nil)
+					if err != nil {
+						return err
+					}
+					j := job(log, "a"+strconv.Itoa(len(starts)), startsSource{Reader: bound, starts: &starts}, runner.Passthrough{Convert: columnless}, committed)
+					j.Sync, j.Destination, j.Settings.Require = sync, dest, delivery.AtLeastOnce
+					j.Streams = []runner.Stream{s}
+					_, err = runner.RunAttempt(ctx, j)
+					time.Sleep(time.Second)
+					return err
+				}
+				if err := attempt("s0", false, tc.before); err != nil {
+					t.Fatal(err)
+				}
+				upstream = 9
+				if err := attempt("s1", true, tc.before); err == nil {
+					t.Fatal("the failing attempt succeeded")
+				}
+				if err := attempt("s2", false, tc.after); err != nil {
+					t.Fatal(err)
+				}
+				if len(starts) != 3 || starts[2] != tc.from {
+					t.Fatalf("the reads started from %q, want the last from %q", starts, tc.from)
+				}
+				if got := dest.table["s"]; tc.rows >= 0 && got != tc.rows {
+					t.Fatalf("the overwritten table has %d rows, want %d", got, tc.rows)
+				}
+			})
+		})
+	}
+}
+
 // startsSource keeps the state each read of its one stream starts from.
 type startsSource struct {
 	source.Reader
@@ -333,6 +442,64 @@ func TestAFullRefreshOnWorkersStartsWithNoState(t *testing.T) {
 	slices.Sort(from)
 	if want := []string{"s0@", "s1@"}; !slices.Equal(from, want) {
 		t.Fatalf("the second sync's splits started at %q, want %q", from, want)
+	}
+}
+
+// On workers too, a switch to full_refresh while a read is unfinished
+// starts a new read, with no state.
+func TestASwitchOfModeOnWorkersDuringAReadStartsANewOne(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+	// Each split waits after its first page, so the first attempt stops
+	// with its read unfinished.
+	gate := make(chan struct{})
+	p := newPool(t, func() *rangeSource {
+		s := ranges(2, 20, 5)()
+		s.gate = gate
+		return s
+	})
+	j := p.workers("a1", 2)
+	var mu sync.Mutex
+	positioned := map[uint64]bool{}
+	j.OnCheckpoint = func(rec *checkpoint.Record, _, _ map[string]uint64) {
+		mu.Lock()
+		defer mu.Unlock()
+		positioned[rec.Epoch] = slices.ContainsFunc(rec.Splits("s"), func(sp checkpoint.SplitState) bool { return sp.State != nil })
+	}
+	var once sync.Once
+	j.OnCommit = func(n uint64) {
+		mu.Lock()
+		defer mu.Unlock()
+		if positioned[n] {
+			once.Do(func() { p.kill("a1", 0) })
+		}
+	}
+	if _, err := runner.RunAttempt(ctx, j); err == nil {
+		t.Fatal("the attempt went on without its worker")
+	}
+	p.wait("a1")
+	close(gate)
+	p.change = func(j *runner.Job) {
+		j.Sync = j.Owner
+		j.Streams[0].Read = source.FullRefresh
+	}
+	if _, err := runner.RunAttempt(ctx, p.workers("a2", 2)); err != nil {
+		t.Fatal(err)
+	}
+	for i, err := range p.wait("a2") {
+		if err != nil {
+			t.Fatalf("worker %d: %v", i, err)
+		}
+	}
+	var from []string
+	for _, rs := range p.sources["a2"] {
+		rs.mu.Lock()
+		from = append(from, rs.from...)
+		rs.mu.Unlock()
+	}
+	slices.Sort(from)
+	if want := []string{"s0@", "s1@"}; !slices.Equal(from, want) {
+		t.Fatalf("the full refresh's splits started at %q, want %q", from, want)
 	}
 }
 

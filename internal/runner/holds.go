@@ -248,8 +248,9 @@ func (j *Job) notHolding(s Stream) string {
 // doesn't hold in this job, as after a version that changes its write
 // mode, key, destination or transform, or that doesn't read it, or a
 // catalog without it: the next record would drop its holds, and their held
-// files with them. The job's discards apply first. A paused stream keeps
-// its holds, and an overwritten one reads its values again.
+// files with them. The job's discards apply first, also those of a release
+// being patched in, which only a stream that holds can end. A paused
+// stream keeps its holds, and an overwritten one reads its values again.
 func (j *Job) keptHolds(restored *checkpoint.Record) error {
 	if restored == nil {
 		return nil
@@ -292,7 +293,7 @@ func (j *Job) keptHolds(restored *checkpoint.Record) error {
 		if len(cols) == 1 {
 			col = cols[0]
 		}
-		problems = append(problems, fmt.Sprintf("stream %s holds %s, and %s, so this run can't keep them; undo the change and release them, "+
+		problems = append(problems, fmt.Sprintf("stream %s holds %s, and %s, so this run can't keep them; undo the change, which keeps them, "+
 			"or discard them with `openetl holds discard PIPELINE %s %s`", name, strings.Join(held, " and "), reason, name, col))
 	}
 	if len(problems) == 0 {
@@ -303,7 +304,8 @@ func (j *Job) keptHolds(restored *checkpoint.Record) error {
 
 // heldValues are what h holds of stream's values once releases' discards
 // apply, as phrases, and the columns a discard takes; none if it holds
-// nothing.
+// nothing. A discard of a column's release in progress names the hold
+// that Holds.Releasing gives.
 func heldValues(h *checkpoint.Holds, releases []Release, stream string) (held, cols []string) {
 	if h == nil {
 		return nil, nil
@@ -324,7 +326,15 @@ func heldValues(h *checkpoint.Holds, releases []Release, stream string) (held, c
 		}
 	}
 	if h.Replay != nil {
-		held = append(held, "the release of "+strings.Join(h.Replay.Columns, ", ")+", which is being patched in and can't be discarded")
+		var releasing []string
+		for _, col := range h.Replay.Columns {
+			if !discarded(col, h.Releasing(col)) {
+				releasing = append(releasing, col)
+			}
+		}
+		if len(releasing) > 0 {
+			held, cols = append(held, "the values of "+strings.Join(releasing, ", ")+" that a release is patching in"), append(cols, releasing...)
+		}
 	}
 	slices.Sort(cols)
 	return held, slices.Compact(cols)
@@ -355,6 +365,8 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 		// The releases' IDs, by column.
 		wholes, cells := map[string]string{}, map[string]string{}
 		for _, r := range j.Releases {
+			// Releases wait for a replay to end. A discard of the replay
+			// counts only once the stream stops holding (keptHolds).
 			if r.Stream != s.Name || h.Replay != nil {
 				continue
 			}
@@ -487,6 +499,9 @@ func (j *Job) startHolds(ctx context.Context, restored *checkpoint.Record, limit
 				return nil, nil, err
 			}
 			h.Replay = &checkpoint.Replay{Columns: released, Files: files, Versioned: versioned}
+			if len(whole) > 0 {
+				h.Replay.Since = whole
+			}
 			// A column isn't read from the files before its hold of a kind
 			// started, or from any for a kind it holds nothing of: those
 			// may hold values of an earlier hold of it, patched in since, or
@@ -657,7 +672,7 @@ func cloneHolds(h *checkpoint.Holds) *checkpoint.Holds {
 		r := *h.Replay
 		r.Columns, r.Files, r.Held = slices.Clone(r.Columns), slices.Clone(r.Files), maps.Clone(r.Held)
 		r.Versioned, r.CellReleases = slices.Clone(r.Versioned), maps.Clone(r.CellReleases)
-		r.First, r.FirstCells = maps.Clone(r.First), maps.Clone(r.FirstCells)
+		r.First, r.FirstCells, r.Since = maps.Clone(r.First), maps.Clone(r.FirstCells), maps.Clone(r.Since)
 		out.Replay = &r
 	}
 	return out

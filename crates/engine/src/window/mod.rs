@@ -189,13 +189,21 @@ pub(crate) fn seen(id: &[u8], hash: u64) -> Seen {
 
 /// A session: its first row's time and its last's plus the gap, and its
 /// state. Where the operator drops repeats, what its rows are as repeats
-/// go, in order.
+/// go.
 #[derive(Clone, Debug, PartialEq)]
 struct Session {
     start: i64,
     end: i64,
     state: State,
-    seen: Vec<Seen>,
+    seen: BTreeSet<Seen>,
+}
+
+/// Adds `from` to `into`, the smaller set to the larger.
+fn merge_seen(into: &mut BTreeSet<Seen>, mut from: BTreeSet<Seen>) {
+    if from.len() > into.len() {
+        std::mem::swap(into, &mut from);
+    }
+    into.extend(from);
 }
 
 /// What a call gave.
@@ -796,16 +804,16 @@ impl Operator {
                         start: s.start,
                         end: s.end,
                         state: s.state.clone(),
-                        seen: Vec::new(),
+                        seen: BTreeSet::new(),
                     };
                     (s.start, s)
                 })
                 .collect();
             for (r, t) in rs {
                 if let Some(seen) = seen
-                    && list.iter().any(|s| {
-                        s.start <= t && t <= s.end && s.seen.binary_search(&seen[r]).is_ok()
-                    })
+                    && list
+                        .iter()
+                        .any(|s| s.start <= t && t <= s.end && s.seen.contains(&seen[r]))
                 {
                     self.repeats += 1;
                     continue;
@@ -831,7 +839,7 @@ impl Operator {
                     continue;
                 }
                 let mut merged = State::new(&self.specs);
-                let mut taken: Vec<Seen> = Vec::new();
+                let mut taken = BTreeSet::new();
                 let mut rest = Vec::with_capacity(list.len());
                 for s in list {
                     match meets(&s) {
@@ -841,11 +849,11 @@ impl Operator {
                             merged.shown = s.state.shown.clone();
                             merged.shown_end = s.state.shown_end;
                             merged.merge(s.state);
-                            taken.extend(s.seen);
+                            merge_seen(&mut taken, s.seen);
                         }
                         true => {
                             merged.merge(s.state);
-                            taken.extend(s.seen);
+                            merge_seen(&mut taken, s.seen);
                         }
                         false => rest.push(s),
                     }
@@ -856,9 +864,7 @@ impl Operator {
                     }
                 }
                 if let Some(seen) = seen {
-                    taken.push(seen[r]);
-                    taken.sort_unstable();
-                    taken.dedup();
+                    taken.insert(seen[r]);
                 }
                 rest.push(Session {
                     start,
@@ -1401,7 +1407,8 @@ impl Operator {
                     start,
                     end,
                     state,
-                    seen,
+                    // In order, as they're written: built whole.
+                    seen: BTreeSet::from_iter(seen),
                 });
             }
             Ok(out)

@@ -19,6 +19,7 @@ openetl-state.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
+arrow-data.workspace = true
 arrow-ipc.workspace = true
 arrow-schema.workspace = true
 arrow-select.workspace = true

@@ -181,6 +181,10 @@ func TestStartHoldsAppliesReleasesToTheHoldsTheyName(t *testing.T) {
 	if r == nil || !reflect.DeepEqual(r.Columns, []string{"y", "z"}) || len(r.Versioned) != 1 || r.Versioned[0].Column != "z" || string(r.Versioned[0].Delivered) != "z int" {
 		t.Errorf("replay %+v", r)
 	}
+	// It names the holds it ends, by which a discard names it.
+	if !reflect.DeepEqual(r.Since, map[string]checkpoint.RecordRef{"y": since, "z": since}) {
+		t.Errorf("the replay's holds started at %v", r.Since)
+	}
 	if len(holds["s"].Columns) != 0 {
 		t.Errorf("columns %+v", holds["s"].Columns)
 	}
@@ -399,7 +403,7 @@ func TestHeldValuesStopAnAttemptThatWouldDropThem(t *testing.T) {
 
 	_, _, err := sql("b").startHolds(t.Context(), outputHeld, nil)
 	stops(err, "stream a holds column n held whole and 3 held cells of x, and no output of the SQL transform has its name",
-		"undo the change and release them", "openetl holds discard PIPELINE a COLUMN")
+		"undo the change, which keeps them", "openetl holds discard PIPELINE a COLUMN")
 	if strings.Contains(err.Error(), "gone") {
 		t.Errorf("%v names a discarded hold", err)
 	}
@@ -428,8 +432,7 @@ func TestHeldValuesStopAnAttemptThatWouldDropThem(t *testing.T) {
 	_, _, err = spark.startHolds(t.Context(), outputHeld, nil)
 	stops(err, "stream a holds", "a Spark or Flink transform writes it")
 
-	// A paused stream keeps its holds; a release in progress can't be
-	// discarded.
+	// A paused stream keeps its holds; a release in progress is held too.
 	streamHeld := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"a": {Holds: held()}, "p": {Holds: held()}}}
 	plain.Paused = []Stream{{Name: "p"}}
 	if _, _, err := plain.startHolds(t.Context(), streamHeld, nil); err != nil {
@@ -439,7 +442,62 @@ func TestHeldValuesStopAnAttemptThatWouldDropThem(t *testing.T) {
 	releasing.Replay = &checkpoint.Replay{Columns: []string{"x"}}
 	plain.Paused = nil
 	_, _, err = plain.startHolds(t.Context(), &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"a": {}, "r": {Holds: releasing}}}, nil)
-	stops(err, "stream r holds", "the release of x, which is being patched in and can't be discarded", "the pipeline doesn't read it now")
+	stops(err, "stream r holds", "the values of x that a release is patching in", "the pipeline doesn't read it now")
+}
+
+// A release being patched in on a stream that stops holding, here one the
+// pipeline doesn't read now, as when the source dropped it, stops the
+// attempt until the change is undone or a person discards it: each of its
+// columns, by the hold the API lists for it, its cells' or else its whole
+// hold's. A discard of another hold of the column doesn't end it.
+func TestADiscardEndsAReleaseOfAStreamThatStopsHolding(t *testing.T) {
+	whole, cells := checkpoint.RecordRef{Generation: 1, Epoch: 2}, checkpoint.RecordRef{Generation: 1, Epoch: 4}
+	restored := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{
+		"a": {},
+		"r": {Holds: &checkpoint.Holds{
+			Cells:  map[string]checkpoint.CellHold{"x": {Cells: 3, Since: cells}},
+			Replay: &checkpoint.Replay{Columns: []string{"x", "y"}, Since: map[string]checkpoint.RecordRef{"x": whole, "y": whole}},
+		}},
+	}}
+	j := &Job{
+		HeldURL: "file:///held", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"), Destination: holdingDest{},
+		Streams: []Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}},
+	}
+	discard := func(col string, since checkpoint.RecordRef) Release {
+		return Release{Stream: "r", Column: col, Since: since, Discard: true}
+	}
+	stops := func(want ...string) {
+		t.Helper()
+		_, _, err := j.startHolds(t.Context(), restored, nil)
+		if errs.CodeOf(err) != errs.SchemaDrift {
+			t.Fatalf("got %v, want SCHEMA_DRIFT", err)
+		}
+		for _, w := range want {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%v doesn't say %q", err, w)
+			}
+		}
+	}
+	stops("stream r holds 3 held cells of x and the values of x, y that a release is patching in, and the pipeline doesn't read it now",
+		"undo the change, which keeps them, or discard them with `openetl holds discard PIPELINE r COLUMN`")
+	j.Releases = []Release{discard("x", cells), discard("y", checkpoint.RecordRef{})}
+	stops("stream r holds the values of y that a release is patching in", "openetl holds discard PIPELINE r y`")
+	j.Releases = []Release{discard("x", whole), discard("y", whole)}
+	stops("stream r holds 3 held cells of x and the values of x that a release is patching in", "openetl holds discard PIPELINE r x`")
+	j.Releases = []Release{discard("x", cells), discard("y", whole)}
+	if _, _, err := j.startHolds(t.Context(), restored, nil); err != nil {
+		t.Errorf("discarded: %v", err)
+	}
+
+	// Where the stream holds again, the release goes on.
+	j.Streams = append(j.Streams, Stream{Name: "r", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}})
+	holds, _, err := j.startHolds(t.Context(), restored, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := holds["r"]; h.Replay == nil || !reflect.DeepEqual(h.Replay.Columns, []string{"x", "y"}) || h.Cells["x"].Cells != 3 {
+		t.Errorf("holds %+v", h)
+	}
 }
 
 // sparkCode stands for the user's Spark code.

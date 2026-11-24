@@ -76,6 +76,23 @@ pub fn widens(from: &Field, to: &Field) -> bool {
     }
 }
 
+/// Whether a widening from `from` to `to` keeps each value's order and the
+/// record ID it gives, as a key or a cursor must: an integer to a wider
+/// one, or a decimal to more digits at its scale. A string sorts "10"
+/// before "9", a float rounds past 2^53 and orders other values than the
+/// source's, and another scale, or a decimal from an integer, gives other
+/// record IDs.
+fn keeps_order(from: &Field, to: &Field) -> bool {
+    use DataType as D;
+    match (from.data_type(), to.data_type()) {
+        // JSON to a string: the same text.
+        (a, b) if a == b => true,
+        (D::Int16, D::Int32 | D::Int64) | (D::Int32, D::Int64) => true,
+        (D::Decimal128(_, s1), D::Decimal128(_, s2)) => s1 == s2,
+        _ => false,
+    }
+}
+
 /// A batch conformed to the stream's schema.
 #[derive(Debug)]
 pub(crate) struct Conformed {
@@ -447,6 +464,16 @@ impl Evolver {
             {
                 return Err(Error::Drift(format!(
                     "{what}, which isn't a widening; it can't be held or go to a new column, as {}: change the column back at the source, or, to keep the new type, {REREAD}",
+                    why.clause()
+                )));
+            }
+            if widening
+                && !casts
+                && !keeps_order(&cur, f)
+                && let Some(why) = self.pinned.get(f.name())
+            {
+                return Err(Error::Drift(format!(
+                    "{what}, a widening that changes how its values sort or the record IDs they give; it can't be held or go to a new column, as {}: change the column back at the source, or, to keep the new type, {REREAD}",
                     why.clause()
                 )));
             }
