@@ -297,6 +297,8 @@ Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases pa
 
 The new orchestrator resumes existing workflows. Runners stop jobs at a checkpoint before exiting, with up to 2 minutes for a sync or 10 minutes for a stream. Jobs are then placed again and resume from their checkpoints. The Compose file allows runners 11 minutes to stop.
 
+A runner of 0.1.0-alpha applies no releases or discards of [held values](../pipelines/holds-and-quarantine.md). They wait until a runner of the new version runs the pipeline.
+
 A newer version can write a checkpoint format that older runners cannot read. An older runner refuses that pipeline with `CONFIG_INVALID`. If this occurs after a downgrade, run the affected pipelines with the newer version.
 
 ## Back up

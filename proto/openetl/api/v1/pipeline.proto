@@ -1581,6 +1581,11 @@ message DiscardHoldRequest {
 
 message DiscardHoldResponse {
   Hold hold = 1;
+  // The column had a release, which the discard ends instead. The next run
+  // drops its values, unless a run has already started patching them in:
+  // that release goes on while the stream holds, and a run in which the
+  // stream doesn't hold drops the values it hasn't patched in.
+  bool ends_release = 2;
 }
 
 // QuarantineFile is one stream's quarantined rows from one committed

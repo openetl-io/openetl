@@ -317,7 +317,7 @@ type HoldRelease struct {
 	CreateTime      time.Time
 	NewVersion      bool
 	Ends            bool
-	TakeTime        *time.Time
+	EndsCells       int64
 }
 
 type Incident struct {

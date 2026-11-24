@@ -71,10 +71,9 @@ service DataPlaneService {
 message GetSyncSpecRequest {
   string pipeline_id = 1;
   string version = 2;
-  // The caller is an attempt, which applies the pipeline's hold releases:
-  // the response has them, and the server records that a run has taken
-  // them. Without it, the response has none.
-  bool take_releases = 3;
+  // The caller is an attempt, which applies the pipeline's hold releases,
+  // ends among them: the response has them. Without it, it has none.
+  bool apply_releases = 3;
 }
 
 message GetSyncSpecResponse {
@@ -105,7 +104,7 @@ message GetSyncSpecResponse {
   // secret stores.
   repeated ExternalSecret flink_access_secrets = 15;
   // Holds released or discarded, for the holds still open in the
-  // pipeline's last mirrored checkpoint, with take_releases. A release
+  // pipeline's last mirrored checkpoint, with apply_releases. A release
   // applies to the hold it names only while that hold is open, so sending
   // it again does nothing.
   repeated HoldRelease releases = 16;
@@ -156,11 +155,17 @@ message HoldRelease {
   // A column hold's values go to a new version of the column, col__v2, as
   // allow_all's do, and the column keeps the type the destination has.
   bool new_version = 5;
-  // A release that a person discarded once a run had taken it: a run in
-  // which its stream holds goes on with it, and one in which the stream
-  // doesn't hold drops the values it hasn't patched in. It ends with the
-  // release, so the values a finished release leaves held stay held.
+  // A release that a person discarded: a discard of its hold, unless the
+  // replay in the pipeline's record took it, as a run may have started
+  // patching it in. Then a run in which the stream holds goes on with it,
+  // and one in which the stream doesn't hold drops the values it hasn't
+  // patched in. It ends with the replay, so the values a finished release
+  // leaves held stay held.
   bool ends = 7;
+  // With ends, the held cells of the column that the person saw when they
+  // discarded the release: a run in which the stream doesn't hold drops the
+  // column's cells with the replay only while it holds no more than these.
+  uint64 ends_cells = 8;
 }
 
 // PinnedFlinkCluster's secret references that this server holds are

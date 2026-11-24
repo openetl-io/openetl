@@ -8506,8 +8506,13 @@ func (x *DiscardHoldRequest) GetColumn() string {
 }
 
 type DiscardHoldResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hold          *Hold                  `protobuf:"bytes,1,opt,name=hold,proto3" json:"hold,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Hold  *Hold                  `protobuf:"bytes,1,opt,name=hold,proto3" json:"hold,omitempty"`
+	// The column had a release, which the discard ends instead. The next run
+	// drops its values, unless a run has already started patching them in:
+	// that release goes on while the stream holds, and a run in which the
+	// stream doesn't hold drops the values it hasn't patched in.
+	EndsRelease   bool `protobuf:"varint,2,opt,name=ends_release,json=endsRelease,proto3" json:"ends_release,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -8547,6 +8552,13 @@ func (x *DiscardHoldResponse) GetHold() *Hold {
 		return x.Hold
 	}
 	return nil
+}
+
+func (x *DiscardHoldResponse) GetEndsRelease() bool {
+	if x != nil {
+		return x.EndsRelease
+	}
+	return false
 }
 
 // QuarantineFile is one stream's quarantined rows from one committed
@@ -9607,9 +9619,10 @@ const file_openetl_api_v1_pipeline_proto_rawDesc = "" +
 	"\x12DiscardHoldRequest\x12\x16\n" +
 	"\x06parent\x18\x01 \x01(\tR\x06parent\x12\x16\n" +
 	"\x06stream\x18\x02 \x01(\tR\x06stream\x12\x16\n" +
-	"\x06column\x18\x03 \x01(\tR\x06column\"?\n" +
+	"\x06column\x18\x03 \x01(\tR\x06column\"b\n" +
 	"\x13DiscardHoldResponse\x12(\n" +
-	"\x04hold\x18\x01 \x01(\v2\x14.openetl.api.v1.HoldR\x04hold\"\xba\x02\n" +
+	"\x04hold\x18\x01 \x01(\v2\x14.openetl.api.v1.HoldR\x04hold\x12!\n" +
+	"\fends_release\x18\x02 \x01(\bR\vendsRelease\"\xba\x02\n" +
 	"\x0eQuarantineFile\x12\x16\n" +
 	"\x06stream\x18\x01 \x01(\tR\x06stream\x12\x16\n" +
 	"\x06output\x18\x02 \x01(\bR\x06output\x12\x12\n" +

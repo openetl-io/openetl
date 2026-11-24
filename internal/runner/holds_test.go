@@ -468,8 +468,9 @@ func TestADiscardEndsAReleaseOfAStreamThatStopsHolding(t *testing.T) {
 		HeldURL: "file:///held", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"), Destination: holdingDest{},
 		Streams: []Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}},
 	}
+	// As the API marks them, with the 3 cells of x the person saw.
 	ends := func(id, col string, since checkpoint.RecordRef) Release {
-		return Release{ID: id, Stream: "r", Column: col, Since: since, Ends: true}
+		return Release{ID: id, Stream: "r", Column: col, Since: since, Ends: true, EndsCells: 3}
 	}
 	stops := func(want ...string) {
 		t.Helper()
@@ -561,28 +562,45 @@ func TestADiscardOfAReleaseInProgressEndsWithIt(t *testing.T) {
 	}
 }
 
-// A release that a person discarded once a run had taken it, though no
-// run recorded patching it in, is a release where the stream holds, and a
-// discard of its hold where the stream doesn't.
-func TestADiscardOfATakenReleaseGoesOnWhereTheStreamHolds(t *testing.T) {
-	w := checkpoint.RecordRef{Generation: 1, Epoch: 2}
+// A release that a person discarded is a discard of its hold unless the
+// replay in the record took it: a run may have fetched it, but one that
+// recorded no replay of it patched nothing in. So a release that a run
+// deferred while another column was being patched in, then discarded, is
+// discarded once that replay ends, though the stream holds, and so is one
+// whose attempt failed before it recorded its replay; also its cells.
+func TestADiscardOfAReleaseNoReplayTookIsADiscard(t *testing.T) {
+	w0, w := checkpoint.RecordRef{Generation: 1, Epoch: 1}, checkpoint.RecordRef{Generation: 1, Epoch: 2}
 	j := &Job{
 		HeldURL: "file:///held", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"), Destination: holdingDest{},
-		Streams:  []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}},
-		Releases: []Release{{ID: "r1", Stream: "s", Column: "y", Since: w, Ends: true}},
+		Streams: []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{Cells: true}}},
 	}
-	restored := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{
-		Columns: []checkpoint.ColumnHold{{Column: "y", Since: w, Reason: "a view depends on it"}},
+	x := checkpoint.ColumnHold{Column: "x", Since: w, Reason: "a view depends on it"}
+	cells := map[string]checkpoint.CellHold{"x": {Cells: 2, Since: w}}
+	replaying := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{x}, Cells: cells,
+		Replay: &checkpoint.Replay{Columns: []string{"c"}, Since: map[string]checkpoint.RecordRef{"c": w0}, WholeReleases: map[string]string{"c": "rc"}},
 	}}}}
-	holds, _, err := j.startHolds(t.Context(), restored, nil)
+	// A run fetches the release of x, and defers it while c is patched in.
+	j.Releases = []Release{{ID: "rx", Stream: "s", Column: "x", Since: w}}
+	holds, _, err := j.startHolds(t.Context(), replaying, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h := holds["s"]; h.Replay == nil || !h.Replay.Took("y", "r1") || len(h.Columns) != 0 {
-		t.Errorf("holds %+v, where the stream holds", h)
+	if h := holds["s"]; len(h.Columns) != 1 || h.Replay.Took("x", "rx") {
+		t.Fatalf("the release of x was taken while c is patched in: %+v", h)
+	}
+	// The person discards it, and c's replay ends.
+	done := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: &checkpoint.Holds{Columns: []checkpoint.ColumnHold{x}, Cells: cells}}}}
+	j.Releases = []Release{{ID: "rx", Stream: "s", Column: "x", Since: w, Ends: true}}
+	holds, _, err = j.startHolds(t.Context(), done, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := holds["s"]; h.Replay != nil || len(h.Columns) != 1 || !h.Columns[0].Discarded || len(h.Cells) != 0 {
+		t.Errorf("the discarded release, which no run started, isn't a discard where the stream holds: %+v", h)
 	}
 	j.Streams = []Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}}
-	if _, _, err := j.startHolds(t.Context(), restored, nil); err != nil {
+	if _, _, err := j.startHolds(t.Context(), done, nil); err != nil {
 		t.Errorf("where the stream doesn't hold: %v", err)
 	}
 }
@@ -590,7 +608,9 @@ func TestADiscardOfATakenReleaseGoesOnWhereTheStreamHolds(t *testing.T) {
 // A release in progress is named by the release it took for its whole
 // life: a column released whole that holds cells while it's patched in,
 // which the API then lists by its cells, is still ended by a discard of
-// that release once the stream stops holding, the cells with it.
+// that release once the stream stops holding, the cells with it. Cells
+// held after the discard, which the person didn't see, stop the run, as
+// any held values do, until the person discards again.
 func TestADiscardEndsAReleaseWhoseColumnHoldsCellsSince(t *testing.T) {
 	w := checkpoint.RecordRef{Generation: 1, Epoch: 2}
 	j := &Job{
@@ -609,18 +629,27 @@ func TestADiscardEndsAReleaseWhoseColumnHoldsCellsSince(t *testing.T) {
 	if h.Replay == nil || !h.Replay.Took("y", "r1") {
 		t.Fatalf("replay %+v", h.Replay)
 	}
-	// A value of y doesn't fit while the replay goes on.
-	h = mergeHolds(h, &ReadyHolds{Cells: map[string]checkpoint.CellHold{"y": {Cells: 1, Reason: "nan"}}}, checkpoint.RecordRef{Generation: 1, Epoch: 5}, time.Now())
+	// The person discards the release, before any cell of y is held.
+	discarded := Release{ID: "r1", Stream: "s", Column: "y", Since: w, Ends: true}
+	// Values of y don't fit while the replay goes on.
+	h = mergeHolds(h, &ReadyHolds{Cells: map[string]checkpoint.CellHold{"y": {Cells: 3, Reason: "nan"}}}, checkpoint.RecordRef{Generation: 1, Epoch: 5}, time.Now())
 	if h.Replay == nil || h.Cells["y"].Since == w {
 		t.Fatalf("holds %+v", h)
 	}
-	// The stream stops holding, and the person discards the release.
+	// The stream stops holding.
 	j.Streams = []Stream{{Name: "a", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{}}}
 	stopped := &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: h}}}
 	if _, _, err := j.startHolds(t.Context(), stopped, nil); errs.CodeOf(err) != errs.SchemaDrift {
 		t.Fatalf("got %v, want SCHEMA_DRIFT", err)
 	}
-	j.Releases = []Release{{ID: "r1", Stream: "s", Column: "y", Since: w, Ends: true}}
+	j.Releases = []Release{discarded}
+	_, _, err = j.startHolds(t.Context(), stopped, nil)
+	if errs.CodeOf(err) != errs.SchemaDrift || !strings.Contains(err.Error(), "stream s holds 3 held cells of y, and") {
+		t.Errorf("with the cells held after the discard, got %v, want them held", err)
+	}
+	// The person discards again, seeing the 3 cells.
+	discarded.EndsCells = 3
+	j.Releases = []Release{discarded}
 	if _, _, err := j.startHolds(t.Context(), stopped, nil); err != nil {
 		t.Errorf("discarded: %v", err)
 	}
@@ -723,6 +752,58 @@ func TestAReleaseReadsFromTheCellHoldsItClears(t *testing.T) {
 	}
 	if want := files[1:]; !slices.Equal(r.Files, want) {
 		t.Errorf("the release of x's hold since epoch 5 reads %v, want %v, from x's cell hold", r.Files, want)
+	}
+}
+
+// A column the destination refuses again while its release is being
+// patched in is held again from where its hold started, refused by the
+// release, and so are its released cells. So a later release reads every
+// value held since then, those the replay hadn't patched in among them;
+// those it had are patched in again, by their IDs.
+func TestAColumnRefusedWhileItsReleaseIsPatchedInKeepsItsValues(t *testing.T) {
+	files, start := heldEpochs(t)
+	// c is held whole since epoch 2, and has cells held since epoch 3.
+	h := &checkpoint.Holds{
+		Columns: []checkpoint.ColumnHold{{Column: "c", Since: epoch(2), Reason: "refused"}},
+		Cells:   map[string]checkpoint.CellHold{"c": {Cells: 4, Since: epoch(3)}},
+		Epochs:  []checkpoint.HeldEpochs{{Generation: 1, From: 1, To: 6}},
+	}
+	j := &Job{Releases: []Release{{ID: "rw", Stream: "s", Column: "c", Since: epoch(2)}, {ID: "rc", Stream: "s", Column: "c", Since: epoch(3)}}}
+	r := start(h, j)
+	if r == nil || !slices.Equal(r.Files, files[1:]) || !r.Took("c", "rw") || !r.Took("c", "rc") {
+		t.Fatalf("replay %+v", r)
+	}
+	// The replay is recorded with the files of epochs 2 and 3 patched in.
+	h = mergeHolds(&checkpoint.Holds{Cells: h.Cells, Epochs: h.Epochs, Replay: r}, &ReadyHolds{Replayed: &ReplayProgress{File: 2}}, epoch(7), time.Now())
+
+	// The stream widens c again, and the destination refuses it.
+	j = &Job{
+		HeldURL: "file:///held", Log: checkpoint.NewLog(checkpoint.NewMemStore(), "org", "pipe"), Destination: holdingDest{},
+		Streams: []Stream{{Name: "s", Replay: source.Exact, Mode: destination.Append, PrimaryKey: []string{"id"}, Holds: &StreamHolds{Cells: true}}},
+		refused: []RefusedColumn{{RefusedColumn: destination.RefusedColumn{Stream: "s", Column: "c", Reason: "still too narrow"}}},
+	}
+	holds, _, err := j.startHolds(t.Context(), &checkpoint.Record{Streams: map[string]checkpoint.StreamState{"s": {Holds: h}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h = holds["s"]
+	if h.Replay != nil || len(h.Columns) != 1 {
+		t.Fatalf("c, refused again, is held %+v, replay %+v", h.Columns, h.Replay)
+	}
+	if c := h.Columns[0]; c.Since != epoch(2) || c.Started.IsZero() || c.Refused == nil || c.Refused.Release != "rw" {
+		t.Errorf("c, refused again, is held %+v", c)
+	}
+	if c := h.Cells["c"]; c.Since != epoch(3) || c.Refused == nil || c.Refused.Release != "rc" {
+		t.Errorf("c's cells, refused again, are held %+v", c)
+	}
+	// The engine holds c whole, and a later release, as the API lists it,
+	// reads the files of every value held since epoch 2.
+	h = mergeHolds(h, &ReadyHolds{Holding: []checkpoint.ColumnHold{{Column: "c", Reason: "refused"}}}, epoch(8), time.Now())
+	r = start(h, &Job{Releases: []Release{
+		{ID: "r2", Stream: "s", Column: "c", Since: h.Columns[0].Since}, {ID: "r2c", Stream: "s", Column: "c", Since: h.Cells["c"].Since},
+	}})
+	if r == nil || !slices.Equal(r.Files, files[1:]) || r.First["c"] != 0 {
+		t.Errorf("the later release reads %+v, from file %d for c held whole, want %v from the first", r.Files, r.First["c"], files[1:])
 	}
 }
 
