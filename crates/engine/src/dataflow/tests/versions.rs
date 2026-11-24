@@ -1016,3 +1016,231 @@ async fn first_read_times() {
         }
     }
 }
+
+/// How a job of many streams that keep versions went: a read's time, the
+/// most the process allocated above where it started, sampled each
+/// millisecond, the runs its barriers wrote, merges, the runs the record
+/// names, its pending sets' bytes and the block caches'. `None` where the
+/// streams keep no versions.
+struct Many {
+    took: std::time::Duration,
+    peak: u64,
+    base: u64,
+    kept: Option<Kept>,
+}
+
+struct Kept {
+    runs: u64,
+    written: u64,
+    merges: u64,
+    named: usize,
+    pending: usize,
+    caches: usize,
+}
+
+/// Two reads of `streams` streams on `lanes` lanes and writer lanes, in a
+/// job of `memory` bytes: `rows` rows of each, then `changed` of them with
+/// other values, in `epochs` epochs a read, the streams keeping versions
+/// or not.
+async fn many_streams(
+    streams: usize,
+    lanes: u32,
+    (rows_each, changed): (usize, usize),
+    memory: u64,
+    epochs: u64,
+    versions: bool,
+) -> Vec<Many> {
+    let names: Vec<String> = (0..streams).map(|s| format!("t{s}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let dir = tempfile::tempdir().unwrap();
+    let mut from: Option<EpochReady> = None;
+    let mut out = Vec::new();
+    for sync in 1..=2u64 {
+        let mut req = crate::plan::tests::lanes_request(&refs, lanes, lanes);
+        req.generation = sync;
+        req.first_epoch = 1 + (sync - 1) * epochs;
+        req.state_url = format!("file://{}", dir.path().join("state").display());
+        req.restored_snapshots = from.as_ref().map_or(Vec::new(), |r| r.snapshots.clone());
+        req.limits = Some(openetl_proto::engine::v1::Limits {
+            memory_bytes: memory,
+            ..Default::default()
+        });
+        for s in &mut req.streams {
+            s.restored_schema = from
+                .as_ref()
+                .and_then(|r| r.schemas.get(&s.name).cloned())
+                .unwrap_or_default();
+            s.primary_key = vec!["id".into()];
+            s.cursor_field = "at".into();
+            s.read_start_micros = sync as i64 * 1000;
+            if versions {
+                s.versions_operator = format!("versions.{}", s.name);
+            }
+            if lanes > 1 {
+                s.exchange = Some(openetl_proto::engine::v1::Exchange {
+                    columns: vec!["id".into()],
+                });
+            }
+        }
+        if !versions {
+            req.state_url.clear();
+        }
+        let given = match sync {
+            1 => rows_each,
+            _ => changed,
+        };
+        let plan = Arc::new(Plan::from_request(req).unwrap());
+        let base = crate::memory::held();
+        let peak = Arc::new(std::sync::atomic::AtomicU64::new(base));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sampler = {
+            let (peak, done) = (peak.clone(), done.clone());
+            tokio::spawn(async move {
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    peak.fetch_max(crate::memory::held(), std::sync::atomic::Ordering::Relaxed);
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            })
+        };
+        let started = std::time::Instant::now();
+        let mut h = start_plan(plan.clone());
+        let (closed, none) = tokio::sync::mpsc::channel(1);
+        drop(closed);
+        let mut events = std::mem::replace(&mut h.events, none);
+        let readies = tokio::spawn(async move { ready(&mut events).await });
+        let mut ins = std::mem::take(&mut h.ins);
+        let first = 1 + (sync - 1) * epochs;
+        let feed = tokio::spawn(async move {
+            let per = given.div_ceil(epochs as usize).max(1);
+            let mut at = 0;
+            for e in 0..epochs {
+                let upto = (at + per).min(given);
+                for s in 0..streams {
+                    let rs: Vec<String> = (at..upto)
+                        .map(|i| format!(r#"{{"id": {i}, "name": "r{sync}", "at": "2024-05-01"}}"#))
+                        .collect();
+                    if rs.is_empty() {
+                        continue;
+                    }
+                    let page = rows(&rs.iter().map(String::as_str).collect::<Vec<_>>());
+                    let lane = s % ins.len();
+                    put(&mut ins[lane], FrameKind::Rows, s as u32, page).await;
+                }
+                at = upto;
+                for w in &mut ins {
+                    for s in 0..streams {
+                        let b = epoch_barrier(sync, first + e);
+                        put(w, FrameKind::Barrier, s as u32, b).await;
+                    }
+                }
+            }
+            for w in &mut ins {
+                for s in 0..streams {
+                    put(w, FrameKind::EndOfStream, s as u32, vec![]).await;
+                }
+                w.shutdown().await.unwrap();
+            }
+        });
+        let (outs, _) = h.finish().await;
+        feed.await.unwrap();
+        let took = started.elapsed();
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        sampler.await.unwrap();
+        let ready = readies.await.unwrap();
+        assert_eq!(written(&outs).len(), streams * given);
+        let last = ready.last().unwrap().clone();
+        let kept = plan.state.job.as_ref().map(|job| {
+            let (mut runs, mut written, mut merges) = (0, 0, 0);
+            for n in &names {
+                let c = job.stores(&format!("versions.{n}")).counts();
+                runs += c.barrier.count;
+                written += c.barrier.bytes;
+                merges += c.merges;
+            }
+            Kept {
+                runs,
+                written,
+                merges,
+                named: last.snapshots.iter().map(|s| s.runs.len()).sum(),
+                pending: last.snapshots.iter().map(|s| s.pending.len()).sum(),
+                caches: job.cache_bytes(),
+            }
+        });
+        out.push(Many {
+            took,
+            peak: peak.load(std::sync::atomic::Ordering::Relaxed) - base,
+            base,
+            kept,
+        });
+        from = Some(last);
+    }
+    out
+}
+
+/// The versions of many streams, each with a few rows on each writer lane,
+/// share the job's budget: a record carries as much of their pending sets
+/// as it may, rather than each stream's small share of it, so far fewer
+/// lanes write a run at each barrier than there are lanes with changes.
+#[tokio::test(flavor = "multi_thread")]
+async fn versions_of_many_streams_share_the_jobs_budget() {
+    let reads = many_streams(300, 2, (100, 100), 768 << 20, 1, true).await;
+    for r in &reads {
+        let k = r.kept.as_ref().unwrap();
+        println!("{} runs written, {} bytes pending", k.runs, k.pending);
+        assert!(k.pending <= 1 << 20, "{} bytes pending", k.pending);
+        assert!(k.runs < 500, "{} runs of 600 lanes with changes", k.runs);
+    }
+}
+
+/// A job of `STREAMS` streams (default 300) that keep versions, on `LANES`
+/// lanes and writer lanes (default 8), with `MEMORY` bytes (default 768
+/// MiB, the smallest engine's), reads `ROWS` rows of each (default 10),
+/// then each again with `CHANGED` of them changed (default all), in
+/// `EPOCHS` epochs a read (default 1); `VERSIONS=off` keeps none, for
+/// what the rest takes. Each read prints what [`Many`] has. A measure, not
+/// a check:
+/// `cargo test -p openetl-engine versions_of_many_streams -- --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn versions_of_many_streams() {
+    let var = |name: &str, default: u64| -> u64 {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let (streams, lanes) = (var("STREAMS", 300) as usize, var("LANES", 8) as u32);
+    let (rows_each, memory) = (var("ROWS", 10) as usize, var("MEMORY", 768 << 20));
+    let changed = var("CHANGED", rows_each as u64) as usize;
+    let epochs = var("EPOCHS", 1).max(1);
+    let versions = std::env::var("VERSIONS").as_deref() != Ok("off");
+    let reads = many_streams(
+        streams,
+        lanes,
+        (rows_each, changed),
+        memory,
+        epochs,
+        versions,
+    );
+    for (i, r) in reads.await.iter().enumerate() {
+        let what = format!(
+            "{streams} streams on {lanes} lanes, read {} of {rows_each} rows each in {epochs} epochs: {:?}, peak {} MiB above {} MiB",
+            i + 1,
+            r.took,
+            r.peak >> 20,
+            r.base >> 20
+        );
+        match &r.kept {
+            None => eprintln!("{what}, no versions"),
+            Some(k) => eprintln!(
+                "{what}, {} runs written ({} KiB), {} merges, {} runs named, pending sets {} bytes, block caches {} KiB",
+                k.runs,
+                k.written >> 10,
+                k.merges,
+                k.named,
+                k.pending,
+                k.caches >> 10
+            ),
+        }
+    }
+}

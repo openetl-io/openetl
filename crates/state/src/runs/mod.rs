@@ -438,23 +438,28 @@ struct Shared {
     /// The disk cache, and this store's namespace in it.
     disk: Option<(Arc<DiskCache>, String)>,
     counters: Counters,
-    cache: Mutex<BlockCache>,
-    /// The next run a lane opens or writes: its blocks' key in the cache.
-    next_id: AtomicU64,
+    /// Its own, or its [`Pool`]'s.
+    cache: Arc<Mutex<BlockCache>>,
     /// The most bytes a lane held at once reading values sections whole.
     learn_peak: AtomicU64,
     /// The bytes its lanes' merges in flight take, of the merge config's
-    /// `max_bytes`.
-    merging: AtomicU64,
+    /// `max_bytes`: its own, or its [`Pool`]'s.
+    merging: Arc<AtomicU64>,
+    /// What its [`Pool`]'s records carry of pending sets, if it has one.
+    carried: Option<Arc<Carried>>,
     /// Each lane's last early flush, by its generation and key groups: the
     /// epoch, and the flush's number. A store opened again on a lane's
     /// groups counts on from it, so no name is written twice.
     early: Mutex<HashMap<(u64, KeyGroupRange), (u64, u32)>>,
 }
 
+/// The next run a lane opens or writes, of any store: its blocks' key in a
+/// cache, which a [`Pool`]'s stores share.
+static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
+
 impl Shared {
     fn id(&self) -> u64 {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        NEXT_RUN.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Bytes `offset` to `offset + len` of run `name`, if the disk cache
@@ -490,6 +495,84 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// What the stores of several operators share, where they take one budget
+/// rather than each its own: a block cache, the bytes their merges in
+/// flight take, and what a record carries of their lanes' pending sets.
+#[derive(Clone)]
+pub struct Pool {
+    cache: Arc<Mutex<BlockCache>>,
+    merging: Arc<AtomicU64>,
+    carried: Arc<Carried>,
+}
+
+impl Pool {
+    /// A pool of a block cache of `cache_bytes`, whose records carry at
+    /// most `pending_bytes` of its stores' lanes' pending sets each. Its
+    /// stores' merges in flight take their config's `max_bytes` together.
+    pub fn new(cache_bytes: usize, pending_bytes: usize) -> Self {
+        Self {
+            cache: Arc::new(Mutex::new(BlockCache::new(cache_bytes))),
+            merging: Arc::new(AtomicU64::new(0)),
+            carried: Arc::new(Carried {
+                bytes: pending_bytes,
+                epochs: Mutex::default(),
+            }),
+        }
+    }
+
+    /// The block cache's bytes.
+    pub fn cache_bytes(&self) -> usize {
+        lock(&self.cache).bytes()
+    }
+}
+
+/// What a pool's records carry of its lanes' pending sets, by epoch: a
+/// lane's barrier takes its set's bytes of its epoch's record, while they
+/// fit, so each record carries at most `bytes`, whichever lanes' sets
+/// those are and in whatever order their barriers come.
+struct Carried {
+    bytes: usize,
+    epochs: Mutex<CarriedEpochs>,
+}
+
+#[derive(Default)]
+struct CarriedEpochs {
+    /// The bytes each epoch's record carries so far.
+    taken: BTreeMap<u64, usize>,
+    /// Epochs before this one are no longer counted: a set of one is
+    /// committed.
+    floor: u64,
+}
+
+/// The epochs a pool counts at once: a lane further behind the newest
+/// commits its pending set.
+const CARRIED_EPOCHS: usize = 64;
+
+impl Carried {
+    /// Whether a lane's pending set of `bytes` rides in epoch `epoch`'s
+    /// record, which then carries them.
+    fn take(&self, epoch: u64, bytes: usize) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        let mut c = lock(&self.epochs);
+        if epoch < c.floor {
+            return false;
+        }
+        let taken = c.taken.entry(epoch).or_default();
+        let fits = taken.checked_add(bytes).is_some_and(|t| t <= self.bytes);
+        if fits {
+            *taken += bytes;
+        }
+        while c.taken.len() > CARRIED_EPOCHS {
+            if let Some((e, _)) = c.taken.pop_first() {
+                c.floor = e + 1;
+            }
+        }
+        fits
+    }
+}
+
 /// Stores of runs, for the lanes of a job or a worker: they share its
 /// config, its block cache and its counts.
 #[derive(Clone)]
@@ -500,7 +583,7 @@ pub struct RunStores {
 
 impl RunStores {
     pub fn new(objects: Arc<dyn Objects>, config: RunConfig) -> Self {
-        Self::cached(objects, config, None)
+        Self::cached(objects, config, None, None)
     }
 
     /// Stores over `disk`, if any, under namespace `space`: each name a
@@ -511,15 +594,38 @@ impl RunStores {
         disk: Arc<DiskCache>,
         space: &str,
     ) -> Self {
-        Self::cached(objects, config, Some((disk, space.to_owned())))
+        Self::cached(objects, config, Some((disk, space.to_owned())), None)
+    }
+
+    /// Stores that take `pool`'s block cache, merges' bytes and records'
+    /// pending sets with the other stores of it, in place of their own,
+    /// over `disk` as [`RunStores::with_disk`]'s, if any. `config`'s
+    /// `cache_bytes` is unused; its merges' `max_bytes` bounds the pool's
+    /// merges in flight, so its stores take the same.
+    pub fn pooled(
+        objects: Arc<dyn Objects>,
+        config: RunConfig,
+        disk: Option<(Arc<DiskCache>, &str)>,
+        pool: &Pool,
+    ) -> Self {
+        let disk = disk.map(|(d, space)| (d, space.to_owned()));
+        Self::cached(objects, config, disk, Some(pool))
     }
 
     fn cached(
         objects: Arc<dyn Objects>,
         config: RunConfig,
         disk: Option<(Arc<DiskCache>, String)>,
+        pool: Option<&Pool>,
     ) -> Self {
-        let cache = Mutex::new(BlockCache::new(config.cache_bytes));
+        let (cache, merging, carried) = match pool {
+            Some(p) => (p.cache.clone(), p.merging.clone(), Some(p.carried.clone())),
+            None => (
+                Arc::new(Mutex::new(BlockCache::new(config.cache_bytes))),
+                Arc::default(),
+                None,
+            ),
+        };
         Self {
             shared: Arc::new(Shared {
                 objects,
@@ -527,9 +633,9 @@ impl RunStores {
                 disk,
                 counters: Counters::default(),
                 cache,
-                next_id: AtomicU64::new(0),
                 learn_peak: AtomicU64::new(0),
-                merging: AtomicU64::new(0),
+                merging,
+                carried,
                 early: Mutex::default(),
             }),
             pending: PendingLimit::default(),
@@ -2237,6 +2343,13 @@ impl Store for RunStore {
 
     fn flushes(&self) -> bool {
         true
+    }
+
+    fn carry(&self, epoch: u64, bytes: usize, share: usize) -> bool {
+        match &self.shared.carried {
+            Some(c) => c.take(epoch, bytes),
+            None => bytes <= share,
+        }
     }
 
     fn flush<'a>(

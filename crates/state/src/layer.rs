@@ -311,8 +311,9 @@ impl Layer {
     /// The barrier of epoch `epoch`, the open one: adds its changes to the
     /// pending set, and returns the snapshots the record names for the
     /// lane. They carry the pending set while its encoding is within the
-    /// lane's share; past it, the barrier commits the set to the store,
-    /// and the set starts empty. What the horizons passed leaves the set,
+    /// lane's share, or what's left of its store's pool's for the epoch
+    /// ([`Store::carry`]); past it, the barrier commits the set to the
+    /// store, and the set starts empty. What the horizons passed leaves the set,
     /// and so do deletes of what the store can't hold. The snapshots count
     /// once the record is written. Another epoch is refused; after any
     /// other error the layer is unusable, and the lane opens again from a
@@ -335,7 +336,10 @@ impl Layer {
         pending.retain(|k, v| {
             !self.passed(k, v.as_deref()) && (v.is_some() || self.store.may_hold(k))
         });
-        let changes: Vec<Change> = match pending::encoded_len(pending.iter()) <= self.share {
+        let carried = self
+            .store
+            .carry(epoch, pending::encoded_len(pending.iter()), self.share);
+        let changes: Vec<Change> = match carried {
             true => Vec::new(),
             false => std::mem::take(&mut pending).into_iter().collect(),
         };

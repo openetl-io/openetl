@@ -370,3 +370,85 @@ async fn a_pending_set_that_doesnt_read_fails_the_restore() {
     }];
     assert!(Layer::open(&s, 2, 2, range, &old).await.is_ok());
 }
+
+/// Stores of several operators that share a pool: a record carries at most
+/// the pool's bytes of all their lanes' pending sets, each epoch's its own,
+/// and a lane with changes takes what's left of them, rather than a share
+/// of its own that a lane without changes leaves unused; their blocks are
+/// in one cache, within the pool's bound.
+#[tokio::test]
+async fn stores_of_a_pool_share_what_a_record_carries() {
+    let pool = openetl_state::Pool::new(64 << 10, 3000);
+    let objects: Vec<Arc<ObjectStorage>> = (0..3).map(|_| bucket()).collect();
+    let pooled: Vec<RunStores> = objects
+        .iter()
+        .map(|o| {
+            RunStores::pooled(o.clone(), RunConfig::default(), None, &pool).with_pending(
+                PendingLimit {
+                    bytes: 1000,
+                    key_groups: GROUPS,
+                },
+            )
+        })
+        .collect();
+    let mut lanes = Vec::new();
+    for s in &pooled {
+        lanes.push(open(s, 1, 1, 4, &[]).await);
+    }
+    let value = Bytes::from(vec![7u8; 100]);
+    // Epoch 1: operator 0's lane 0 alone changes, 20 values, which pass
+    // its 250-byte share and fit the pool's 3000.
+    for k in 0..20u32 {
+        let key = format!("k{k}");
+        lanes[0][0].put(OP, KeyRef::new(0, key.as_bytes()), value.clone());
+    }
+    let mut carried = 0;
+    for ls in &mut lanes {
+        for l in ls.iter_mut() {
+            let snaps = l.barrier(1).await.unwrap();
+            carried += snaps.iter().map(|s| s.pending.len()).sum::<usize>();
+            assert_eq!(l.commits(), 0, "a lane committed");
+        }
+    }
+    assert!(carried > 1000 && carried <= 3000, "{carried}");
+    // Epoch 2: every lane of every operator changes as much: the record
+    // carries what the pool holds, and the rest commit.
+    for ls in &mut lanes {
+        for l in ls.iter_mut() {
+            let g = l.range().first;
+            for k in 0..20u32 {
+                let key = format!("e2-{k}");
+                l.put(OP, KeyRef::new(g, key.as_bytes()), value.clone());
+            }
+        }
+    }
+    let (mut carried, mut commits) = (0, 0);
+    for ls in &mut lanes {
+        for l in ls.iter_mut() {
+            let snaps = l.barrier(2).await.unwrap();
+            carried += snaps.iter().map(|s| s.pending.len()).sum::<usize>();
+            commits += l.commits();
+        }
+    }
+    assert!(carried <= 3000, "{carried}");
+    assert!((10..12).contains(&commits), "{commits} lanes committed");
+    // Every value reads back, after a restore too.
+    for (s, ls) in pooled.iter().zip(&mut lanes) {
+        let mut snaps = Vec::new();
+        for l in ls.iter_mut() {
+            let g = l.range().first;
+            let key = b"e2-19";
+            assert_eq!(
+                l.get(OP, &[KeyRef::new(g, key)]).await.unwrap(),
+                [Some(value.clone())]
+            );
+            snaps.extend(l.barrier(3).await.unwrap());
+        }
+        let mut back = open(s, 2, 4, 1, &snaps).await;
+        let got = back[0].get(OP, &[KeyRef::new(16, b"e2-0")]).await.unwrap();
+        assert_eq!(got, [Some(value.clone())]);
+    }
+    assert!(pool.cache_bytes() > 0 && pool.cache_bytes() <= 64 << 10);
+    let own: usize = pooled.iter().map(RunStores::cache_bytes).sum();
+    assert_eq!(own, 3 * pool.cache_bytes(), "one cache");
+}

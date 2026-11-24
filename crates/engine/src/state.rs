@@ -28,7 +28,7 @@ use bytes::Bytes;
 use openetl_proto::connector::v1::ErrorCode;
 use openetl_proto::engine::v1::{KeyGroupRange as ProtoRange, StateSnapshot};
 use openetl_state::runs::{MergeConfig, ObjectStorage, RunConfig, RunStores, runs};
-use openetl_state::{DiskCache, Error as StateError, KeyGroupRange, PendingLimit, Snapshot};
+use openetl_state::{DiskCache, Error as StateError, KeyGroupRange, PendingLimit, Pool, Snapshot};
 
 use crate::error::JobError;
 use crate::store::Location;
@@ -80,8 +80,14 @@ pub struct JobState {
     config: RunConfig,
     /// Each operator's.
     pending: PendingLimit,
+    /// What records carry at most of all operators' pending sets.
+    pending_bytes: usize,
     /// Each operator's, which its lanes share with their block cache.
     stores: Mutex<HashMap<String, RunStores>>,
+    /// The operators whose stores take one pool's block cache, merges'
+    /// bytes and records' pending sets, their part of the job's, and their
+    /// stores' config.
+    pooled: Option<(std::collections::HashSet<String>, Pool, RunConfig)>,
     operators: usize,
     /// The job's memory; 0 for no limit.
     memory: u64,
@@ -156,6 +162,8 @@ impl JobState {
                 bytes: pending / operators.max(1),
                 key_groups,
             },
+            pending_bytes: pending,
+            pooled: None,
             config: RunConfig {
                 cache_bytes: cache,
                 merge: Some(MergeConfig {
@@ -174,6 +182,42 @@ impl JobState {
             #[cfg(test)]
             peak: Default::default(),
         })
+    }
+
+    /// Has `operators`, of the job's, share one [`Pool`] in place of each
+    /// its own block cache, merges' bytes and pending share: their part of
+    /// the job's, as they are of its operators, and of the pending bytes,
+    /// as this engine's lanes' `groups` are of the pipeline's key groups.
+    /// So the state of many streams' versions stays within the job's
+    /// budget, rather than each stream's taking at least the least an
+    /// operator takes, and a record carries the pending sets of the lanes
+    /// with changes, rather than a small share of each lane's.
+    pub fn pooled(mut self, operators: std::collections::HashSet<String>, groups: u32) -> Self {
+        let (v, n) = (operators.len(), self.operators);
+        if v == 0 {
+            return self;
+        }
+        let most = MAX_CACHE.saturating_mul(v);
+        let cache = match self.memory {
+            0 => most,
+            m => usize::try_from(m / CACHE_SHARE * v as u64 / n as u64)
+                .unwrap_or(most)
+                .clamp(MIN_CACHE, most),
+        };
+        let key_groups = u128::from(self.pending.key_groups.max(1));
+        let pending = self.pending_bytes as u128 * v as u128 / n as u128;
+        let pending = pending * u128::from(groups.min(self.pending.key_groups)) / key_groups;
+        let config = RunConfig {
+            cache_bytes: cache,
+            merge: Some(MergeConfig {
+                max_bytes: cache as u64,
+                ..MergeConfig::default()
+            }),
+            ..RunConfig::default()
+        };
+        let pool = Pool::new(cache, usize::try_from(pending).unwrap_or(usize::MAX));
+        self.pooled = Some((operators, pool, config));
+        self
     }
 
     /// Whether the engine is near its memory limit.
@@ -226,19 +270,25 @@ impl JobState {
             }
             held.values().sum()
         };
-        let caches: usize = self
-            .stores
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .values()
-            .map(RunStores::cache_bytes)
-            .sum();
-        let all = (lanes + caches) as u64;
+        let all = (lanes + self.cache_bytes()) as u64;
         crate::memory::set_state(all);
         #[cfg(test)]
         self.peak
             .fetch_max(all, std::sync::atomic::Ordering::Relaxed);
         all
+    }
+
+    /// What the block caches of the job's operators hold: a pool's once.
+    pub fn cache_bytes(&self) -> usize {
+        let own: usize = self
+            .stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|(op, _)| !self.is_pooled(op))
+            .map(|(_, s)| s.cache_bytes())
+            .sum();
+        own + self.pooled.as_ref().map_or(0, |p| p.1.cache_bytes())
     }
 
     /// What the job's state may hold in memory, in all, near the engine's
@@ -270,6 +320,10 @@ impl JobState {
         format!("{base}/{}/{run}", dir(operator))
     }
 
+    fn is_pooled(&self, operator: &str) -> bool {
+        self.pooled.as_ref().is_some_and(|p| p.0.contains(operator))
+    }
+
     /// Where `operator`'s lanes keep their runs.
     pub fn stores(&self, operator: &str) -> RunStores {
         let mut stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
@@ -278,14 +332,16 @@ impl JobState {
             .or_insert_with(|| {
                 let prefix = self.location.prefix.clone().join(dir(operator));
                 let objects = Arc::new(ObjectStorage::new(self.location.store.clone(), prefix));
-                match &self.disk {
-                    Some(d) => RunStores::with_disk(
-                        objects,
-                        self.config.clone(),
-                        d.clone(),
-                        &dir(operator),
-                    ),
-                    None => RunStores::new(objects, self.config.clone()),
+                let space = dir(operator);
+                match (&self.pooled, &self.disk) {
+                    (Some((ops, pool, config)), d) if ops.contains(operator) => {
+                        let disk = d.as_ref().map(|d| (d.clone(), space.as_str()));
+                        RunStores::pooled(objects, config.clone(), disk, pool)
+                    }
+                    (_, Some(d)) => {
+                        RunStores::with_disk(objects, self.config.clone(), d.clone(), &space)
+                    }
+                    (_, None) => RunStores::new(objects, self.config.clone()),
                 }
                 .with_pending(self.pending)
             })
@@ -546,6 +602,30 @@ mod tests {
                 assert!(sum + lanes as usize >= limit.bytes, "{sum}");
             }
         }
+    }
+
+    /// Many streams' versions share one pool: its block cache and merges
+    /// take their part of the job's, rather than each the least an
+    /// operator takes, and the job counts its cache once. An operator
+    /// outside the pool keeps its own.
+    #[test]
+    fn versions_share_a_pool_of_the_jobs_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", dir.path().display());
+        let ops: std::collections::HashSet<String> =
+            (0..300).map(|i| format!("versions.t{i}")).collect();
+        let state = JobState::open(&url, false, 301, 768 << 20, 256, None, None)
+            .unwrap()
+            .pooled(ops, 128);
+        let (_, pool, config) = state.pooled.as_ref().unwrap();
+        let part = (768 << 20) / CACHE_SHARE as usize * 300 / 301;
+        assert_eq!(config.cache_bytes, part);
+        assert_eq!(config.merge.as_ref().unwrap().max_bytes, part as u64);
+        assert_eq!(state.config.cache_bytes, MIN_CACHE, "the window's own");
+        let (a, b) = (state.stores("versions.t0"), state.stores("versions.t1"));
+        assert!(!state.is_pooled("w") && state.is_pooled("versions.t7"));
+        assert_eq!(state.cache_bytes(), pool.cache_bytes());
+        assert_eq!(a.cache_bytes(), b.cache_bytes());
     }
 
     /// A lane that ends, holding state, stops counting toward the job's,

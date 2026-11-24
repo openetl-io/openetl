@@ -46,7 +46,7 @@ pub use layer::{Layer, Memory};
 pub use layout::{LAYOUT, SectionKind};
 pub use memory::MemoryBucket;
 pub use pending::VERSION as PENDING_VERSION;
-pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, RunConfig, RunStores};
+pub use runs::{DiskCache, MergeConfig, ObjectStorage, Objects, Pool, RunConfig, RunStores};
 pub use store::{BoxFuture, Change, Horizons, PendingLimit, Snapshot, Store, Stores};
 
 /// A key's group, out of the pipeline's key groups, as routing gives it.
