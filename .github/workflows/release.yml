@@ -1,7 +1,8 @@
 name: release
 
-# A release is a pushed tag: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N or -rc.N,
-# which is a prerelease. The tag's commit must be in main for vX.Y.0 and its
+# A release is a pushed tag: vX.Y.Z, or vX.Y.Z-alpha, -beta or -rc, with or
+# without a number (vX.Y.Z-alpha.N), which is a prerelease. The tag's commit
+# must be in main for vX.Y.0 and its
 # prereleases, and in the line's branch release-X.Y for a patch, vX.Y.Z with
 # Z > 0; and nightly must have run every suite on it
 # and passed: a run titled "nightly (all)", which a scheduled run is and
@@ -54,13 +55,13 @@ jobs:
           EVENT: ${{ github.event_name }}
           COMMIT: ${{ github.sha }}
         run: |
-          release='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)\.(0|[1-9][0-9]*))?$'
+          release='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)(\.(0|[1-9][0-9]*))?)?$'
           publish=false
           version=0.0.0-dev
           if [ "$EVENT" = push ]; then
             publish=true
             tag=$GITHUB_REF_NAME
-            [[ "$tag" =~ $release ]] || { echo "::error::$tag isn't a release's tag: vX.Y.Z, or vX.Y.Z-alpha.N, -beta.N or -rc.N"; exit 1; }
+            [[ "$tag" =~ $release ]] || { echo "::error::$tag isn't a release's tag: vX.Y.Z, or vX.Y.Z-alpha, -beta or -rc, with or without .N"; exit 1; }
             version=${tag#v}
           elif [ "$GITHUB_REF_TYPE" = tag ] && [[ "$GITHUB_REF_NAME" =~ $release ]]; then
             tag=$GITHUB_REF_NAME
