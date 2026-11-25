@@ -36,8 +36,7 @@ The manifests do not include Postgres or object storage. Configure those service
    resources:
      - https://github.com/openetl-io/openetl//deploy/kubernetes?ref=v{{version}}
    images:
-     - name: openetl
-       newName: ghcr.io/openetl-io/openetl
+     - name: ghcr.io/openetl-io/openetl
        newTag: {{version}}
    patches:
      - patch: |

@@ -404,7 +404,8 @@ To keep the statements in a file of their own, write `sql: { file: transforms/sh
 The engine plans the statements each time a sync or a continuous pipeline's job starts.
 
 - It runs row-wise statements: projections and renames, literals, casts, `CASE`, scalar functions, `WHERE` and `UNNEST`, and `CREATE VIEW` over them. Each statement runs on every lane of the job.
-- It refuses other statements, such as aggregates, `GROUP BY`, window functions, joins, `DISTINCT`, `ORDER BY` and `LIMIT`. The sync, or the continuous pipeline's job, fails with `CONFIG_INVALID`. The message gives the position of each statement it refuses, as `LINE:COLUMN`.
+- It runs three kinds of statements that keep state: aggregates with `GROUP BY` over a [window of time](../../pipelines/windows.md), [`OVER`](../../pipelines/over.md) with the functions and frames that it takes, and a [dedupe with `ROW_NUMBER`](../../pipelines/dedupe.md).
+- It refuses other statements, such as `GROUP BY` without a window, other window functions, joins, `DISTINCT`, `ORDER BY` and `LIMIT`. [What is refused](../sql-errors.md#whats-refused) lists them. The sync, or the continuous pipeline's job, fails with `CONFIG_INVALID`. The message gives the position of each statement it refuses, as `LINE:COLUMN`.
 - A statement reads only streams whose columns are known when the sync starts: the source declares them, as a database source does, or an earlier sync of the pipeline recorded them. If a statement reads a stream whose columns the source infers from its rows, such as `faker`'s, and no sync has recorded them, the sync fails with `CONFIG_INVALID`. Such a stream can still pass through. A column that an earlier sync recorded and the source no longer sends is null.
 - `openetl plan` and `openetl apply` plan the statements on a runner, against the columns the source's catalog declares, or where it declares none, those an earlier sync recorded. A sync plans them again when it starts, against both.
 
