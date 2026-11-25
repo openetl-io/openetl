@@ -1,0 +1,11 @@
+# Security updates only: a limit of 0 keeps version updates off.
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /libs/openetl-spark/java
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    ignore:
+      # The cluster's Spark provides Jackson, at the version that Spark ships.
+      - dependency-name: "com.fasterxml.jackson*"
