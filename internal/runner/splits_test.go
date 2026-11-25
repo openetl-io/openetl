@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -221,7 +223,7 @@ func (f *laneFlow) Run(ctx context.Context, plan runner.Plan, in <-chan runner.F
 		defer close(through)
 		for fr := range in {
 			f.mu.Lock()
-			f.frames = append(f.frames, runner.Frame{Kind: fr.Kind, Lane: fr.Lane, Stream: fr.Stream, Epoch: fr.Epoch})
+			f.frames = append(f.frames, runner.Frame{Kind: fr.Kind, Lane: fr.Lane, Stream: fr.Stream, Epoch: fr.Epoch, EndsRead: fr.EndsRead})
 			f.mu.Unlock()
 			select {
 			case through <- fr:
@@ -337,6 +339,59 @@ func TestFramesOfAStreamWithoutAKeyGoInTurn(t *testing.T) {
 	}
 	if barriers[0] == 0 || barriers[0] != barriers[1] {
 		t.Errorf("barriers on lanes %v, want as many on each", barriers)
+	}
+}
+
+// emptySplitSource splits its one stream into a and b, and b has no rows:
+// it completes without emitting any.
+type emptySplitSource struct{}
+
+func (emptySplitSource) Splits(context.Context, source.ConfiguredStream, []source.Split) ([]source.Split, error) {
+	return []source.Split{{ID: "a"}, {ID: "b"}}, nil
+}
+
+func (emptySplitSource) Read(_ context.Context, req source.ReadRequest, out source.Emitter) error {
+	for _, sp := range req.Streams[0].Splits {
+		e := out.Split("s", sp.ID)
+		if sp.ID == "a" {
+			if err := e.Rows([]json.RawMessage{json.RawMessage(`{}`)}); err != nil {
+				return err
+			}
+		}
+		if err := e.Complete(nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// A read whose last split has no rows, so is on no lane, ends on the
+// barrier of the last lane to get one: the writer that replaces the table
+// with the read knows, as does the dataflow.
+func TestAReadEndsThoughItsLastSplitHasNoRows(t *testing.T) {
+	flow := &laneFlow{Passthrough: runner.Passthrough{Convert: columnless}}
+	dest := &readsDest{}
+	j := job(checkpoint.NewLog(checkpoint.NewMemStore(), "org", "p"), "a1", emptySplitSource{}, flow, make(chan uint64, 16))
+	j.Destination = dest
+	j.Streams = []runner.Stream{{Name: "s", Replay: source.Exact, Mode: destination.Overwrite}}
+	j.Settings.CommitMaxBytes = 1 << 40
+	res, err := runner.RunAttempt(t.Context(), j)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow.mu.Lock()
+	defer flow.mu.Unlock()
+	var ends []uint64
+	for _, f := range flow.frames {
+		if f.Kind == runner.FrameBarrier && f.EndsRead {
+			ends = append(ends, f.Epoch)
+		}
+	}
+	if len(ends) != 1 || ends[0] != res.Last {
+		t.Errorf("barriers that end the read: %v, want one, of epoch %d", ends, res.Last)
+	}
+	if !slices.Contains(dest.log, fmt.Sprintf("end %d s", res.Last)) {
+		t.Errorf("the writer got %q, and no end of the read in epoch %d", dest.log, res.Last)
 	}
 }
 

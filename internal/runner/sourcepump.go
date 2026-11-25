@@ -734,7 +734,7 @@ func (p *sourcePump) request(n uint64) error {
 		}
 	} else {
 		for _, name := range p.order {
-			for _, sp := range slices.Clone(p.streams[name].splits) {
+			for _, sp := range placing(p.streams[name].splits) {
 				if !sp.dirty && !sp.placed && p.pending != 0 {
 					if err := p.place(name, sp, false); err != nil {
 						return err
@@ -780,10 +780,29 @@ func (p *sourcePump) placeFreeLanes(name string) error {
 	return nil
 }
 
+// placing is the order to place the pending barrier on splits in: those on
+// no lane first. They hold back no lane's barrier, so if the last split
+// placed were one, it would find the read ended after every lane's barrier
+// had gone out saying it didn't.
+func placing(splits []*splitPos) []*splitPos {
+	out := make([]*splitPos, 0, len(splits))
+	for _, sp := range splits {
+		if sp.lane < 0 {
+			out = append(out, sp)
+		}
+	}
+	for _, sp := range splits {
+		if sp.lane >= 0 {
+			out = append(out, sp)
+		}
+	}
+	return out
+}
+
 func (p *sourcePump) placeRemaining() error {
 	for _, name := range p.order {
 		st := p.streams[name]
-		for _, sp := range slices.Clone(st.splits) {
+		for _, sp := range placing(st.splits) {
 			if p.pending == 0 || sp.placed {
 				continue
 			}
