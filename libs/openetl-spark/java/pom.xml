@@ -25,7 +25,9 @@
     <maven.compiler.release>8</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <spark.version>3.5.8</spark.version>
-    <!-- What Spark 3.5 ships. -->
+    <!-- What Spark 3.5 ships; the cluster provides it. Spark's Jackson Scala
+         module refuses any other minor, so this moves with spark.version,
+         and dependabot leaves it. -->
     <jackson.version>2.15.2</jackson.version>
     <slf4j.version>2.0.7</slf4j.version>
   </properties>
