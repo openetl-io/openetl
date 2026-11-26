@@ -68,7 +68,7 @@ openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres
 ```
 
 ```text
-created connectors/openetl/postgres/versions/0.1.0-alpha (version sha256:93636), the newest version of oci://ghcr.io/openetl-io/openetl-connectors/postgres
+created connectors/openetl/postgres/versions/0.2.0-alpha (version sha256:0f909), the newest version of oci://ghcr.io/openetl-io/openetl-connectors/postgres
 ```
 
 The apply fails if no connected source covers the reference, or if the source offers no version of the package. A reference with a version applies that version, whether or not a source covers it. To apply the same version on every installation, give the version.

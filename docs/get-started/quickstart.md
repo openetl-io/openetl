@@ -132,7 +132,7 @@ openetl connector apply oci://ghcr.io/openetl-io/openetl-connectors/postgres
 ```
 
 ```text
-created connectors/openetl/postgres/versions/0.1.0-alpha (version sha256:93636), the newest version of oci://ghcr.io/openetl-io/openetl-connectors/postgres
+created connectors/openetl/postgres/versions/0.2.0-alpha (version sha256:0f909), the newest version of oci://ghcr.io/openetl-io/openetl-connectors/postgres
 ```
 
 The command installs the newest version of the connector. The output names that version, which can be newer than this example's.
