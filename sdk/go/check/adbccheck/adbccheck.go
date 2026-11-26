@@ -10,8 +10,6 @@
 //
 // Every check but Connect needs "db.connect", so Connect goes first in the
 // list.
-//
-// It's a module of its own, so that the SDK doesn't require ADBC.
 package adbccheck
 
 import (

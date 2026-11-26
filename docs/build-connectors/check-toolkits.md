@@ -99,7 +99,7 @@ The kit classifies a driver's error with `Kit.Failure`, as [Classify driver erro
 
 ### adbccheck
 
-`github.com/openetl-io/openetl/sdk/go/check/adbccheck` checks a database through ADBC. It is a module of its own, so that the SDK does not require ADBC. Its versions are its own, tagged `sdk/go/check/adbccheck/vX.Y.Z`, apart from the SDK's `sdk/go/vX.Y.Z`. Require it by one of those versions.
+`github.com/openetl-io/openetl/sdk/go/check/adbccheck` checks a database through ADBC. It comes with the SDK, as the other toolkits do, so your connector imports it and requires only the SDK for it.
 
 Its `Kit` shares one ADBC database and connection. It has the same methods as `sqlcheck`'s, except `Readable`, and adds `Table`:
 

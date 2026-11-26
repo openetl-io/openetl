@@ -73,7 +73,7 @@ The connectors `make dev` builds are local executables in `bin/connectors`, whic
 | `internal/delivery` | Each stream's delivery guarantee, worked out from the destination, the source's replay behavior, the write mode, the primary key and the level the pipeline requires |
 | `internal/store` | The metadata store on Postgres: migrations, and queries, from which sqlc generates `internal/store/db` |
 | `internal/connectorhost`, `connectors/native` | Connectors the runner hosts: the ones built in (`faker`, `stdout` and `parquet`), declarative sources, and external connectors |
-| `sdk/go` | The Go connector SDK, a module of its own, with `sdk.Serve` for external connectors and a conformance suite. `sdk/go/check/adbccheck`, checks of a database through ADBC, is a module of its own too, so that the SDK doesn't require ADBC |
+| `sdk/go` | The Go connector SDK, a module of its own, with `sdk.Serve` for external connectors and a conformance suite |
 | `crates/` | `openetl-engine`, the Rust data engine, and its libraries |
 | `libs/` | `openetl-spark` and `openetl-flink`: what runs on your Spark and Flink clusters |
 | `web/` | The UI: React and TypeScript, a client of the API only |
@@ -113,8 +113,6 @@ A release that failed later runs again the same way, and replaces the tag's draf
 ```sh
 git tag sdk/go/v0.2.0 && git push origin sdk/go/v0.2.0
 ```
-
-`sdk/go/check/adbccheck` is tagged on its own, `sdk/go/check/adbccheck/vX.Y.Z`. Here it requires the SDK at a placeholder version, which a `replace` points at `sdk/go`, and a `replace` counts only in this repository. So tag the SDK first, then set the SDK's requirement in `sdk/go/check/adbccheck/go.mod` to that tag, and tag `adbccheck` on the commit that does.
 
 **The connectors** are released from [openetl-connectors](https://github.com/openetl-io/openetl-connectors), each package with tags of its own, `PACKAGE/vX.Y.Z`. A change across both repositories lands here first, without breaking what the connectors use, and then the connectors move to the new SDK.
 
