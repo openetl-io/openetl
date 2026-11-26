@@ -55,7 +55,7 @@ spec:
 
 | Command | What it does |
 |---|---|
-| `version` | Prints the CLI's version, such as `0.1.0-alpha` |
+| `version` | Prints the CLI's version, such as `{{version}}` |
 | `apply -f FILE` | Creates or updates the resources in `FILE`, of any kind in the table above |
 | `plan -f FILE` | Shows what `apply` would change, and how each pipeline would sync |
 | `pause NAME` | Stops a pipeline's scheduled syncs |

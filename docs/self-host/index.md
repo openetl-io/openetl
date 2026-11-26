@@ -50,7 +50,7 @@ See [pipeline resources](../reference/specs/pipeline.md#resources) for sizing fi
 
 ## Releases
 
-Each release of OpenETL has a version, such as `0.1.0-alpha`, and a git tag, such as `v0.1.0-alpha`. OpenETL is in alpha: the pipeline format and the API can change between releases. The [releases page](https://github.com/openetl-io/openetl/releases) has each release's notes and files:
+Each release of OpenETL has a version, such as `{{version}}`, and a git tag, such as `v{{version}}`. OpenETL is in alpha: the pipeline format and the API can change between releases. The [releases page](https://github.com/openetl-io/openetl/releases) has each release's notes and files:
 
 | File | What it holds |
 |---|---|

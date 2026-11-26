@@ -276,7 +276,7 @@ Before returning to DBOS, remove its old workflows while the control plane is st
 
 ## Upgrade
 
-Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases page](https://github.com/openetl-io/openetl/releases) list what changed. In the alpha, the pipeline format and the API can change between releases.
+Each release has a version, such as `{{version}}`. Its notes on the [releases page](https://github.com/openetl-io/openetl/releases) list what changed. In the alpha, the pipeline format and the API can change between releases.
 
 1. Read the notes of each release between your version and the new one.
 2. Make a backup, as [Back up](#back-up) describes.
@@ -286,7 +286,7 @@ Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases pa
    curl -fsSLO https://github.com/openetl-io/openetl/releases/download/vVERSION/compose.yml
    ```
 
-4. If `.env` sets `OPENETL_IMAGE`, remove that line, or set it to `ghcr.io/openetl-io/openetl:VERSION`. Installations of 0.1.0-alpha set it.
+4. If `.env` sets `OPENETL_IMAGE`, remove that line, or set it to `ghcr.io/openetl-io/openetl:VERSION`.
 5. Replace the containers whose image changed:
 
    ```sh
@@ -296,8 +296,6 @@ Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases pa
 6. Upgrade the CLI on your computer to the same version, as [Install the CLI](../get-started/install.md#upgrade) shows.
 
 The new orchestrator resumes existing workflows. Runners stop jobs at a checkpoint before exiting, with up to 2 minutes for a sync or 10 minutes for a stream. Jobs are then placed again and resume from their checkpoints. The Compose file allows runners 11 minutes to stop.
-
-A runner of 0.1.0-alpha applies no releases or discards of [held values](../pipelines/holds-and-quarantine.md). They wait until a runner of the new version runs the pipeline.
 
 A newer version can write a checkpoint format that older runners cannot read. An older runner refuses that pipeline with `CONFIG_INVALID`. If this occurs after a downgrade, run the affected pipelines with the newer version.
 

@@ -354,7 +354,7 @@ To run workflows on Temporal instead of DBOS, set `OPENETL_ORCHESTRATOR: tempora
 
 ## Upgrading
 
-Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases page](https://github.com/openetl-io/openetl/releases) list what changed. In the alpha, the pipeline format and the API can change between releases.
+Each release has a version, such as `{{version}}`. Its notes on the [releases page](https://github.com/openetl-io/openetl/releases) list what changed. In the alpha, the pipeline format and the API can change between releases.
 
 1. Read the notes of each release between your version and the new one.
 2. Back up the metadata database and keep a copy of `OPENETL_SECRETS_KEY`. [Back up and restore](./backup-and-restore.md) lists what an installation's state is.
@@ -363,8 +363,6 @@ Each release has a version, such as `0.1.0-alpha`. Its notes on the [releases pa
 5. Upgrade the CLI to the same version, as [Install the CLI](../get-started/install.md#upgrade) shows.
 
 New orchestrators resume existing workflows, and syncs resume from their checkpoints. Old runners checkpoint their jobs before stopping, then those jobs are placed again. Existing job pods finish with the image they started with.
-
-A runner of 0.1.0-alpha applies no releases or discards of [held values](../pipelines/holds-and-quarantine.md). They wait until a runner of the new version runs the pipeline.
 
 A newer version can write a checkpoint format that older runners cannot read. An older runner refuses that pipeline with `CONFIG_INVALID`. If this occurs after a downgrade, run the affected pipelines with the newer version.
 
