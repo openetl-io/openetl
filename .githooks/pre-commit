@@ -35,8 +35,7 @@ if [ -n "$go_files" ]; then
 	fi
 	need bin/golangci-lint
 	lint . $( (grep -v -E '^(sdk/go|tools)/' <<<"$go_files" || true) | dirs | sed 's|^|./|')
-	lint sdk/go $( (grep -E '^sdk/go/' <<<"$go_files" | grep -v -E '^sdk/go/check/adbccheck/' || true) | dirs | sed 's|^sdk/go|.|')
-	lint sdk/go/check/adbccheck $( (grep -E '^sdk/go/check/adbccheck/' <<<"$go_files" || true) | dirs | sed 's|^sdk/go/check/adbccheck|.|')
+	lint sdk/go $( (grep -E '^sdk/go/' <<<"$go_files" || true) | dirs | sed 's|^sdk/go|.|')
 fi
 
 if [ -n "$(touched '\.rs$|(^|/)Cargo\.(toml|lock)$|^clippy\.toml$')" ]; then
