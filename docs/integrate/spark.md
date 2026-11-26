@@ -125,7 +125,7 @@ Use the application's driver ID and cluster UI to inspect its execution. OpenETL
 
 Python transforms run on YARN, Kubernetes or EMR, where Python cluster deploy mode is supported. Install [`openetl-spark`'s Python package](../../libs/openetl-spark/python) in the application environment and make it available to the driver and executors. PySpark comes from the cluster.
 
-Each release has the package as a wheel, `openetl_spark-PYVERSION-py3-none-any.whl`. `PYVERSION` is the release's version as Python's version rules write it: `0.1.0a1` for `0.1.0-alpha.1`, `0.2.0b2` for `0.2.0-beta.2`, `0.2.0rc1` for `0.2.0-rc.1`, and `0.2.0` for `0.2.0`. Replace `PYVERSION`:
+Each release has the package as a wheel, `openetl_spark-PYVERSION-py3-none-any.whl`. `PYVERSION` is the release's version as Python's version rules write it: `0.2.0a0` for `0.2.0-alpha`, `0.1.0a1` for `0.1.0-alpha.1`, `0.2.0b2` for `0.2.0-beta.2`, `0.2.0rc1` for `0.2.0-rc.1`, and `0.2.0` for `0.2.0`. Replace `PYVERSION`:
 
 ```sh
 pip install https://github.com/openetl-io/openetl/releases/download/v{{version}}/openetl_spark-PYVERSION-py3-none-any.whl
