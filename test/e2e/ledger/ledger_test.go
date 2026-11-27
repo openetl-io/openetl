@@ -219,6 +219,36 @@ func TestAKillThatFoundNothingIsRetracted(t *testing.T) {
 	}
 }
 
+// Two kills noted before either found nothing, as a run that isn't strict
+// may, retracted in either order, put back the kill noted before both, or
+// none.
+func TestOverlappingRetractionsPutBackTheKillBeforeThem(t *testing.T) {
+	for _, prior := range []bool{false, true} {
+		for _, order := range [][2]int{{3, 4}, {4, 3}} {
+			var r Records
+			commit(&r, 1, 1)
+			if prior {
+				r.Killed(at(2))
+			}
+			r.LandedKill(at(3))
+			r.LandedKill(at(4))
+			r.Unland(at(order[0]))
+			r.Unland(at(order[1]))
+			if len(r.landed) != 0 || r.Resuming() != prior {
+				t.Errorf("a kill before: %v; retracted %v: %d landed, resuming %v", prior, order, len(r.landed), r.Resuming())
+			}
+			commit(&r, 2, 5)
+			var want []time.Duration
+			if prior {
+				want = []time.Duration{3 * time.Second}
+			}
+			if got := r.Resumes(); !slices.Equal(got, want) {
+				t.Errorf("a kill before: %v; retracted %v: resumes %v, want %v", prior, order, got, want)
+			}
+		}
+	}
+}
+
 // Arbitrary histories of a few attempts: claims, records, commits arriving
 // in flight past a kill, attempts replaced with and without kills, and the
 // run's own faults landing at any time, or in half the histories only when

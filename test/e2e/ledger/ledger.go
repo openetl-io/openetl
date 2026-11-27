@@ -99,6 +99,13 @@ func (r *Records) Unland(at time.Time) {
 	}
 	l := r.landed[i]
 	r.landed = slices.Delete(r.landed, i, i+1)
+	// A kill noted after it, as a run that isn't strict may, now comes
+	// after the one before it.
+	for j := range r.landed {
+		if r.landed[j].before.Equal(at) {
+			r.landed[j].before, r.landed[j].beforeGen = l.before, l.beforeGen
+		}
+	}
 	if r.killed.Equal(at) {
 		r.killed, r.killedGen = l.before, l.beforeGen
 	}
