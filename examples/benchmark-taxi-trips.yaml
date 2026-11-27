@@ -1,0 +1,73 @@
+# The documents of the benchmark in docs/self-host/benchmarks.md that copies
+# two tables of New York City taxi trip records from Postgres into Iceberg
+# tables in AWS Glue, as its first run applied them. Replace BUCKET with the
+# name of your bucket, and store the source's URL as the secret taxi-dsn.
+#
+# The page's steps apply the pipeline twice: first with source.ref taxi-seed,
+# which creates the tables, then as it is here, which the timed sync reads.
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: taxi-full
+spec:
+  connector: postgres@0.2.0-alpha
+  config:
+    dsn: { secret: taxi-dsn }
+    schema: taxi
+    tables: [trips, fhv_trips]
+    maxConnections: 8
+---
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: taxi-seed
+spec:
+  connector: postgres@0.2.0-alpha
+  config:
+    dsn: { secret: taxi-dsn }
+    schema: taxi_seed
+    tables: [trips, fhv_trips]
+    maxConnections: 8
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: glue-lake
+spec:
+  connector: iceberg@0.2.0-alpha
+  config:
+    catalog: glue
+    region: ap-southeast-2
+    warehouse: s3://BUCKET/iceberg
+    namespace: oetl_taxi_default
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: taxi-full-r1
+spec:
+  schedule: { cron: "0 0 1 1 *" }
+  resources:
+    size: { cpu: 8, memory: 13Gi }
+  delivery:
+    commit: { scope: stream }
+  source:
+    ref: taxi-full
+    streams:
+      - name: trips
+        sync: full_refresh
+        columns:
+          pickup_longitude: { type: float64 }
+          pickup_latitude: { type: float64 }
+          dropoff_longitude: { type: float64 }
+          dropoff_latitude: { type: float64 }
+          trip_distance: { type: float64 }
+          fare_amount: { type: float64 }
+          extra: { type: float64 }
+          mta_tax: { type: float64 }
+          tip_amount: { type: float64 }
+          tolls_amount: { type: float64 }
+          total_amount: { type: float64 }
+      - name: fhv_trips
+        sync: full_refresh
+  destination: { ref: glue-lake, namespace: oetl_taxi_full_r1 }

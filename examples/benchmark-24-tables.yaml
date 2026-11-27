@@ -1,0 +1,56 @@
+# The documents of the benchmark in docs/self-host/benchmarks.md that copies
+# 24 tables derived from TPC-DS at scale factor 10 from Postgres into Iceberg
+# tables in AWS Glue, as its first run applied them. Replace BUCKET with the
+# name of your bucket, and store the source's URL as the secret tpcds-dsn.
+#
+# The page's steps apply the pipeline twice: first with source.ref tpcds-seed,
+# which creates the tables, then as it is here, which the timed sync reads.
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: tpcds-l8
+spec:
+  connector: postgres@0.2.0-alpha
+  config:
+    dsn: { secret: tpcds-dsn }
+    schema: tpcds_sf10
+    maxConnections: 8
+---
+apiVersion: openetl.io/v1alpha1
+kind: Source
+metadata:
+  name: tpcds-seed
+spec:
+  connector: postgres@0.2.0-alpha
+  config:
+    dsn: { secret: tpcds-dsn }
+    schema: tpcds_sf10_seed
+    maxConnections: 8
+---
+apiVersion: openetl.io/v1alpha1
+kind: Destination
+metadata:
+  name: glue-lake
+spec:
+  connector: iceberg@0.2.0-alpha
+  config:
+    catalog: glue
+    region: ap-southeast-2
+    warehouse: s3://BUCKET/iceberg
+    namespace: oetl_tpc_ds_r1
+---
+apiVersion: openetl.io/v1alpha1
+kind: Pipeline
+metadata:
+  name: tpcds-r1
+spec:
+  schedule: { cron: "0 0 1 1 *" }
+  resources:
+    size: { cpu: 8, memory: 13Gi }
+  delivery:
+    commit: { scope: stream }
+  source:
+    ref: tpcds-l8
+  destination:
+    ref: glue-lake
+    namespace: oetl_tpc_ds_r1

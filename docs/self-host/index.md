@@ -39,7 +39,7 @@ Capacity changes at several levels:
 
 The continuous-job autoscaler observes lane utilization and source lag. If lanes spend most of their time waiting for the destination, it leaves parallelism unchanged. More lanes would add load without resolving that bottleneck.
 
-See [pipeline resources](../reference/specs/pipeline.md#resources) for sizing fields, [workers](../pipelines/workers.md) for compatibility, and [Kubernetes](./kubernetes.md) for runner and node scaling.
+See [pipeline resources](../reference/specs/pipeline.md#resources) for sizing fields, [workers](../pipelines/workers.md) for compatibility, and [Kubernetes](./kubernetes.md) for runner and node scaling. [Benchmarks](./benchmarks.md) gives measured times for three full copies from Postgres into Iceberg, with the machines and job sizes that they used.
 
 ## What you need
 
