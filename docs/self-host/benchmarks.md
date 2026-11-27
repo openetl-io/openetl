@@ -689,7 +689,7 @@ COPY (SELECT ROWS_BEFORE + file_row_number + 1 AS id, MAPPED_COLUMNS
 SQL
 ```
 
-`ROWS_BEFORE` is the number of rows in the files before `FILE` that go to the same table, in the order of the files above. `MAPPED_COLUMNS` are the expressions of the mapping, in the order of the table's columns after `id`. `psql` prints `COPY` and the file's row count. The mapping:
+`ROWS_BEFORE` is the number of rows in the files before `FILE` that go to the same table, in the order of the files above. `MAPPED_COLUMNS` are the expressions of the mapping, in the order of the table's columns after `id`. For each file, the load checked that every command of the pipe exited with status 0. It also checked that `psql` printed `COPY` with the file's row count, from the Parquet file's metadata. A copy whose input ends early commits the rows that it read, so these checks stop a short load. The mapping:
 
 - `id` is the row's place in the order of the files above, then of the rows in its file, from 1.
 - In `trips`, the yellow files' 18 columns map by their position in the file. `cab_type_id` is 1. `vendor_id` is 1 for `CMT`, 2 for `VTS` and 3 for `DDS`. `payment_type` is 1 for credit, 2 for cash, 3 for no charge and 4 for dispute, from each spelling that the files use. `store_and_fwd_flag` is true for `Y` or `1`, and false for `N` or `0`. A coordinate of 0 becomes NULL.
@@ -960,7 +960,15 @@ These steps make one workload's machines, load its data, and time its runs. They
 
 ### Load the data
 
-Follow the steps of the workload's Data section, against the RDS instance:
+Give `psql` and `vacuumdb` the RDS instance, the user and the database: `tpcds`, `tpch` or `taxi`.
+
+```sh
+export PGHOST=RDS_ENDPOINT PGUSER=openetl PGDATABASE=DATABASE PGSSLMODE=require
+```
+
+Put the password in `~/.pgpass`, in a line `RDS_ENDPOINT:5432:*:openetl:PASSWORD`. Then run `chmod 600 ~/.pgpass`, so that only you can read it.
+
+Then follow the steps of the workload's Data section:
 
 - [24 tables derived from TPC-DS](#data)
 - [8 tables derived from TPC-H](#data-1)
