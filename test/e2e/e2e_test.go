@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"flag"
 	"fmt"
 	"maps"
 	"net"
@@ -22,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -57,6 +59,7 @@ import (
 	"github.com/openetl-io/openetl/internal/orchestration/dispatch"
 	"github.com/openetl-io/openetl/internal/orchestration/workflows"
 	"github.com/openetl-io/openetl/internal/platform/config"
+	"github.com/openetl-io/openetl/internal/platform/logging"
 	"github.com/openetl-io/openetl/internal/platform/telemetry"
 	"github.com/openetl-io/openetl/internal/platform/telemetry/telemetrytest"
 	"github.com/openetl-io/openetl/internal/spec"
@@ -102,7 +105,21 @@ var env struct {
 // at the address pods reach this host at too.
 var egressAllow = "127.0.0.1/32"
 
+// orchestratorEnv makes this test binary an orchestrator of a test's control
+// plane rather than run tests: see startOrchestrator.
+const orchestratorEnv = "OPENETL_E2E_ORCHESTRATOR"
+
+// serverExecutor is the DBOS executor ID of the orchestrator in this process.
+const serverExecutor = "e2e-server"
+
 func TestMain(m *testing.M) {
+	if os.Getenv(orchestratorEnv) != "" {
+		if err := runOrchestrator(os.Args[1:]); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "e2e orchestrator:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	code, err := setup(m)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "e2e:", err)
@@ -149,7 +166,7 @@ func setup(m *testing.M) (int, error) {
 	if env.openetld = os.Getenv("OPENETL_OPENETLD"); env.openetld == "" {
 		env.openetld = filepath.Join(dir, "openetld")
 		if out, err := exec.CommandContext(ctx, "go", "build", "-o", env.openetld, "github.com/openetl-io/openetl/cmd/openetld").CombinedOutput(); err != nil {
-			return 0, fmt.Errorf("build openetld: %v\n%s", err, out)
+			return 0, fmt.Errorf("build openetld: %w\n%s", err, out)
 		}
 	}
 
@@ -217,18 +234,12 @@ func setup(m *testing.M) (int, error) {
 	env.apiURL = "http://" + ln.Addr().String()
 	ready := make(chan struct{})
 	done := make(chan error, 1)
-	// Short timeouts, so tests don't wait out production's, unless
-	// OPENETL_E2E_TIMEOUTS=production measures with them.
-	wf := workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second, StreamHeartbeat: 4 * time.Second}
-	placement := dispatch.Options{ReportLapse: 3 * time.Second, StartTimeout: 3 * time.Second, PodStartTimeout: 30 * time.Second, ReserveAfter: 5 * time.Second}
-	if os.Getenv("OPENETL_E2E_TIMEOUTS") == "production" {
-		wf, placement = workflows.Workflows{}, dispatch.Options{}
-	}
+	wf, placement := timings()
 	go func() {
 		done <- daemon.Run(ctx, daemon.Options{
 			Config: config.Config{
 				DatabaseURL: env.dbURL, Orchestrator: env.orchestrator, TemporalAddress: env.temporal, TemporalNamespace: env.ns, DataPlane: "default",
-				Connectors: env.noConnectors, EgressAllow: egressAllow, SecretsKey: filepath.Join(dir, "secrets.key"),
+				ExecutorID: serverExecutor, Connectors: env.noConnectors, EgressAllow: egressAllow, SecretsKey: filepath.Join(dir, "secrets.key"),
 				BootstrapKeyFile: env.keyFile, SignInRate: 1000, OfficialConnectors: env.connectorRegistry,
 			},
 			Roles:     daemon.Roles{Server: true, Orchestrator: true},
@@ -276,6 +287,41 @@ func setup(m *testing.M) (int, error) {
 		return code, fmt.Errorf("server: %w", err)
 	}
 	return code, nil
+}
+
+// timings are the control plane's: short, so tests don't wait out
+// production's, unless OPENETL_E2E_TIMEOUTS=production measures with them.
+// Every orchestrator of a control plane takes the same, as a workflow replays
+// only under the timings it ran with.
+func timings() (workflows.Workflows, dispatch.Options) {
+	if os.Getenv("OPENETL_E2E_TIMEOUTS") == "production" {
+		return workflows.Workflows{}, dispatch.Options{}
+	}
+	return workflows.Workflows{AttemptRetry: time.Second, AttemptHeartbeat: 4 * time.Second, StreamHeartbeat: 4 * time.Second},
+		dispatch.Options{ReportLapse: 3 * time.Second, StartTimeout: 3 * time.Second, PodStartTimeout: 30 * time.Second, ReserveAfter: 5 * time.Second}
+}
+
+// runOrchestrator runs the orchestrator role as openetld orchestrator does,
+// with its flags, but on the timings of the orchestrator in the test
+// process, until SIGINT or SIGTERM.
+func runOrchestrator(args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	cfg, err := config.Parse(flag.NewFlagSet("orchestrator", flag.ContinueOnError), args, nil)
+	if err != nil {
+		return err
+	}
+	log, err := logging.New(os.Stderr, cfg.LogLevel, cfg.LogFormat)
+	if err != nil {
+		return err
+	}
+	stopTelemetry, err := telemetry.Start(ctx, telemetry.Options{Service: "openetld", Attributes: []attribute.KeyValue{attribute.String("openetl.role", "orchestrator")}})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stopTelemetry(context.Background()) }()
+	wf, placement := timings()
+	return daemon.Run(ctx, daemon.Options{Config: cfg, Roles: daemon.Roles{Orchestrator: true}, Logger: log, Workflows: wf, Dispatch: placement})
 }
 
 // kubeListener listens on every address, for pods that reach this host at
@@ -400,17 +446,17 @@ func recordHistories(ctx context.Context, dir string) error {
 	}
 }
 
-// replaceText replaces old with new in every string and bytes field of m,
+// replaceText replaces from with to in every string and bytes field of m,
 // payloads included.
-func replaceText(m protoreflect.Message, old, new string) {
+func replaceText(m protoreflect.Message, from, to string) {
 	fix := func(fd protoreflect.FieldDescriptor, v protoreflect.Value) (protoreflect.Value, bool) {
 		switch fd.Kind() {
 		case protoreflect.StringKind:
-			return protoreflect.ValueOfString(strings.ReplaceAll(v.String(), old, new)), true
+			return protoreflect.ValueOfString(strings.ReplaceAll(v.String(), from, to)), true
 		case protoreflect.BytesKind:
-			return protoreflect.ValueOfBytes(bytes.ReplaceAll(v.Bytes(), []byte(old), []byte(new))), true
+			return protoreflect.ValueOfBytes(bytes.ReplaceAll(v.Bytes(), []byte(from), []byte(to))), true
 		case protoreflect.MessageKind, protoreflect.GroupKind:
-			replaceText(v.Message(), old, new)
+			replaceText(v.Message(), from, to)
 		}
 		return v, false
 	}
@@ -512,7 +558,27 @@ func startRunnerWith(t *testing.T, token, apiURL string, extra ...string) *runne
 // startOpenetld starts an openetld process, for the test.
 func startOpenetld(t *testing.T, vars []string, args ...string) *runner {
 	t.Helper()
-	cmd := exec.Command(env.openetld, args...)
+	return startProcess(t, exec.Command(env.openetld, args...), vars, args[0])
+}
+
+// startOrchestrator starts another orchestrator of the control plane, with
+// the flags openetld orchestrator takes: this test binary, which runs that
+// role on the timings of the orchestrator in this process. Being the same
+// binary, it runs the same DBOS version, unless vars set DBOS__APPVERSION.
+func startOrchestrator(t *testing.T, vars []string, args ...string) *runner {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return startProcess(t, exec.Command(exe, args...), append(vars, orchestratorEnv+"=1"), "orchestrator")
+}
+
+// startProcess starts cmd, with vars added to this process's environment, and
+// kills it when the test ends, showing its output, under name, if the test
+// failed.
+func startProcess(t *testing.T, cmd *exec.Cmd, vars []string, name string) *runner {
+	t.Helper()
 	cmd.Env = append(os.Environ(), vars...)
 	r := &runner{cmd: cmd, out: &syncBuffer{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = r.out, r.out
@@ -526,7 +592,7 @@ func startOpenetld(t *testing.T, vars []string, args ...string) *runner {
 	t.Cleanup(func() {
 		r.kill(t)
 		if t.Failed() {
-			t.Logf("%s %d output:\n%s", args[0], cmd.Process.Pid, r.out.String())
+			t.Logf("%s %d output:\n%s", name, cmd.Process.Pid, r.out.String())
 		}
 	})
 	return r

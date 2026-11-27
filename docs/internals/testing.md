@@ -41,6 +41,17 @@ A crash point fires at one of a pipeline's checkpoint writes and kills the proce
 
 The data check stops at the first duplicate or phantom row. Rows that are missing at that point can still arrive, so the failure says they were still settling.
 
+When a run fails with missing rows, the failure also gives the dispatch state of the pipeline's newest attempt. The state is pending, placed on a runner or pod launcher, running or finished. For a placement on a pod launcher, the failure says if the launcher has claimed the attempt. It also gives the start or lease deadline, and when that runner or launcher last reported.
+
+In `TestChaosChecks`, a run with a held plant writes to its source for 15 seconds. The 15 seconds start when the pipeline has written the rows that the source held before the run. The run fails if the pipeline does not write those rows within `-chaos.settle`.
+
+`TestChaos` can also add faults to the control plane:
+
+- `-chaos.postgres-restart` restarts or kills the Compose Postgres at about this interval. A restart that is in progress when the runs end finishes before the next test starts.
+- `-chaos.orchestrator-kill` runs two more orchestrators on DBOS, and kills one at about this interval. Then it starts that orchestrator again.
+
+The extra orchestrators are the test binary, which takes the flags of `openetld orchestrator`. They use the suite's short timings, the same as the API server and the orchestrator in the test process. Because they are the same binary, they run the same DBOS application version, so each orchestrator takes new workflows. When the runs end, the suite stops the extra orchestrators. It then waits until the orchestrator in the test process runs DBOS's latest version. `TestChaos` fails if that takes more than two minutes.
+
 Some runs use group windows over Kafka, on one pod or several workers. These runs kill a worker or the coordinator. Records arrive in event-time order within each partition, so these cases have no late records. The suite compares each window's row with a window model.
 
 `TestChaosDedupe` and `TestChaosOver` run the same faults with a first-row dedupe and with `OVER`. A dedupe's run compares each key's first rows with a model of the retention. An `OVER` run compares each record's row, by its partition and offset, with its key's running count and sum, peers included. `TestChaosChecks` plants a lost and a changed row in each of their outputs, and fails unless the check finds it.
