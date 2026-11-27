@@ -10,6 +10,7 @@
     "access",
     "secrets",
     "monitoring",
-    "backup-and-restore"
+    "backup-and-restore",
+    "benchmarks"
   ]
 }
