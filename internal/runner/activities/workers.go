@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"connectrpc.com/connect"
@@ -98,41 +99,75 @@ func (coordinatorDestination) Open(context.Context, destination.OpenConfig) (des
 // RunWorker runs one worker's part of an attempt that another runner
 // coordinates, in a pod of the worker's own: w is the attempt, of size each
 // worker's, and where the worker joins. It reads, writes and commits what
-// the coordinator assigns, with its own connectors and engine.
+// the coordinator assigns, with its own connectors and engine. A worker
+// that fails before it joins tells the coordinator (runner.FailBeforeJoining).
 func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 	j := w.GetJoin()
 	if j == nil {
 		return errs.New(errs.Internal, "runner: a worker with nowhere to join")
 	}
+	// Taken first: a worker that fails after this joins to say so, with the
+	// address it would have joined with.
+	listen, advertise, held, err := attempt.ExchangeAddresses(ctx, a.ExchangeListen, a.ExchangeAdvertise)
+	if err != nil {
+		return err
+	}
+	t := attempt.Target{
+		Address: j.GetAddress(), Certificate: j.GetCertificate(), Token: j.GetToken(),
+		Attempt: j.GetOwner(), Generation: j.GetGeneration(), Worker: int(j.GetWorker()),
+		Exchange: advertise, Listen: listen, Held: held,
+	}
 	// A stream job's input has the same fields.
 	var in contract.AttemptInput
 	if err := json.Unmarshal(w.GetInput(), &in); err != nil {
-		return errs.Wrap(errs.Internal, err, "the attempt's input")
+		return runner.FailBeforeJoining(ctx, t, attempt.Options{}, errs.Wrap(errs.Internal, err, "the attempt's input"))
 	}
 	log := a.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	log = log.With("pipeline", in.PipelineID, "sync", in.SyncID, "version", in.Version, "attempt", in.Attempt, "worker", j.GetWorker()+1)
+	job, closeJob, err := a.workerJob(ctx, w, in, log)
+	defer closeJob()
+	if err != nil {
+		return runner.FailBeforeJoining(ctx, t, attempt.Options{}, err)
+	}
+	err = runner.RunWorker(ctx, job, t, attempt.Options{})
+	if err == nil {
+		log.Info("the worker's part of the attempt finished")
+	}
+	return err
+}
+
+// workerJob is a worker's job: the pipeline's spec, with its secrets, and
+// its connectors, started. closeJob closes what it opened, also after an
+// error.
+func (a *Sync) workerJob(ctx context.Context, w *dataplanev1.Work, in contract.AttemptInput, log *slog.Logger) (job runner.Job, closeJob func(), err error) {
+	var closers []func()
+	closeJob = func() {
+		for _, c := range slices.Backward(closers) {
+			c()
+		}
+	}
 	spec, err := syncSpec(ctx, a.API, in.OrgID, in.PipelineID, in.Version, false)
 	if err != nil {
-		return err
+		return job, closeJob, err
 	}
 	if err := readSecrets(ctx, a.Secrets, spec.GetSource(), spec.GetSourceSecrets()); err != nil {
-		return err
+		return job, closeJob, err
 	}
 	if err := readSecrets(ctx, a.Secrets, spec.GetDestination(), spec.GetDestinationSecrets()); err != nil {
-		return err
+		return job, closeJob, err
 	}
 	env, err := connectorEnv(ctx, a.Connectors, a.Versions, spec.GetSourceConnector(), spec.GetDestinationConnector())
 	if err != nil {
-		return err
+		return job, closeJob, err
 	}
 	release, err := leaseAWS(ctx, a.AWSRoles, &env, spec.GetWorkspace(), spec.GetPipelineName(),
 		awsConnection{"source", spec.GetSourceName(), spec.GetSource().GetAws()}, awsConnection{"destination", spec.GetDestinationName(), spec.GetDestination().GetAws()})
-	defer release()
+	closers = append(closers, release)
 	if err != nil {
-		return err
+		return job, closeJob, err
 	}
 	env.Logger = log.With("component", "connector")
 	meter, size := resources.NewMeter(), resources.Size{CPU: w.GetSize().GetCpuMillis(), Memory: w.GetSize().GetMemoryBytes()}
@@ -143,22 +178,25 @@ func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 	plans := func(ctx context.Context, req sqlplan.Request) (sqlplan.Answer, error) {
 		return engineclient.Plan(ctx, planner, req)
 	}
-	job, err := bindJob(ctx, spec, env, withRestored(plans, checkpoints), false)
-	defer connectorhost.Close(job.Source)
-	defer connectorhost.Close(job.Destination)
+	job, err = bindJob(ctx, spec, env, withRestored(plans, checkpoints), false)
+	src, dst := job.Source, job.Destination
+	closers = append(closers, func() {
+		connectorhost.Close(dst)
+		connectorhost.Close(src)
+	})
 	if err != nil {
-		return err
+		return job, closeJob, err
 	}
-	job.Owner, job.Sync, job.Org, job.Log = j.GetOwner(), in.RunKey, spec.GetOrgId(), checkpoints
+	job.Owner, job.Sync, job.Org, job.Log = w.GetJoin().GetOwner(), in.RunKey, spec.GetOrgId(), checkpoints
 	if a.Storage != "" {
 		if job.QuarantineURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.QuarantineDir); err != nil {
-			return errs.Wrap(errs.ConfigInvalid, err, "quarantine location")
+			return job, closeJob, errs.Wrap(errs.ConfigInvalid, err, "quarantine location")
 		}
 		if job.HeldURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.HeldDir); err != nil {
-			return errs.Wrap(errs.ConfigInvalid, err, "held values' location")
+			return job, closeJob, errs.Wrap(errs.ConfigInvalid, err, "held values' location")
 		}
 		if job.StateURL, err = pipelineURL(a.Storage, spec.GetOrgId(), spec.GetPipelineId(), checkpoint.StateDir); err != nil {
-			return errs.Wrap(errs.ConfigInvalid, err, "state's location")
+			return job, closeJob, errs.Wrap(errs.ConfigInvalid, err, "state's location")
 		}
 	}
 	if size != (resources.Size{}) {
@@ -168,18 +206,5 @@ func (a *Sync) RunWorker(ctx context.Context, w *dataplanev1.Work) error {
 	engine.Logger = log.With("component", "engine")
 	engine.Meter, engine.Size = meter, size
 	job.Meter, job.Dataflow, job.Logger = meter, &engineclient.Dataflow{Options: engine}, log
-	listen, advertise, held, err := attempt.ExchangeAddresses(ctx, a.ExchangeListen, a.ExchangeAdvertise)
-	if err != nil {
-		return err
-	}
-	t := attempt.Target{
-		Address: j.GetAddress(), Certificate: j.GetCertificate(), Token: j.GetToken(),
-		Attempt: j.GetOwner(), Generation: j.GetGeneration(), Worker: int(j.GetWorker()),
-		Exchange: advertise, Listen: listen, Held: held,
-	}
-	err = runner.RunWorker(ctx, job, t, attempt.Options{})
-	if err == nil {
-		log.Info("the worker's part of the attempt finished")
-	}
-	return err
+	return job, closeJob, nil
 }

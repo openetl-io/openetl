@@ -43,26 +43,27 @@ var errFinished = errors.New("runner: the attempt finished")
 // coordinator ends the attempt as finished. The job is the coordinator's,
 // whose Log, Sync, Paused, Resets, Rewind, KeepRecords, Drain, Workers and
 // On callbacks it doesn't use. A target without an exchange address has its
-// engine listen on 127.0.0.1, at a free port. RunWorker closes t.Held.
+// engine listen on 127.0.0.1, at a free port. A job a worker can't run fails
+// the attempt through FailBeforeJoining. RunWorker closes t.Held.
 func RunWorker(ctx context.Context, job Job, t attempt.Target, opts attempt.Options) error {
 	defer func() { releaseHeld(t) }()
-	if err := job.validateRun(false); err != nil {
-		return err
-	}
-	if err := job.OnWorkers(1); err != nil {
-		return err
-	}
-	log := job.Logger
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
-	log = log.With("pipeline", job.Pipeline, "owner", job.Owner, "generation", t.Generation, "worker", t.Worker+1)
 	if t.Exchange == "" {
 		var err error
 		if t.Listen, t.Exchange, t.Held, err = attempt.ExchangeAddresses(ctx, t.Listen, ""); err != nil {
 			return err
 		}
 	}
+	if err := job.validateRun(false); err != nil {
+		return FailBeforeJoining(ctx, t, opts, err)
+	}
+	if err := job.OnWorkers(1); err != nil {
+		return FailBeforeJoining(ctx, t, opts, err)
+	}
+	log := job.Logger
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	log = log.With("pipeline", job.Pipeline, "owner", job.Owner, "generation", t.Generation, "worker", t.Worker+1)
 	w, err := attempt.Join(ctx, t, opts)
 	if err != nil {
 		return err
@@ -87,6 +88,30 @@ func stopped(ctx context.Context, err error) error {
 	if err != nil && ctx.Err() != nil {
 		return errs.Wrap(errs.Transient, err, "runner: the worker was stopped")
 	}
+	return err
+}
+
+// FailBeforeJoining fails the attempt at t with err, which a worker failed
+// with before it could join, as when its connectors didn't start: it joins
+// only to send its failure, so the coordinator fails the attempt with err
+// and its code at once, not once its workers' time to join is up. It returns
+// err as the worker reports it, and closes t.Held. A worker that's stopping
+// still sends it, within the protocol's timeout. A coordinator that can't
+// be reached, or that refuses the join, as once the attempt is over or in a
+// newer generation, isn't told. t has the exchange address the worker would
+// have joined with: without one, an attempt whose engines exchange rows can
+// fail for the missing address before the failure reaches it.
+func FailBeforeJoining(ctx context.Context, t attempt.Target, opts attempt.Options, err error) error {
+	defer releaseHeld(t)
+	err = stopped(ctx, err)
+	jctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(opts.Timeout, attempt.DefaultTimeout))
+	defer cancel()
+	w, jerr := attempt.Join(jctx, t, opts)
+	if jerr != nil {
+		return err
+	}
+	w.Fail(err)
+	_ = w.Close()
 	return err
 }
 

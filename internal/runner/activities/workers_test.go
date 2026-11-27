@@ -40,6 +40,7 @@ import (
 	"github.com/openetl-io/openetl/sdk/go/arrowipc"
 	"github.com/openetl-io/openetl/sdk/go/destination"
 	"github.com/openetl-io/openetl/sdk/go/host"
+	protocolv1 "github.com/openetl-io/openetl/sdk/go/protocol/v1"
 	"github.com/openetl-io/openetl/sdk/go/source"
 )
 
@@ -53,6 +54,10 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	if code, ok := strings.CutPrefix(os.Getenv(processEnv), "fails-"); ok {
+		sdk.Serve(failingSource(code))
+		return
+	}
 	switch os.Getenv(processEnv) {
 	case "connector":
 		sdk.Serve(laneFiles)
@@ -189,21 +194,33 @@ func onWorkerProcesses(t *testing.T, src *apiv1.ConnectorConfig, pipeline *apiv1
 	if _, err := os.Stat(engine); engine == "" || err != nil {
 		t.Skip("OPENETL_ENGINE names no engine binary")
 	}
+	return onWorkerProcessesAs(t, src, pipeline, engine, nil)
+}
+
+// onWorkerProcessesAs is onWorkerProcesses with engine's binary, which an
+// attempt whose workers start no engine may leave empty, and with the
+// workers' connectors run as workerAs's processes, by connector file, where
+// it names one, and as the coordinator's otherwise.
+func onWorkerProcessesAs(t *testing.T, src *apiv1.ConnectorConfig, pipeline *apiv1.PipelineSpec, engine string, workerAs map[string]string) (contract.AttemptResult, *workersAPI, *worker.Work, string, error) {
+	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	connectors, store, out := filepath.Join(dir, "connectors"), filepath.Join(dir, "store"), filepath.Join(dir, "out")
-	for _, d := range []string{connectors, store, out} {
+	connectors, workerConnectors := filepath.Join(dir, "connectors"), filepath.Join(dir, "worker-connectors")
+	store, out := filepath.Join(dir, "store"), filepath.Join(dir, "out")
+	for _, d := range []string{connectors, workerConnectors, store, out} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for name, as := range map[string]string{"destination-lanes": "connector", "source-timed": "timed"} {
-		script := fmt.Sprintf("#!/bin/sh\n%s=%s exec %q -test.run='^$'\n", processEnv, as, exe)
-		if err := os.WriteFile(filepath.Join(connectors, name), []byte(script), 0o700); err != nil {
-			t.Fatal(err)
+		for d, as := range map[string]string{connectors: as, workerConnectors: cmp.Or(workerAs[name], as)} {
+			script := fmt.Sprintf("#!/bin/sh\n%s=%s exec %q -test.run='^$'\n", processEnv, as, exe)
+			if err := os.WriteFile(filepath.Join(d, name), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	dst, err := structpb.NewStruct(map[string]any{"dir": out})
@@ -228,7 +245,7 @@ func onWorkerProcesses(t *testing.T, src *apiv1.ConnectorConfig, pipeline *apiv1
 
 	launcher := &pods.Processes{
 		Command: []string{exe, "-test.run=^$"},
-		Environ: append(os.Environ(), processEnv+"=worker", apiEnv+"="+srv.URL, storeEnv+"="+store, dirEnv+"="+connectors),
+		Environ: append(os.Environ(), processEnv+"=worker", apiEnv+"="+srv.URL, storeEnv+"="+store, dirEnv+"="+workerConnectors),
 		Pool:    "default",
 	}
 	t.Cleanup(launcher.Close)
@@ -310,6 +327,48 @@ func TestAnAttemptOnWorkerProcesses(t *testing.T) {
 		if lanes := stagedLanes(t, filepath.Join(out, ".epochs"))[stream]; len(lanes) != 2 {
 			t.Errorf("%s's rows were staged on writer lanes %v, want both workers'", stream, lanes)
 		}
+	}
+}
+
+// failingSource's discovery fails with the code it's named by, as a source's
+// does while its database restarts, or when its config can't work.
+func failingSource(code string) sdk.Connector {
+	return sdk.Connector{
+		Name: "timed", ConfigSchema: timedEvents.ConfigSchema, Egress: timedEvents.Egress, Splits: true,
+		Source: func([]byte, host.Host) (source.Source, error) { return failing(code), nil },
+	}
+}
+
+type failing string
+
+func (f failing) Discover(context.Context) (source.Catalog, error) {
+	code := protocolv1.ErrorCode(protocolv1.ErrorCode_value["ERROR_CODE_"+string(f)])
+	return source.Catalog{}, sdk.WithCode(code, errors.New("the database system is starting up"))
+}
+
+func (failing) Read(context.Context, source.ReadRequest, source.Emitter) error { return nil }
+
+// Worker processes whose connectors don't start, as their source's
+// database restarts or its config can't work, join only to say so: the
+// attempt fails within seconds with a worker's error and its code, not once
+// its workers' 5 minutes to join are up.
+func TestWorkersWhoseConnectorsDontStartFailTheAttemptAtOnce(t *testing.T) {
+	for _, code := range []errs.Code{errs.Transient, errs.ConfigInvalid} {
+		t.Run(code.String(), func(t *testing.T) {
+			began := time.Now()
+			_, _, _, _, err := onWorkerProcessesAs(t, &apiv1.ConnectorConfig{Connector: "timed", Config: &structpb.Struct{}},
+				&apiv1.PipelineSpec{Source: &apiv1.PipelineSource{Streams: []*apiv1.PipelineStream{{Name: "events"}}}},
+				"", map[string]string{"source-timed": "fails-" + code.String()})
+			took := time.Since(began)
+			switch msg := fmt.Sprint(err); {
+			case err == nil:
+				t.Fatal("the attempt went on without its workers")
+			case errs.CodeOf(err) != code || !strings.Contains(msg, " failed: ") || !strings.Contains(msg, "the database system is starting up"):
+				t.Fatalf("the attempt failed with %v (%s), want a worker's error, %s", err, errs.CodeOf(err), code)
+			case took > 30*time.Second:
+				t.Errorf("the attempt took %s to fail", took)
+			}
+		})
 	}
 }
 
