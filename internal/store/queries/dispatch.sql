@@ -154,9 +154,10 @@ ORDER BY priority, enqueue_time
 LIMIT @max_rows;
 
 -- name: PlaceDispatch :exec
--- On a runner, or on a pod launcher with the time a pod takes to start.
+-- On a runner, or on a pod launcher, which has as long to take it as a runner
+-- has to start it.
 UPDATE dispatches SET state = 'placed', runner = @runner, launcher = sqlc.narg('launcher'), placements = placements + 1,
-    start_deadline = now() + (COALESCE(sqlc.narg('start_ms')::bigint, start_timeout_ms) * interval '1 millisecond')
+    start_deadline = now() + (start_timeout_ms * interval '1 millisecond')
 WHERE org_id = @org_id AND id = @id AND state = 'pending';
 
 -- name: NotifyDispatch :exec
@@ -173,8 +174,9 @@ WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND runner = @runner A
 RETURNING *;
 
 -- name: ClaimLaunches :many
--- The attempts placed on this pod launcher that it hasn't made pods for.
-UPDATE dispatches SET launched = true
+-- The attempts placed on this pod launcher in time that it hasn't made pods
+-- for. From now their pods have the time a pod takes to start.
+UPDATE dispatches SET launched = true, start_deadline = now() + (sqlc.arg(pod_start_ms)::bigint * interval '1 millisecond')
 WHERE org_id = @org_id AND data_plane_id = @data_plane_id AND launcher = @launcher AND runner = @launcher
     AND state = 'placed' AND NOT launched AND start_deadline > now() AND NOT cancel
 RETURNING *;
@@ -321,8 +323,9 @@ WHERE d.org_id = @org_id AND a.org_id = d.org_id AND a.id = d.id AND a.pipeline_
   AND d.state = 'running' AND NOT d.cancel AND (sqlc.narg('id')::text IS NULL OR d.id = sqlc.narg('id'));
 
 -- name: ReturnUnstarted :execrows
--- Attempts whose runner or pod didn't start them in time go back to wait for
--- room, keeping their place in the queue.
+-- Attempts whose runner didn't start them in time, whose pod launcher didn't
+-- take them in time, or whose pod didn't start them in time go back to wait
+-- for room, keeping their place in the queue.
 UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launched = false, start_deadline = NULL
 WHERE org_id = @org_id AND state = 'placed' AND start_deadline <= now();
 

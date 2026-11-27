@@ -116,6 +116,8 @@ Each job has a size, from `xs` (0.5 vCPU, 1 GiB) to `xl` (8 vCPUs, 16 GiB), whic
 
 Jobs wait until capacity is available. Before stopping, a runner finishes jobs at a checkpoint. It allows up to 2 minutes for a sync and 10 minutes for a stream. Its termination grace period covers that time. Jobs are then placed again.
 
+A runner has 30 seconds to start a job placed on it, and a launcher has 30 seconds to take one from the API. If a runner or launcher does not, such as when its node fails, the orchestrators place the job again. They place no job on a runner or launcher whose last report is more than 30 seconds old. After a launcher takes a job, the job has 5 minutes to start in its pod, including the start-up of a new node. If it does not start in time, the orchestrators place it again.
+
 A pod's spec comes from the PodTemplate `openetl-attempt-default`, to which the launcher adds the job, labels, resources and node constraints. To change it, add a patch for the PodTemplate to your kustomization. The launcher reads the template when it starts, so restart it after you apply the change (`kubectl -n openetl rollout restart deploy/openetl-launcher-default`).
 
 ### Jobs on several pods
