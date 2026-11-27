@@ -114,9 +114,9 @@ The data is AWS's public set of files derived from TPC-DS, version 2.13, at scal
 
 The load used `psql` and `vacuumdb` on the runner's machine, against database `tpcds` of the RDS instance:
 
-1. Create the 24 tables in schema `tpcds_sf10`, with the column names and types of the benchmark's schema, without keys.
+1. Create the 24 tables in schema `tpcds_sf10`, as the `tpcds.sql` file of the benchmark's 2.13 toolkit defines them, without their `primary key` clauses. The [TPC](https://www.tpc.org/tpc_documents_current_versions/current_specifications5.asp) distributes the toolkit. The 24 tables have 425 columns in all.
 2. Load each file with `\copy TABLE from 'FILE' with (format csv, delimiter '|', null '', quote E'\x01', encoding 'UTF8')`, 8 tables at a time. This took 80 seconds.
-3. Add each table's primary key, 6 tables at a time, with `maintenance_work_mem` set to `4GB`. This took 68 seconds.
+3. Add each table's primary key, as the table below lists them, 6 tables at a time. Set `maintenance_work_mem` to `4GB`. This took 68 seconds.
 4. Run `vacuumdb --analyze -j 8 --schema=tpcds_sf10 -d tpcds`. This took 27 seconds.
 5. Make the seed schema `tpcds_sf10_seed`. For each table, run `CREATE TABLE tpcds_sf10_seed.TABLE (LIKE tpcds_sf10.TABLE INCLUDING ALL)`, and copy one row into it.
 
@@ -678,12 +678,23 @@ CREATE TABLE taxi.fhv_trips (
 );
 ```
 
-DuckDB 1.4.4 reads each Parquet file, maps its columns to the table's, and writes CSV to `psql`'s `\copy`, 8 files at a time. The mapping:
+DuckDB 1.4.4 reads each Parquet file, maps its columns to the table's, and writes CSV to `psql`'s `\copy`, 8 files at a time. For each file:
+
+```sh
+duckdb -batch <<'SQL' | PGOPTIONS="-c synchronous_commit=off" psql -c "\copy taxi.TABLE from stdin with (format csv)"
+SET threads = 2; SET memory_limit = '1200MB'; SET preserve_insertion_order = false;
+COPY (SELECT ROWS_BEFORE + file_row_number + 1 AS id, MAPPED_COLUMNS
+      FROM read_parquet('FILE', file_row_number = true))
+  TO '/dev/stdout' (FORMAT csv, HEADER false);
+SQL
+```
+
+`ROWS_BEFORE` is the number of rows in the files before `FILE` that go to the same table, in the order of the files above. `MAPPED_COLUMNS` are the expressions of the mapping, in the order of the table's columns after `id`. `psql` prints `COPY` and the file's row count. The mapping:
 
 - `id` is the row's place in the order of the files above, then of the rows in its file, from 1.
-- In `trips`, the yellow files' 18 columns map by name. `cab_type_id` is 1. `vendor_id` is 1 for `CMT`, 2 for `VTS` and 3 for `DDS`. `payment_type` is 1 for credit, 2 for cash, 3 for no charge and 4 for dispute, from each spelling that the files use. `store_and_fwd_flag` is true for `Y` or `1`, and false for `N` or `0`. A coordinate of 0 becomes NULL.
+- In `trips`, the yellow files' 18 columns map by their position in the file. `cab_type_id` is 1. `vendor_id` is 1 for `CMT`, 2 for `VTS` and 3 for `DDS`. `payment_type` is 1 for credit, 2 for cash, 3 for no charge and 4 for dispute, from each spelling that the files use. `store_and_fwd_flag` is true for `Y` or `1`, and false for `N` or `0`. A coordinate of 0 becomes NULL.
 - `ehail_fee`, `improvement_surcharge`, `congestion_surcharge`, `airport_fee`, `trip_type`, `pickup_nyct2010_gid`, `dropoff_nyct2010_gid`, `pickup_location_id` and `dropoff_location_id` of `trips` are NULL.
-- In `fhv_trips`, the files' 24 columns map by name. The 5 flag columns become booleans: `Y` is true and `N` is false, and an empty `access_a_ride_flag` is false. The license and base numbers are trimmed and in capitals. `legacy_shared_ride` and `affiliated_base_num` are NULL.
+- In `fhv_trips`, the files' 24 columns map by their position in the file. The 5 flag columns become booleans: `Y` is true and `N` is false, and an empty `access_a_ride_flag` is false. The license and base numbers are trimmed and in capitals. `legacy_shared_ride` and `affiliated_base_num` are NULL.
 - An empty string becomes NULL. A floating-point value that holds a whole number is written as an integer. The 2010 files' extra index column, `__index_level_0__`, is not loaded.
 
 The load:
@@ -910,6 +921,8 @@ These steps make one workload's machines, load its data, and time its runs. They
    sudo apt-get install -y docker.io docker-compose-v2 jq unzip curl postgresql-client sysstat python3 zstd ethtool
    sudo usermod -aG docker "$USER"
    ```
+
+   Sign out and sign in again, so that your shell has the `docker` group before you start the stack.
 
    For the taxi trips, also install the DuckDB 1.4.4 CLI. For scale factor 50 of the workload derived from TPC-H, the loader needs the DuckDB 1.4.1 CLI.
 
