@@ -30,17 +30,18 @@ type Pods struct {
 type attempt struct {
 	// Empty until one of its engines is ready.
 	pipeline string
-	// Its pod's PID; on workers, the coordinator's.
-	pod int
-	// Its workers' pods of its latest placement, by their number in the
-	// log, from 1: worker 1 is the attempt's first, which commits.
-	placement string
+	// Its latest placement's pod's PID, on workers the coordinator's, and
+	// that placement.
+	pod, podPlacement int
+	// Its latest placement's workers' pods, by their number in the log,
+	// from 1: worker 1 is the attempt's first, which commits.
+	placement int
 	workers   map[int]int
 }
 
 var (
-	// A pod's first line: its PID, and its attempt.
-	podStarted = regexp.MustCompile(`msg="runner running one attempt" .*\bid=\S+:(\d+) attempt=(\S+)`)
+	// A pod's first line: its PID, attempt and placement.
+	podStarted = regexp.MustCompile(`msg="runner running one attempt" .*\bid=\S+:(\d+) attempt=(\S+) placement=(\d+)`)
 	// A worker's pod's: its PID, attempt, placement and number.
 	workerStarted = regexp.MustCompile(`msg="runner running one worker of an attempt" .*\bid=\S+:(\d+) attempt=(\S+) placement=(\d+) worker=(\d+)`)
 	// An engine's: its pipeline and PID, and in a job, the job's owner,
@@ -55,14 +56,22 @@ func (p *Pods) Line(line string) {
 	case strings.Contains(line, `msg="runner running one attempt"`):
 		if m := podStarted.FindStringSubmatch(line); m != nil {
 			a := p.attempt(m[2])
-			a.pod, _ = strconv.Atoi(m[1])
-			p.bind(a)
+			// A placement's line may come after a later one's.
+			if placement, _ := strconv.Atoi(m[3]); placement >= a.podPlacement {
+				a.podPlacement = placement
+				a.pod, _ = strconv.Atoi(m[1])
+				p.bind(a)
+			}
 		}
 	case strings.Contains(line, `msg="runner running one worker of an attempt"`):
 		if m := workerStarted.FindStringSubmatch(line); m != nil {
 			a := p.attempt(m[2])
-			if a.placement != m[3] {
-				a.placement, a.workers = m[3], map[int]int{}
+			placement, _ := strconv.Atoi(m[3])
+			switch {
+			case placement < a.placement:
+				return
+			case placement > a.placement || a.workers == nil:
+				a.placement, a.workers = placement, map[int]int{}
 			}
 			n, _ := strconv.Atoi(m[4])
 			a.workers[n], _ = strconv.Atoi(m[1])
@@ -77,11 +86,15 @@ func (p *Pods) Line(line string) {
 			p.engines, p.latest = map[string]int{}, map[string]*attempt{}
 		}
 		p.engines[pipeline] = pid
-		if m := engineOwner.FindStringSubmatch(line); m != nil {
-			a := p.attempt(m[1])
-			a.pipeline, p.latest[pipeline] = pipeline, a
-			p.bind(a)
+		m := engineOwner.FindStringSubmatch(line)
+		if m == nil {
+			// Its attempt, and so its pod, is unknown.
+			delete(p.latest, pipeline)
+			return
 		}
+		a := p.attempt(m[1])
+		a.pipeline, p.latest[pipeline] = pipeline, a
+		p.bind(a)
 	}
 }
 

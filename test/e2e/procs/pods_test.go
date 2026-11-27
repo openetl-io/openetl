@@ -126,38 +126,52 @@ func TestPodsBindInEitherOrder(t *testing.T) {
 	}
 }
 
-// A placement of the attempt's workers again replaces the workers of the
-// one before, and a pod of the same attempt placed again replaces its pod.
-func TestAPlacementAgainReplacesItsPods(t *testing.T) {
-	all := lines(t, "testdata/launcher-temporal.log")
-	var p Pods
-	for _, l := range all {
-		p.Line(l)
-	}
+// A later placement of an attempt's pods replaces the one before, and a
+// line of an earlier placement that comes after a later one's changes
+// nothing.
+func TestALaterPlacementReplacesItsPods(t *testing.T) {
 	const pipeline, attempt = "2647813d-916d-486b-a54e-98930426c1f3", "attempt=93ee6905-4446-4ca2-96cd-1bbcd24808d0/job-01a21cc2-0bda-77b6-afd9-6b7ffe0a03aa/1"
 	again := []string{
 		`time=2026-11-27T11:27:50.000Z level=INFO msg="runner running one worker of an attempt" role=runner id=runnervm0hi8g:290001 ` + attempt + ` placement=2 worker=1`,
 		`time=2026-11-27T11:27:50.010Z level=INFO msg="runner running one attempt" role=runner id=runnervm0hi8g:290003 ` + attempt + ` placement=2`,
 	}
-	for _, l := range again {
-		p.Line(l)
-	}
-	if got := p.Pod(pipeline); got != 290003 {
-		t.Errorf("pod %d, want 290003", got)
-	}
-	if got, want := p.Workers(pipeline), map[int]int{1: 290001}; !maps.Equal(got, want) {
-		t.Errorf("workers %v, want %v", got, want)
+	all := lines(t, "testdata/launcher-temporal.log")
+	for name, order := range map[string][]string{
+		"later placement after":  append(slices.Clone(all), again...),
+		"later placement before": append(slices.Clone(again), all...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var p Pods
+			for _, l := range order {
+				p.Line(l)
+			}
+			if got := p.Pod(pipeline); got != 290003 {
+				t.Errorf("pod %d, want 290003", got)
+			}
+			if got, want := p.Workers(pipeline), map[int]int{1: 290001}; !maps.Equal(got, want) {
+				t.Errorf("workers %v, want %v", got, want)
+			}
+		})
 	}
 }
 
-// An engine whose line names no owner, as a planner's, is still the
-// pipeline's latest, and binds no pod.
+// An engine whose line names no owner, as a planner's would, is the
+// pipeline's latest, of an attempt and so a pod that's unknown: it binds no
+// pod, and leaves the pipeline with none, though one was bound before.
 func TestAnEngineWithoutAnOwnerBindsNothing(t *testing.T) {
 	var p Pods
 	p.Line(`time=2026-11-27T11:20:00.000Z level=INFO msg="runner running one attempt" role=runner id=h:10 attempt=a/1 placement=1`)
 	p.Line(`time=2026-11-27T11:20:00.100Z level=INFO msg="engine ready" role=runner pipeline=p component=engine pid=11 version=0.0.0`)
 	if p.Engine("p") != 11 || p.Pod("p") != 0 || p.Bound("p") {
 		t.Errorf("engine %d, pod %d, bound %v; want 11, 0, false", p.Engine("p"), p.Pod("p"), p.Bound("p"))
+	}
+	const pipeline = "965bd3db-9a28-4ac6-86fa-e51a6244d0c2"
+	for _, l := range lines(t, "testdata/launcher-temporal.log") {
+		p.Line(l)
+	}
+	p.Line(`time=2026-11-27T11:25:00.000Z level=INFO msg="engine ready" role=runner pipeline=` + pipeline + ` component=engine pid=12 version=0.0.0`)
+	if p.Engine(pipeline) != 12 || p.Pod(pipeline) != 0 || p.Workers(pipeline) != nil || !p.Bound(pipeline) {
+		t.Errorf("engine %d, pod %d, workers %v, bound %v; want 12, 0, none, true", p.Engine(pipeline), p.Pod(pipeline), p.Workers(pipeline), p.Bound(pipeline))
 	}
 }
 
