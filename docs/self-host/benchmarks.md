@@ -966,7 +966,7 @@ Give `psql` and `vacuumdb` the RDS instance, the user and the database: `tpcds`,
 export PGHOST=RDS_ENDPOINT PGUSER=openetl PGDATABASE=DATABASE PGSSLMODE=require
 ```
 
-Put the password in `~/.pgpass`, in a line `RDS_ENDPOINT:5432:*:openetl:PASSWORD`. Then run `chmod 600 ~/.pgpass`, so that only you can read it.
+Put the password in `~/.pgpass`, in a line `RDS_ENDPOINT:5432:*:openetl:PASSWORD`. If the password has a `:` or a `\`, put a `\` before each of them in that line. Then run `chmod 600 ~/.pgpass`, so that only you can read it.
 
 Then follow the steps of the workload's Data section:
 
