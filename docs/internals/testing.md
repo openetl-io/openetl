@@ -35,6 +35,8 @@ Use `make sim SEEDS=10000` to run more seeds. Use `go test ./test/sim -run 'Test
 
 The chaos suite in `test/e2e` runs randomized pipelines under failures. It kills runners, engines and connectors. It also interrupts API access and injects object-storage failures. The suite checks that each row is written once.
 
+Each chaos test starts its runs after all runners and pod launchers of its pod data plane have reported. If no launcher has reported, the plane places a pod's attempt on its runner.
+
 When a run deletes its pipeline, the suite waits for the pipeline's teardowns to finish before the run's runners stop. A run fails if its teardowns don't finish. At the end of each test, a replication slot whose pipeline is gone fails the test, and the suite drops the slot.
 
 Some runs place their attempts in pods, which pod launchers start as processes. A fault at a pod, a worker's pod or a pod's connector finds the process through the launcher's output. The first line of a pod gives only its attempt ID, and on Temporal the attempt ID does not contain the pipeline ID. The suite connects the attempt to its pipeline through the line of the attempt's engine, which gives both IDs. A run in pods fails if no launcher's output connects a pod to its pipeline. `TestChaos` fails if it makes faults at pods and none of them finds the process to kill.
@@ -42,6 +44,17 @@ Some runs place their attempts in pods, which pod launchers start as processes. 
 A crash point fires at one of a pipeline's checkpoint writes and kills the process that wrote it, or the worker that commits. Runs can share a runner, so another run's fault can kill that runner first. The write then continues as if no crash point were armed, and the crash point is armed again for a later write. The run's fault counts show each such miss as `re-armed`. In `TestChaosWindows`, `TestChaosDedupe`, `TestChaosOver` and `TestChaosWorkers`, a run fails on a crash point that never kills. It also fails if the point finds nothing to kill five times in a row.
 
 The data check stops at the first duplicate or phantom row. Rows that are missing at that point can still arrive, so the failure says they were still settling.
+
+When a run fails with missing rows, the failure also gives the dispatch state of the pipeline's newest attempt. The state is pending, placed on a runner or pod launcher, running or finished. For a placement on a pod launcher, the failure says if the launcher has claimed the attempt. It also gives the start or lease deadline, and when that runner or launcher last reported.
+
+In `TestChaosChecks`, a run with a held plant writes to its source for 15 seconds. The 15 seconds start when the pipeline has written the rows that the source held before the run. The run fails if the pipeline does not write those rows within `-chaos.settle`.
+
+`TestChaos` can also add faults to the control plane:
+
+- `-chaos.postgres-restart` restarts or kills the Compose Postgres at about this interval. A restart that is in progress when the runs end waits up to two minutes for Postgres to accept connections before the next test starts.
+- `-chaos.orchestrator-kill` runs two more orchestrators on DBOS, and kills one at about this interval. Then it starts that orchestrator again.
+
+The extra orchestrators are the test binary, which takes the flags of `openetld orchestrator`. They use the suite's short timings, the same as the API server and the orchestrator in the test process. Because they are the same binary, they run the same DBOS application version, so each orchestrator takes new workflows. When the runs end, the suite stops the extra orchestrators. It then waits until the orchestrator in the test process runs DBOS's latest version. `TestChaos` fails if that takes more than two minutes.
 
 Some runs use group windows over Kafka, on one pod or several workers. These runs kill a worker or the coordinator. Records arrive in event-time order within each partition, so these cases have no late records. The suite compares each window's row with a window model.
 

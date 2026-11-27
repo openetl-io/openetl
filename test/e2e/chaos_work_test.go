@@ -350,7 +350,7 @@ func (w *pgWork) plant(t *testing.T, what string) {
 	switch {
 	case what == plantHeld:
 		if !w.added {
-			t.Fatalf("the source never got w, which the held plant needs: the writes add it once the pipeline has loaded the source's first rows, which it hadn't, or only just, when the run's %v of writes ran out", w.c.writing())
+			t.Fatalf("the source never got w, which the held plant needs: the writes add it in the first half of their %v, which start once the pipeline has loaded the source's first rows", w.c.writing())
 		}
 		w.dest.exec(t, "UPDATE "+out+" SET w = NULL, _openetl_held = jsonb_build_object('w', _openetl_id) WHERE ctid = (SELECT ctid FROM "+out+" WHERE w IS NOT NULL LIMIT 1)")
 	case what == plantLoss && w.incr:

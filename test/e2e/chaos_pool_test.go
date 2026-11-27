@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/test/e2e/ports"
 	"github.com/openetl-io/openetl/test/e2e/procs"
 )
 
@@ -117,7 +118,7 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 			s.s3 = startS3Proxy(t, s, target)
 		}
 		if cfg.bridge {
-			s.bridge = freePort(t)
+			s.bridge = bridgePort(t)
 		}
 		p.slots = append(p.slots, s)
 	}
@@ -129,15 +130,33 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 	return p
 }
 
-func freePort(t *testing.T) int {
+// Runners' bridges listen on ports from 21000 to 22999, below those the
+// kernel gives listeners on port 0 (32768 and up on Linux, 49152 and up on
+// macOS). A port it gave and took back could be one of the suite's own
+// proxies' before the runner listens on it, and every start of the runner
+// would fail. Each is one slot's until its pool's runners have stopped.
+var bridgePorts = &ports.Range{First: 21000, N: 2000}
+
+// bridgePort is a port for a slot's runner's bridge that no other slot has
+// now, and that's free. It goes back when t ends, after the cleanup
+// startPool adds once it has every slot's, which waits for the runners.
+func bridgePort(t *testing.T) int {
 	t.Helper()
-	var lc net.ListenConfig
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	host := cmp.Or(os.Getenv("OPENETL_TEST_BRIDGE_HOST"), "0.0.0.0")
+	port, ok := bridgePorts.Take(func(port int) bool {
+		var lc net.ListenConfig
+		ln, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return false
+		}
+		_ = ln.Close()
+		return true
+	})
+	if !ok {
+		t.Fatalf("no port from %d to %d is free for a runner's bridge", bridgePorts.First, bridgePorts.First+bridgePorts.N-1)
 	}
-	defer func() { _ = ln.Close() }()
-	return ln.Addr().(*net.TCPAddr).Port
+	t.Cleanup(func() { bridgePorts.Release(port) })
+	return port
 }
 
 // supervise starts the slot's runner, and starts it again 1 to 5 seconds

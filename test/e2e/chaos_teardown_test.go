@@ -175,6 +175,110 @@ func dropSlot(ctx context.Context, conn *pgx.Conn, slot string) error {
 	}
 }
 
+// behind says what may hold a pipeline's rows back: how it last failed, and
+// where its newest attempt is.
+func behind(t *testing.T, pipeline string) string {
+	t.Helper()
+	return lastFailure(t, pipeline) + "; " + newestAttempt(t, pipeline)
+}
+
+// newestAttempt says where the pipeline's newest attempt is in its dispatch:
+// waiting for room; placed on a runner, or on a pod launcher and whether the
+// launcher has claimed it, until its start deadline; running until its
+// lease's; or finished. It also says when that runner or launcher last
+// reported: an attempt placed on one that has died waits for its start
+// deadline.
+func newestAttempt(t *testing.T, pipeline string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, env.dbURL)
+	if err != nil {
+		return "reading its newest attempt: " + err.Error()
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var (
+		attempt, placements int
+		age                 float64
+		state, plane, code  string
+		runner, launcher    *string
+		launched            bool
+		// Seconds; nil where there's none.
+		startIn, leaseIn, finished, runnerReport, launcherReport *float64
+	)
+	err = conn.QueryRow(ctx, `SELECT a.attempt, extract(epoch FROM now() - a.create_time)::float8,
+			d.state, d.data_plane_id, d.runner, d.launcher, d.launched, d.placements,
+			extract(epoch FROM d.start_deadline - now())::float8, extract(epoch FROM d.lease_deadline - now())::float8,
+			extract(epoch FROM now() - d.finish_time)::float8, coalesce(d.outcome->>'Code', ''),
+			(SELECT extract(epoch FROM now() - r.report_time)::float8 FROM runners r
+				WHERE r.org_id = d.org_id AND r.data_plane_id = d.data_plane_id AND r.id = d.runner),
+			(SELECT extract(epoch FROM now() - r.report_time)::float8 FROM runners r
+				WHERE r.org_id = d.org_id AND r.data_plane_id = d.data_plane_id AND r.id = d.launcher)
+		FROM attempts a JOIN pipelines p ON p.org_id = a.org_id AND p.id = a.pipeline_id
+		JOIN dispatches d ON d.org_id = a.org_id AND d.id = a.id
+		WHERE p.name = $1 ORDER BY a.create_time DESC LIMIT 1`, pipeline).Scan(
+		&attempt, &age, &state, &plane, &runner, &launcher, &launched, &placements,
+		&startIn, &leaseIn, &finished, &code, &runnerReport, &launcherReport)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "no attempt of it yet"
+	case err != nil:
+		return "reading its newest attempt: " + err.Error()
+	}
+	dur := func(s float64) time.Duration {
+		return time.Duration(s * float64(time.Second)).Round(100 * time.Millisecond)
+	}
+	deadline := func(what string, s *float64) string {
+		switch {
+		case s == nil:
+			return "no " + what
+		case *s < 0:
+			return fmt.Sprintf("%s %v ago", what, dur(-*s))
+		}
+		return fmt.Sprintf("%s in %v", what, dur(*s))
+	}
+	reported := func(s *float64) string {
+		if s == nil {
+			return "has no report"
+		}
+		return fmt.Sprintf("last reported %v ago", dur(*s))
+	}
+	name := func(s *string) string {
+		if s == nil {
+			return "none"
+		}
+		return *s
+	}
+	head := fmt.Sprintf("newest attempt: attempt %d of its sync, made %v ago, ", attempt, dur(age))
+	switch {
+	case state == "pending":
+		return head + fmt.Sprintf("waiting for room on data plane %s, after %d placements", plane, placements)
+	case state == "placed" && launcher != nil:
+		claimed := "not claimed by it"
+		if launched {
+			claimed = "claimed by it"
+		}
+		return head + fmt.Sprintf("placed on pod launcher %s of data plane %s (placement %d), %s, %s; the launcher %s",
+			*launcher, plane, placements, claimed, deadline("start deadline", startIn), reported(launcherReport))
+	case state == "placed":
+		return head + fmt.Sprintf("placed on runner %s of data plane %s (placement %d), not started, %s; the runner %s",
+			name(runner), plane, placements, deadline("start deadline", startIn), reported(runnerReport))
+	case state == "running":
+		var pod string
+		if launcher != nil {
+			pod = fmt.Sprintf(", in a pod of launcher %s, which %s", *launcher, reported(launcherReport))
+		}
+		return head + fmt.Sprintf("running on runner %s of data plane %s (placement %d)%s, %s; the runner %s",
+			name(runner), plane, placements, pod, deadline("lease deadline", leaseIn), reported(runnerReport))
+	case state == "finished" && finished != nil:
+		if code != "" {
+			code = ": " + code
+		}
+		return head + fmt.Sprintf("finished %v ago%s", dur(*finished), code)
+	}
+	return head + state
+}
+
 // lastFailure says how the pipeline last failed: its latest sync's error
 // or, since a stream's attempts leave that empty, its latest failed
 // attempt's.

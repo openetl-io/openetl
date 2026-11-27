@@ -29,6 +29,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	apiv1 "github.com/openetl-io/openetl/gen/openetl/api/v1"
+	"github.com/openetl-io/openetl/internal/orchestration/dbosbackend"
 	"github.com/openetl-io/openetl/internal/platform/objectstore"
 )
 
@@ -56,7 +58,7 @@ var (
 	chaosLogs     = flag.String("chaos.logs", "", "a directory to keep every runner's output in")
 	chaosTemporal = flag.Duration("chaos.temporal-restart", 0, "restart compose's Temporal about this often; 0: never")
 	chaosPostgres = flag.Duration("chaos.postgres-restart", 0, "restart or kill compose's Postgres about this often; 0: never")
-	chaosKills    = flag.Duration("chaos.orchestrator-kill", 0, "on DBOS, run two more orchestrators, and kill one about this often, which starts again; 0: neither")
+	chaosKills    = flag.Duration("chaos.orchestrator-kill", 0, "on DBOS, run two more orchestrators, of this binary and the suite's timings, and kill one about this often, which starts again; 0: neither")
 	// Group windows run on workers, their engines exchanging keyed rows
 	// between pods; false keeps every windowed run on one pod.
 	chaosWindowWorkers = flag.Bool("chaos.window-workers", true, "run group windows on workers too, beside those on one pod")
@@ -83,7 +85,11 @@ type chaosConfig struct {
 	noise    float64
 	// Unset: -chaos.write.
 	writeFor time.Duration
-	plant    string
+	// Its writes, and the time they take, start once the pipeline has
+	// loaded what the source held before it, which it has up to
+	// -chaos.settle for, rather than when it's applied.
+	writeFromLoad bool
+	plant         string
 	// A column added to the source mid-run is held under block, and
 	// released.
 	holds bool
@@ -420,14 +426,18 @@ func TestChaos(t *testing.T) {
 	s := newChaosSuite(t, seed, *chaosRunners)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	// The control plane's faults, which end with the runs: a restart under
+	// way finishes, and the other orchestrators stop.
+	var controlPlane sync.WaitGroup
 	if *chaosTemporal > 0 {
-		go s.restartTemporal(ctx, t, seed)
+		controlPlane.Go(func() { s.restartTemporal(ctx, t, seed) })
 	}
 	if *chaosPostgres > 0 {
-		go s.restartPostgres(ctx, t, seed)
+		controlPlane.Go(func() { s.restartPostgres(ctx, t, seed) })
 	}
-	if *chaosKills > 0 && env.orchestrator == "dbos" {
-		go s.killOrchestrators(ctx, t, seed)
+	orchestrators := *chaosKills > 0 && env.orchestrator == "dbos"
+	if orchestrators {
+		controlPlane.Go(func() { s.killOrchestrators(ctx, t, seed) })
 	}
 	sem := make(chan struct{}, *chaosParallel)
 	t.Run("runs", func(t *testing.T) {
@@ -445,7 +455,11 @@ func TestChaos(t *testing.T) {
 		}
 	})
 	cancel()
+	controlPlane.Wait()
 	s.report(t, seed)
+	if orchestrators {
+		awaitServerOrchestrator(t)
+	}
 }
 
 // TestChaosChecks runs a pipeline of each kind without faults, then takes a
@@ -493,10 +507,11 @@ func TestChaosChecks(t *testing.T) {
 			if !c.continuous {
 				c.every = "5s"
 			}
-			// Its plant needs the column, and writes wait for the first sync,
-			// which can take this long on a machine this busy.
+			// Its plant needs the column, which the writes add in their first
+			// half. They count from the load, so a first sync that starts late
+			// doesn't use them up.
 			if plant == plantHeld {
-				c.writeFor = 15 * time.Second
+				c.writeFor, c.writeFromLoad = 15*time.Second, true
 			}
 			if *chaosOnly != "" && !slices.ContainsFunc(strings.Split(*chaosOnly, ","), func(s string) bool { return strings.Contains(c.name(), s) }) {
 				continue
@@ -538,7 +553,22 @@ func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 	s.planes = append(s.planes, s.podPlane)
 	s.podPool = startPool(ctx, t, poolConfig{runners: 3, launchers: 2, first: runners + 2, bucket: bucket, dataPlane: s.podPlane, token: token}, *chaosLogs, s.book)
 	t.Cleanup(stop)
+	awaitRunners(t, s.podPlane, s.podPool.cfg.runners, s.podPool.cfg.launchers)
 	return s
+}
+
+// awaitRunners waits, for up to a minute, until the data plane has as many
+// runners reporting, so many of them pod launchers. A run's attempt placed
+// before its plane's launchers have reported goes to a runner of the plane,
+// though it's for a pod, and a strict run of workers then never runs on
+// them.
+func awaitRunners(t *testing.T, plane string, runners, launchers int) {
+	t.Helper()
+	eventually(t, time.Minute, fmt.Sprintf("data plane %s's %d runners, %d of them pod launchers, to report", plane, runners, launchers), func() bool {
+		ok, err := query[bool](t, `SELECT count(*) >= $2 AND count(*) FILTER (WHERE launcher) >= $3 FROM runners
+			WHERE data_plane_id = $1 AND attempt = ''`, plane, runners, launchers)
+		return err == nil && ok
+	})
 }
 
 // ownPool starts a pool of one runner like base's, on a data plane of its
@@ -667,6 +697,9 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		})
 	})
 
+	if c.writeFromLoad {
+		s.awaitLoad(t, w, name)
+	}
 	var (
 		writeCtx  context.Context
 		stopWrite context.CancelFunc
@@ -775,7 +808,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		}
 		if extra > 0 || missing > 0 {
 			var last string
-			s.pg.do(func() { last = lastFailure(t, name) })
+			s.pg.do(func() { last = behind(t, name) })
 			t.Fatalf("before the plant: %d missing, %d extra: %s (%s)%s", missing, extra, detail, last, settling)
 		}
 		s.pg.do(func() {
@@ -793,7 +826,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		res.failed = "duplicates or phantom rows: " + detail + settling
 	case missing > 0:
 		var last string
-		s.pg.do(func() { last = lastFailure(t, name) })
+		s.pg.do(func() { last = behind(t, name) })
 		res.failed = fmt.Sprintf("rows missing after %v: %s (%s)", *chaosSettle, detail, last)
 	}
 	if res.failed != "" {
@@ -906,6 +939,24 @@ func syncedSince(t *testing.T, pipeline string, since time.Time) bool {
 	ok, err := query[bool](t, `SELECT EXISTS (SELECT 1 FROM syncs s JOIN pipelines p ON p.id = s.pipeline_id
 		WHERE p.name = $1 AND s.status = 'succeeded' AND s.start_time > $2)`, pipeline, since)
 	return err == nil && ok
+}
+
+// awaitLoad waits for the pipeline to load what its source held before it
+// started, and fails t if it hasn't within -chaos.settle.
+func (s *chaosSuite) awaitLoad(t *testing.T, w workload, pipeline string) {
+	t.Helper()
+	for deadline := time.Now().Add(*chaosSettle); ; time.Sleep(500 * time.Millisecond) {
+		var loaded bool
+		s.pg.do(func() { loaded = w.loaded(t) })
+		if loaded {
+			return
+		}
+		if time.Now().After(deadline) {
+			var last string
+			s.pg.do(func() { last = behind(t, pipeline) })
+			t.Fatalf("the pipeline hadn't loaded the source's first rows %v after it was applied, so the run wrote nothing (%s)", *chaosSettle, last)
+		}
+	}
 }
 
 // inject arms or makes the run's faults at random times while ctx lasts.
@@ -1116,24 +1167,35 @@ func (s *chaosSuite) locate(ctx context.Context, pool *chaosPool, pipeline strin
 	return nil, 0
 }
 
-// killOrchestrators kills an orchestrator now and then, with jitter. Half the
-// time it starts again under its own name, and recovers its own workflows when
-// it launches; otherwise under another, as a Deployment's pod does, and another
-// recovers them when its reports lapse.
+// killOrchestrators runs two more orchestrators beside the one in this
+// process, and kills one now and then, with jitter. Half the time it starts
+// again under its own name, and recovers its own workflows when it launches;
+// otherwise under another, as a Deployment's pod does, and another recovers
+// them when its reports lapse. They're this binary, so they run the same
+// DBOS version, with the same timings, as the one in this process. Once ctx
+// ends they're killed, and the one in this process goes on alone.
 func (s *chaosSuite) killOrchestrators(ctx context.Context, t *testing.T, seed uint64) {
 	rng := rand.New(rand.NewPCG(seed, 0x0c5))
 	start := func(id string) *runner {
-		return startOpenetld(t, nil, "orchestrator", "--database-url", env.dbURL, "--executor-id", id, "--bootstrap-key-file", env.keyFile)
+		return startOrchestrator(t, nil, "--database-url", env.dbURL, "--executor-id", id, "--bootstrap-key-file", env.keyFile, "--log-format", "text")
 	}
 	names := []string{"chaos-0", "chaos-1"}
 	replicas := []*runner{start(names[0]), start(names[1])}
+	defer func() {
+		for i, r := range replicas {
+			if r != nil {
+				stopOrchestrator(t, names[i], r)
+			}
+		}
+	}()
 	for n := 2; ; n++ {
 		pause(ctx, *chaosKills/2+upTo(rng, *chaosKills))
 		if ctx.Err() != nil {
 			return
 		}
 		i := rng.IntN(len(replicas))
-		replicas[i].kill(t)
+		stopOrchestrator(t, names[i], replicas[i])
+		replicas[i] = nil
 		s.mu.Lock()
 		s.orchestratorKills++
 		s.mu.Unlock()
@@ -1146,6 +1208,90 @@ func (s *chaosSuite) killOrchestrators(ctx context.Context, t *testing.T, seed u
 		}
 		replicas[i] = start(names[i])
 	}
+}
+
+// stopOrchestrator kills one of killOrchestrators', and keeps its output in
+// -chaos.logs.
+func stopOrchestrator(t *testing.T, name string, r *runner) {
+	r.kill(t)
+	if *chaosLogs != "" {
+		_ = os.WriteFile(filepath.Join(*chaosLogs, fmt.Sprintf("orchestrator-%s-%d.log", name, r.cmd.Process.Pid)), []byte(r.out.String()), 0o600)
+	}
+}
+
+// serverTakeover is how long the orchestrator in this process may take to be
+// the one that takes new workflows, once the others have stopped: those of
+// another version hold DBOS's latest until the leader sees their reports
+// lapse, which takes 30 to 40 seconds.
+const serverTakeover = 2 * time.Minute
+
+// awaitServerOrchestrator waits until the orchestrator in this process runs
+// DBOS's latest version and reports, so the workflows of the tests after this
+// one run on it: only the latest version takes what the API enqueues, which
+// has none. It fails t, saying which orchestrators run the latest, if that
+// takes longer than serverTakeover.
+func awaitServerOrchestrator(t *testing.T) {
+	t.Helper()
+	start := time.Now()
+	for {
+		ok, state, err := serverTakesWork(t.Context())
+		if err == nil && ok {
+			t.Logf("the orchestrator in this process takes new workflows, %v after the others stopped", time.Since(start).Round(100*time.Millisecond))
+			return
+		}
+		if err != nil {
+			state = err.Error()
+		}
+		if time.Since(start) > serverTakeover {
+			t.Errorf("the orchestrator in this process didn't take new workflows within %v of the others stopping, so the tests after this one wait for an orchestrator that's gone: %s", serverTakeover, state)
+			return
+		}
+		pause(t.Context(), time.Second)
+	}
+}
+
+// serverTakesWork reports whether the orchestrator in this process runs DBOS's
+// latest version and has reported in the last 30 seconds, as orchestrators
+// count each other live, and says which run what.
+func serverTakesWork(ctx context.Context) (ok bool, state string, err error) {
+	system, err := dbosbackend.SystemDatabaseURL(env.dbURL)
+	if err != nil {
+		return false, "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, system)
+	if err != nil {
+		return false, "", err
+	}
+	defer func() { _ = conn.Close(context.Background()) }()
+	var latest string
+	if err := conn.QueryRow(ctx, `SELECT version_name FROM dbos.application_versions
+		WHERE application_name = 'openetl' OR application_name IS NULL ORDER BY version_timestamp DESC LIMIT 1`).Scan(&latest); err != nil {
+		return false, "", fmt.Errorf("DBOS's latest version: %w", err)
+	}
+	rows, err := conn.Query(ctx, `SELECT id, version, extract(epoch FROM now() - reported_at)::float8 FROM openetl.executors ORDER BY id`)
+	if err != nil {
+		return false, "", err
+	}
+	short := func(v string) string { return v[:min(len(v), 12)] }
+	var (
+		id, version string
+		ago         float64
+		executors   []string
+	)
+	_, err = pgx.ForEachRow(rows, []any{&id, &version, &ago}, func() error {
+		live := ago < 30
+		if id == serverExecutor {
+			ok = version == latest && live
+		}
+		executors = append(executors, fmt.Sprintf("%s runs %s, reported %v ago", id, short(version), time.Duration(ago*float64(time.Second)).Round(time.Second)))
+		return nil
+	})
+	if err != nil {
+		return false, "", err
+	}
+	return ok, fmt.Sprintf("DBOS's latest version is %s; %s", short(latest), strings.Join(executors, "; ")), nil
 }
 
 // restartTemporal restarts compose's Temporal now and then, with jitter.
@@ -1189,7 +1335,9 @@ func (s *chaosSuite) restartPostgres(ctx context.Context, t *testing.T, seed uin
 		}
 		kill := rng.IntN(2) == 0
 		s.pg.mu.Lock()
-		err = restartPostgres(ctx, id, kill)
+		// One under way when the runs end still waits for Postgres, which the
+		// next test needs.
+		err = restartPostgres(context.WithoutCancel(ctx), id, kill)
 		s.pg.restarts++
 		if kill {
 			s.pg.kills++
@@ -1201,8 +1349,8 @@ func (s *chaosSuite) restartPostgres(ctx context.Context, t *testing.T, seed uin
 	}
 }
 
-// restartPostgres restarts or kills and starts container id, and waits
-// until Postgres takes connections.
+// restartPostgres restarts or kills and starts container id, and waits, for
+// up to two minutes, until Postgres takes connections.
 func restartPostgres(ctx context.Context, id string, kill bool) error {
 	cmds := [][]string{{"docker", "restart", id}}
 	if kill {
@@ -1213,14 +1361,17 @@ func restartPostgres(ctx context.Context, id string, kill bool) error {
 			return fmt.Errorf("%s: %w\n%s", strings.Join(c, " "), err, out)
 		}
 	}
-	deadline := time.Now().Add(2 * time.Minute)
+	// The two minutes also end a connect or ping that a Postgres that never
+	// answers would hold, as ctx may have no end.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	for {
 		conn, err := pgx.Connect(ctx, env.dbURL)
 		if err == nil {
 			err = conn.Ping(ctx)
-			_ = conn.Close(context.Background())
+			_ = conn.Close(ctx)
 		}
-		if err == nil || time.Now().After(deadline) || ctx.Err() != nil {
+		if err == nil || ctx.Err() != nil {
 			return err
 		}
 		pause(ctx, 500*time.Millisecond)
