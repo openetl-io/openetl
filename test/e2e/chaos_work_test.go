@@ -349,6 +349,9 @@ func (w *pgWork) plant(t *testing.T, what string) {
 	out, in := pgx.Identifier{w.out, chaosTables[0]}.Sanitize(), pgx.Identifier{w.in, chaosTables[0]}.Sanitize()
 	switch {
 	case what == plantHeld:
+		if !w.added {
+			t.Fatalf("the source never got w, which the held plant needs: the writes add it once the pipeline has loaded the source's first rows, which it hadn't, or only just, when the run's %v of writes ran out", w.c.writing())
+		}
 		w.dest.exec(t, "UPDATE "+out+" SET w = NULL, _openetl_held = jsonb_build_object('w', _openetl_id) WHERE ctid = (SELECT ctid FROM "+out+" WHERE w IS NOT NULL LIMIT 1)")
 	case what == plantLoss && w.incr:
 		w.dest.exec(t, "DELETE FROM "+out+" WHERE (id, v) IN (SELECT id, v FROM "+in+" LIMIT 1)")
