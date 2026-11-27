@@ -553,7 +553,22 @@ func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 	s.planes = append(s.planes, s.podPlane)
 	s.podPool = startPool(ctx, t, poolConfig{runners: 3, launchers: 2, first: runners + 2, bucket: bucket, dataPlane: s.podPlane, token: token}, *chaosLogs, s.book)
 	t.Cleanup(stop)
+	awaitRunners(t, s.podPlane, s.podPool.cfg.runners, s.podPool.cfg.launchers)
 	return s
+}
+
+// awaitRunners waits, for up to a minute, until the data plane has as many
+// runners reporting, so many of them pod launchers. A run's attempt placed
+// before its plane's launchers have reported goes to a runner of the plane,
+// though it's for a pod, and a strict run of workers then never runs on
+// them.
+func awaitRunners(t *testing.T, plane string, runners, launchers int) {
+	t.Helper()
+	eventually(t, time.Minute, fmt.Sprintf("data plane %s's %d runners, %d of them pod launchers, to report", plane, runners, launchers), func() bool {
+		ok, err := query[bool](t, `SELECT count(*) >= $2 AND count(*) FILTER (WHERE launcher) >= $3 FROM runners
+			WHERE data_plane_id = $1 AND attempt = ''`, plane, runners, launchers)
+		return err == nil && ok
+	})
 }
 
 // ownPool starts a pool of one runner like base's, on a data plane of its
