@@ -35,6 +35,8 @@ Use `make sim SEEDS=10000` to run more seeds. Use `go test ./test/sim -run 'Test
 
 The chaos suite in `test/e2e` runs randomized pipelines under failures. It kills runners, engines and connectors. It also interrupts API access and injects object-storage failures. The suite checks that each row is written once.
 
+Each chaos test starts its runs after all runners and pod launchers of its pod data plane have reported. If no launcher has reported, the plane places a pod's attempt on its runner.
+
 When a run deletes its pipeline, the suite waits for the pipeline's teardowns to finish before the run's runners stop. A run fails if its teardowns don't finish. At the end of each test, a replication slot whose pipeline is gone fails the test, and the suite drops the slot.
 
 A crash point fires at one of a pipeline's checkpoint writes and kills the process that wrote it, or the worker that commits. Runs can share a runner, so another run's fault can kill that runner first. The crash point is then armed again and fires at a later write. The run's fault counts show each such miss as `re-armed`. A run fails on a crash point only if the point never kills.
