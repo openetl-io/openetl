@@ -1,8 +1,9 @@
 // Package procs finds the chaos suite's targets among processes: a
-// pipeline's connectors, only where they can be told apart from every
-// other pipeline's. A connector's process carries nothing of its
-// pipeline, so it's the pipeline's only by its parent: a pod, which runs
-// one attempt, or a runner that runs no other pipeline.
+// pipeline's pods, workers' pods and engines, by what their launcher's
+// output says of them (see Pods); and its connectors, only where they can
+// be told apart from every other pipeline's. A connector's process carries
+// nothing of its pipeline, so it's the pipeline's only by its parent: a
+// pod, which runs one attempt, or a runner that runs no other pipeline.
 package procs
 
 import (

@@ -39,7 +39,9 @@ Each chaos test starts its runs after all runners and pod launchers of its pod d
 
 When a run deletes its pipeline, the suite waits for the pipeline's teardowns to finish before the run's runners stop. A run fails if its teardowns don't finish. At the end of each test, a replication slot whose pipeline is gone fails the test, and the suite drops the slot.
 
-A crash point fires at one of a pipeline's checkpoint writes and kills the process that wrote it, or the worker that commits. Runs can share a runner, so another run's fault can kill that runner first. The crash point is then armed again and fires at a later write. The run's fault counts show each such miss as `re-armed`. A run fails on a crash point only if the point never kills.
+Some runs place their attempts in pods, which pod launchers start as processes. A fault at a pod, a worker's pod or a pod's connector finds the process through the launcher's output. The first line of a pod gives only its attempt ID, and on Temporal the attempt ID does not contain the pipeline ID. The suite connects the attempt to its pipeline through the line of the attempt's engine, which gives both IDs. A run in pods fails if no launcher's output connects a pod to its pipeline. `TestChaos` fails if it makes faults at pods and none of them finds the process to kill.
+
+A crash point fires at one of a pipeline's checkpoint writes and kills the process that wrote it, or the worker that commits. Runs can share a runner, so another run's fault can kill that runner first. The write then continues as if no crash point were armed, and the crash point is armed again for a later write. The run's fault counts show each such miss as `re-armed`. In `TestChaosWindows`, `TestChaosDedupe`, `TestChaosOver` and `TestChaosWorkers`, a run fails on a crash point that never kills. It also fails if the point finds nothing to kill five times in a row.
 
 The data check stops at the first duplicate or phantom row. Rows that are missing at that point can still arrive, so the failure says they were still settling.
 
@@ -57,6 +59,8 @@ The extra orchestrators are the test binary, which takes the flags of `openetld 
 Some runs use group windows over Kafka, on one pod or several workers. These runs kill a worker or the coordinator. Records arrive in event-time order within each partition, so these cases have no late records. The suite compares each window's row with a window model.
 
 `TestChaosDedupe` and `TestChaosOver` run the same faults with a first-row dedupe and with `OVER`. A dedupe's run compares each key's first rows with a model of the retention. An `OVER` run compares each record's row, by its partition and offset, with its key's running count and sum, peers included. `TestChaosChecks` plants a lost and a changed row in each of their outputs, and fails unless the check finds it.
+
+When a shard of `chaos.yml` fails, the workflow keeps two artifacts for seven days. `chaos-logs-SEED` has the output of each runner and pod launcher. `chaos-compose-SEED` has the state and logs of each Compose service, and the kernel's out-of-memory lines.
 
 ### Event-time property tests
 

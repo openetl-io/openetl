@@ -143,21 +143,28 @@ func (q *Queries) ClaimLaunched(ctx context.Context, arg ClaimLaunchedParams) ([
 }
 
 const claimLaunches = `-- name: ClaimLaunches :many
-UPDATE dispatches SET launched = true
-WHERE org_id = $1 AND data_plane_id = $2 AND launcher = $3 AND runner = $3
+UPDATE dispatches SET launched = true, start_deadline = now() + ($1::bigint * interval '1 millisecond')
+WHERE org_id = $2 AND data_plane_id = $3 AND launcher = $4 AND runner = $4
     AND state = 'placed' AND NOT launched AND start_deadline > now() AND NOT cancel
 RETURNING org_id, id, data_plane_id, workflow_id, kind, input, light, pool, size_cpu, size_memory, priority, needs, trace, state, runner, heartbeat_ms, start_timeout_ms, timeout_ms, enqueue_time, start_deadline, run_deadline, lease_deadline, cancel, epoch, outcome, finish_time, woken, drain, launcher, placements, launched, workers, coordinator_cpu, coordinator_memory, worker_target
 `
 
 type ClaimLaunchesParams struct {
+	PodStartMs  int64
 	OrgID       uuid.UUID
 	DataPlaneID string
 	Launcher    *string
 }
 
-// The attempts placed on this pod launcher that it hasn't made pods for.
+// The attempts placed on this pod launcher in time that it hasn't made pods
+// for. From now their pods have the time a pod takes to start.
 func (q *Queries) ClaimLaunches(ctx context.Context, arg ClaimLaunchesParams) ([]Dispatch, error) {
-	rows, err := q.db.Query(ctx, claimLaunches, arg.OrgID, arg.DataPlaneID, arg.Launcher)
+	rows, err := q.db.Query(ctx, claimLaunches,
+		arg.PodStartMs,
+		arg.OrgID,
+		arg.DataPlaneID,
+		arg.Launcher,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -1038,24 +1045,23 @@ func (q *Queries) PendingDataPlanes(ctx context.Context, orgID uuid.UUID) ([]str
 
 const placeDispatch = `-- name: PlaceDispatch :exec
 UPDATE dispatches SET state = 'placed', runner = $1, launcher = $2, placements = placements + 1,
-    start_deadline = now() + (COALESCE($3::bigint, start_timeout_ms) * interval '1 millisecond')
-WHERE org_id = $4 AND id = $5 AND state = 'pending'
+    start_deadline = now() + (start_timeout_ms * interval '1 millisecond')
+WHERE org_id = $3 AND id = $4 AND state = 'pending'
 `
 
 type PlaceDispatchParams struct {
 	Runner   *string
 	Launcher *string
-	StartMs  *int64
 	OrgID    uuid.UUID
 	ID       string
 }
 
-// On a runner, or on a pod launcher with the time a pod takes to start.
+// On a runner, or on a pod launcher, which has as long to take it as a runner
+// has to start it.
 func (q *Queries) PlaceDispatch(ctx context.Context, arg PlaceDispatchParams) error {
 	_, err := q.db.Exec(ctx, placeDispatch,
 		arg.Runner,
 		arg.Launcher,
-		arg.StartMs,
 		arg.OrgID,
 		arg.ID,
 	)
@@ -1637,8 +1643,9 @@ UPDATE dispatches SET state = 'pending', runner = NULL, launcher = NULL, launche
 WHERE org_id = $1 AND state = 'placed' AND start_deadline <= now()
 `
 
-// Attempts whose runner or pod didn't start them in time go back to wait for
-// room, keeping their place in the queue.
+// Attempts whose runner didn't start them in time, whose pod launcher didn't
+// take them in time, or whose pod didn't start them in time go back to wait
+// for room, keeping their place in the queue.
 func (q *Queries) ReturnUnstarted(ctx context.Context, orgID uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, returnUnstarted, orgID)
 	if err != nil {

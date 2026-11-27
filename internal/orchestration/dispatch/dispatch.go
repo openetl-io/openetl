@@ -39,10 +39,11 @@ type Waker interface {
 type Options struct {
 	// How long a runner's report counts for placing work on it. Zero: 30 s.
 	ReportLapse time.Duration
-	// How long a runner has to start an attempt placed on it. Zero: 30 s.
+	// How long a runner has to start an attempt placed on it, and a pod
+	// launcher to take one. Zero: 30 s.
 	StartTimeout time.Duration
-	// How long a pod launcher's pod has to start an attempt placed on the
-	// launcher, a new node's start-up included. Zero: 5 minutes.
+	// How long a pod launcher's pod has to start an attempt from when the
+	// launcher takes it, a new node's start-up included. Zero: 5 minutes.
 	PodStartTimeout time.Duration
 	// How long a request waits before it reserves a runner, or fails if none
 	// could take it. Zero: DefaultReserveAfter.
@@ -496,7 +497,8 @@ func (d *Dispatcher) claim(ctx context.Context, org uuid.UUID, dataPlane, runner
 	if err != nil {
 		return nil, err
 	}
-	launches, err := d.Store.ClaimLaunches(ctx, db.ClaimLaunchesParams{OrgID: org, DataPlaneID: dataPlane, Launcher: id})
+	podStart := cmp.Or(d.Options.PodStartTimeout, 5*time.Minute).Milliseconds()
+	launches, err := d.Store.ClaimLaunches(ctx, db.ClaimLaunchesParams{PodStartMs: podStart, OrgID: org, DataPlaneID: dataPlane, Launcher: id})
 	if err != nil {
 		return work, err
 	}
@@ -740,8 +742,7 @@ func (d *Dispatcher) pass(ctx context.Context, org uuid.UUID, dataPlane string) 
 			}
 			place := db.PlaceDispatchParams{OrgID: org, ID: dec.ID, Runner: &dec.Runner}
 			if dec.Launch {
-				start := cmp.Or(d.Options.PodStartTimeout, 5*time.Minute).Milliseconds()
-				place.Launcher, place.StartMs = &dec.Runner, &start
+				place.Launcher = &dec.Runner
 			}
 			if err := q.PlaceDispatch(ctx, place); err != nil {
 				return err
