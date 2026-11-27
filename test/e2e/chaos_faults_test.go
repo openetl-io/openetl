@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"maps"
 	"math/rand/v2"
 	"sync"
@@ -36,6 +37,11 @@ const (
 	// after.
 	crashWorkerCommit = "worker commit"
 )
+
+// Misses in a row after which a crash point isn't armed again: what it
+// kills can't be found, as when the suite can't tell which pod runs the
+// pipeline.
+const crashMisses = 5
 
 // What an object-store proxy does with a request.
 type action struct {
@@ -93,6 +99,8 @@ type pipeFaults struct {
 	lastWrite time.Time
 	records   ledger.Records
 	counts    map[string]int
+	// Each crash point's misses since it last killed.
+	misses map[string]int
 	// A strict run's: its crash points fire only while it's ready.
 	strict bool
 	// The run's faults have stopped: see quiet.
@@ -106,7 +114,7 @@ func newFaultBook(seed uint64) *faultBook {
 func (b *faultBook) add(pipeline string, noise float64, strict bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.pipes[pipeline] = &pipeFaults{noise: noise, recorded: map[int]bool{}, host: -1, counts: map[string]int{}, strict: strict}
+	b.pipes[pipeline] = &pipeFaults{noise: noise, recorded: map[int]bool{}, host: -1, counts: map[string]int{}, misses: map[string]int{}, strict: strict}
 }
 
 // remove stops faulting the pipeline, and returns what it injected and the
@@ -145,9 +153,9 @@ func (b *faultBook) quiet(pipeline string) {
 // missed notes that the crash point act fired for didn't land, as why
 // says: what it was to kill had gone, most likely to another run's kill of
 // the runner they share. Its landing is retracted, and until the run is
-// quiet the point is armed again, first, for the pipeline's next request
-// it fits. Either way the miss is counted: as re-armed, or as missed, which
-// fails a strict run.
+// quiet, or the point has missed crashMisses times in a row, it's armed
+// again, first, for the pipeline's next request it fits. Either way the
+// miss is counted: as re-armed, or as missed, which fails a strict run.
 func (b *faultBook) missed(pipeline string, act action, why string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -156,12 +164,26 @@ func (b *faultBook) missed(pipeline string, act action, why string) {
 		return
 	}
 	f.records.Unland(act.at)
-	if f.quiet {
+	f.misses[act.point]++
+	switch n := f.misses[act.point]; {
+	case n >= crashMisses:
+		f.counts[fmt.Sprintf("missed crash %s: %s, %d times in a row", act.point, why, n)]++
+	case f.quiet:
 		f.counts["missed crash "+act.point+": "+why]++
-		return
+	default:
+		f.counts["re-armed crash "+act.point+": "+why]++
+		f.armed = append([]string{act.point}, f.armed...)
 	}
-	f.counts["re-armed crash "+act.point+": "+why]++
-	f.armed = append([]string{act.point}, f.armed...)
+}
+
+// killed notes that the crash point act fired for killed.
+func (b *faultBook) killed(pipeline string, act action) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if f := b.pipes[pipeline]; f != nil {
+		f.counts["killed at crash "+act.point]++
+		delete(f.misses, act.point)
+	}
 }
 
 // counts is what the pipeline's run has injected so far.

@@ -737,6 +737,10 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	s.pg.do(func() { res.changes = w.changes(t) })
 	if c.pods {
 		s.pg.do(func() { res.inPods = attemptsInPods(t, name) })
+		// Faults find the pipeline's pods by their launcher's output.
+		if res.inPods > 0 && !pool.bound(pipeline) {
+			t.Errorf("%d of %s's attempts were placed on a pod launcher, but no launcher's output tied a pod to the pipeline, so no fault could find its pod, workers or connectors", res.inPods, name)
+		}
 	}
 	if c.workers > 0 {
 		s.pg.do(func() { res.onWorkers = attemptsOnWorkers(t, name) })
@@ -979,12 +983,14 @@ func (s *chaosSuite) fault(base context.Context, partitions *sync.WaitGroup, c c
 	if name, ok := podFaults[f]; ok && sl.launcher {
 		what = name
 	}
+	// On a launcher, kills of the runner, workers and connectors are at a
+	// pod: see slot.podFault.
 	var act func() bool
 	switch f {
 	case faultKill:
-		act = func() bool { return sl.stop(pipeline, syscall.SIGKILL) }
+		act = func() bool { return sl.podFault(sl.stop(pipeline, syscall.SIGKILL)) }
 	case faultDrain:
-		act = func() bool { return sl.stop(pipeline, syscall.SIGTERM) }
+		act = func() bool { return sl.podFault(sl.stop(pipeline, syscall.SIGTERM)) }
 	case faultEngine:
 		act = func() bool { return kill(engine) }
 	case faultLauncher:
@@ -992,17 +998,17 @@ func (s *chaosSuite) fault(base context.Context, partitions *sync.WaitGroup, c c
 	case faultWorker:
 		pids := sl.workerPIDs(pipeline)
 		if len(pids) == 0 {
-			return what, false, false
+			return what, sl.podFault(false), false
 		}
 		pid := pids[rng.IntN(len(pids))]
-		act = func() bool { return sl.stopWorker(pid) }
+		act = func() bool { return sl.podFault(sl.stopWorker(pid)) }
 	case faultSource, faultDestination:
 		pids := sl.children(base, pipeline, strings.TrimPrefix(f, "kill ")+"-")
 		if len(pids) == 0 {
-			return what, false, false
+			return what, sl.podFault(false), false
 		}
 		pid := pids[rng.IntN(len(pids))]
-		act = func() bool { return kill(pid) }
+		act = func() bool { return sl.podFault(kill(pid)) }
 	case faultPartition:
 		d := 5*time.Second + upTo(rng, 15*time.Second)
 		act = func() bool {
@@ -1290,6 +1296,11 @@ func (s *chaosSuite) report(t *testing.T, seed uint64) {
 	// One run can miss its pods, if both launchers are down when it's placed.
 	if podRuns > 0 && inPods == 0 {
 		t.Errorf("none of the %d runs for pods had an attempt in a pod", podRuns)
+	}
+	tried, landed := s.podPool.podTried.Load(), s.podPool.podLanded.Load()
+	fmt.Fprintf(&b, "faults at a pod, a worker's pod or a pod's connector: %d, %d of which found what they kill\n", tried, landed)
+	if tried > 0 && landed == 0 {
+		t.Errorf("none of the %d faults at a pod, a worker's pod or a pod's connector found what they kill", tried)
 	}
 	fmt.Fprintf(&b, "attempts on workers: %d across %d runs that can run on them\n", onWorkers, workerRuns)
 	if workerRuns > 0 && onWorkers == 0 {
