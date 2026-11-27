@@ -35,6 +35,8 @@ Use `make sim SEEDS=10000` to run more seeds. Use `go test ./test/sim -run 'Test
 
 The chaos suite in `test/e2e` runs randomized pipelines under failures. It kills runners, engines and connectors. It also interrupts API access and injects object-storage failures. The suite checks that each row is written once.
 
+When a run deletes its pipeline, the suite waits for the pipeline's teardowns to finish before the run's runners stop. A run fails if its teardowns don't finish. At the end of each test, a replication slot whose pipeline is gone fails the test, and the suite drops the slot.
+
 Some runs use group windows over Kafka, on one pod or several workers. These runs kill a worker or the coordinator. Records arrive in event-time order within each partition, so these cases have no late records. The suite compares each window's row with a window model.
 
 `TestChaosDedupe` and `TestChaosOver` run the same faults with a first-row dedupe and with `OVER`. A dedupe's run compares each key's first rows with a model of the retention. An `OVER` run compares each record's row, by its partition and offset, with its key's running count and sum, peers included. `TestChaosChecks` plants a lost and a changed row in each of their outputs, and fails unless the check finds it.

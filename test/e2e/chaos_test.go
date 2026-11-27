@@ -374,7 +374,9 @@ type chaosSuite struct {
 	// The next slot index of a run's own pool.
 	ownSlots atomic.Int64
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// The data planes the suite made, whose runners stop by its end.
+	planes   []string
 	results  []runResult
 	restarts int
 	// Orchestrators killed.
@@ -511,6 +513,10 @@ func TestChaosChecks(t *testing.T) {
 // bucket of the suite's own.
 func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 	t.Helper()
+	s := &chaosSuite{book: newFaultBook(seed), sparkRuns: make(chan struct{}, 1), flinkRuns: make(chan struct{}, 2)}
+	// Last, once the runners have stopped, and after each run's cleanups
+	// have waited for its pipeline's teardowns.
+	t.Cleanup(func() { s.leftBehind(t) })
 	bucket := "chaos-" + strings.TrimPrefix(unique("x"), "x-")
 	c, err := objectstore.S3Client(t.Context(), mustParse(t, "s3://"+bucket+"?anonymous=true&endpoint="+s3Endpoint()))
 	if err != nil {
@@ -520,15 +526,16 @@ func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 		t.Fatalf("create bucket: %v", err)
 	}
 	t.Cleanup(func() { dropBucket(t, c, bucket) })
-	s := &chaosSuite{book: newFaultBook(seed), sparkRuns: make(chan struct{}, 1), flinkRuns: make(chan struct{}, 2)}
 	s.flink, s.spark = setupFlink(t), setupSpark(t)
 	ctx, stop := context.WithCancel(context.Background())
 	s.pool = startPool(ctx, t, poolConfig{runners: runners, bucket: bucket, dataPlane: "default", token: env.runnerToken, bridge: s.flink != nil}, *chaosLogs, s.book)
 	if s.spark != nil {
+		s.planes = append(s.planes, s.spark.dataPlane)
 		s.sparkPool = s.startSparkPool(ctx, t, runners)
 	}
 	var token string
 	s.podPlane, token = placementPlane(t)
+	s.planes = append(s.planes, s.podPlane)
 	s.podPool = startPool(ctx, t, poolConfig{runners: 3, launchers: 2, first: runners + 2, bucket: bucket, dataPlane: s.podPlane, token: token}, *chaosLogs, s.book)
 	t.Cleanup(stop)
 	return s
@@ -537,12 +544,16 @@ func newChaosSuite(t *testing.T, seed uint64, runners int) *chaosSuite {
 // ownPool starts a pool of one runner like base's, on a data plane of its
 // own, for a run that kills its pipeline's connectors: on a runner other
 // runs share, they can't be told from the other pipelines'. It stops once
-// the run's cleanups that come after it have run.
+// the run's cleanups that come after it have run, the wait for the deleted
+// pipeline's teardowns among them, which only its runner can run.
 func (s *chaosSuite) ownPool(t *testing.T, base *chaosPool) *chaosPool {
 	t.Helper()
 	cfg := base.cfg
 	cfg.runners, cfg.launchers, cfg.first = 1, 0, 1000+int(s.ownSlots.Add(1))
 	cfg.dataPlane, cfg.token = placementPlane(t)
+	s.mu.Lock()
+	s.planes = append(s.planes, cfg.dataPlane)
+	s.mu.Unlock()
 	ctx, stop := context.WithCancel(context.Background())
 	p := startPool(ctx, t, cfg, base.logs, s.book)
 	t.Cleanup(stop)
@@ -627,19 +638,27 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	}
 	s.book.add(pipeline, c.noise, c.strict)
 	res := runResult{c: c}
-	defer func() {
-		res.counts, res.resumes = s.book.remove(pipeline)
-		t.Logf("faults: %v; resumed after: %v", res.counts, res.resumes)
+	// After the cleanup below, so a run whose teardowns don't finish counts
+	// as failed.
+	t.Cleanup(func() {
 		if t.Failed() {
 			res.failed = cmp.Or(res.failed, "failed")
 		}
 		s.mu.Lock()
 		s.results = append(s.results, res)
 		s.mu.Unlock()
+	})
+	defer func() {
+		res.counts, res.resumes = s.book.remove(pipeline)
+		t.Logf("faults: %v; resumed after: %v", res.counts, res.resumes)
 	}()
 	t.Cleanup(func() {
+		failed := s.deletePipeline(t, name)
+		if failed == "" {
+			failed = s.awaitTeardowns(t, name, pipeline)
+		}
+		res.failed = cmp.Or(res.failed, failed)
 		s.pg.do(func() {
-			_, _ = pipelines().DeletePipeline(context.Background(), connect.NewRequest(&apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}))
 			if !t.Failed() {
 				w.drop(t)
 			} else {
@@ -743,7 +762,9 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 			t.Errorf("no attempt of %s ran on workers", name)
 		}
 		if extra > 0 || missing > 0 {
-			t.Fatalf("before the plant: %d missing, %d extra: %s", missing, extra, detail)
+			var last string
+			s.pg.do(func() { last = lastFailure(t, name) })
+			t.Fatalf("before the plant: %d missing, %d extra: %s (%s)", missing, extra, detail, last)
 		}
 		s.pg.do(func() {
 			w.plant(t, c.plant)
@@ -760,8 +781,8 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		res.failed = "duplicates or phantom rows: " + detail
 	case missing > 0:
 		var last string
-		s.pg.do(func() { last = lastSyncError(t, name) })
-		res.failed = fmt.Sprintf("rows missing after %v: %s (last sync: %s)", *chaosSettle, detail, last)
+		s.pg.do(func() { last = lastFailure(t, name) })
+		res.failed = fmt.Sprintf("rows missing after %v: %s (%s)", *chaosSettle, detail, last)
 	}
 	if res.failed != "" {
 		t.Errorf("%s\nconfig: %s\nrerun: go test -tags 'e2e chaos' ./test/e2e -run 'TestChaos/runs/%04d-' -chaos.seed=%d", res.failed, c, c.i, c.seed)
