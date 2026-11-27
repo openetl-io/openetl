@@ -1477,6 +1477,52 @@ func TestLaunchesThatFail(t *testing.T) {
 	}
 }
 
+// A pod launcher has as long to take an attempt placed on it as a runner has
+// to start one, not the time a pod takes to start: one lost without its poll
+// dropping loses the attempt then, and can't take it late, nor can a pod of
+// that placement. The launcher that takes it next gives its pod the time a
+// pod takes to start, from then.
+func TestUntakenLaunchIsPlacedAgain(t *testing.T) {
+	f := setup(t, Options{StartTimeout: time.Second, PodStartTimeout: time.Hour})
+	ctx := t.Context()
+	pods := Pods{Min: resources.M}
+	f.launcher("lost", pods)
+	f.sized("a", resources.L)
+	time.Sleep(1100 * time.Millisecond)
+	if got := f.launches("lost"); len(got) != 0 {
+		t.Fatalf("the lost launcher took %v late", got)
+	}
+	f.move(lapseReports, "lost")
+	f.launcher("alive", pods)
+	f.tick()
+	got := f.launches("alive")
+	if len(got) != 1 || got[0] != (Launch{"a", 2}) {
+		t.Fatalf("alive got %v, want a's second placement", got)
+	}
+	if late := f.launches("lost"); len(late) != 0 {
+		t.Fatalf("the lost launcher took %v", late)
+	}
+	if f.claimAs("late", Launch{"a", 1}) {
+		t.Fatal("a pod of the first placement took it")
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	f.tick()
+	conn, err := pgx.Connect(ctx, f.url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close(context.WithoutCancel(ctx)) }()
+	var waits bool
+	if err := conn.QueryRow(ctx, "SELECT start_deadline > now() + interval '59 minutes' FROM dispatches WHERE org_id = $1 AND id = $2 AND state = 'placed' AND launched AND placements = 2",
+		f.org, "a").Scan(&waits); err != nil || !waits {
+		t.Fatalf("a's second placement waits for its pod: %v (%v), want for the pod start timeout from when alive took it", waits, err)
+	}
+	if !f.claimAs("pod", got[0]) {
+		t.Fatal("its pod didn't get it")
+	}
+}
+
 // The pool's runners are too small for a job below the launcher's threshold,
 // so it goes to a pod; and a draining launcher keeps the pods it's making.
 func TestPodPoolAndDrainingLauncher(t *testing.T) {
