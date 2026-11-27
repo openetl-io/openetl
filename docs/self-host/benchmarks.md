@@ -978,7 +978,7 @@ Add the primary keys before you apply the connections, so that `openetl discover
 
 ### Apply the connections
 
-1. Store the source's URL as the secret that the documents name, `tpcds-dsn`, `tpch-dsn` or `taxi-dsn`. Enter `postgres://openetl:PASSWORD@HOST:5432/DATABASE?sslmode=require` at the prompt:
+1. Store the source's URL as the secret that the documents name, `tpcds-dsn`, `tpch-dsn` or `taxi-dsn`. Enter `postgres://openetl:PASSWORD@HOST:5432/DATABASE?sslmode=require` at the prompt. In the URL, percent-encode each character of the password that URLs reserve, such as `@`, `:`, `/` or `%`:
 
    ```sh
    ~/bin/openetl secret set tpcds-dsn
