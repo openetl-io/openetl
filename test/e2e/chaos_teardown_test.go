@@ -41,7 +41,11 @@ func (s *chaosSuite) deletePipeline(t *testing.T, name string) string {
 	req := &apiv1.DeletePipelineRequest{Name: "workspaces/default/pipelines/" + name}
 	for deadline := time.Now().Add(time.Minute); ; time.Sleep(2 * time.Second) {
 		var err error
-		s.pg.do(func() { _, err = pipelines().DeletePipeline(context.Background(), connect.NewRequest(req)) })
+		s.pg.do(func() {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			_, err = pipelines().DeletePipeline(ctx, connect.NewRequest(req))
+		})
 		if err == nil || connect.CodeOf(err) == connect.CodeNotFound {
 			return ""
 		}
