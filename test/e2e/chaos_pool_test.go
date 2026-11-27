@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -48,6 +49,9 @@ type chaosPool struct {
 	// The one pipeline a run's own pool runs, once it's applied; empty for
 	// a pool runs share.
 	only string
+	// Faults at a launcher's pod, a worker's pod or a pod's connector, and
+	// those of them that found what they kill.
+	podTried, podLanded atomic.Int64
 }
 
 // dedicate notes that the pool runs pipeline and no other.
@@ -93,19 +97,10 @@ type slot struct {
 	mu       sync.Mutex
 	cur      *runner
 	started  int
-	// For each pipeline, a launcher's pods' latest engine and latest pod; and
-	// the process group of each launcher it has run.
-	engines, pods map[string]int
-	groups        []int
-	// For each pipeline, the worker pods of the latest attempt on workers.
-	workers map[string]*workerPods
-}
-
-// workerPods are an attempt's workers' pods: its placement, and each
-// worker's PID, by its index from 0.
-type workerPods struct {
-	attempt string
-	pids    map[int]int
+	// What its launchers' output says of their pods, and the process group
+	// of each launcher it has run.
+	pods   procs.Pods
+	groups []int
 }
 
 func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, book *faultBook) *chaosPool {
@@ -116,8 +111,7 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 		t.Fatal(err)
 	}
 	for i := range cfg.runners {
-		s := &slot{i: cfg.first + i, pool: p, launcher: i < cfg.launchers, engines: map[string]int{}, pods: map[string]int{}, workers: map[string]*workerPods{},
-			results: startAPIFilter(t, env.apiURL)}
+		s := &slot{i: cfg.first + i, pool: p, launcher: i < cfg.launchers, results: startAPIFilter(t, env.apiURL)}
 		s.api = startProxy(t, strings.TrimPrefix(s.results.url(), "http://"))
 		if cfg.bucket != "" {
 			s.s3 = startS3Proxy(t, s, target)
@@ -241,36 +235,16 @@ func (s *slot) start() (*runner, error) {
 }
 
 // follow keeps what a launcher and its pods write until the last of them has
-// gone, and notes each pipeline's latest engine and pod.
+// gone, and notes what it says of the pods: see procs.Pods.
 func (s *slot) follow(r *runner, logs *os.File) {
 	defer func() { _ = logs.Close() }()
 	br := bufio.NewReader(logs)
 	for {
 		line, err := br.ReadString('\n')
 		_, _ = r.out.Write([]byte(line))
-		if m := engineReady.FindStringSubmatch(line); m != nil {
-			pid, _ := strconv.Atoi(m[2])
-			s.mu.Lock()
-			s.engines[m[1]] = pid
-			s.mu.Unlock()
-		}
-		if m := podStarted.FindStringSubmatch(line); m != nil {
-			pid, _ := strconv.Atoi(m[1])
-			s.mu.Lock()
-			s.pods[m[2]] = pid
-			s.mu.Unlock()
-		}
-		if m := workerStarted.FindStringSubmatch(line); m != nil {
-			pid, _ := strconv.Atoi(m[1])
-			n, _ := strconv.Atoi(m[5])
-			placement, pipeline := m[2]+" "+m[4], m[3]
-			s.mu.Lock()
-			if w := s.workers[pipeline]; w == nil || w.attempt != placement {
-				s.workers[pipeline] = &workerPods{attempt: placement, pids: map[int]int{}}
-			}
-			s.workers[pipeline].pids[n] = pid
-			s.mu.Unlock()
-		}
+		s.mu.Lock()
+		s.pods.Line(line)
+		s.mu.Unlock()
 		if err != nil {
 			s.save(r)
 			return
@@ -337,13 +311,10 @@ func (s *slot) stop(pipeline string, sig syscall.Signal) bool {
 }
 
 // workerPIDs are the PIDs of the pipeline's latest workers' pods on this
-// slot's launcher that still run, by their index.
+// slot's launcher that still run, by their number.
 func (s *slot) workerPIDs(pipeline string) []int {
 	s.mu.Lock()
-	var pids map[int]int
-	if w := s.workers[pipeline]; w != nil {
-		pids = maps.Clone(w.pids)
-	}
+	pids := s.pods.Workers(pipeline)
 	s.mu.Unlock()
 	var out []int
 	for _, n := range slices.Sorted(maps.Keys(pids)) {
@@ -369,10 +340,7 @@ func (s *slot) stopWorker(pid int) bool {
 // reports whether there was one.
 func (s *slot) crashWorker(pipeline string) bool {
 	s.mu.Lock()
-	pid := 0
-	if w := s.workers[pipeline]; w != nil {
-		pid = w.pids[1]
-	}
+	pid := s.pods.Workers(pipeline)[1]
 	s.mu.Unlock()
 	return openetld(pid) && s.stopWorker(pid)
 }
@@ -408,7 +376,7 @@ func (s *slot) killLauncher() bool {
 // reused PID.
 func (s *slot) pod(pipeline string) int {
 	s.mu.Lock()
-	pod := s.pods[pipeline]
+	pod := s.pods.Pod(pipeline)
 	s.mu.Unlock()
 	if !openetld(pod) {
 		return 0
@@ -416,32 +384,46 @@ func (s *slot) pod(pipeline string) int {
 	return pod
 }
 
-var (
-	engineReady = regexp.MustCompile(`msg="engine ready" .*pipeline=(\S+) .* pid=(\d+)`)
-	podStarted  = regexp.MustCompile(`msg="runner running one attempt" .*id=\S+:(\d+) attempt=(?:sync|stream)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`)
-	// Its PID, attempt, pipeline, placement and index.
-	workerStarted = regexp.MustCompile(`msg="runner running one worker of an attempt" .*id=\S+:(\d+) attempt=((?:sync|stream)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\S*) placement=(\d+) worker=(\d+)`)
-)
-
 // engine is the PID of the engine the slot's runner, or one of its launcher's
 // pods, last started for pipeline, or 0.
 func (s *slot) engine(pipeline string) int {
 	if s.launcher {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.engines[pipeline]
+		return s.pods.Engine(pipeline)
 	}
 	r := s.runner()
 	if r == nil {
 		return 0
 	}
-	pid := 0
-	for _, m := range engineReady.FindAllStringSubmatch(r.out.String(), -1) {
-		if m[1] == pipeline {
-			pid, _ = strconv.Atoi(m[2])
+	return procs.Engine(r.out.String(), pipeline)
+}
+
+// bound reports whether one of the pool's launchers ever ran a pod of the
+// pipeline that it could find: see procs.Pods.
+func (p *chaosPool) bound(pipeline string) bool {
+	for _, s := range p.slots {
+		s.mu.Lock()
+		b := s.pods.Bound(pipeline)
+		s.mu.Unlock()
+		if b {
+			return true
 		}
 	}
-	return pid
+	return false
+}
+
+// podFault notes a fault at one of the slot's launcher's pods, workers'
+// pods or a pod's connectors, which landed if it found what it kills, and
+// returns landed. On a runner it notes nothing.
+func (s *slot) podFault(landed bool) bool {
+	if s.launcher {
+		s.pool.podTried.Add(1)
+		if landed {
+			s.pool.podLanded.Add(1)
+		}
+	}
+	return landed
 }
 
 // children are the PIDs of the pipeline's connectors whose names start
@@ -557,8 +539,11 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch act.kind {
 	case actKillBefore:
-		p.kill(pipeline, act)
-		panic(http.ErrAbortHandler)
+		if p.kill(pipeline, act) {
+			panic(http.ErrAbortHandler)
+		}
+		// With nothing to kill, the write goes on as if no point were armed.
+		act = action{}
 	case actStatus:
 		w.Header().Set("Content-Type", "application/xml")
 		w.WriteHeader(act.status)
@@ -586,11 +571,13 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.slot.pool.book.count(pipeline, "missed crash "+act.point+": the write failed")
 	}
 	switch {
-	case act.kind == actKillAfter && ok && act.worker:
-		p.kill(pipeline, act)
 	case act.kind == actKillAfter && ok:
-		p.kill(pipeline, act)
-		panic(http.ErrAbortHandler)
+		// What wrote dies before it sees the response, but the worker that
+		// commits as its coordinator sees it. With nothing to kill, the
+		// response goes back as if no point were armed.
+		if p.kill(pipeline, act) && !act.worker {
+			panic(http.ErrAbortHandler)
+		}
 	case act.kind == actDrop:
 		_, _ = io.Copy(io.Discard, res.Body)
 		panic(http.ErrAbortHandler)
@@ -604,18 +591,28 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, res.Body)
 }
 
-// kill carries out the crash point act fired for, and counts it once it has
-// killed: the coordinator or the pod or runner that wrote, or the worker
-// that commits. If there's nothing to kill, the point is armed again.
-func (p *s3Proxy) kill(pipeline string, act action) {
+// kill carries out the crash point act fired for, the coordinator or the
+// pod or runner that wrote, or the worker that commits, and reports whether
+// it killed. If there's nothing to kill, the fault book arms the point
+// again: see faultBook.missed.
+func (p *s3Proxy) kill(pipeline string, act action) bool {
+	sl := p.slot
+	var killed bool
+	why := "nothing to kill"
 	switch {
-	case act.worker && !p.slot.crashWorker(pipeline):
-		p.slot.pool.book.missed(pipeline, act, "no worker to kill")
-	case !act.worker && !p.slot.crash(pipeline):
-		p.slot.pool.book.missed(pipeline, act, "nothing to kill")
+	case act.worker:
+		killed, why = sl.podFault(sl.crashWorker(pipeline)), "no worker to kill"
+	case sl.launcher:
+		killed, why = sl.podFault(sl.crash(pipeline)), "no pod to kill"
 	default:
-		p.slot.pool.book.count(pipeline, "killed at crash "+act.point)
+		killed = sl.crash(pipeline)
 	}
+	if killed {
+		sl.pool.book.killed(pipeline, act)
+	} else {
+		sl.pool.book.missed(pipeline, act, why)
+	}
+	return killed
 }
 
 func (p *s3Proxy) forward(r *http.Request) (*http.Response, error) {

@@ -135,3 +135,29 @@ jobs:
           name: chaos-logs-${{ matrix.seed }}
           path: ${{ runner.temp }}/chaos-logs
           retention-days: 7
+      # What make deps-up started: each container's state, with why it
+      # stopped, each service's logs, and the kernel's lines on processes it
+      # killed for memory.
+      - name: Collect the compose services' state and logs
+        if: failure()
+        run: |
+          out="$RUNNER_TEMP/compose"
+          mkdir -p "$out"
+          compose() { docker compose -f deploy/compose/dev.yml --profile temporal "$@"; }
+          compose ps -a > "$out/ps.txt" 2>&1 || true
+          ids=$(compose ps -aq 2>/dev/null || true)
+          if [ -n "$ids" ]; then
+            docker inspect --format '{{.Name}} status={{.State.Status}} exit={{.State.ExitCode}} oom_killed={{.State.OOMKilled}} restarts={{.RestartCount}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} error={{.State.Error}}' $ids > "$out/state.txt" 2>&1 || true
+          fi
+          for s in $(compose ps -a --services 2>/dev/null || true); do
+            compose logs --no-color --timestamps --tail 100000 "$s" > "$out/$s.log" 2>&1 || true
+          done
+          sudo dmesg -T 2>/dev/null | grep -iE 'out of memory|oom|killed process' > "$out/oom.txt" || true
+          df -h > "$out/df.txt" 2>&1 || true
+      - name: Compose services' state and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-compose-${{ matrix.seed }}
+          path: ${{ runner.temp }}/compose
+          retention-days: 7
