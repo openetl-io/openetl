@@ -51,7 +51,7 @@ In `TestChaosChecks`, a run with a held plant writes to its source for 15 second
 
 `TestChaos` can also add faults to the control plane:
 
-- `-chaos.postgres-restart` restarts or kills the Compose Postgres at about this interval. A restart that is in progress when the runs end finishes before the next test starts.
+- `-chaos.postgres-restart` restarts or kills the Compose Postgres at about this interval. A restart that is in progress when the runs end waits up to two minutes for Postgres to accept connections before the next test starts.
 - `-chaos.orchestrator-kill` runs two more orchestrators on DBOS, and kills one at about this interval. Then it starts that orchestrator again.
 
 The extra orchestrators are the test binary, which takes the flags of `openetld orchestrator`. They use the suite's short timings, the same as the API server and the orchestrator in the test process. Because they are the same binary, they run the same DBOS application version, so each orchestrator takes new workflows. When the runs end, the suite stops the extra orchestrators. It then waits until the orchestrator in the test process runs DBOS's latest version. `TestChaos` fails if that takes more than two minutes.

@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/openetl-io/openetl/internal/checkpoint"
+	"github.com/openetl-io/openetl/test/e2e/ports"
 	"github.com/openetl-io/openetl/test/e2e/procs"
 )
 
@@ -133,29 +134,29 @@ func startPool(ctx context.Context, t *testing.T, cfg poolConfig, logs string, b
 // kernel gives listeners on port 0 (32768 and up on Linux, 49152 and up on
 // macOS). A port it gave and took back could be one of the suite's own
 // proxies' before the runner listens on it, and every start of the runner
-// would fail.
-const (
-	firstBridgePort = 21000
-	bridgePorts     = 2000
-)
-
-var bridgePortsTaken atomic.Int64
+// would fail. Each is one slot's until its pool's runners have stopped.
+var bridgePorts = &ports.Range{First: 21000, N: 2000}
 
 // bridgePort is a port for a slot's runner's bridge that no other slot has
-// had, and that's free now.
+// now, and that's free. It goes back when t ends, after the cleanup
+// startPool adds once it has every slot's, which waits for the runners.
 func bridgePort(t *testing.T) int {
 	t.Helper()
 	host := cmp.Or(os.Getenv("OPENETL_TEST_BRIDGE_HOST"), "0.0.0.0")
-	for range bridgePorts {
-		port := firstBridgePort + int(bridgePortsTaken.Add(1)%bridgePorts)
+	port, ok := bridgePorts.Take(func(port int) bool {
 		var lc net.ListenConfig
-		if ln, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(host, strconv.Itoa(port))); err == nil {
-			_ = ln.Close()
-			return port
+		ln, err := lc.Listen(t.Context(), "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return false
 		}
+		_ = ln.Close()
+		return true
+	})
+	if !ok {
+		t.Fatalf("no port from %d to %d is free for a runner's bridge", bridgePorts.First, bridgePorts.First+bridgePorts.N-1)
 	}
-	t.Fatalf("no port from %d to %d is free for a runner's bridge", firstBridgePort, firstBridgePort+bridgePorts-1)
-	return 0
+	t.Cleanup(func() { bridgePorts.Release(port) })
+	return port
 }
 
 // supervise starts the slot's runner, and starts it again 1 to 5 seconds

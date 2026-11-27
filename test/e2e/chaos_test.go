@@ -1349,8 +1349,8 @@ func (s *chaosSuite) restartPostgres(ctx context.Context, t *testing.T, seed uin
 	}
 }
 
-// restartPostgres restarts or kills and starts container id, and waits
-// until Postgres takes connections.
+// restartPostgres restarts or kills and starts container id, and waits, for
+// up to two minutes, until Postgres takes connections.
 func restartPostgres(ctx context.Context, id string, kill bool) error {
 	cmds := [][]string{{"docker", "restart", id}}
 	if kill {
@@ -1361,14 +1361,17 @@ func restartPostgres(ctx context.Context, id string, kill bool) error {
 			return fmt.Errorf("%s: %w\n%s", strings.Join(c, " "), err, out)
 		}
 	}
-	deadline := time.Now().Add(2 * time.Minute)
+	// The two minutes also end a connect or ping that a Postgres that never
+	// answers would hold, as ctx may have no end.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	for {
 		conn, err := pgx.Connect(ctx, env.dbURL)
 		if err == nil {
 			err = conn.Ping(ctx)
-			_ = conn.Close(context.Background())
+			_ = conn.Close(ctx)
 		}
-		if err == nil || time.Now().After(deadline) || ctx.Err() != nil {
+		if err == nil || ctx.Err() != nil {
 			return err
 		}
 		pause(ctx, 500*time.Millisecond)
