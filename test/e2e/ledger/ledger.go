@@ -17,6 +17,7 @@ package ledger
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -35,9 +36,18 @@ type Records struct {
 	killed    time.Time
 	killedGen int64
 	resumes   []time.Duration
-	// Whether the pipeline was ready as each of the run's own faults
-	// landed.
-	landed []bool
+	// The run's own faults that landed.
+	landed []landing
+}
+
+// landing is one of the run's own faults: whether the pipeline was ready
+// as it landed; and for a kill, when it came, and the kill noted before
+// it, which Unland puts back.
+type landing struct {
+	ready     bool
+	at        time.Time
+	before    time.Time
+	beforeGen int64
 }
 
 // Seen notes a request of the attempt of generation gen, as it arrives.
@@ -69,13 +79,36 @@ func (r *Records) Killed(at time.Time) {
 
 // Landed notes that one of the run's own faults that doesn't kill an
 // attempt lands.
-func (r *Records) Landed() { r.landed = append(r.landed, r.Ready()) }
+func (r *Records) Landed() { r.landed = append(r.landed, landing{ready: r.Ready()}) }
 
 // LandedKill notes that one of the run's own faults lands at `at` and
 // kills the pipeline's attempt, before it does.
 func (r *Records) LandedKill(at time.Time) {
-	r.Landed()
+	r.landed = append(r.landed, landing{ready: r.Ready(), at: at, before: r.killed, beforeGen: r.killedGen})
 	r.Killed(at)
+}
+
+// Unland retracts the kill LandedKill noted at `at`, which then found
+// nothing to kill. It no longer counts as landed; and unless a kill or a
+// newer attempt's commit has been noted since, the kill noted before it is
+// back, or none.
+func (r *Records) Unland(at time.Time) {
+	i := slices.IndexFunc(r.landed, func(l landing) bool { return !l.at.IsZero() && l.at.Equal(at) })
+	if i < 0 {
+		return
+	}
+	l := r.landed[i]
+	r.landed = slices.Delete(r.landed, i, i+1)
+	// A kill noted after it, as a run that isn't strict may, now comes
+	// after the one before it.
+	for j := range r.landed {
+		if r.landed[j].before.Equal(at) {
+			r.landed[j].before, r.landed[j].beforeGen = l.before, l.beforeGen
+		}
+	}
+	if r.killed.Equal(at) {
+		r.killed, r.killedGen = l.before, l.beforeGen
+	}
 }
 
 // Ready reports whether a fault may land now: the rule's first half.
@@ -98,8 +131,8 @@ func (r *Records) Strict(faults, kills int) []string {
 	if len(r.landed) < faults {
 		out = append(out, fmt.Sprintf("%d of %d faults landed", len(r.landed), faults))
 	}
-	for i, ready := range r.landed {
-		if !ready {
+	for i, l := range r.landed {
+		if !l.ready {
 			out = append(out, fmt.Sprintf("fault %d landed before the newest attempt had committed %d records, or while a kill waited", i+1, Commits))
 		}
 	}

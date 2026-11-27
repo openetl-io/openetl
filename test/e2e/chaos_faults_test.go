@@ -40,9 +40,12 @@ const (
 // What an object-store proxy does with a request.
 type action struct {
 	kind int
-	// A kill's crash point. It's counted when it fires, and again, as
-	// "killed at crash POINT", once it has killed.
+	// A kill's crash point. It's counted when it fires, and again once it
+	// has killed, as "killed at crash POINT", or found nothing to kill: see
+	// faultBook.missed.
 	point string
+	// When the crash point fired.
+	at time.Time
 	// A kill is of the worker that commits the attempt's epochs, which
 	// sees the response go to its coordinator, rather than of what wrote.
 	worker bool
@@ -92,6 +95,8 @@ type pipeFaults struct {
 	counts    map[string]int
 	// A strict run's: its crash points fire only while it's ready.
 	strict bool
+	// The run's faults have stopped: see quiet.
+	quiet bool
 }
 
 func newFaultBook(seed uint64) *faultBook {
@@ -133,8 +138,30 @@ func (b *faultBook) quiet(pipeline string) {
 		for _, p := range f.armed {
 			f.counts["missed crash "+p]++
 		}
-		f.armed, f.noise = nil, 0
+		f.armed, f.noise, f.quiet = nil, 0, true
 	}
+}
+
+// missed notes that the crash point act fired for didn't land, as why
+// says: what it was to kill had gone, most likely to another run's kill of
+// the runner they share. Its landing is retracted, and until the run is
+// quiet the point is armed again, first, for the pipeline's next request
+// it fits. Either way the miss is counted: as re-armed, or as missed, which
+// fails a strict run.
+func (b *faultBook) missed(pipeline string, act action, why string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	f := b.pipes[pipeline]
+	if f == nil {
+		return
+	}
+	f.records.Unland(act.at)
+	if f.quiet {
+		f.counts["missed crash "+act.point+": "+why]++
+		return
+	}
+	f.counts["re-armed crash "+act.point+": "+why]++
+	f.armed = append([]string{act.point}, f.armed...)
 }
 
 // counts is what the pipeline's run has injected so far.
@@ -176,11 +203,11 @@ func (b *faultBook) decide(slot int, pipeline string, kind int, gen int64) actio
 		armed = f.armed[0]
 	}
 	// Every crash point kills: it lands, and the attempt's death is noted,
-	// as it fires, before the kill.
+	// as it fires, before the kill. A kill that finds nothing retracts it.
 	fire := func(a action) action {
 		f.counts["crash "+armed]++
-		f.armed, a.point = f.armed[1:], armed
-		f.records.LandedKill(time.Now())
+		f.armed, a.point, a.at = f.armed[1:], armed, time.Now()
+		f.records.LandedKill(a.at)
 		return a
 	}
 	switch {

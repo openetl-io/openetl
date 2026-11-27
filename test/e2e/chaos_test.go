@@ -728,6 +728,12 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		time.Sleep(2 * time.Second)
 	}
 	res.settle = time.Since(start)
+	// The loop stops at the first extra row, while what's missing may
+	// still be on its way.
+	var settling string
+	if extra > 0 && missing > 0 && res.settle <= *chaosSettle {
+		settling = fmt.Sprintf(" (the check stopped at the first extra row, %v into settling: the rows counted missing were still settling)", res.settle.Round(100*time.Millisecond))
+	}
 	s.pg.do(func() { res.changes = w.changes(t) })
 	if c.pods {
 		s.pg.do(func() { res.inPods = attemptsInPods(t, name) })
@@ -748,8 +754,10 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		for _, p := range strictly() {
 			t.Errorf("when the writes stopped: %s", p)
 		}
+		// A crash point re-armed after a miss counts as such, and fails
+		// the run only by never killing.
 		for what, n := range counts {
-			if strings.HasPrefix(what, "missed ") || strings.HasSuffix(what, " to kill") {
+			if strings.HasPrefix(what, "missed ") {
 				t.Errorf("%s: %d", what, n)
 			}
 		}
@@ -764,7 +772,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 		if extra > 0 || missing > 0 {
 			var last string
 			s.pg.do(func() { last = lastFailure(t, name) })
-			t.Fatalf("before the plant: %d missing, %d extra: %s (%s)", missing, extra, detail, last)
+			t.Fatalf("before the plant: %d missing, %d extra: %s (%s)%s", missing, extra, detail, last, settling)
 		}
 		s.pg.do(func() {
 			w.plant(t, c.plant)
@@ -778,7 +786,7 @@ func (s *chaosSuite) run(t *testing.T, c chaosConfig) {
 	}
 	switch {
 	case extra > 0:
-		res.failed = "duplicates or phantom rows: " + detail
+		res.failed = "duplicates or phantom rows: " + detail + settling
 	case missing > 0:
 		var last string
 		s.pg.do(func() { last = lastFailure(t, name) })

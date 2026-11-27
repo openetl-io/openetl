@@ -374,11 +374,7 @@ func (s *slot) crashWorker(pipeline string) bool {
 		pid = w.pids[1]
 	}
 	s.mu.Unlock()
-	if !openetld(pid) || !s.stopWorker(pid) {
-		s.pool.book.count(pipeline, "crash with no worker to kill")
-		return false
-	}
-	return true
+	return openetld(pid) && s.stopWorker(pid)
 }
 
 // openetld reports whether pid is an openetld process: the name guards
@@ -393,13 +389,7 @@ func openetld(pid int) bool {
 
 // crash kills what's writing the pipeline's checkpoints through this slot,
 // and reports whether there was something to kill.
-func (s *slot) crash(pipeline string) bool {
-	if !s.stop(pipeline, syscall.SIGKILL) {
-		s.pool.book.count(pipeline, "crash with nothing to kill")
-		return false
-	}
-	return true
-}
+func (s *slot) crash(pipeline string) bool { return s.stop(pipeline, syscall.SIGKILL) }
 
 // killLauncher kills the slot's launcher and leaves its pods running, as when
 // a launcher's own pod dies on Kubernetes.
@@ -578,7 +568,11 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	killAfter := act.kind == actKillAfter || act.kind == actKillLater
 	res, err := p.forward(r)
 	if err != nil {
-		if killAfter {
+		switch {
+		case killAfter && r.Context().Err() != nil:
+			// What wrote hung up, as it does when it dies mid-write.
+			p.slot.pool.book.missed(pipeline, act, "the writer went away")
+		case killAfter:
 			p.slot.pool.book.count(pipeline, "missed crash "+act.point+": the write failed")
 		}
 		http.Error(w, err.Error(), http.StatusBadGateway)
@@ -612,15 +606,14 @@ func (p *s3Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // kill carries out the crash point act fired for, and counts it once it has
 // killed: the coordinator or the pod or runner that wrote, or the worker
-// that commits.
+// that commits. If there's nothing to kill, the point is armed again.
 func (p *s3Proxy) kill(pipeline string, act action) {
-	killed := false
-	if act.worker {
-		killed = p.slot.crashWorker(pipeline)
-	} else {
-		killed = p.slot.crash(pipeline)
-	}
-	if killed {
+	switch {
+	case act.worker && !p.slot.crashWorker(pipeline):
+		p.slot.pool.book.missed(pipeline, act, "no worker to kill")
+	case !act.worker && !p.slot.crash(pipeline):
+		p.slot.pool.book.missed(pipeline, act, "nothing to kill")
+	default:
 		p.slot.pool.book.count(pipeline, "killed at crash "+act.point)
 	}
 }

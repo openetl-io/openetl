@@ -185,6 +185,70 @@ func TestAnotherRunsKillHoldsTheFaults(t *testing.T) {
 	fails(t, r.Strict(1, 0))
 }
 
+// A crash point that found nothing to kill is retracted: it hasn't landed,
+// and the pipeline is ready again, unless its attempt was killed meanwhile,
+// as by another run's kill of the runner they share, which a newer
+// attempt's commit still resumes. One retracted while an earlier kill
+// waited puts that kill back.
+func TestAKillThatFoundNothingIsRetracted(t *testing.T) {
+	var r Records
+	commit(&r, 1, 1)
+	commit(&r, 1, 2)
+	r.LandedKill(at(3))
+	r.Unland(at(3))
+	if !r.Ready() {
+		t.Fatal("not ready after the kill was retracted")
+	}
+	fails(t, r.Strict(1, 1), "0 of 1 faults landed", "no commit by a newer attempt after a kill")
+
+	r.LandedKill(at(4))
+	r.Killed(at(5))
+	r.Unland(at(4))
+	if r.Ready() || !r.Resuming() {
+		t.Fatal("ready while another run's kill waits")
+	}
+	r.LandedKill(at(6))
+	r.Unland(at(6))
+	commit(&r, 2, 7)
+	commit(&r, 2, 8)
+	r.LandedKill(at(9))
+	commit(&r, 3, 10)
+	fails(t, r.Strict(1, 1))
+	if got := r.Resumes(); !slices.Equal(got, []time.Duration{2 * time.Second, time.Second}) {
+		t.Errorf("resumes %v", got)
+	}
+}
+
+// Two kills noted before either found nothing, as a run that isn't strict
+// may, retracted in either order, put back the kill noted before both, or
+// none.
+func TestOverlappingRetractionsPutBackTheKillBeforeThem(t *testing.T) {
+	for _, prior := range []bool{false, true} {
+		for _, order := range [][2]int{{3, 4}, {4, 3}} {
+			var r Records
+			commit(&r, 1, 1)
+			if prior {
+				r.Killed(at(2))
+			}
+			r.LandedKill(at(3))
+			r.LandedKill(at(4))
+			r.Unland(at(order[0]))
+			r.Unland(at(order[1]))
+			if len(r.landed) != 0 || r.Resuming() != prior {
+				t.Errorf("a kill before: %v; retracted %v: %d landed, resuming %v", prior, order, len(r.landed), r.Resuming())
+			}
+			commit(&r, 2, 5)
+			var want []time.Duration
+			if prior {
+				want = []time.Duration{3 * time.Second}
+			}
+			if got := r.Resumes(); !slices.Equal(got, want) {
+				t.Errorf("a kill before: %v; retracted %v: resumes %v, want %v", prior, order, got, want)
+			}
+		}
+	}
+}
+
 // Arbitrary histories of a few attempts: claims, records, commits arriving
 // in flight past a kill, attempts replaced with and without kills, and the
 // run's own faults landing at any time, or in half the histories only when
