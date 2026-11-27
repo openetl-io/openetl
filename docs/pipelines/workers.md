@@ -164,7 +164,9 @@ A job on workers fails as a whole. OpenETL then retries it from the last checkpo
 - If a worker fails, the attempt fails, and OpenETL retries it. The next attempt restores every worker from the last checkpoint, and reads again what came after it.
 - If a worker's pod is stopped, such as on a node drain or a spot interruption, the worker does not wait for a checkpoint. The attempt fails with the code `TRANSIENT`, as it does when a worker's pod is lost, and OpenETL retries it.
 - If the coordinator's pod is stopped, the coordinator stops the attempt at a checkpoint, as a job's pod does. OpenETL then places the job again.
-- Every worker must join its coordinator within 5 minutes after the coordinator starts the attempt. A worker that does not join in time fails the attempt.
+- If a worker fails before it joins its coordinator, the worker still reports the failure to the coordinator. For example, its source or destination connector cannot start. The attempt fails at once with the worker's error and its code, as it does when a worker fails after it joins.
+- If a worker's pod fails before the worker joins, such as when its container is killed, the attempt fails when the pod launcher next reports its pods.
+- Every worker must join its coordinator within 5 minutes after the coordinator starts the attempt. A worker that does not join in time fails the attempt. For example, the worker's pod does not start, or the worker cannot reach the API or its coordinator.
 - An attempt can be stopped before its workers have joined, or before they have their work. For example, you pause the pipeline, apply a new version, or release a hold, which starts a continuous pipeline's job again. The coordinator does not wait for the workers. It stops the attempt at once, as it stops at a checkpoint, and the attempt does not count as failed.
 - If a worker runs out of memory, the retry runs at a larger size only when the pod launcher reports the worker's pod before the coordinator reports the attempt. Otherwise the retry runs at the same size. If workers run out of memory, set a larger `resources.size`.
 

@@ -616,6 +616,70 @@ func TestAWorkerStoppedInACallFailsTheAttemptAsTransient(t *testing.T) {
 	p.wait("a1")
 }
 
+// A worker that fails before it joins, as when its connectors don't start,
+// joins only to say so: the attempt fails at once with the worker's error
+// and its code, not once the workers' time to join is up; one stopped as it
+// starts, as its pod is, says so as transient. The worker joining after
+// that, as a late join would, is refused.
+func TestAWorkerThatFailsBeforeItJoinsFailsTheAttemptAtOnce(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err     error
+		stopped bool
+		want    errs.Code
+	}{
+		"transient":      {err: errs.New(errs.Transient, "connector: the source didn't start: the database is restarting"), want: errs.Transient},
+		"config invalid": {err: errs.New(errs.ConfigInvalid, "connector: the source didn't start: it has no host"), want: errs.ConfigInvalid},
+		"stopped":        {err: errs.Wrap(errs.Internal, context.Canceled, "connector: the source didn't start"), stopped: true, want: errs.Transient},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+			defer cancel()
+			p := newPool(t, ranges(6, 20, 5))
+			j := p.workers("a1", 2)
+			j.Workers.Options.JoinTimeout = time.Hour
+			launch := j.Workers.Launch
+			var late attempt.Target
+			reported := make(chan error, 1)
+			j.Workers.Launch = func(ctx context.Context, targets []attempt.Target) error {
+				late = targets[1]
+				tg := targets[1]
+				var err error
+				if tg.Listen, tg.Exchange, tg.Held, err = attempt.ExchangeAddresses(ctx, "", ""); err != nil {
+					return err
+				}
+				wctx, stop := context.WithCancel(context.WithoutCancel(ctx))
+				if tc.stopped {
+					stop()
+				}
+				go func() {
+					defer stop()
+					reported <- runner.FailBeforeJoining(wctx, tg, workerOpts, tc.err)
+				}()
+				return launch(ctx, targets[:1])
+			}
+			began := time.Now()
+			_, err := runner.RunAttempt(ctx, j)
+			took := time.Since(began)
+			switch msg := fmt.Sprint(err); {
+			case errs.CodeOf(err) != tc.want || !strings.Contains(msg, "worker 2 failed: ") || !strings.Contains(msg, tc.err.Error()):
+				t.Fatalf("the attempt failed with %v (%s), want worker 2's error, %s", err, errs.CodeOf(err), tc.want)
+			case took > 10*time.Second:
+				t.Errorf("the attempt took %s to fail", took)
+			case tc.stopped && !strings.Contains(msg, "the worker was stopped"):
+				t.Errorf("the attempt failed with %v, want the worker stopped", err)
+			}
+			if err := <-reported; errs.CodeOf(err) != tc.want || !strings.Contains(err.Error(), tc.err.Error()) {
+				t.Errorf("the worker reported %v (%s)", err, errs.CodeOf(err))
+			}
+			p.wait("a1")
+			err = runner.RunWorker(ctx, p.job("a1", ranges(6, 20, 5)(), p.destination(false)), late, workerOpts)
+			if !errors.Is(err, attempt.ErrRefused) || errs.CodeOf(err) != errs.Fenced {
+				t.Fatalf("worker 2 joining after the attempt failed: %v (%s), want refused", err, errs.CodeOf(err))
+			}
+		})
+	}
+}
+
 // A worker lost between record N and its commit fails the attempt. The
 // next one's workers settle epoch N from its staging, or find its marker
 // if the commit happened, before anything is assigned.

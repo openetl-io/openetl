@@ -624,6 +624,46 @@ func TestAWorkersFailureFailsTheAttempt(t *testing.T) {
 	})
 }
 
+// A worker that fails before it could take part joins only to send its
+// failure, with the address it would have joined with: the attempt fails
+// with the worker's error and its code, also when the coordinator, which
+// waited only for that join, assigns an attempt whose engines exchange rows
+// first. A join after that, the worker's again or another's, is refused.
+func TestAWorkerThatJoinsOnlyToFailFailsTheAttemptWithItsError(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := coordinatorFor(t, testAttemptOf(2), Options{})
+		w0 := joinPipe(t, c, target(0), Options{})
+		a := layout(2)
+		a.Exchange = &attemptv1.Exchange{Certificate: []byte("cert"), Key: []byte("key"), Secret: []byte("secret")}
+		assigned := make(chan error, 1)
+		go func() { assigned <- c.Assign(t.Context(), a) }()
+		w1 := joinPipe(t, c, target(1), Options{})
+		if err := w1.awaitTaken(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		w1.Fail(errs.New(errs.ConfigInvalid, "connector: the source has no host"))
+		within(t, c.Done(), time.Second, "the attempt's failure")
+		if err := c.Err(); errs.CodeOf(err) != errs.ConfigInvalid || !strings.Contains(err.Error(), "worker 2 failed: CONFIG_INVALID: connector: the source has no host") {
+			t.Fatalf("attempt: %v", err)
+		}
+		if err := within(t, assigned, time.Second, "Assign"); err != nil && !errors.Is(err, c.Err()) {
+			t.Fatalf("Assign: %v", err)
+		}
+		within(t, w0.Done(), time.Second, "worker 0's end")
+		if err := w0.Err(); !errors.Is(err, ErrAborted) || errs.CodeOf(err) != errs.ConfigInvalid {
+			t.Fatalf("worker 0: %v", err)
+		}
+		for _, tg := range []Target{target(1), target(0)} {
+			late := joinPipe(t, c, tg, Options{})
+			within(t, late.Done(), time.Second, "a late join's end")
+			if err := late.Err(); !errors.Is(err, ErrRefused) || errs.CodeOf(err) != errs.Fenced {
+				t.Fatalf("worker %d joining late: %v", tg.Worker+1, err)
+			}
+		}
+	})
+}
+
 // A worker whose engine lost another's doesn't say why the attempt failed
 // when the other worker's own failure follows within the grace: that one
 // does, though it came second.
